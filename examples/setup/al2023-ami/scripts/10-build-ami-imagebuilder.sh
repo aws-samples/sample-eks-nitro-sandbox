@@ -63,7 +63,7 @@ mkdir -p "$EVIDENCE_DIR" "$LOG_DIR"
 # The account and Region ib-prereqs.sh recorded for the run.
 account=$(aw sts get-caller-identity --query Account --output text) || die "could not read the current AWS account"
 [ "$(rec1 ACCOUNT_ID)" = "$account" ] || die "credentials are for a different account than run $RUN_ID's prerequisites"
-require_identity AWS_REGION RESOURCE_PREFIX
+require_identity AWS_REGION RESOURCE_PREFIX KUBERNETES_VERSION
 
 # The group's launch template decides the build instance. Image Builder takes any InService
 # instance of the group, so check the numbered template version the group is pinned to (never

@@ -122,6 +122,24 @@ require_identity() {
   done
 }
 
+# bind_k8s_version: KUBERNETES_VERSION is part of the run's identity, first record wins. The AMI
+# (Packer) and the parent image (Image Builder) are built for one version, and nothing on the AMI
+# says which, so a later command given another version must stop. A run that already holds an AMI
+# or parent image but never recorded the version fails closed, and needs a new run.
+bind_k8s_version() {
+  local f="$RUN_STATE_DIR/run-state.env" have=""
+  require_supported_k8s
+  [ -f "$f" ] && have=$(sed -n 's/^KUBERNETES_VERSION=//p' "$f" | head -n 1)
+  if [ -z "$have" ]; then
+    if [ -f "$f" ] && grep -qE '^(AMI_ID|IB_PARENT_AMI)=' "$f"; then
+      die "run $RUN_ID already has an image but never recorded its Kubernetes version; start a new run"
+    fi
+    mkdir -p "$RUN_STATE_DIR"; printf 'KUBERNETES_VERSION=%s\n' "$KUBERNETES_VERSION" >> "$f"
+  elif [ "$have" != "$KUBERNETES_VERSION" ]; then
+    die "KUBERNETES_VERSION is '$KUBERNETES_VERSION' but run $RUN_ID recorded '$have'; use the recorded value, or start a new run"
+  fi
+}
+
 # The pod isolation runtime is published for these Kubernetes versions only.
 require_supported_k8s() {
   case "$KUBERNETES_VERSION" in 1.36|1.37) ;; *) die "KUBERNETES_VERSION '$KUBERNETES_VERSION': the pod isolation runtime is published for 1.36 and 1.37 only" ;; esac

@@ -63,6 +63,7 @@ elif [ "$recorded" != "$account" ]; then
   die "credentials are for a different account than run $RUN_ID was created in; refusing"
 fi
 IDENTITY_MAY_BE_NEW="" require_identity AWS_REGION RESOURCE_PREFIX
+[ "$mode" != up ] || bind_k8s_version   # before the parent image is chosen
 
 # --------------------------------------------------------------------------------------------
 if [ "$mode" = up ]; then
@@ -277,19 +278,28 @@ esac
 # Auto Scaling group: empty it, then delete it with its instances.
 probe 'xxx-never' aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" \
   --query 'AutoScalingGroups[0]' --output json; rc=$?
+asg_gone=0
 case $rc in
   0) if printf '%s' "$PROBE_OUT" | jtags | tags_match; then
-       aw autoscaling delete-auto-scaling-group --auto-scaling-group-name "$NAME" --force-delete \
-         && log "deleting Auto Scaling group $NAME and its instances" || leave "could not delete Auto Scaling group $NAME"
-       for _ in $(seq 1 60); do
-         left=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" --query 'length(AutoScalingGroups)' --output text 2>/dev/null)
-         [ "$left" = 0 ] && break; sleep 10
-       done
-       [ "$left" = 0 ] || leave "Auto Scaling group $NAME is still being deleted"
+       if aw autoscaling delete-auto-scaling-group --auto-scaling-group-name "$NAME" --force-delete; then
+         log "deleting Auto Scaling group $NAME and its instances"
+         left=""
+         for _ in $(seq 1 60); do
+           left=$(aw autoscaling describe-auto-scaling-groups --auto-scaling-group-names "$NAME" --query 'length(AutoScalingGroups)' --output text 2>/dev/null)
+           [ "$left" = 0 ] && break; sleep 10
+         done
+         [ "$left" = 0 ] && asg_gone=1 || leave "Auto Scaling group $NAME is still being deleted"
+       else leave "could not delete Auto Scaling group $NAME"; fi
      else leave "Auto Scaling group $NAME is not tagged for run $RUN_ID; leaving it"; fi ;;
-  1) log "Auto Scaling group $NAME not present" ;;
+  1) log "Auto Scaling group $NAME not present"; asg_gone=1 ;;
   *) incomplete=1 ;;
 esac
+# The group launches replacements from the profile, roles, template and security group below.
+# While it is there, or could not be checked, keep them all.
+if [ "$asg_gone" != 1 ]; then
+  echo "IMAGE BUILDER CLEAN UP INCOMPLETE: Auto Scaling group $NAME is still there, is not this run's, or could not be checked, so the instance profile, roles, launch template and security group are kept. Fix the warnings above and run down again."
+  exit 1
+fi
 
 # IAM: the instance profile, on its own tags (whether or not its role is still there), then the roles.
 prof="$NAME-instance"

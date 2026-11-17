@@ -49,7 +49,7 @@ grep -qs '^JOIN_MODE=' "$STATE_FILE" || printf 'JOIN_MODE=%s\n' "$JOIN_MODE" >> 
 printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
 log "run id: $RUN_ID (mode: $mode, JOIN_MODE: $JOIN_MODE)"
 
-require_supported_k8s
+bind_k8s_version
 
 # --- Cluster prerequisites (full, join): read only, and before the long build -----------------
 if [ "$mode" != ami-only ]; then

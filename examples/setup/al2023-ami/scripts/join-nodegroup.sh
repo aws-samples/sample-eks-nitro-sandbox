@@ -10,7 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/lib/common.sh"
 require_run_id
-require_identity RESOURCE_PREFIX CLUSTER_NAME AWS_REGION NAMESPACE
+require_identity RESOURCE_PREFIX CLUSTER_NAME AWS_REGION NAMESPACE KUBERNETES_VERSION
 mkdir -p "$RUN_STATE_DIR" "$EVIDENCE_DIR" || die "could not create $EVIDENCE_DIR"
 
 # The AMI is the one the run's build recorded, checked for this run's tags and NODE_ARCH.
