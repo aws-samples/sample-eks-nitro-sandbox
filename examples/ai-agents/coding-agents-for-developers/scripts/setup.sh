@@ -35,7 +35,7 @@ NAMESPACE="${NAMESPACE:-coding-agents-for-developers}"
 S3_PREFIX="${S3_PREFIX:-coding-agents}"
 POOL_REPLICAS="${POOL_REPLICAS:-1}"
 AGENT_CLIS="${AGENT_CLIS:-claude-code,codex,kiro-cli,opencode,pi,oh-my-pi}"
-IMAGE_TAG="${IMAGE_TAG:-v1}"   # must match build-images.sh; bump it after changing an image
+IMAGE_TAG="${IMAGE_TAG:-v2}"   # must match build-images.sh; bump it after changing an image
 KCTL=(kubectl --context "$CLUSTER_NAME")
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
@@ -249,13 +249,47 @@ done
 # later step depend on it.
 [[ "${fs_status^^}" == "AVAILABLE" ]] || die "file system $S3_FILES_FS_ID did not become AVAILABLE (last status: ${fs_status:-unknown})"
 
-say "Mount targets, one per cluster subnet"
-for subnet in $(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
-  --query 'cluster.resourcesVpcConfig.subnetIds' --output text); do
-  have="$(aws s3files list-mount-targets --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
-    --query "mountTargets[?subnetId=='$subnet'].mountTargetId | [0]" --output text 2>/dev/null || true)"
-  [[ "$have" == "None" || -z "$have" ]] && aws s3files create-mount-target \
-    --file-system-id "$S3_FILES_FS_ID" --subnet-id "$subnet" --security-groups "$SG_ID" --region "$AWS_REGION" >/dev/null
+say "Mount targets, one per Availability Zone of the cluster's subnets"
+# S3 Files allows one mount target per Availability Zone, and a cluster can have more than
+# one subnet in a zone. Read the cluster's subnets, this file system's mount targets and each
+# of those subnets' zone ids, then create a mount target only in a zone that has none, in the
+# first of the cluster's subnets there (by id). A lookup that fails stops the run: an
+# unknown answer is not "no mount target".
+cluster_subnets="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
+  --query 'cluster.resourcesVpcConfig.subnetIds' --output text)" \
+  || die "could not read the subnets of cluster $CLUSTER_NAME; retry setup"
+[[ -n "$cluster_subnets" && "$cluster_subnets" != "None" ]] || die "cluster $CLUSTER_NAME lists no subnets"
+mt_subnets="$(aws s3files list-mount-targets --file-system-id "$S3_FILES_FS_ID" --region "$AWS_REGION" \
+  --query 'mountTargets[].subnetId' --output text)" \
+  || die "could not list the mount targets of $S3_FILES_FS_ID; retry setup"
+if [[ "$mt_subnets" == "None" ]]; then mt_subnets=""; fi
+# shellcheck disable=SC2086  # the subnet lists are split into ids on purpose
+subnet_ids="$(printf '%s\n' $cluster_subnets $mt_subnets | sort -u)"
+# shellcheck disable=SC2086
+subnet_azs="$(aws ec2 describe-subnets --subnet-ids $subnet_ids --region "$AWS_REGION" \
+  --query 'Subnets[].[SubnetId,AvailabilityZoneId]' --output text)" \
+  || die "could not read the Availability Zones of the subnets; retry setup"
+az_of() { awk -v s="$1" '$1 == s { print $2; exit }' <<<"$subnet_azs"; }
+covered=" "
+for subnet in $mt_subnets; do
+  az="$(az_of "$subnet")"
+  [[ -n "$az" ]] || die "could not find the Availability Zone of mount target subnet $subnet"
+  covered="$covered$az "
+done
+# Choose every subnet first, so a zone that cannot be read stops the run before any create.
+picks=""
+# shellcheck disable=SC2086
+for subnet in $(printf '%s\n' $cluster_subnets | sort -u); do
+  az="$(az_of "$subnet")"
+  [[ -n "$az" ]] || die "could not find the Availability Zone of cluster subnet $subnet"
+  [[ "$covered" == *" $az "* ]] && continue
+  covered="$covered$az "
+  picks="$picks $subnet:$az"
+done
+for pick in $picks; do
+  aws s3files create-mount-target --file-system-id "$S3_FILES_FS_ID" --subnet-id "${pick%%:*}" \
+    --security-groups "$SG_ID" --region "$AWS_REGION" >/dev/null \
+    || die "could not create a mount target for $S3_FILES_FS_ID in subnet ${pick%%:*} (${pick#*:})"
 done
 pending=1
 for i in $(seq 1 90); do
