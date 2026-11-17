@@ -34,6 +34,10 @@ AGW_CA_VOLUME = "agentgateway-ca"
 AGW_CA_CONFIG_MAP = "agentgateway-ca"
 AGW_CA_MOUNT_PATH = "/etc/agentgateway-ca"
 AGW_CA_PATH = f"{AGW_CA_MOUNT_PATH}/ca.crt"
+OCE_CONFIGURATION_VOLUME = "openclaw-configuration"
+OCE_CONFIGURATION_MOUNT_PATH = "/etc/openclaw"
+OCE_SERVICE_PRINCIPAL_VOLUME = "openclaw-service-principal"
+OCE_SERVICE_PRINCIPAL_MOUNT_PATH = "/var/run/secrets/openclaw/service-principal"
 NODE_CA_ENV = "NODE_EXTRA_CA_CERTS"
 TMPDIR_ENV = "TMPDIR"
 TMPDIR_PATH = "/dev/shm"  # nosec B108
@@ -43,6 +47,8 @@ SERVICE_ACCOUNT_MOUNT_PATH = "/var/run/secrets/kubernetes.io/serviceaccount"
 RUNTIME_UID = 1000
 RUNTIME_GID = 1000
 HOME_MOUNT_PATH = "/home/node"
+HOME_ENV = "HOME"
+AWS_CREDENTIAL_DIRECTORY = f"{HOME_MOUNT_PATH}/.aws"
 RUNTIME_TMP_ROOT = "/runtime-temporary"
 TRUSTED_BOOTSTRAP_PATHS = (
     "/bin",
@@ -353,6 +359,75 @@ def _validate_trusted_mounts(container: dict[str, Any], location: str) -> None:
                 )
 
 
+def _validate_runtime_credential_mounts(
+    container: dict[str, Any],
+    volumes: list[Any],
+    location: str,
+    gateway_id: str,
+    ignored_volume_names: set[str] | None = None,
+) -> None:
+    """Reject credential-bearing mounts except the exact OCE runtime inputs."""
+    volume_by_name = {
+        volume.get("name"): volume
+        for volume in volumes
+        if isinstance(volume, dict) and _is_nonempty_string(volume.get("name"))
+    }
+    for mount in _mounts(container, location):
+        if not isinstance(mount, dict):
+            raise AdmissionError(f"{location}.volumeMounts entries must be objects")
+        mount_path = _safe_absolute_mount_path(
+            mount.get("mountPath"), f"{location}.volumeMounts.mountPath"
+        )
+        if mount.get("name") in (ignored_volume_names or set()):
+            continue
+        if _mount_paths_overlap(mount_path, AWS_CREDENTIAL_DIRECTORY) and not (
+            mount.get("name") == RUNTIME_VOLUME
+            and mount_path == HOME_MOUNT_PATH
+            and mount.get("subPath") in (None, "home")
+            and "subPathExpr" not in mount
+        ):
+            raise AdmissionError(
+                f"{location} has a mount that can provide AWS credential files"
+            )
+
+        volume = volume_by_name.get(mount.get("name"))
+        if not isinstance(volume, dict):
+            raise AdmissionError(f"{location} references an unknown volume")
+        approved = (
+            _is_empty_dir_volume(volume)
+            or _is_gateway_state_volume(volume, gateway_id)
+            or (
+            mount.get("name") == OCE_CONFIGURATION_VOLUME
+            and mount
+            == {
+                "name": OCE_CONFIGURATION_VOLUME,
+                "mountPath": OCE_CONFIGURATION_MOUNT_PATH,
+                "readOnly": True,
+            }
+            and _is_oce_configuration_volume(volume, gateway_id)
+            )
+            or (
+            mount.get("name") == OCE_SERVICE_PRINCIPAL_VOLUME
+            and mount
+            == {
+                "name": OCE_SERVICE_PRINCIPAL_VOLUME,
+                "mountPath": OCE_SERVICE_PRINCIPAL_MOUNT_PATH,
+                "readOnly": True,
+            }
+            and _is_oce_service_principal_volume(volume)
+            )
+            or (
+            mount.get("name") == AGW_CA_VOLUME
+            and _is_agentgateway_ca_mount(mount)
+            and _is_agentgateway_ca_volume(volume)
+            )
+        )
+        if not approved:
+            raise AdmissionError(
+                f"{location} has an unsupported credential-capable volume mount"
+            )
+
+
 def _validate_link_paths(links: dict[str, str]) -> None:
     paths = sorted(PurePosixPath(link).parts for link in links)
     for index, path in enumerate(paths):
@@ -363,7 +438,12 @@ def _validate_link_paths(links: dict[str, str]) -> None:
                 )
 
 
-def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
+def _runtime_environment(
+    container: dict[str, Any],
+    location: str,
+    *,
+    require_runtime_values: bool = False,
+) -> list[Any]:
     env_from = container.get("envFrom", [])
     if not isinstance(env_from, list):
         raise AdmissionError(f"{location}.envFrom must be a list")
@@ -389,6 +469,7 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
                 f"{location} configures prohibited AWS credential environment {name}"
             )
     required = {
+        HOME_ENV: HOME_MOUNT_PATH,
         NODE_CA_ENV: AGW_CA_PATH,
         TMPDIR_ENV: TMPDIR_PATH,
     }
@@ -400,6 +481,8 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
         ]
         if len(matches) > 1:
             raise AdmissionError(f"{location} has duplicate {name} entries")
+        if require_runtime_values and matches != [{"name": name, "value": value}]:
+            raise AdmissionError(f"{location} must configure {name}={value}")
         if matches and matches[0] != {"name": name, "value": value}:
             raise AdmissionError(f"{location} already configures {name}")
     return environment
@@ -883,6 +966,68 @@ def _is_agentgateway_ca_mount(mount: Any) -> bool:
     }
 
 
+def _is_oce_configuration_volume(volume: Any, gateway_id: str) -> bool:
+    if not isinstance(volume, dict) or set(volume) != {"name", "configMap"}:
+        return False
+    config_map = volume.get("configMap")
+    if not isinstance(config_map, dict):
+        return False
+    if not set(config_map).issubset({"name", "items", "defaultMode", "optional"}):
+        return False
+    name = config_map.get("name")
+    return (
+        _is_nonempty_string(name)
+        and re.fullmatch(
+            rf"gateway-{re.escape(gateway_id)}-rev-[0-9a-f]{{12}}",
+            name,
+        )
+        is not None
+        and config_map.get("items")
+        == [{"key": "openclaw.json", "path": "openclaw.json"}]
+        and config_map.get("defaultMode", 420) == 420
+        and config_map.get("optional", False) is False
+    )
+
+
+def _is_oce_service_principal_volume(volume: Any) -> bool:
+    if not isinstance(volume, dict) or set(volume) != {"name", "projected"}:
+        return False
+    projected = volume.get("projected")
+    if (
+        not isinstance(projected, dict)
+        or not set(projected).issubset({"sources", "defaultMode"})
+        or projected.get("defaultMode", 420) != 420
+    ):
+        return False
+    return projected.get("sources") == [
+        {
+            "serviceAccountToken": {
+                "audience": "openclaw-enterprise",
+                "expirationSeconds": 900,
+                "path": "token",
+            }
+        }
+    ]
+
+
+def _is_empty_dir_volume(volume: Any) -> bool:
+    if not isinstance(volume, dict) or set(volume) != {"name", "emptyDir"}:
+        return False
+    empty_dir = volume.get("emptyDir")
+    return isinstance(empty_dir, dict) and set(empty_dir).issubset(
+        {"medium", "sizeLimit"}
+    )
+
+
+def _is_gateway_state_volume(volume: Any, gateway_id: str) -> bool:
+    return volume == {
+        "name": STATE_VOLUME,
+        "persistentVolumeClaim": {
+            "claimName": f"gateway-state-{gateway_id}",
+        },
+    }
+
+
 def _default_service_account_volumes(volumes: list[Any], mounts: list[Any]) -> set[str]:
     """Find only Kubernetes' standard auto-injected service-account projections."""
     removable: set[str] = set()
@@ -964,7 +1109,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     volumes = spec.get("volumes", [])
     if not isinstance(volumes, list):
         raise AdmissionError("spec.volumes must be a list")
-    _validate_provenance(pod, spec, volumes)
+    gateway_id = _validate_provenance(pod, spec, volumes)
     init_containers, containers = _container_groups(spec)
     for index, container in enumerate(init_containers):
         if isinstance(container, dict) and container.get("restartPolicy") == "Always":
@@ -1258,6 +1403,17 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         raise AdmissionError(
                             f"{mount_path} would mask the designated runtime home"
                         )
+                    if (
+                        group_name == "containers"
+                        and index == designated_index
+                        and _mount_paths_overlap(
+                            mount_path, AWS_CREDENTIAL_DIRECTORY
+                        )
+                    ):
+                        raise AdmissionError(
+                            f"spec.{group_name}[{index}] has a mount that can "
+                            "provide AWS credential files"
+                        )
                     rewritten.append(copy.deepcopy(mount))
                     continue
 
@@ -1396,6 +1552,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         container, f"spec.{group_name}[{index}]"
                     )
                     required_environment = [
+                        {"name": HOME_ENV, "value": HOME_MOUNT_PATH},
                         {"name": NODE_CA_ENV, "value": AGW_CA_PATH},
                         {"name": TMPDIR_ENV, "value": TMPDIR_PATH},
                     ]
@@ -1427,6 +1584,14 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                         "value": rewritten,
                     }
                 )
+
+    _validate_runtime_credential_mounts(
+        containers[designated_index],
+        volumes,
+        f"spec.containers[{designated_index}]",
+        gateway_id,
+        default_service_account_volumes,
+    )
 
     relocated_prep_script = _validate_prepare_private_state(
         prep,
@@ -1614,7 +1779,7 @@ def validate_pod(pod: dict[str, Any]) -> None:
     volumes = spec.get("volumes")
     if not isinstance(volumes, list):
         raise AdmissionError("spec.volumes must be a list")
-    _validate_provenance(pod, spec, volumes)
+    gateway_id = _validate_provenance(pod, spec, volumes)
     labels = pod["metadata"]["labels"]
     if labels.get(NETWORK_PROFILE_LABEL) != NITRO_RESTRICTED_PROFILE:
         raise AdmissionError(
@@ -1654,8 +1819,18 @@ def validate_pod(pod: dict[str, Any]) -> None:
         raise AdmissionError(
             "gateway image is not in the configured OCE runtime allowlist"
         )
-    _runtime_environment(gateway, "spec.containers[0]")
+    _runtime_environment(
+        gateway,
+        "spec.containers[0]",
+        require_runtime_values=True,
+    )
     _validate_trusted_mounts(gateway, "spec.containers[0]")
+    _validate_runtime_credential_mounts(
+        gateway,
+        volumes,
+        "spec.containers[0]",
+        gateway_id,
+    )
 
     prep, ownership, link, owner = init_containers
     unexpected_prep_fields = sorted(set(prep) - PREP_ALLOWED_FIELDS)

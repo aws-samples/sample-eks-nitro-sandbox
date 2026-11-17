@@ -20,9 +20,11 @@ does not modify upstream OCE.
   match OCE's public HTTPS egress policy. These controls require a
   network-policy implementation that enforces Kubernetes `NetworkPolicy`.
 - **No AWS credential injection by the adapter:** it rejects common AWS
-  credential environment variables, disables the automatic Kubernetes API
-  token, and permits only OCE's audience-scoped service-principal token.
-  Operators must also verify that tenant ServiceAccounts have no IRSA
+  credential environment variables and pins `HOME=/home/node`. It also rejects
+  unrecognized volume sources. It allows only empty scratch volumes, the
+  verified agent-state claim, and the exact OCE configuration, audience-scoped
+  service-principal token, and AgentGateway CA inputs. Operators must also
+  verify that tenant ServiceAccounts have no IRSA
   annotation or EKS Pod Identity association. The tenant policy denies the EKS
   Pod Identity Agent endpoint. A Nitro guest can still receive an HTTP response
   from IMDS, but its IMDS credential path returns no IAM role or credentials.

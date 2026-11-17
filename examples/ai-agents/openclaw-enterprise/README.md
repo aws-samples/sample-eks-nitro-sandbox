@@ -84,7 +84,10 @@ gateway pod, the adapter:
 - Sets `automountServiceAccountToken: false` and removes the exact
   auto-injected `kube-api-access-*` volume and mount shape. It allows only the
   exact OCE service-principal token projection and rejects other
-  service-account token projections.
+  service-account token projections. It pins the runtime's `HOME` to
+  `/home/node` and allows only empty scratch volumes, the verified agent-state
+  claim, and the exact OCE configuration, service-principal token, and
+  AgentGateway CA inputs.
 - Mounts the tenant `agentgateway-ca` ConfigMap at `/etc/agentgateway-ca`, sets
   `NODE_EXTRA_CA_CERTS=/etc/agentgateway-ca/ca.crt`, removes OCE's
   `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,

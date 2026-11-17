@@ -12,8 +12,14 @@ from adapter import (
     AGW_CA_MOUNT_PATH,
     AGW_CA_PATH,
     AGW_CA_VOLUME,
+    HOME_ENV,
+    HOME_MOUNT_PATH,
     LINK_INIT_NAME,
     NODE_CA_ENV,
+    OCE_CONFIGURATION_MOUNT_PATH,
+    OCE_CONFIGURATION_VOLUME,
+    OCE_SERVICE_PRINCIPAL_MOUNT_PATH,
+    OCE_SERVICE_PRINCIPAL_VOLUME,
     OPENCLAW_HOME_PATH,
     OWNER_SCRIPT,
     OWNERSHIP_INIT_NAME,
@@ -293,7 +299,7 @@ def admitted_target_pod() -> dict:
             },
             {
                 "name": "projected-settings",
-                "projected": {"sources": [{"configMap": {"name": "runtime-settings"}}]},
+                "emptyDir": {},
             },
         ]
     )
@@ -612,7 +618,7 @@ class BuildPatchTests(unittest.TestCase):
         )
         self.assertEqual(
             {entry["name"] for entry in gateway["env"]},
-            {"OPENAI_API_KEY", NODE_CA_ENV, TMPDIR_ENV},
+            {"OPENAI_API_KEY", HOME_ENV, NODE_CA_ENV, TMPDIR_ENV},
         )
         self.assertEqual(
             {mount["name"] for mount in gateway["volumeMounts"]},
@@ -1374,6 +1380,234 @@ class BuildPatchTests(unittest.TestCase):
                         f"prohibited AWS credential environment {name}",
                     ):
                         build_patch(pod)
+
+    def test_pins_runtime_home_environment(self) -> None:
+        rendered = apply_patch(target_pod(), build_patch(target_pod()))
+        gateway = rendered["spec"]["containers"][-1]
+
+        self.assertIn(
+            {"name": HOME_ENV, "value": HOME_MOUNT_PATH},
+            gateway["env"],
+        )
+
+        for value_source in (
+            {"value": "/workspace/aws-home"},
+            {"valueFrom": {"configMapKeyRef": {"name": "home", "key": "path"}}},
+        ):
+            with self.subTest(value_source=value_source):
+                pod = target_pod()
+                pod["spec"]["containers"][-1].setdefault("env", []).append(
+                    {"name": HOME_ENV, **value_source}
+                )
+                with self.assertRaisesRegex(AdmissionError, HOME_ENV):
+                    build_patch(pod)
+
+    def test_rejects_file_backed_aws_credentials(self) -> None:
+        for volume_source in (
+            {"secret": {"secretName": "aws-credentials"}},
+            {"configMap": {"name": "aws-credentials"}},
+            {
+                "projected": {
+                    "sources": [
+                        {"secret": {"name": "aws-credentials"}},
+                    ]
+                }
+            },
+        ):
+            with self.subTest(volume_source=volume_source):
+                pod = target_pod()
+                pod["spec"]["volumes"].append(
+                    {"name": "aws-credentials", **volume_source}
+                )
+                pod["spec"]["containers"][-1]["volumeMounts"].append(
+                    {
+                        "name": "aws-credentials",
+                        "mountPath": f"{HOME_MOUNT_PATH}/.aws",
+                        "readOnly": True,
+                    }
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError, "provide AWS credential files"
+                ):
+                    build_patch(pod)
+
+    def test_rejects_credential_capable_mounts_outside_approved_paths(self) -> None:
+        for volume_source in (
+            {"secret": {"secretName": "tenant-bootstrap"}},
+            {"configMap": {"name": "tenant-bootstrap"}},
+            {
+                "projected": {
+                    "sources": [{"secret": {"name": "tenant-bootstrap"}}]
+                }
+            },
+            {"csi": {"driver": "secrets-store.csi.k8s.io"}},
+            {
+                "persistentVolumeClaim": {
+                    "claimName": "attacker-credentials",
+                }
+            },
+            {"hostPath": {"path": "/var/lib/credentials"}},
+            {"nfs": {"server": "nfs.example.invalid", "path": "/credentials"}},
+            {
+                "ephemeral": {
+                    "volumeClaimTemplate": {
+                        "spec": {
+                            "accessModes": ["ReadOnlyMany"],
+                            "resources": {"requests": {"storage": "1Gi"}},
+                        }
+                    }
+                }
+            },
+        ):
+            with self.subTest(volume_source=volume_source):
+                pod = target_pod()
+                pod["spec"]["volumes"].append(
+                    {"name": "tenant-bootstrap", **volume_source}
+                )
+                pod["spec"]["containers"][-1]["volumeMounts"].append(
+                    {
+                        "name": "tenant-bootstrap",
+                        "mountPath": "/credentials/.aws",
+                        "readOnly": True,
+                    }
+                )
+                with self.assertRaisesRegex(
+                    AdmissionError, "unsupported credential-capable volume mount"
+                ):
+                    build_patch(pod)
+
+    def test_accepts_exact_oce_credential_capable_mounts(self) -> None:
+        pod = target_pod()
+        pod["spec"]["volumes"].append(
+            {
+                "name": OCE_CONFIGURATION_VOLUME,
+                "configMap": {
+                    "name": "gateway-a1b2c3d4e5f6-rev-012345abcdef",
+                    "items": [{"key": "openclaw.json", "path": "openclaw.json"}],
+                },
+            }
+        )
+        pod["spec"]["containers"][-1]["volumeMounts"].extend(
+            [
+                {
+                    "name": OCE_CONFIGURATION_VOLUME,
+                    "mountPath": OCE_CONFIGURATION_MOUNT_PATH,
+                    "readOnly": True,
+                },
+                {
+                    "name": OCE_SERVICE_PRINCIPAL_VOLUME,
+                    "mountPath": OCE_SERVICE_PRINCIPAL_MOUNT_PATH,
+                    "readOnly": True,
+                },
+            ]
+        )
+
+        rendered = apply_patch(pod, build_patch(pod))
+        validate_pod(rendered)
+
+    def test_rejects_tampered_oce_configuration_volume(self) -> None:
+        pod = target_pod()
+        pod["spec"]["volumes"].append(
+            {
+                "name": OCE_CONFIGURATION_VOLUME,
+                "configMap": {
+                    "name": "aws-credentials",
+                    "items": [{"key": "credentials", "path": "openclaw.json"}],
+                },
+            }
+        )
+        pod["spec"]["containers"][-1]["volumeMounts"].append(
+            {
+                "name": OCE_CONFIGURATION_VOLUME,
+                "mountPath": OCE_CONFIGURATION_MOUNT_PATH,
+                "readOnly": True,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            AdmissionError, "unsupported credential-capable volume mount"
+        ):
+            build_patch(pod)
+
+    def test_rejects_tampered_oce_service_principal_volume(self) -> None:
+        pod = target_pod()
+        service_principal = next(
+            volume
+            for volume in pod["spec"]["volumes"]
+            if volume["name"] == OCE_SERVICE_PRINCIPAL_VOLUME
+        )
+        service_principal["projected"]["sources"].append(
+            {"secret": {"name": "aws-credentials"}}
+        )
+        pod["spec"]["containers"][-1]["volumeMounts"].append(
+            {
+                "name": OCE_SERVICE_PRINCIPAL_VOLUME,
+                "mountPath": OCE_SERVICE_PRINCIPAL_MOUNT_PATH,
+                "readOnly": True,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            AdmissionError, "unsupported credential-capable volume mount"
+        ):
+            build_patch(pod)
+
+    def test_final_validator_rejects_aws_credential_mount_tampering(self) -> None:
+        for volume_source in (
+            {"secret": {"secretName": "aws-credentials"}},
+            {
+                "persistentVolumeClaim": {
+                    "claimName": "attacker-credentials",
+                }
+            },
+            {"hostPath": {"path": "/var/lib/credentials"}},
+            {"nfs": {"server": "nfs.example.invalid", "path": "/credentials"}},
+            {
+                "ephemeral": {
+                    "volumeClaimTemplate": {
+                        "spec": {
+                            "accessModes": ["ReadOnlyMany"],
+                            "resources": {"requests": {"storage": "1Gi"}},
+                        }
+                    }
+                }
+            },
+        ):
+            with self.subTest(volume_source=volume_source):
+                rendered = apply_patch(target_pod(), build_patch(target_pod()))
+                rendered["spec"]["volumes"].append(
+                    {"name": "aws-credentials", **volume_source}
+                )
+                rendered["spec"]["containers"][-1]["volumeMounts"].append(
+                    {
+                        "name": "aws-credentials",
+                        "mountPath": f"{HOME_MOUNT_PATH}/.aws",
+                        "readOnly": True,
+                    }
+                )
+
+                with self.assertRaisesRegex(
+                    AdmissionError, "provide AWS credential files"
+                ):
+                    validate_pod(rendered)
+
+    def test_final_validator_requires_runtime_environment(self) -> None:
+        for name, value in (
+            (HOME_ENV, HOME_MOUNT_PATH),
+            (NODE_CA_ENV, AGW_CA_PATH),
+            (TMPDIR_ENV, TMPDIR_PATH),
+        ):
+            with self.subTest(name=name):
+                rendered = apply_patch(target_pod(), build_patch(target_pod()))
+                gateway = rendered["spec"]["containers"][-1]
+                gateway["env"] = [
+                    entry for entry in gateway["env"] if entry.get("name") != name
+                ]
+
+                with self.assertRaisesRegex(
+                    AdmissionError, f"must configure {name}={value}"
+                ):
+                    validate_pod(rendered)
 
     def test_rejects_exec_lifecycle_hooks_and_probes(self) -> None:
         exec_action = {"exec": {"command": ["/bin/sh", "-c", "id"]}}
