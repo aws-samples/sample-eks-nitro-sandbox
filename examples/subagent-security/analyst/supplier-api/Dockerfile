@@ -5,8 +5,9 @@
 #   docker build -f analyst/supplier-api/Dockerfile -t <repo>:<tag> .
 #
 # It needs no Python packages: the server is standard library only, which keeps the pod a
-# reader has to trust as small as the sample can make it.
-FROM public.ecr.aws/docker/library/python:3.13-slim
+# reader has to trust as small as the sample can make it. The base image is pinned by its
+# digest, so the image's tag (a digest of this file and its inputs) names all of it.
+FROM public.ecr.aws/docker/library/python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 COPY analyst/src/business.py /opt/analyst/business.py
 COPY analyst/fixtures/ /opt/analyst/fixtures/

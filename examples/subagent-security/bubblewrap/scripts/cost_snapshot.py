@@ -27,10 +27,12 @@ bytes a node sends, so no maximum can be proved for them and build() refuses the
 than price them: a node-subnet route to anything but the VPC itself, an internet gateway
 (for IPv4, from a node with no public address) or a gateway endpoint; any interface or
 Gateway Load Balancer endpoint in the VPC; a node subnet or NodeClass that gives a node a
-public IPv4 address; and node and control-plane subnets in more than one Availability Zone,
+public IPv4 address (a subnet two NodeClasses share counts as public when either does); and
+node and control-plane subnets in more than one Availability Zone,
 which is every cluster EKS creates today. It also refuses a registry that replicates images
 or scans them with Amazon Inspector, a NodePool that would not remove an empty node within
-ten minutes, and a NodeClass that provisions gp3 IOPS or throughput above the included
+ten minutes (a static-capacity pool with spec.replicas, or a disruption budget of zero in any
+spelling, included), and a NodeClass that provisions gp3 IOPS or throughput above the included
 baseline.
 """
 import argparse
@@ -231,8 +233,14 @@ def empties_node(pool):
     after = seconds(disruption.get("consolidateAfter"), f"NodePool {name}'s consolidateAfter")
     if after > EMPTY_NODE_MAX_S:
         raise Bad(f"NodePool {name} waits {after}s before removing an empty node, more than {EMPTY_NODE_MAX_S}s")
+    if pool.get("static"):
+        raise Bad(f"NodePool {name} sets spec.replicas: a static-capacity pool keeps its nodes and is not "
+                  "consolidated, so nothing removes the run's node")
     for budget in disruption.get("budgets") or []:
-        if budget.get("schedule") or str(budget.get("nodes")).strip() in ("0", "0%"):
+        # Karpenter reads nodes as a count or a percentage; any spelling of zero (0, 00, 0%, 000%)
+        # stops it removing a node, and so does a value this check cannot read
+        nodes = re.fullmatch(r"(\d+)%?", str(budget.get("nodes", "10%")).strip())
+        if budget.get("schedule") or not nodes or int(nodes.group(1)) == 0:
             raise Bad(f"NodePool {name} has a disruption budget that can stop it removing an empty node")
     return after
 
@@ -268,6 +276,8 @@ def scheduling(raws):
                 raise Bad(f"NodeClass {name} provisions gp3 {key} {storage[key]!r}, above the included "
                           f"{base}, which this check does not price")
         public = (item.get("spec", {}).get("advancedNetworking") or {}).get("associatePublicIPAddress")
+        if public is not None and not isinstance(public, bool):
+            raise Bad(f"NodeClass {name} sets associatePublicIPAddress to {public!r}, not true or false")
         classes[name] = (int(size.group(1)), sorted(subnets), public)
     pools = []
     for item in raws["nodepools"].get("items", []):
@@ -285,7 +295,8 @@ def scheduling(raws):
                 raise Bad(f"the RuntimeClass tolerates NodePool {name}'s taint, so a pool the "
                           "check treats as closed to the pod could take it")
         pools.append({"name": name, "taints": taints, "requirements": spec.get("requirements") or [],
-                      "node_class": ref["name"], "disruption": item["spec"].get("disruption") or {}})
+                      "node_class": ref["name"], "disruption": item["spec"].get("disruption") or {},
+                      "static": "replicas" in item["spec"]})
     if not pools:
         raise Bad("the cluster has no NodePool")
     return pools, classes
@@ -455,7 +466,14 @@ def build(folder, account, region, cluster, context, model_id, derive, identity=
                                               for t in p["taints"])]
     empty_after = max((empties_node(p) for p in open_pools), default=0)
     subnets = sorted({s for p in open_pools for s in classes[p["node_class"]][1]})
-    public = {s: classes[p["node_class"]][2] for p in open_pools for s in classes[p["node_class"]][1]}
+    # a subnet two NodeClasses share gets a public address if either assigns one: True wins,
+    # then None (the subnet's own default), and False only when every NodeClass says False
+    settings = {}
+    for pool in open_pools:
+        _, nets, setting = classes[pool["node_class"]]
+        for subnet in nets:
+            settings.setdefault(subnet, set()).add(setting)
+    public = {s: True if True in v else None if None in v else False for s, v in settings.items()}
     cluster_subnets = ((raws["cluster"].get("cluster") or {}).get("resourcesVpcConfig") or {}).get("subnetIds")
     if not cluster_subnets:
         raise Bad("describe-cluster names no control-plane subnets")

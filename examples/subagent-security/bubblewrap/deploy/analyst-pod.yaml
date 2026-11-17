@@ -11,8 +11,9 @@
 # the sandbox, so the controller reaches Amazon S3 and Amazon Bedrock and the tool
 # processes find no Kubernetes token on disk.
 #
-# <NAMESPACE>, <MANAGED_BY>, <ANALYST_IMAGE>, <AWS_REGION>, <BUCKET>, <ROLE_NAME> and
-# <BEDROCK_MODEL_ID> and <ACTIVE_DEADLINE_SECONDS> are replaced at apply time by setup.sh.
+# <NAMESPACE>, <MANAGED_BY>, <ANALYST_IMAGE>, <AWS_REGION>, <BUCKET>, <ROLE_NAME>,
+# <BEDROCK_MODEL_ID>, <ACTIVE_DEADLINE_SECONDS> and <CLEANUP_AT_EPOCH> are replaced at apply
+# time by setup.sh.
 #
 # Two settings here are what bubblewrap needs from the guest, and neither of them reaches
 # the node. They are explained on the page under "What the guest has to allow":
@@ -64,8 +65,9 @@ spec:
   serviceAccountName: analyst
   automountServiceAccountToken: false
   restartPolicy: Never
-  # The pod stops itself when the run's clean up is due: setup sets the seconds left until
-  # then, so the controller, its model calls and any image pull end by then on their own.
+  # The pod stops itself when the run's clean up is due, by two clocks: setup sets the
+  # seconds left until then, and both containers below refuse to start after that time and
+  # the working one exits at it, however late the pod was placed.
   activeDeadlineSeconds: <ACTIVE_DEADLINE_SECONDS>
   # The controller and every tool process run as an ordinary user. fsGroup is what lets
   # the controller read the supplier key at mode 0440, and that is deliberate: the key
@@ -84,6 +86,7 @@ spec:
         - sh
         - -ec
         - |
+          test "$(date +%s)" -lt <CLEANUP_AT_EPOCH>
           echo 128 > /proc/sys/user/max_user_namespaces
           test "$(cat /proc/sys/user/max_user_namespaces)" = 128
       # This writes a sysctl in the Nitro guest's own kernel, which belongs to this pod
@@ -100,7 +103,7 @@ spec:
   containers:
     - name: analyst
       image: <ANALYST_IMAGE>
-      command: ["sleep", "infinity"]
+      command: ["sh", "-c", "exec sleep $(( <CLEANUP_AT_EPOCH> - $(date +%s) ))"]
       securityContext:
         privileged: true
         readOnlyRootFilesystem: true

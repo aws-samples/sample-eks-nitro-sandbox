@@ -6,24 +6,31 @@
 # the record still holds; a NodeClaim launched for the run's pods (named in their events)
 # only if it appeared after the run started and is none the cluster had then. A pod other
 # than a DaemonSet's or a static one on a node means someone else's work is on it, and the
-# node is left alone. Deleting the NodeClaim is the EKS Auto Mode way to remove a node;
+# node is left alone. Every delete is fenced: the node is cordoned first, as the recorded node,
+# and its pods are listed again after that, so nothing scheduled since the last look is
+# drained with it. Deleting the NodeClaim is the EKS Auto Mode way to remove a node;
 # terminating the instance directly happens only with --allow-instance-termination, after
-# that fails, after the node is cordoned, and after every check again.
+# that fails, and after every check again.
 #
 # clean.sh sets what these read: the run record's fields, allow_terminate, and kc, aws,
-# gone_within, note_fail and identity_matches.
+# gone_within, note_fail and identity_matches; run-lib.sh gives fence_node, foreign_pods
+# and lookup.
 # shellcheck disable=SC2154
 
 node_why=""
 foreign_on() { # <node name>: sets node_why and fails if other workloads run on it
-  local pods foreign
-  if pods="$(kc get pods -A --field-selector "spec.nodeName=$1" -o json 2>/dev/null)" &&
-     foreign="$(jq -er '[.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed")
-       | select(((.metadata.ownerReferences // []) | map(.kind) | index("DaemonSet")) == null)
-       | select((.metadata.annotations // {})["kubernetes.io/config.mirror"] == null)
-       | "\(.metadata.namespace)/\(.metadata.name)"] | join(" ")' <<<"$pods")"; then :
-  else node_why="could not list the pods on node $1"; return 1; fi
+  local foreign
+  foreign="$(foreign_pods "$1" 2>/dev/null)" || { node_why="could not list the pods on node $1"; return 1; }
   [[ -z "$foreign" ]] || { node_why="other workloads run on node $1: $foreign"; return 1; }
+}
+fence_present() { # <node> <uid> <provider id>: cordons it if it is still there, then waits
+  local present
+  present="$(kc get node "$1" --ignore-not-found -o name 2>/dev/null)" ||
+    { node_why="could not read node $1"; return 1; }
+  [[ -n "$present" ]] || return 0
+  fence_node "$1" "$2" "$3" 2>/dev/null ||
+    { node_why="could not cordon node $1 as the recorded node"; return 1; }
+  sleep 10  # a bind the scheduler decided before the cordon lands within this
 }
 node_matches() { # fresh reads of the Node, its NodeClaim and the pods on it
   local node claim want
@@ -71,7 +78,7 @@ wait_terminated() { # every ten seconds, for ten minutes at most
   return 1
 }
 delete_run_node() {
-  local field instance gone=false dry
+  local field instance gone=false rc
   for field in NODE_NAME NODE_UID NODE_PROVIDER_ID NODE_CREATED_AT NODE_POOL NODE_AT_START \
       NODECLAIM_NAME NODECLAIM_UID NODECLAIM_CREATED_AT NODECLAIM_POOL RUN_STARTED_AT CLUSTER_NAME; do
     [[ -n "${!field:-}" ]] ||
@@ -83,7 +90,8 @@ delete_run_node() {
   [[ "$NODE_PROVIDER_ID" =~ ^aws:///[a-z0-9-]+/(i-[0-9a-f]{8,17})$ ]] ||
     { note_fail "node $NODE_NAME's provider id is not an EC2 instance; left it in place"; return; }
   instance="${BASH_REMATCH[1]}"
-  node_matches || { note_fail "$node_why; left it in place"; return; }
+  { fence_present "$NODE_NAME" "$NODE_UID" "$NODE_PROVIDER_ID" && node_matches; } ||
+    { note_fail "$node_why; left it in place"; return; }
 
   kc delete nodeclaim "$NODECLAIM_NAME" --ignore-not-found --wait=false >/dev/null 2>&1 ||
     echo "  the NodeClaim delete was not accepted; waiting to see whether the node goes anyway"
@@ -97,18 +105,15 @@ delete_run_node() {
     note_fail "$node_why; pass --allow-instance-termination to terminate the instance directly"
     return
   fi
-  dry="$(aws ec2 terminate-instances --instance-ids "$instance" --dry-run 2>&1)"
-  grep -q 'DryRunOperation' <<<"$dry" ||
+  # Permitted only on exactly the dry run's own answer: exit 254, no output, and one line
+  # "An error occurred (DryRunOperation) when calling the TerminateInstances operation".
+  rc=0
+  lookup DryRunOperation ec2 terminate-instances --instance-ids "$instance" --dry-run \
+    >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == 1 ]] ||
     { note_fail "$node_why, and terminating instance $instance directly is not permitted here; left it"; return; }
-  # Nothing new may land on it from here: cordon it, only while it is still the recorded
-  # node (the patch's own test of its uid and provider id), then wait and check it again.
-  if kc get node "$NODE_NAME" --ignore-not-found -o name 2>/dev/null | grep -q .; then
-    kc patch node "$NODE_NAME" --type=json -p "$(jq -cn --arg u "$NODE_UID" --arg p "$NODE_PROVIDER_ID" \
-      '[{op: "test", path: "/metadata/uid", value: $u}, {op: "test", path: "/spec/providerID", value: $p},
-        {op: "add", path: "/spec/unschedulable", value: true}]')" >/dev/null ||
-      { note_fail "could not cordon node $NODE_NAME as the recorded node; left instance $instance in place"; return; }
-    sleep 30
-  fi
+  fence_present "$NODE_NAME" "$NODE_UID" "$NODE_PROVIDER_ID" ||
+    { note_fail "$node_why; left instance $instance in place"; return; }
   if ! identity_matches; then
     note_fail "this shell no longer acts as the identity setup recorded; left instance $instance in place"
     return
@@ -123,7 +128,7 @@ delete_run_node() {
   echo "  terminated instance $instance directly, after the NodeClaim delete did not finish."
 }
 delete_nominated_claim() { # <name>: a NodeClaim launched for this run's pods, never its record
-  local claim node
+  local claim node uid
   claim="$(kc get nodeclaim "$1" --ignore-not-found -o json 2>/dev/null)" ||
     { note_fail "could not read NodeClaim $1, launched for this run's pods"; return; }
   [[ -n "$claim" ]] || { echo "  NodeClaim $1, launched for this run's pods, is already gone."; return; }
@@ -132,7 +137,14 @@ delete_nominated_claim() { # <name>: a NodeClaim launched for this run's pods, n
      "$RUN_STARTED_AT" < "$(jq -r '.metadata.creationTimestamp' <<<"$claim")" ]] ||
     { note_fail "NodeClaim $1 was nominated for this run's pods but is not shown appearing after the run started; left it"; return; }
   node="$(jq -r '.status.nodeName // ""' <<<"$claim")"
-  [[ -z "$node" ]] || foreign_on "$node" || { note_fail "$node_why; left NodeClaim $1"; return; }
+  if [[ -n "$node" ]]; then
+    # Its node is fenced like the run's own, as the node this NodeClaim launched.
+    uid="$(kc get node "$node" --ignore-not-found -o json 2>/dev/null | jq -r --arg p \
+      "$(jq -r '.status.providerID // ""' <<<"$claim")" 'if .spec.providerID == $p then .metadata.uid else "" end')"
+    [[ -z "$uid" ]] || fence_present "$node" "$uid" "$(jq -r '.status.providerID' <<<"$claim")" ||
+      { note_fail "$node_why; left NodeClaim $1"; return; }
+    foreign_on "$node" || { note_fail "$node_why; left NodeClaim $1"; return; }
+  fi
   if ! { kc delete nodeclaim "$1" --wait=false >/dev/null 2>&1 && gone_within 600 nodeclaim "$1"; }; then
     note_fail "NodeClaim $1, launched for this run's pods, is still there after ten minutes"
     return

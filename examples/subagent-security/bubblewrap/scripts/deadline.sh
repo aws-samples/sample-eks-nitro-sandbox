@@ -11,11 +11,16 @@
 # five minutes for a setup or run.sh still holding it) and, if the run record is still there
 # and still names that same deadline, runs ./scripts/clean.sh --delete-aws --delete-node; if
 # you removed the run first, or a later run has replaced the record, it does nothing.
-# Its output goes to tmp/bubblewrap-deadline.log.
+# The clean up it starts is killed after CLEAN_HARD_S, whatever it is doing, which is the
+# bound the cost check reads. Its output goes to tmp/bubblewrap-deadline.log.
 #
 # It is the second of two ways a run ends. The first needs nothing on this machine: both
 # pods stop themselves at the same time, and EKS Auto Mode removes the empty node.
 set -uo pipefail
+# Never setup's lock: this process waits for it like any other script.
+unset BUBBLEWRAP_LOCK_TOKEN
+# clean.sh's own budget (CLEAN_BUDGET_S) and one last call (CALL_TIMEOUT_S) fit inside this.
+CLEAN_HARD_S=2700
 
 [[ "$#" == 2 && "$2" =~ ^[0-9]+$ ]] || { echo "usage: deadline.sh <run record> <epoch>" >&2; exit 2; }
 state="$1" at="$2"
@@ -24,6 +29,8 @@ SAMPLE="bubblewrap"
 die() { echo "$(date -u +%FT%TZ) ERROR: $*" >&2; exit 1; }
 # shellcheck source=run-lib.sh
 . "$(cd "$(dirname "$0")" && pwd)/run-lib.sh"
+TIMEOUT="$(command -v timeout || command -v gtimeout)" ||
+  die "timeout (GNU coreutils; gtimeout on macOS) is required; the clean up will not run"
 
 ack="$(mktemp "$TMP_DIR/deadline.ack.XXXXXX")" || die "could not answer setup.sh"
 { printf '%s %s\n' "$$" "$at" > "$ack" && mv -f "$ack" "$TMP_DIR/deadline.ack"; } ||
@@ -41,7 +48,7 @@ if [[ ! -f "$state" ]] || ! jq -e --arg at "$at" '.CLEANUP_AT_EPOCH == $at' "$st
   exit 0
 fi
 echo "$(date -u +%FT%TZ) the run reached its clean-up deadline; running clean.sh --delete-aws --delete-node"
-"$(cd "$(dirname "$0")" && pwd)/clean.sh" --delete-aws --delete-node
+"$TIMEOUT" -k 30 "$CLEAN_HARD_S" "$(cd "$(dirname "$0")" && pwd)/clean.sh" --delete-aws --delete-node
 status=$?
 lock_release
 exit "$status"

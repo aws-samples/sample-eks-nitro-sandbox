@@ -48,27 +48,32 @@ and subnets, and the AWS Price List records for each priced item.
 [`scripts/cost_gate.py`](scripts/cost_gate.py) rebuilds every price and offering from those
 raw reads and checks the most one run can cost, through its clean up. Setup refuses to
 start, and so does `run.sh`, when the worst case is USD 5 or more, when any read is missing,
-changed, more than an hour old or made as another identity, or when the node could reach
-anything charged per byte or per hour that nothing here bounds: a route to anything but the
-VPC itself, an internet gateway or a gateway endpoint (so a NAT gateway is refused), an
-interface endpoint in the VPC, a public IPv4 address on the node, or node and control-plane
-subnets in more than one Availability Zone. EKS puts every cluster's control plane in at least
-two zones, and a node with none of those paths cannot reach Amazon ECR or Amazon Bedrock, so
-as written the check refuses every cluster: a run needs one of those paths priced first.
-`run.sh` also refuses more than 40 minutes after setup started, and refuses a second model
-turn.
+changed, more than an hour old or made as anyone but the account and role `.env` names, or
+when the node could reach anything charged per byte or per hour that nothing here bounds: a
+route to anything but the VPC itself, an internet gateway or a gateway endpoint (so a NAT
+gateway is refused), an interface endpoint in the VPC, a public IPv4 address on the node
+(from any NodeClass that uses the subnet), or node and control-plane subnets in more than one
+Availability Zone. EKS puts every cluster's control plane in at least two zones, and a node
+with none of those paths cannot reach Amazon ECR, Amazon Bedrock, EKS Pod Identity or the EKS
+control plane. So, as written, the check refuses every run: once the rest is priced it adds
+one refusal of its own, that no network route to those services is approved and bounded, and
+it keeps that refusal until the maintainers approve one. Setup also refuses unless the
+namespace, the bucket and both ECR repositories are new. `run.sh` refuses more than 40
+minutes after setup started, and refuses a second model turn.
 
-The run ends itself in two ways. In the cluster, both pods stop at the run's clean-up
-deadline, an hour after setup started (`activeDeadlineSeconds`, which setup lowers once each
-pod has started so it counts to exactly that time), and EKS Auto Mode then removes the empty
-node within the time its NodePool sets, which the cost check reads and requires to be ten
-minutes or less. On your machine, [`scripts/deadline.sh`](scripts/deadline.sh) runs
-`./scripts/clean.sh --delete-aws --delete-node` at that time unless you already have. Setup
-waits for it to answer and checks that your AWS credentials last until that clean up could
-end; `run.sh` refuses to run if it is gone; every call the clean up makes gives up on its own,
-and all of them together stop after 40 minutes. The images and objects also expire a day
-after they were written. A `setup.sh` or `run.sh` that fails runs the same clean up at once.
-Neither way has yet been run on a live cluster.
+The run ends itself in two ways. In the cluster, each pod ends at the run's clean-up
+deadline, an hour after setup started, by its own clock: its containers refuse to start after
+that time and exit at it, however late the pod was placed. `activeDeadlineSeconds`, which
+setup lowers once each pod has started, ends it at the same time from the cluster's side. EKS
+Auto Mode then removes the empty node within the time its NodePool sets, which the cost check
+reads and requires to be ten minutes or less. On your machine,
+[`scripts/deadline.sh`](scripts/deadline.sh) runs `./scripts/clean.sh --delete-aws
+--delete-node` at that time unless you already have. Setup waits for it to answer and checks
+that your AWS credentials last until that clean up could end; `run.sh` refuses to run if it
+is gone. Every call the clean up makes gives up on its own and is killed after four minutes,
+the clean up stops itself after 40, and `deadline.sh` kills it after 45. The images and
+objects also expire a day after they were written. A `setup.sh` or `run.sh` that fails runs
+the same clean up at once. Neither way has yet been run on a live cluster.
 
 Every output block on this page is from one real run of this blueprint, run id
 `0eb808c7a8244688b2ceb854d71ed07a`. Values from the account and cluster it ran on are
@@ -126,7 +131,7 @@ This folder was built against these releases. Pin each to its latest when you bu
 | [`strands-agents`](https://pypi.org/project/strands-agents/) | 1.62.0 |
 | [`boto3`](https://pypi.org/project/boto3/) | 1.43.118 |
 | [`pydantic`](https://pypi.org/project/pydantic/) | 2.14.1 |
-| [Python](https://www.python.org/downloads/) base image | 3.13 (`public.ecr.aws/docker/library/python:3.13-slim`) |
+| [Python](https://www.python.org/downloads/) base image | 3.13 (`public.ecr.aws/docker/library/python:3.13-slim`), pinned in this folder's `Dockerfile` and the shared supplier API's by digest `sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90` |
 | [busybox](https://hub.docker.com/_/busybox), for the comparison pod | 1.37.0 |
 
 The build options are `-Dman=disabled -Dtests=false -Dselinux=disabled
@@ -229,6 +234,13 @@ AWS_REGION=us-west-2
 # happens to be current.
 KUBE_CONTEXT=
 
+# Required. The one account, and the IAM role in it, this run may act as. setup.sh asks
+# STS who the AWS CLI is before any other AWS read and stops unless it is a session of
+# exactly this role in this account, and the clean up checks the same. The role's own ARN, in the form
+# arn:<partition>:iam::<ACCOUNT_ID>:role/<ROLE>, not a session's.
+EXPECTED_ACCOUNT_ID=
+EXPECTED_ROLE_ARN=
+
 # The namespace this sample creates and owns. Change it to run this sample twice, or
 # beside another demo; it reaches every object the scripts apply.
 NAMESPACE=subagent-security-bubblewrap
@@ -245,6 +257,10 @@ BEDROCK_MODEL_ID=global.anthropic.claude-sonnet-4-5-20250929-v1:0
 # account id. Set them to run a second copy beside the first.
 # BUCKET=
 # ROLE_NAME=
+
+# Optional. An absolute path outside this checkout. setup.sh claims it once, before its
+# first write, and no clean up removes it, so a second setup with the same .env stops.
+# ATTEMPT_MARKER=
 ```
 
 There is no cost snapshot to collect first: `setup.sh` collects the reads itself, into the
@@ -262,9 +278,13 @@ python3 scripts/cost_snapshot.py collect --out ../../../tmp/bubblewrap-cost-$(da
 stages. It checks the cluster and the most a run can cost before it creates anything, builds
 and pushes the supplier API image and the analyst image, seeds the proposals into a new S3
 bucket, creates the IAM role and its Pod Identity association, starts the sandboxed pod,
-starts the supplier API on that pod's own node, and then starts one real tool process in the
+cordons the new node it landed on and checks nothing else runs there, starts the supplier API
+on that pod's own node, and then starts one real tool process in the
 sandboxed pod. It creates nothing outside this blueprint's own namespace and changes no
-cluster-wide setting. If it stops after creating anything, it removes what it created.
+cluster-wide setting. If it stops after creating anything, it removes what it created. As
+written, its cost check refuses every run (see the top of this page), so it stops there,
+having created nothing in AWS or the cluster; the output below is from the page's run, made
+before that refusal was added.
 
 ```bash
 ./scripts/setup.sh
@@ -541,6 +561,7 @@ spec:
         - sh
         - -ec
         - |
+          test "$(date +%s)" -lt <CLEANUP_AT_EPOCH>
           echo 128 > /proc/sys/user/max_user_namespaces
           test "$(cat /proc/sys/user/max_user_namespaces)" = 128
       securityContext:
@@ -552,6 +573,7 @@ spec:
   containers:
     - name: analyst
       image: <ANALYST_IMAGE>
+      command: ["sh", "-c", "exec sleep $(( <CLEANUP_AT_EPOCH> - $(date +%s) ))"]
       securityContext:
         privileged: true
         readOnlyRootFilesystem: true
@@ -1189,7 +1211,7 @@ copy.
 - **The model turn has fixed bounds.** [`src/run_envelope.json`](src/run_envelope.json) caps
   it at three model calls (the evidence tool call, the structured answer, and one forced
   retry of that answer), two tries per call and one HTTP send per try, 4,000 output and
-  24,000 total tokens, and 40,000 bytes per request. A turn that goes past any of them, or
+  24,000 total tokens, and 65,536 bytes per request. A turn that goes past any of them, or
   stops for any other reason, fails the run rather than producing a recommendation. The cost
   check prices each of those six sends at the model's whole 200,000-token context window,
   which is the most any one request can bill, so the Bedrock term is far above what a run
@@ -1204,6 +1226,8 @@ copy.
 ## Clean up
 
 `clean.sh` reads the same run record `setup.sh` wrote, so there is nothing to set again.
+Without that record it touches nothing: it prints the names a run would have used, for you
+to check and remove by hand, and exits non-zero.
 
 ```bash
 cd sample-eks-nitro-sandbox/examples/subagent-security/bubblewrap
@@ -1239,12 +1263,18 @@ namespace "subagent-security-bubblewrap" deleted
 Clean up complete.
 ```
 
+This block is from the page's run, made with an earlier `clean.sh`: the current one has five
+steps, with the run's sandbox node second, and deletes the supplier API as a pod rather than a
+Deployment. A fresh run replaces it.
+
 `--delete-aws` also removes the run record under the repository's `tmp/`, which is where
 `run.sh` copied the recommendation, so copy anything you want to keep out of there first.
 
 It deletes in reverse order of creation, starting with the sandboxed pod, which is what
 holds sandbox capacity other workloads on the cluster share. It touches a namespace only
-when that namespace carries this blueprint's `app.kubernetes.io/managed-by` label, and an AWS
+when that namespace carries this blueprint's `app.kubernetes.io/managed-by` label and the uid
+the run recorded when it created it; a namespace of that name with another uid is another
+run's, and it leaves that run and everything named in this record alone. It touches an AWS
 resource only when it carries `ManagedBy=bubblewrap`. The Pod Identity association must also
 be the one the run record names, with the same role, and a local image is removed only by
 the exact reference and image id the run recorded when it built it. A lookup that fails
@@ -1252,7 +1282,8 @@ counts as "could not determine" rather than "already gone", so anything it could
 or confirm is named at the end and makes it exit non-zero.
 
 With `--delete-aws --delete-node` it also deletes the sandbox node the run's pod was given,
-through its NodeClaim, which is how EKS Auto Mode removes a node, and waits until its EC2
+through its NodeClaim, which is how EKS Auto Mode removes a node, cordoning the node first,
+and waits until its EC2
 instance is terminated. It does that only after the namespace is gone, only for the node and
 NodeClaim the run record names, with the same uid, provider id, creation time and NodePool,
 only if both appeared after the run started and neither was on the cluster before it, and
@@ -1272,8 +1303,8 @@ Before it deletes anything, it takes the run lock (one setup, run or clean up at
 checks that this shell still acts as the account, role, cluster, cluster endpoint, Region and
 kube context setup recorded; it stops, having touched nothing, if any of them differs. Every
 Kubernetes request it makes gives up after a minute and every AWS CLI request after 70
-seconds, three tries at most, and the whole clean up stops after 40 minutes, naming what it
-did not reach. It counts its runs in the run record and, past the eight the cost check
+seconds, three tries at most, any call still running after four minutes is killed, and the
+whole clean up stops after 40 minutes, naming what it did not reach. It counts its runs in the run record and, past the eight the cost check
 counts, leaves the bucket's S3 requests out.
 
 You may not need to run it at all. A `setup.sh` or `run.sh` that fails runs
@@ -1286,8 +1317,10 @@ machine, runs that same command unless the run record is already gone; it writes
 pods have already stopped themselves.
 
 Without `--delete-aws` it removes the cluster objects and the Pod Identity association and
-keeps the S3 bucket, the IAM role and the images, so a second run skips the build. It keeps
-the run directory too, and `setup.sh` refuses to start while that directory exists:
+keeps the S3 bucket, the IAM role and the images. A second run cannot use them: `setup.sh`
+refuses to start while the bucket or either repository exists, because every run starts from
+new ones the cost check has read. It keeps the run directory too, and `setup.sh` refuses to
+start while that directory exists:
 creating it is how `setup.sh` checks that no other run is using these names. What is in it
 is the only place an earlier run's names are written down, and every copy of this blueprint
 marks its resources the same way, so a clean up that had lost them could report "already

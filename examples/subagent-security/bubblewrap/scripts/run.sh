@@ -51,9 +51,10 @@ trap on_run_exit EXIT
 
 lock_take 0 ||
   die "another setup, run or clean up of this sample holds $LOCK_DIR; ran nothing"
-state_load ||
-  die "no readable run record at $STATE_FILE; run ./scripts/setup.sh first"
-[[ -n "${KUBE_CONTEXT:-}" ]] || die "the run record names no kube context; ran nothing"
+state_load NAMESPACE KUBE_CONTEXT AWS_REGION ACCOUNT_ID CLUSTER_NAME CLUSTER_ENDPOINT BUCKET \
+    BEDROCK_MODEL_ID ANALYST_IMAGE COST_SNAPSHOT COST_SNAPSHOT_SHA256 RUN_STARTED_AT CLEANUP_AT_EPOCH \
+    DEADLINE_PID SUPPLIER_API_IMAGE_BYTES ANALYST_IMAGE_BYTES ||
+  die "no readable run record at $STATE_FILE, or it lacks what setup records; run ./scripts/setup.sh first"
 [[ ! -e "$TMP_DIR/model-turn" ]] ||
   die "this run's model turn has already run once, and one setup pays for one. Clean up with ./scripts/clean.sh --delete-aws --delete-node and set up again for another."
 clean_on_failure=true
@@ -62,6 +63,12 @@ clean_on_failure=true
 # the deadline, and the model turn is the one paid step of the run.
 ps -o args= -p "${DEADLINE_PID:-0}" 2>/dev/null | grep -q "deadline\\.sh .*${CLEANUP_AT_EPOCH:-none}" ||
   die "the clean-up deadline process setup started (pid ${DEADLINE_PID:-none}) is no longer running; nothing was run"
+
+# The kube context must still point at the cluster endpoint setup recorded.
+server="$(kubectl config view --minify --context "$KUBE_CONTEXT" -o 'jsonpath={.clusters[0].cluster.server}' 2>/dev/null)"
+server="${server%/}"
+[[ "${server%:443}" == "$CLUSTER_ENDPOINT" ]] ||
+  die "the kube context $KUBE_CONTEXT no longer points at $CLUSTER_ENDPOINT, the endpoint setup recorded; nothing was run"
 
 # The pod has to be the one setup created, with the image setup pushed, by digest.
 live_image="$(kc get pod analyst -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].image}' 2>/dev/null)" ||

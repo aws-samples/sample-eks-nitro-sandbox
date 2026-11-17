@@ -18,6 +18,8 @@ spec:
   nodeName: <NODE_NAME>
   automountServiceAccountToken: false
   restartPolicy: Never
+  # Ten minutes, counted from its start, as its own sleep is; the cost check reads both.
+  activeDeadlineSeconds: 600
   containers:
     - name: shell
       image: public.ecr.aws/docker/library/busybox:1.37.0

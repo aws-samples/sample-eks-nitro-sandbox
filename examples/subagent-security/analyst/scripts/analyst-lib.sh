@@ -349,8 +349,13 @@ analyst_image() {
     [[ "$rc" == 1 ]] ||
       die "the ECR repository $repo has a repository policy, or it could not be read; stopped before pushing to $repo."
   else
+    # Tags are mutable unless the caller sets ANALYST_TAG_MUTABILITY=IMMUTABLE (bubblewrap
+    # does, so a tag it pushed and measured can never point at another image); AES256 is
+    # ECR's own default, written out so the caller can read it back.
     aws ecr create-repository --repository-name "$repo" \
       --image-scanning-configuration scanOnPush=true \
+      --image-tag-mutability "${ANALYST_TAG_MUTABILITY:-MUTABLE}" \
+      --encryption-configuration encryptionType=AES256 \
       --tags "Key=ManagedBy,Value=$SAMPLE" >/dev/null
     IMAGE_REPOSITORY_CREATED=true
     echo "  created the ECR repository $repo"
@@ -413,6 +418,9 @@ analyst_image() {
   # Its digest, so a caller can name exactly this image rather than a tag that can move.
   IMAGE_DIGEST="$(jq -r 'if (.imageDetails | length) == 1 then .imageDetails[0].imageDigest
     else "" end' <<<"$image")"
+  # Its size in the registry, for a caller that bounds what it stores (bubblewrap's setup.sh).
+  # shellcheck disable=SC2034
+  IMAGE_SIZE_BYTES="$(jq -r '.imageDetails[0].imageSizeInBytes // ""' <<<"$image")"
   [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
     die "the image $repo:$tag read back with no single sha256 digest"
 }

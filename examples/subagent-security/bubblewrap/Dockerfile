@@ -8,8 +8,9 @@
 # commit is checked after the checkout and the release tag is checked to point at it, so
 # a tag moved upstream cannot change what goes in the image. The pin is written into the
 # image and the run reads it back, which is how the page's version claim is checked
-# rather than asserted.
-FROM public.ecr.aws/docker/library/python:3.13-slim AS bubblewrap
+# rather than asserted. The base image is pinned by its digest too, so the image's tag (a
+# digest of this file and its inputs) names everything that goes into the image.
+FROM public.ecr.aws/docker/library/python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS bubblewrap
 
 ARG BWRAP_VERSION=0.13.1
 ARG BWRAP_COMMIT=362936aea0d5c6e70f7af75d2d44b5a914cb4ba2
@@ -32,7 +33,7 @@ RUN git clone https://github.com/containers/bubblewrap.git /src \
     && printf '%s %s\n' "$BWRAP_VERSION" "$BWRAP_COMMIT" \
        > /usr/local/share/bubblewrap-pin
 
-FROM public.ecr.aws/docker/library/python:3.13-slim
+FROM public.ecr.aws/docker/library/python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 # libcap2 is what bwrap links against. libseccomp2 is what the controller loads through
 # ctypes to compile a BPF filter; bubblewrap itself does not depend on it, because

@@ -7,9 +7,10 @@
 #   ./scripts/setup.sh
 #
 # What it does, in order:
-#   1. checks the tools, the kube context, the isolated-sandbox RuntimeClass and that the
-#      Bedrock model is reachable, collects the cost reads itself (scripts/cost_snapshot.py)
-#      and checks the most one run can cost, before it creates anything;
+#   1. checks the tools, the identity, the kube context, the isolated-sandbox RuntimeClass
+#      and that the Bedrock model is reachable, collects the cost reads itself
+#      (scripts/cost_snapshot.py) and checks the most one run can cost, before it creates
+#      anything (as written, the cost check refuses every run there);
 #   2. creates the namespace when it is absent, and the analyst ServiceAccount;
 #   3. generates the supplier API key and a sample certificate authority;
 #   4. builds and pushes the supplier API image;
@@ -26,16 +27,14 @@
 # stops after creating anything it runs ./scripts/clean.sh --delete-aws --delete-node
 # itself, and at the deadline scripts/deadline.sh runs that same clean up.
 #
-# This sample ships no network policy, so it does not restrict the analyst pod's egress
-# and does not touch the cluster-wide network policy setting. bubblewrap confines the
-# tool processes the controller starts, inside the pod; see
-# examples/isolation/network-policy for restricting a sandbox's egress on the node.
+# It ships no network policy and does not restrict the analyst pod's egress; bubblewrap
+# confines the tool processes inside the pod (examples/isolation/network-policy restricts a
+# sandbox's egress). It never changes a cluster-wide setting or reuses a resource that is
+# not this sample's: it stops instead, and says what it found.
 #
-# It never changes a cluster-wide setting and never reuses a resource that is not this
-# sample's: it stops instead, and says what it found.
-#
-# Set in .env: CLUSTER_NAME and KUBE_CONTEXT are required; AWS_REGION, NAMESPACE,
-# BEDROCK_MODEL_ID, BUCKET, ROLE_NAME and COST_EXTRA_S3_REQUESTS have defaults.
+# Set in .env: CLUSTER_NAME, KUBE_CONTEXT, EXPECTED_ACCOUNT_ID and EXPECTED_ROLE_ARN are
+# required; AWS_REGION, NAMESPACE, BEDROCK_MODEL_ID, BUCKET, ROLE_NAME and
+# COST_EXTRA_S3_REQUESTS have defaults; ATTEMPT_MARKER is optional.
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -46,7 +45,7 @@ SAMPLE="bubblewrap"
 
 for arg in "$@"; do
   case "$arg" in
-    --help|-h) sed -n '2,38p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -77,17 +76,28 @@ ANALYST_IMAGE_INPUTS=(bubblewrap/src/controller.py bubblewrap/src/sandbox.py
 
 [[ "$KUBE_CONTEXT" =~ ^[A-Za-z0-9_.:@/-]+$ ]] ||
   die "KUBE_CONTEXT is not set in .env, or has a character other than letters, digits and _.:@/-. The cost check binds its reads to that context's cluster endpoint, so this sample does not run against whichever context is current; created nothing."
+[[ "${EXPECTED_ACCOUNT_ID:-}" =~ ^[0-9]{12}$ && "${EXPECTED_ROLE_ARN:-}" == arn:*:iam::"${EXPECTED_ACCOUNT_ID}":role/* ]] ||
+  die "EXPECTED_ACCOUNT_ID and EXPECTED_ROLE_ARN are not set in .env, or the role is not in that account. They name the one account and role this run may act as; created nothing."
+[[ -z "${ATTEMPT_MARKER:-}" || ( "$ATTEMPT_MARKER" == /* && "$ATTEMPT_MARKER" != "$REPO_ROOT"/* ) ]] ||
+  die "ATTEMPT_MARKER must be an absolute path outside this checkout, so no clean up can remove it; created nothing."
 
 # One setup, run or clean up of this sample at a time.
 lock_take 0 ||
   die "another setup, run or clean up of this sample holds $LOCK_DIR (process $(cat "$LOCK_DIR/pid" 2>/dev/null || echo unknown)); created nothing. Wait for it to finish."
 wrote=false
+MEASURED_IMAGES=()
 on_setup_exit() {
-  local status=$?
+  local status=$? pair
   trap - EXIT
-  if [[ "$status" != 0 && "$wrote" != true ]]; then
-    # Nothing was created yet: the run directory holds only this run's reads.
+  if [[ "$status" != 0 && "$wrote" != true ]] &&
+     ! jq -e '.NAMESPACE_CREATED == "true"' "$STATE_FILE" >/dev/null 2>&1; then
+    # Nothing was created yet: remove the run's reads, and each image measured here by its
+    # exact reference while it still has the id this run built (one there before is left).
     rm -rf "$TMP_DIR"
+    for pair in "${MEASURED_IMAGES[@]}"; do
+      [[ "$(docker image inspect --format '{{.Id}}' "${pair%%|*}" 2>/dev/null)" == "${pair#*|}" ]] &&
+        docker image rm "${pair%%|*}" >/dev/null 2>&1
+    done
   elif [[ "$status" != 0 ]]; then
     echo "setup stopped (exit $status); removing what this run created so nothing it started keeps billing" >&2
     { kc describe pods -n "$NAMESPACE"; kc logs analyst -n "$NAMESPACE" -c enable-guest-userns; } \
@@ -100,9 +110,8 @@ on_setup_exit() {
 }
 trap on_setup_exit EXIT
 
-# One run at a time, and the run directory is what says so: mkdir fails if anything at all
-# is already at that path, in one syscall. An earlier run's directory is the only place its
-# resources are named, so this refuses rather than replacing it.
+# One run at a time: mkdir fails if anything at all is at that path. An earlier run's
+# directory is the only place its resources are named, so this refuses rather than replace it.
 mkdir -p "$REPO_ROOT/tmp"
 if ! mkdir -m 700 "$TMP_DIR"; then
   wrote=true  # not ours to remove
@@ -110,12 +119,11 @@ if ! mkdir -m 700 "$TMP_DIR"; then
   die "could not create $TMP_DIR, and mkdir's own reason is above. If something is already there, an earlier run's resources may still be named only in it: finish that run with ./scripts/clean.sh --delete-aws, or, to keep its AWS resources, move $TMP_DIR aside rather than deleting it. Created nothing."
 fi
 
-# Nothing from here to the first write below creates anything in AWS or the cluster.
+# Nothing from here to the first write below creates anything in AWS or the cluster. The
+# identity comes first, so no other read is made as anyone but the expected role.
+{ IDENTITY="$(identity_now)" && [[ -n "$IDENTITY" ]]; } ||
+  die "this shell does not act as $EXPECTED_ROLE_ARN in account $EXPECTED_ACCOUNT_ID, cluster $CLUSTER_NAME is not in that account and AWS_REGION, or the kube context $KUBE_CONTEXT does not point at its endpoint (or one of them could not be read); created nothing"
 analyst_preflight
-IDENTITY="$(identity_now)" ||
-  die "could not read the account, role, cluster and kube context this run would act through; created nothing"
-[[ -n "$IDENTITY" ]] ||
-  die "the kube context $KUBE_CONTEXT does not point at the endpoint of cluster $CLUSTER_NAME, or the identity could not be read; created nothing"
 
 # These names carry the account id, so they are computed after the preflight read it and
 # are overridable in .env for a second run beside the first.
@@ -124,11 +132,31 @@ ROLE_NAME="${ROLE_NAME:-subagent-analyst-$SAMPLE}"
 SUPPLIER_API_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE-supplier-api"
 ANALYST_REPOSITORY="pod-isolation/subagent-analyst-$SAMPLE"
 
+# Everything a run creates is new: an earlier run's namespace, bucket or repository could
+# hold what this run's cost check never saw. The namespace is also the run's lease: setup's
+# first write creates it, which fails if another checkout or machine did first, and the clean
+# up deletes nothing while a namespace of that name with another uid is there.
+{ ns_now="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name)" && [[ -z "$ns_now" ]]; } ||
+  die "namespace $NAMESPACE already exists, or that could not be determined; this sample uses a new namespace for every run, and another run may hold this one. Finish that run with ./scripts/clean.sh --delete-aws, or set a new NAMESPACE in .env. Created nothing."
+rc=0
+lookup NoSuchBucket s3api get-bucket-tagging --bucket "$BUCKET" --output json >/dev/null || rc=$?
+[[ "$rc" == 1 ]] ||
+  die "the bucket $BUCKET already exists, or that could not be determined; this sample uses a new bucket for every run. Finish the run that made it with ./scripts/clean.sh --delete-aws, or set a new BUCKET in .env. Created nothing."
+for repo in "$SUPPLIER_API_REPOSITORY" "$ANALYST_REPOSITORY"; do
+  rc=0
+  lookup RepositoryNotFoundException ecr describe-repositories --repository-names "$repo" \
+    --output json >/dev/null || rc=$?
+  [[ "$rc" == 1 ]] ||
+    die "the ECR repository $repo already exists, or that could not be determined; this sample pushes to a new repository for every run. Finish the run that made it with ./scripts/clean.sh --delete-aws. Created nothing."
+done
+
 # Both images are built here first, on this machine only, so the cost check has their
 # real sizes, and their ids are what the push later has to match.
 cost_build_log="$TMP_DIR/image-build.log"
 measure_image() { # <repository> <dockerfile> <inputs...>; sets MEASURED_ID MEASURED_BYTES
+  local before
   analyst_image_ref "$@"
+  before="$(docker image inspect --format '{{.Id}}' "$ANALYST_IMAGE" 2>/dev/null || true)"
   analyst_image_build "$2" >"$cost_build_log" 2>&1 ||
     { cat "$cost_build_log" >&2; die "the image $ANALYST_IMAGE did not build; created nothing"; }
   MEASURED_ID="" MEASURED_BYTES=""
@@ -136,6 +164,23 @@ measure_image() { # <repository> <dockerfile> <inputs...>; sets MEASURED_ID MEAS
     "$ANALYST_IMAGE") || true
   [[ -n "$MEASURED_ID" && "$MEASURED_BYTES" =~ ^[0-9]+$ ]] ||
     die "could not read the id and size of $ANALYST_IMAGE; created nothing"
+  [[ "$before" == "$MEASURED_ID" ]] || MEASURED_IMAGES+=("$ANALYST_IMAGE|$MEASURED_ID")
+}
+# What was pushed is what was measured: a new repository with AES256 (no KMS key to price)
+# and immutable tags, an image built for the push with the measured id and the pushed digest,
+# and a pushed size within the cost check's limit for each image.
+ANALYST_TAG_MUTABILITY=IMMUTABLE
+check_pushed() { # <repository> <measured id>; reads ANALYST_IMAGE and analyst_image's IMAGE_*
+  local next="starting a pod from $1"
+  expect_aws "the encryption and tag mutability of $1" "$next" \
+    '[.repositories[] | .encryptionConfiguration.encryptionType, .imageTagMutability]' \
+    '["AES256","IMMUTABLE"]' ecr describe-repositories --repository-names "$1"
+  expect "the image built for $1" "$IMAGE_LOCAL_ID" "$2" "$next"
+  docker image inspect --format '{{json .RepoDigests}}' "$ANALYST_IMAGE" |
+    jq -e --arg d "${ANALYST_IMAGE%:*}@$IMAGE_DIGEST" 'index($d) != null' >/dev/null ||
+    die "the local image $ANALYST_IMAGE does not carry the pushed digest $IMAGE_DIGEST; stopped before $next."
+  { [[ "$IMAGE_SIZE_BYTES" =~ ^[0-9]+$ ]] && (( IMAGE_SIZE_BYTES <= 3000000000 )); } ||
+    die "the image pushed to $1 is ${IMAGE_SIZE_BYTES:-of no known size} bytes, over the cost check's 3000000000; stopped before $next."
 }
 measure_image "$SUPPLIER_API_REPOSITORY" analyst/supplier-api/Dockerfile \
   "${ANALYST_SUPPLIER_API_INPUTS[@]}"
@@ -144,10 +189,9 @@ measure_image "$ANALYST_REPOSITORY" bubblewrap/Dockerfile "${ANALYST_IMAGE_INPUT
 ANALYST_EXPECTED_ID="$MEASURED_ID" ANALYST_IMAGE_BYTES="$MEASURED_BYTES"
 rm -f "$cost_build_log"
 
-# The cost reads, collected now by this run itself, into its own private directory, so no
-# folder made beforehand, by hand or otherwise, can stand in for them. Then the most one run
-# can cost, rebuilt from those reads and bound to the identity read above. Silent when it
-# passes; its terms go in the run record below.
+# The cost reads, collected now by this run into its own private directory, so no folder
+# made beforehand can stand in for them; then the most one run can cost, from those reads
+# and the identity above. As written it refuses every run here (cost_gate.py's NO_ROUTE).
 COST_SNAPSHOT="$TMP_DIR/cost"
 python3 "$SAMPLE_DIR/scripts/cost_snapshot.py" collect --out "$COST_SNAPSHOT" \
   --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --kube-context "$KUBE_CONTEXT" \
@@ -176,7 +220,10 @@ credentials_last_until "$clean_end" ||
   die "the AWS credentials this shell uses expire before $(date -u -d "@$clean_end" +%H:%MZ 2>/dev/null || date -u -r "$clean_end" +%H:%MZ), when this run's clean up could still be running (or their expiry could not be read); created nothing. Sign in again with a longer session and re-run."
 
 state_put SAMPLE "$SAMPLE"
+state_put RUN_ID "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 state_put NAMESPACE "$NAMESPACE"
+# Nothing has been launched yet; the clean up adds what the namespace's events name.
+state_put NOMINATED_NODECLAIMS ""
 state_put BUCKET "$BUCKET"
 state_put ROLE_NAME "$ROLE_NAME"
 state_put CLUSTER_NAME "$CLUSTER_NAME"
@@ -209,13 +256,12 @@ for kind in nodes nodeclaims; do
   fi
 done
 
-# The clean up at the deadline, run by this machine. It is the second of two ways the run
-# ends: both pods also stop themselves then, in the cluster, so a machine that is off or
-# asleep at the deadline leaves a node with no workload, which EKS Auto Mode removes, and
-# the AWS resources for the next clean up. It is started in its own session where setsid
-# exists, and it answers before setup goes on, so setup knows it is running.
-launcher=(nohup)
-command -v setsid >/dev/null 2>&1 && launcher=(setsid nohup)
+# The clean up at the deadline, on this machine; the pods also end themselves then, so a
+# machine that is off at the deadline leaves an empty node for EKS Auto Mode to remove.
+# Started in its own session where setsid exists and without this setup's lock token, so it
+# waits for the lock like any other script; setup goes on only once it answers.
+launcher=(env -u BUBBLEWRAP_LOCK_TOKEN nohup)
+command -v setsid >/dev/null 2>&1 && launcher=(setsid env -u BUBBLEWRAP_LOCK_TOKEN nohup)
 "${launcher[@]}" "$SAMPLE_DIR/scripts/deadline.sh" "$STATE_FILE" "$cleanup_at" \
   >> "$REPO_ROOT/tmp/$SAMPLE-deadline.log" 2>&1 < /dev/null &
 deadline_pid=""
@@ -228,18 +274,22 @@ done
   die "the clean-up deadline process did not start and answer; created nothing in AWS or the cluster"
 state_put DEADLINE_PID "$deadline_pid"
 
-wrote=true
+# One approved attempt, when .env names a marker: claimed once, outside this checkout, before
+# the first write, and never removed by any clean up, so a later setup cannot run again.
+if [[ -n "${ATTEMPT_MARKER:-}" ]]; then
+  mkdir -m 700 "$ATTEMPT_MARKER" 2>/dev/null ||
+    die "the attempt marker $ATTEMPT_MARKER is already there, or could not be made: this attempt was used before; created nothing in AWS or the cluster"
+  printf '%s %s\n' "$(jq -r '.RUN_ID' "$STATE_FILE")" "$started_epoch" > "$ATTEMPT_MARKER/claimed"
+fi
+
 export ANALYST_EXPECTED_IMAGE_ID="$SUPPLIER_API_EXPECTED_ID"
+# The first write, and the run's lease: create fails if any namespace of this name exists.
 analyst_namespace
+wrote=true
 analyst_supplier_secrets
 say "4/7 the synthetic supplier API image"
 analyst_supplier_image
-# A new bucket for every run: one an earlier run left could hold objects, versions or
-# settings this run's cost check never saw.
-rc=0
-lookup NoSuchBucket s3api get-bucket-tagging --bucket "$BUCKET" --output json >/dev/null || rc=$?
-[[ "$rc" == 1 ]] ||
-  die "the bucket $BUCKET already exists, or that could not be determined; this sample uses a new bucket for every run. Finish the run that made it with ./scripts/clean.sh --delete-aws, or set a new BUCKET in .env."
+check_pushed "$SUPPLIER_API_REPOSITORY" "$SUPPLIER_API_EXPECTED_ID"
 analyst_bucket
 # A bucket that was never versioned answers with nothing at all.
 versioning="$(aws s3api get-bucket-versioning --bucket "$BUCKET" --output json)" ||
@@ -256,15 +306,12 @@ expect_aws "the lifecycle rule on $BUCKET" "running the analyst" \
   '[["bubblewrap-expire","Enabled",1,true]]' s3api get-bucket-lifecycle-configuration --bucket "$BUCKET"
 analyst_role
 
-# ---------------------------------------------------------------------------
-# 7/7 the analyst image, its sandboxed pod, and one real tool process in it
-# ---------------------------------------------------------------------------
-
 say "7/7 the bubblewrap analyst image and its sandboxed pod"
 
 export ANALYST_EXPECTED_IMAGE_ID="$ANALYST_EXPECTED_ID"
 analyst_image "$ANALYST_REPOSITORY" bubblewrap/Dockerfile "${ANALYST_IMAGE_INPUTS[@]}"
 unset ANALYST_EXPECTED_IMAGE_ID
+check_pushed "$ANALYST_REPOSITORY" "$ANALYST_EXPECTED_ID"
 # The pod names the image by its digest, so what runs is exactly what was pushed.
 ANALYST_POD_IMAGE="${ANALYST_IMAGE%:*}@$IMAGE_DIGEST"
 state_put ANALYST_IMAGE "$ANALYST_POD_IMAGE"
@@ -282,8 +329,7 @@ for repo in "$SUPPLIER_API_REPOSITORY" "$ANALYST_REPOSITORY"; do
 done
 
 pod_deadline=$((cleanup_at - $(date -u +%s)))
-# Fifteen minutes at least: the readiness waits and the node record below must all finish
-# before the deadline's clean up can start.
+# Fifteen minutes at least, for the readiness waits and the node record below.
 [[ "$pod_deadline" -gt 900 ]] ||
   die "only ${pod_deadline}s are left before this run's clean-up deadline, too few to start the analyst pod and record its node"
 analyst_render "$SAMPLE_DIR/deploy/analyst-pod.yaml" "$TMP_DIR/analyst-pod.yaml" \
@@ -292,11 +338,12 @@ analyst_render "$SAMPLE_DIR/deploy/analyst-pod.yaml" "$TMP_DIR/analyst-pod.yaml"
   "s|<BUCKET>|$BUCKET|g" \
   "s|<ROLE_NAME>|$ROLE_NAME|g" \
   "s|<BEDROCK_MODEL_ID>|$BEDROCK_MODEL_ID|g" \
-  "s|<ACTIVE_DEADLINE_SECONDS>|$pod_deadline|g"
+  "s|<ACTIVE_DEADLINE_SECONDS>|$pod_deadline|g" \
+  "s|<CLEANUP_AT_EPOCH>|$cleanup_at|g"
 
-# activeDeadlineSeconds counts from the pod's own start, which comes after it was rendered.
-# Once that start is known, the deadline is lowered (the only change Kubernetes allows) so
-# the pod ends at CLEANUP_AT_EPOCH exactly, and read back.
+# Each pod ends at CLEANUP_AT_EPOCH by its own clock (its containers refuse to start after it
+# and stop at it). activeDeadlineSeconds counts from the pod's start, so once that is known it
+# is lowered, the only change Kubernetes allows, to end the pod then too, and read back.
 pin_deadline() { # <pod>
   local started left
   started="$(kc get pod "$1" -n "$NAMESPACE" -o jsonpath='{.status.startTime}')" || return 1
@@ -308,9 +355,9 @@ pin_deadline() { # <pod>
   [[ "$(kc get pod "$1" -n "$NAMESPACE" -o jsonpath='{.spec.activeDeadlineSeconds}')" == "$left" ]]
 }
 
-# Which node the pod landed on, and whether this run is what made it, read now while it is
-# certain: the clean up deletes that node (--delete-node) only if every one of these still
-# matches. A node or NodeClaim that was already on the cluster is not this run's.
+# Which node the pod landed on, and whether this run made it, read while that is certain: the
+# clean up deletes it (--delete-node) only if all of this still matches, and never one the
+# cluster already had.
 record_node() {
   local pod node claims claim name
   pod="$(kc get pod analyst -n "$NAMESPACE" -o json)" || return 1
@@ -326,8 +373,7 @@ record_node() {
   NODECLAIM_UID="$(jq -r '.[0].metadata.uid' <<<"$claim")"
   NODE_AT_START="$(jq --arg u "$(jq -r '.metadata.uid' <<<"$node")" \
     'index($u) != null' "$TMP_DIR/nodes-at-start.json")"
-  # A node that is new must have a NodeClaim that is new too; anything else is a record
-  # this run cannot stand behind.
+  # A new node must have a new NodeClaim, or the record is not one this run can stand behind.
   [[ "$NODE_AT_START" == true || "$(jq --arg u "$NODECLAIM_UID" 'index($u) == null' \
        "$TMP_DIR/nodeclaims-at-start.json")" == true ]] || return 1
   state_put NODE_NAME "$name"
@@ -342,10 +388,9 @@ record_node() {
   state_put NODE_AT_START "$NODE_AT_START"
 }
 
-# At most one node may be this run's, and it must be the one recorded: every NodeClaim
-# that appeared since the run started, and every one EKS Auto Mode nominated for this run's
-# pods in the namespace's events (which also names one made and replaced between two
-# lists), must be that one. Anything else is outside the run's cost bound.
+# At most one node may be this run's, the one recorded: every NodeClaim that appeared since
+# the run started, and every one the namespace's events say EKS Auto Mode nominated for this
+# run's pods (one made and replaced between two lists included), must be it.
 only_the_recorded_claim() {
   local claims extra nominated mine=""
   [[ "$NODE_AT_START" == false ]] && mine="$NODECLAIM_UID"
@@ -365,8 +410,7 @@ only_the_recorded_claim() {
   [[ -z "${extra// /}" ]] || { echo "NodeClaims that are not this run's record: $extra" >&2; return 1; }
 }
 
-# Replace this sample's own pod rather than adopting it, so an image, identity or
-# environment change can never be hidden by a pod that was already running.
+# The namespace is new, so there is no pod to replace; never adopt one that is running.
 kc delete pod analyst -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=3m
 kc apply -f "$TMP_DIR/analyst-pod.yaml"
 if ! kc wait --for=condition=Ready pod/analyst -n "$NAMESPACE" --timeout=10m; then
@@ -380,6 +424,14 @@ pin_deadline analyst ||
   die "could not set the analyst pod to end at the run's clean-up deadline"
 record_node ||
   die "could not record which node and NodeClaim the analyst pod is on, or the record names a node that is new with a NodeClaim that is not"
+# A node this run made is fenced at once: cordoned as the recorded node, so nothing else is
+# scheduled onto it for the rest of the run, then checked for anything that got there first.
+if [[ "$NODE_AT_START" == false ]]; then
+  fence_node "$NODE_NAME" "$(jq -r '.NODE_UID' "$STATE_FILE")" "$(jq -r '.NODE_PROVIDER_ID' "$STATE_FILE")" ||
+    die "could not cordon node $NODE_NAME as the recorded node"
+  { others="$(foreign_pods "$NODE_NAME" "$NAMESPACE")" && [[ -z "$others" ]]; } ||
+    die "this run is outside its cost bound: other workloads are on node $NODE_NAME (${others:-the list could not be read}), so it cannot be removed with the run"
+fi
 only_the_recorded_claim ||
   die "this run is outside its cost bound: a NodeClaim that is not the one the run recorded appeared, or was nominated for this run's pods, or the list or events could not be read"
 
@@ -395,7 +447,8 @@ awk '/^---$/ { n++ } n < 2' "$TMP_DIR/supplier-api-all.yaml" > "$TMP_DIR/supplie
 analyst_render "$SAMPLE_DIR/deploy/supplier-api-pod.yaml" "$TMP_DIR/supplier-api-pod.yaml" \
   "s|<SUPPLIER_API_IMAGE>|${SUPPLIER_API_IMAGE%:*}@$SUPPLIER_API_DIGEST|g" \
   "s|<NODE_NAME>|$NODE_NAME|g" \
-  "s|<ACTIVE_DEADLINE_SECONDS>|$((cleanup_at - $(date -u +%s)))|g"
+  "s|<ACTIVE_DEADLINE_SECONDS>|$((cleanup_at - $(date -u +%s)))|g" \
+  "s|<CLEANUP_AT_EPOCH>|$cleanup_at|g"
 kc delete deployment,pod supplier-api -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=3m
 kc apply -n "$NAMESPACE" -f "$TMP_DIR/supplier-api-services.yaml"
 kc create -n "$NAMESPACE" -f "$TMP_DIR/supplier-api-pod.yaml"
@@ -408,14 +461,11 @@ pin_deadline supplier-api ||
 only_the_recorded_claim ||
   die "this run is outside its cost bound: a NodeClaim that is not the recorded one appeared while the supplier API started"
 
-# One real tool process, through the same launcher the controller uses. bubblewrap needs
-# a user namespace and a private procfs inside the guest, and neither is available there
-# by default: this is where a guest that cannot provide them says so.
-#
-# Twice, not once, with a pause between, and only for the transport condition: `kubectl
-# exec` to a brand-new node can fail before it reaches the pod at all ("error dialing
-# backend: remote error: tls: internal error"), and the very next command works. A guest
-# that cannot run bubblewrap is answering the question this check asks, so it is not retried.
+# One real tool process, through the same launcher the controller uses: bubblewrap needs a
+# user namespace and a private procfs in the guest, and this is where a guest without them
+# says so. Tried twice, ten seconds apart, only when `kubectl exec` to a brand-new node fails
+# before reaching the pod ("error dialing backend: remote error: tls: internal error"); a
+# guest that cannot run bubblewrap is the answer this check asks for, so it is not retried.
 preflight_failure=""
 preflight_attempts=0
 for attempt in 1 2; do
@@ -431,8 +481,7 @@ for attempt in 1 2; do
     <<<"$preflight_output" || break
   [[ "$attempt" == 1 ]] && sleep 10
 done
-if [[ "$preflight_attempts" == 1 ]]; then preflight_tried="once"
-else preflight_tried="twice, ten seconds apart"; fi
+preflight_tried="once"; [[ "$preflight_attempts" == 1 ]] || preflight_tried="twice, ten seconds apart"
 [[ -z "$preflight_failure" ]] ||
   die "bubblewrap could not start a tool process in the guest, $preflight_tried, and what it said is below. If that names a namespace or a procfs mount, the pod's enable-guest-userns init container and its privileged working container are what make those possible: $REPO_ROOT/tmp/$SAMPLE-setup-failure.log has that container's log and what the cluster said about the pod. If it is a connection error instead, the exec did not reach the pod, and a new run, once this one's clean up below has finished, is the thing to try.
 $preflight_failure"

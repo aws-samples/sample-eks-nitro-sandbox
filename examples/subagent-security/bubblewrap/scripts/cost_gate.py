@@ -1,11 +1,12 @@
 """cost_gate.py -- the most one bubblewrap run can cost, checked before it creates anything.
 
 setup.sh runs this before its first AWS or Kubernetes write, and run.sh before the model
-turn. It exits 0 only when the worst case for one complete run, through its clean up, is
-strictly below USD 5; exactly USD 5 is refused. On success it prints that worst case, its
-terms, the run's timeline and the snapshot's fingerprint as JSON on standard output, which
-setup.sh keeps in the run record. On any refusal it prints why on standard error and exits
-non-zero.
+turn. It would exit 0 only when the worst case for one complete run, through its clean up, is
+strictly below USD 5 (exactly USD 5 is refused) and printed that worst case, its terms, the
+run's timeline and the snapshot's fingerprint as JSON for the run record. As written it never
+does: after pricing everything else it refuses every run with NO_ROUTE (below), because no
+network route the node needs is approved and bounded. On any refusal it prints why on standard
+error and exits 1; --report also prints the terms it computed and every refusal as JSON.
 
 Its inputs:
 
@@ -15,7 +16,9 @@ Its inputs:
                context, and the folder must have been collected within the hour before.
   --identity   the account, role, cluster ARN, endpoint, Region and context setup.sh acts
                through (run-lib.sh identity_now); the reads must have been made as exactly that.
-  --manifest   the analyst pod, which must pin the node to an xlarge.
+  --manifest   the analyst pod, which must pin the node to an xlarge and end by its own clock
+               at CLEANUP_AT_EPOCH; the supplier API's and the ordinary pod's manifests, in
+               this folder, are read for the same.
   --envelope   src/run_envelope.json, the model turn's and the reports' finite bounds.
   --image      both images' sizes, measured by setup.sh before anything is pushed.
   --extra-s3   S3 requests made outside the scripts during the run, such as an operator's
@@ -23,12 +26,14 @@ Its inputs:
 
 Each term below names what bounds it. A term with nothing to bound it is not estimated: the
 check refuses instead. That is why cost_snapshot.py refuses every node network path that is
-charged per byte, and why only a model with a known context window is accepted. The numbers
-that come from the scripts themselves (the clean up's time budget, how many times it may
-run, the lock wait at the deadline, every S3 call and the length of each loop around one)
-are read from those scripts here, so the scripts and this check cannot disagree.
+charged per byte, why this check then refuses every run (NO_ROUTE), and why only a model with
+a known context window is accepted. The numbers that come from the scripts themselves (the
+clean up's time budget, each call's timeout, how many times it may run, the lock wait and the
+hard limit at the deadline, every S3 call and the length of each loop around one) are read
+from those scripts here, so the scripts and this check cannot disagree.
 """
 import argparse
+import ast
 import json
 import re
 import sys
@@ -56,22 +61,33 @@ HOURS_PER_MONTH = Decimal(730)
 # The run's timeline, in seconds from RUN_STARTED_AT, and what enforces each part.
 #   RUN_WINDOW_S       run.sh refuses to start the model turn after this (this check, with
 #                      --started-at).
-#   CLEANUP_START_S    both pods end then, in the cluster: setup.sh lowers each pod's
-#                      activeDeadlineSeconds so it counts to exactly that time. From then the
-#                      node holds no workload but DaemonSets, and its NodePool removes it
-#                      within empty_node_after_s (read from the NodePool, at most 600) plus
-#                      NODE_REMOVE_S. The page's ordinary pod, if started just before, ends
-#                      ORDINARY_POD_S later (its own sleep, restartPolicy Never).
+#   CLEANUP_START_S    both pods end then, in the cluster, by their own clocks: their
+#                      containers refuse to start after CLEANUP_AT_EPOCH and exit at it, and
+#                      setup.sh also lowers each pod's activeDeadlineSeconds to that time.
+#                      From then the node holds no workload but DaemonSets, and its NodePool
+#                      may remove it once empty_node_after_s (read from the NodePool, at
+#                      most 600) has passed, plus NODE_REMOVE_S. The page's ordinary pod, if
+#                      started just before, ends ordinary_pod_s later (read from its manifest).
 #                      scripts/deadline.sh also starts clean.sh then, on this machine; it
-#                      may wait for the run lock (read from deadline.sh), and clean.sh stops
-#                      all its calls after CLEAN_BUDGET_S (read from clean.sh) plus the
-#                      longest single call it can be in when that runs out.
-# The node is priced until the later of those two ends: either one removes it.
+#                      may wait for the run lock, then kills clean.sh after CLEAN_HARD_S and
+#                      a grace period (all read from deadline.sh).
+# The node is priced until the later of those two ends. Neither is a hard bound: consolidation
+# is EKS Auto Mode's own schedule, and the clean up needs this machine; the PR names that.
+# No route by which the node reaches what the run needs is approved, so every run is refused
+# here, after the rest is priced. A node needs Amazon ECR (ecr.api, ecr.dkr and Amazon S3 for
+# image layers), Amazon Bedrock (bedrock-runtime), EKS Pod Identity (eks-auth) and the EKS
+# control plane, whose subnets are in at least two Availability Zones. Every path to them is a
+# NAT gateway, an interface endpoint, a public address or traffic between zones, each charged
+# per GB or per hour with nothing here bounding its bytes; cost_snapshot.py refuses each of
+# them, and a topology it accepts cannot reach those services at all. Allowing a run needs a
+# maintainer-approved route, bounded by bytes, requests, retries, duration and source, priced
+# from the Price List, with tests both ways; until then this stays.
+NO_ROUTE = ("no network route to Amazon ECR, Amazon Bedrock, EKS Pod Identity and the EKS control plane "
+            "is approved and bounded, so no run can be shown to cost less than USD 5; every route is "
+            "refused until the maintainers approve one")
 RUN_WINDOW_S = 40 * 60
 CLEANUP_START_S = 60 * 60
 NODE_REMOVE_S = 10 * 60
-ORDINARY_POD_S = 600
-LONGEST_CLEAN_CALL_S = 3 * (10 + 60) + 30   # three AWS CLI tries at 10 s + 60 s, or a 30 s wait
 # Storage is charged as if kept a whole month; setup.sh also has every image and object
 # expire a day after it is written, so a clean up that never runs still ends that charge.
 STORAGE_MONTHS = Decimal(1)
@@ -102,9 +118,24 @@ SDK_S3_ATTEMPTS = 3
 # lie inside a row's text, and the loop lengths and clean-up runs are read from the sources.
 S3_FILES = ("analyst/scripts/analyst-lib.sh", "bubblewrap/scripts/setup.sh", "bubblewrap/scripts/run.sh",
             "bubblewrap/scripts/clean.sh", "bubblewrap/scripts/clean-node.sh", "bubblewrap/scripts/run-lib.sh",
-            "bubblewrap/scripts/deadline.sh", "bubblewrap/src/controller.py")
-S3_CALL = re.compile(r"\bs3api [a-z0-9-]+|\baws s3 [a-z]+|\bs3\.[a-z_]+\(|\(\"[^\"]+\", \"[a-z_]+_object\""
-                     r"|getattr\(s3, ")
+            "bubblewrap/scripts/deadline.sh", "bubblewrap/src/controller.py", "analyst/src/analyst_agent.py")
+# Where an S3 call could be, in every script and source file the run uses (S3_SCANNED), not
+# only the files above. In shell: the s3 or s3api word and the command after it, across line
+# continuations. In Python, read with ast whatever the receiver is called: a call of any
+# method named like an S3 operation (S3_OPERATION); such a name, or "s3" or "s3api", given to
+# a call or listed in a tuple, which is how a name reaches getattr; a shell S3 command in a
+# string given to a call; and every getattr, methodcaller, __getattribute__, _make_api_call
+# and resource() call whose method the scan cannot read (S3_DYNAMIC). Each must lie inside a
+# row's text. shortcut: a name built at run time and passed through a variable to one of
+# those, or an S3 command reached through a shell variable, is not followed; the scan relies
+# on the dynamic call itself being a row, and a new form needs a new rule here.
+S3_SCANNED = ("analyst/scripts/*.sh", "bubblewrap/scripts/*.sh", "analyst/src/*.py",
+              "analyst/supplier-api/*.py", "bubblewrap/src/*.py", "bubblewrap/scripts/*.py")
+S3_SHELL = re.compile(r"\bs3(?:api)?(?:[ \t]|\\\n)+[a-z][a-z0-9-]*")
+S3_OPERATION = re.compile(r"(?:[a-z0-9]+_)*(?:objects?|buckets?|multipart|uploads?|downloads?|parts?|copy"
+                          r"|public_access_block|session|presigned|paginator|paginate|waiter)(?:_[a-z0-9]+)*")
+S3_WORDS = {"s3", "s3api"}
+S3_DYNAMIC = {"getattr", "methodcaller", "__getattribute__", "_make_api_call", "resource"}
 
 
 def s3_sites(seed_proposals, case_suppliers, clean_runs):
@@ -133,6 +164,10 @@ def s3_sites(seed_proposals, case_suppliers, clean_runs):
         (ctl, '("reading another case\'s object", "get_object"', 1, "get", 1, "sdk"),
         # the one call that sends the three refusals above, which already count it
         (ctl, "getattr(s3, operation)(**params)", 1, "free", 0, "sdk"),
+        # the client itself, which sends nothing until one of the calls in this table
+        (ctl, 's3 = session.client("s3", config=S3_CONFIG)', 1, "free", 0, "sdk"),
+        # the model wrapper passing every other attribute to the Strands model; no S3 client reaches it
+        ("analyst/src/analyst_agent.py", "return getattr(self.inner, name)", 1, "free", 0, "sdk"),
         (ctl, "s3.put_object(Bucket=BUCKET, Key=f\"{prefix}/{name}\"", 1, "put", 2, "sdk"),
         (ctl, "s3.get_object(Bucket=BUCKET, Key=f\"{prefix}/{name}\")", 1, "get", 2, "sdk"),
         (clean, "lookup NoSuchBucket s3api get-bucket-tagging", 2, "get", 2 * clean_runs, "cli"),
@@ -165,7 +200,8 @@ def s3_ledger(section):
     clean_runs = source_number(section, "bubblewrap/scripts/clean.sh", r"^CLEAN_RUNS_MAX=(\d+)$",
                                "the most clean-up runs")
     sites = s3_sites(len(proposals[0].split()), len(suppliers), clean_runs)
-    for path in S3_FILES:
+    scanned = {str(p.relative_to(section)) for pattern in S3_SCANNED for p in section.glob(pattern)}
+    for path in sorted(scanned | set(S3_FILES)):
         text = (section / path).read_text()
         spans = []
         for file, call, count, _, _, _ in sites:
@@ -176,11 +212,46 @@ def s3_ledger(section):
                 raise Refused(f"the S3 ledger expects {call.strip()!r} {count} time(s) in {path}, "
                               f"and it is there {len(starts)} time(s)")
             spans += [(start, start + len(call)) for start in starts]
-        for match in S3_CALL.finditer(text):
-            if not any(start <= match.start() < end for start, end in spans):
-                line = text.count("\n", 0, match.start()) + 1
-                raise Refused(f"{path}:{line} makes the S3 call {match.group(0)!r}, which the ledger lacks")
+        for start, what in s3_calls(path, text):
+            if not any(begin <= start < end for begin, end in spans):
+                line = text.count("\n", 0, start) + 1
+                raise Refused(f"{path}:{line} makes the S3 call {what!r}, which the ledger lacks")
     return sites, clean_runs
+
+
+def s3_calls(path, text):
+    """Where each possible S3 call in one file starts, and what it is (S3_SCANNED, above)."""
+    if not path.endswith(".py"):
+        return [(m.start(), m.group(0)) for m in S3_SHELL.finditer(text)]
+    lines = [line + "\n" for line in text.split("\n")]  # the line breaks ast counts in a .py file
+    starts = [0]
+    for line in lines:
+        starts.append(starts[-1] + len(line))
+
+    def at(lineno, col):  # ast counts columns in UTF-8 bytes
+        return starts[lineno - 1] + len(lines[lineno - 1].encode()[:col].decode())
+
+    def named(value):
+        return isinstance(value, str) and (value in S3_WORDS or "_" in value and
+                                           S3_OPERATION.fullmatch(value) is not None)
+
+    found = []
+    for node in ast.walk(ast.parse(text, path)):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and (S3_OPERATION.fullmatch(func.attr) or func.attr in S3_DYNAMIC):
+                found.append((at(func.end_lineno, func.end_col_offset - len(func.attr)), func.attr))
+            elif isinstance(func, ast.Name) and func.id in S3_DYNAMIC and not (
+                    func.id == "getattr" and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)):
+                found.append((at(func.lineno, func.col_offset), func.id))
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and (named(arg.value) or
+                                                      isinstance(arg.value, str) and S3_SHELL.search(arg.value)):
+                    found.append((at(arg.lineno, arg.col_offset), arg.value))
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            found += [(at(e.lineno, e.col_offset), e.value) for e in node.elts
+                      if isinstance(e, ast.Constant) and named(e.value)]
+    return found
 
 
 class Refused(Exception):
@@ -311,13 +382,20 @@ def manifest_size(path):
         selector[key] = value
     if selector != {SIZE_LABEL: NODE_SIZE}:
         raise Refused(f"{path} must select exactly {SIZE_LABEL}: {NODE_SIZE}, not {selector}")
-    pod_lifetime(path, lines)
+    pod_lifetime(path, lines, ANALYST_CLOCK)
 
 
-def pod_lifetime(path, lines):
+# The lines that end each pod by its own clock at CLEANUP_AT_EPOCH, whenever it was placed.
+ANALYST_CLOCK = ('          test "$(date +%s)" -lt <CLEANUP_AT_EPOCH>',
+                 '      command: ["sh", "-c", "exec sleep $(( <CLEANUP_AT_EPOCH> - $(date +%s) ))"]')
+SUPPLIER_CLOCK = ('      command: ["sh", "-c", "left=$(( <CLEANUP_AT_EPOCH> - $(date +%s) )); '
+                  '[ $left -gt 0 ] && exec timeout $left python3 /opt/supplier-api/supplier_api.py"]',)
+
+
+def pod_lifetime(path, lines, clock):
     """A pod that ends at the run's deadline on its own and tolerates no taint of its own."""
-    for line in ("  activeDeadlineSeconds: <ACTIVE_DEADLINE_SECONDS>", "  restartPolicy: Never"):
-        if line not in lines:
+    for line in ("  activeDeadlineSeconds: <ACTIVE_DEADLINE_SECONDS>", "  restartPolicy: Never", *clock):
+        if lines.count(line) != 1:
             raise Refused(f"{path} must end at the run's clean-up deadline ({line.strip()})")
     if any(re.match(r"^\s*tolerations:", line) for line in lines):
         raise Refused(f"{path} carries tolerations, which could let it onto a NodePool this check "
@@ -330,7 +408,20 @@ def supplier_pod(path):
     if "kind: Pod" not in lines or "  nodeName: <NODE_NAME>" not in lines or \
             any(line.startswith("kind:") and line != "kind: Pod" for line in lines):
         raise Refused(f"{path} must be one pod bound to the analyst pod's node (nodeName)")
-    pod_lifetime(path, lines)
+    pod_lifetime(path, lines, SUPPLIER_CLOCK)
+
+
+def ordinary_pod(path):
+    """The page's ordinary pod: bound to the node, ending on its own; its lifetime in seconds."""
+    lines = Path(path).read_text().splitlines()
+    found = [re.fullmatch(r"  activeDeadlineSeconds: (\d+)", line) for line in lines]
+    found = [int(m.group(1)) for m in found if m]
+    sleeps = [line for line in lines if re.fullmatch(r'      command: \["sleep", "\d+"\]', line)]
+    if "  nodeName: <NODE_NAME>" not in lines or "  restartPolicy: Never" not in lines or \
+            len(found) != 1 or not 0 < found[0] <= 3600 or len(sleeps) != 1:
+        raise Refused(f"{path} must be one pod bound to the node, never restarted, with one "
+                      "activeDeadlineSeconds of at most an hour")
+    return found[0]
 
 
 def envelope(path):
@@ -395,8 +486,6 @@ def worst_case(snapshot, expected, run, image_bytes, seed_bytes, model_id, extra
         "s3": objects / GB * units["s3_usd_per_gb_month"] * STORAGE_MONTHS
         + requests["put"] * units["s3_put_usd_per_1000"] / 1000
         + requests["get"] * units["s3_get_usd_per_10000"] / 10000,
-        # cost_snapshot.build refuses every network path charged per byte or per hour
-        "network": Decimal(0),
     }
     total = sum(terms.values())
     return total, terms, {"worst_node_type": rate_type, "node_usd_per_hour": str(rate),
@@ -408,12 +497,18 @@ def worst_case(snapshot, expected, run, image_bytes, seed_bytes, model_id, extra
 
 def timeline(section, empty_after):
     """The run's timeline in seconds, from the scripts' own numbers and the NodePools' (above)."""
-    budget = source_number(section, "bubblewrap/scripts/clean.sh", r"^CLEAN_BUDGET_S=(\d+)$",
-                           "the clean up's time budget")
-    lock_wait = source_number(section, "bubblewrap/scripts/deadline.sh", r"^lock_take (\d+) \|\|",
-                              "the deadline's lock wait")
-    clean_path = lock_wait + budget + LONGEST_CLEAN_CALL_S
-    empty_path = ORDINARY_POD_S + empty_after + NODE_REMOVE_S
+    clean, deadline = "bubblewrap/scripts/clean.sh", "bubblewrap/scripts/deadline.sh"
+    budget = source_number(section, clean, r"^CLEAN_BUDGET_S=(\d+)$", "the clean up's time budget")
+    call = source_number(section, clean, r"^CALL_TIMEOUT_S=(\d+)$", "the clean up's call timeout")
+    lock_wait = source_number(section, deadline, r"^lock_take (\d+) \|\|", "the deadline's lock wait")
+    hard = source_number(section, deadline, r"^CLEAN_HARD_S=(\d+)$", "the deadline's hard limit")
+    grace = source_number(section, deadline, r'^"\$TIMEOUT" -k (\d+) "\$CLEAN_HARD_S" ',
+                          "the deadline's kill grace")
+    if budget + call > hard:
+        raise Refused("clean.sh's budget and one last call do not fit inside deadline.sh's CLEAN_HARD_S")
+    clean_path = lock_wait + hard + grace
+    ordinary_s = ordinary_pod(section / "bubblewrap/deploy/ordinary-pod.yaml")
+    empty_path = ordinary_s + empty_after + NODE_REMOVE_S
     return {"run_window": RUN_WINDOW_S, "cleanup_start": CLEANUP_START_S, "clean_path": clean_path,
             "empty_node_path": empty_path, "node": CLEANUP_START_S + max(clean_path, empty_path)}
 
@@ -435,7 +530,10 @@ def main(argv=None):
     parser.add_argument("--started-at", metavar="RUN_STARTED_AT",
                         help="when setup started; run.sh passes it from the run record")
     parser.add_argument("--now", help=argparse.SUPPRESS)
+    parser.add_argument("--report", action="store_true",
+                        help="also print the computed terms and every refusal as JSON; the exit code is unchanged")
     args = parser.parse_args(argv)
+    refusals, result = [], {}
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import cost_snapshot
     try:
@@ -498,24 +596,25 @@ def main(argv=None):
         total, terms, facts = worst_case(snapshot, expected, run, image_bytes, seed_bytes,
                                          args.model_id, extra, sites, times)
         facts["clean_runs"] = clean_runs
+        result = {"worst_case_usd": str(total), "cap_usd": str(CAP_USD),
+                  "terms_usd": {k: str(v) for k, v in terms.items()}, **facts,
+                  "snapshot_captured_at": snapshot["captured_at"],
+                  "snapshot_sha256": fingerprint, "timeline_s": times}
+        if not total < CAP_USD:
+            refusals.append(f"one run can cost up to USD {total:.6f}, which is not below USD {CAP_USD}")
+        refusals.append(NO_ROUTE)
     except (Refused, OSError) as error:
-        print(f"cost check refused: {error}", file=sys.stderr)
-        return 1
+        refusals.append(str(error))
     except (TypeError, AttributeError, KeyError, ValueError, ArithmeticError) as error:
         # A malformed input that got past the shape checks: refuse rather than guess.
-        print(f"cost check refused: malformed input ({type(error).__name__}: {error})",
-              file=sys.stderr)
-        return 1
-    if not total < CAP_USD:
-        print(f"cost check refused: one run can cost up to USD {total:.6f}, which is not "
-              f"below USD {CAP_USD}", file=sys.stderr)
-        return 1
-    print(json.dumps({"worst_case_usd": str(total), "cap_usd": str(CAP_USD),
-                      "terms_usd": {k: str(v) for k, v in terms.items()}, **facts,
-                      "snapshot_captured_at": snapshot["captured_at"],
-                      "snapshot_sha256": fingerprint, "timeline_s": times},
-                     sort_keys=True))
-    return 0
+        refusals.append(f"malformed input ({type(error).__name__}: {error})")
+    for refusal in refusals:
+        print(f"cost check refused: {refusal}", file=sys.stderr)
+    if args.report:
+        print(json.dumps({**result, "refusals": refusals}, sort_keys=True))
+    elif not refusals:  # shortcut: unreachable while NO_ROUTE refuses every run
+        print(json.dumps(result, sort_keys=True))
+    return 1 if refusals else 0
 
 
 if __name__ == "__main__":

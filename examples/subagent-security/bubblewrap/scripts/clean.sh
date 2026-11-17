@@ -12,13 +12,15 @@
 #                                           # and, if deleting the node through EKS fails,
 #                                           # cordon it and terminate its EC2 instance
 #
-# It reads the same run record setup.sh wrote, so there is nothing to set again. setup.sh
-# and run.sh run it with --delete-aws --delete-node themselves when they fail, and so does
-# scripts/deadline.sh at the run's clean-up deadline. It takes the run lock first, so it
-# never runs beside a setup, a run or another clean up, and it stops before its first
+# It reads the same run record setup.sh wrote, so there is nothing to set again, and without
+# that record it touches nothing. setup.sh and run.sh run it with --delete-aws --delete-node
+# themselves when they fail, and so does scripts/deadline.sh at the run's clean-up deadline.
+# It takes the run lock first, so it never runs beside a setup, a run or another clean up on
+# this machine, and it touches nothing while the namespace of the run's name is not the one
+# the run created (another checkout's or machine's run holds it). It stops before its first
 # delete if this shell no longer acts as the account, role, cluster, endpoint, Region and
-# kube context setup recorded. Every call it makes gives up on its own, and all of them
-# together stop after CLEAN_BUDGET_S seconds.
+# kube context setup recorded. Every call it makes gives up on its own and is killed after
+# CALL_TIMEOUT_S, and all of them together stop after CLEAN_BUDGET_S seconds.
 #
 # It does not stop at the first failure. A lookup that fails means "could not determine",
 # which is a failure and never "already gone": anything it could not delete or confirm is
@@ -35,8 +37,10 @@ set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$SAMPLE_DIR/../../.." && pwd)"
 SAMPLE="bubblewrap"
-# Every call below shares this one budget, and the cost check reads both numbers from here.
+# Every call below shares this one budget, and each one is also stopped by the clock after
+# CALL_TIMEOUT_S, retries and credential helpers included. The cost check reads both here.
 CLEAN_BUDGET_S=2400
+CALL_TIMEOUT_S=240
 # The most times one run record is cleaned up with S3 calls; the cost check counts them.
 CLEAN_RUNS_MAX=8
 
@@ -46,7 +50,7 @@ for arg in "$@"; do
     --delete-aws) delete_aws=true ;;
     --delete-node) delete_node=true ;;
     --allow-instance-termination) allow_terminate=true ;;
-    --help|-h) sed -n '2,32p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -67,14 +71,22 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 # actually created, .env what the next run would use. Which node is the run's, and the
 # identity setup acted as, come from the run record alone, never from .env.
 if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
-unset NODE_NAME NODE_UID NODE_PROVIDER_ID NODE_CREATED_AT NODE_POOL NODE_AT_START \
+unset NODE_NAME NODE_UID NODE_PROVIDER_ID NODE_CREATED_AT NODE_POOL NODE_AT_START NAMESPACE_UID \
   NODECLAIM_NAME NODECLAIM_UID NODECLAIM_CREATED_AT NODECLAIM_POOL RUN_STARTED_AT \
   NOMINATED_NODECLAIMS ACCOUNT_ID CALLER_ROLE_ARN CLUSTER_ARN CLUSTER_ENDPOINT CLEAN_RUNS_DONE
-have_record=false
-if [[ -e "$STATE_FILE" ]]; then
-  state_load || die "$STATE_FILE is not a run record this script can read; touched nothing"
-  have_record=true
+# Without the run record nothing ties any resource to a run (every copy of this sample marks
+# its resources the same way, and another checkout's run may be in progress), so nothing is
+# touched: the names are printed for you to check and remove by hand.
+if [[ ! -e "$STATE_FILE" ]]; then
+  echo "There is no run record at $STATE_FILE: this run was cleaned up already, or its record was" >&2
+  echo "lost. Nothing was touched. If it was lost, check and remove by hand namespace" >&2
+  echo "${NAMESPACE:-subagent-security-bubblewrap}, bucket ${BUCKET:-subagent-analyst-$SAMPLE-<ACCOUNT_ID>}, role ${ROLE_NAME:-subagent-analyst-$SAMPLE}" >&2
+  echo "and the ECR repositories pod-isolation/subagent-analyst-$SAMPLE and pod-isolation/subagent-analyst-$SAMPLE-supplier-api." >&2
+  exit 1
 fi
+state_load SAMPLE NAMESPACE AWS_REGION KUBE_CONTEXT CLUSTER_NAME ACCOUNT_ID CALLER_ROLE_ARN \
+    CLUSTER_ARN CLUSTER_ENDPOINT ||
+  die "$STATE_FILE is not a run record this script can read, or it lacks the names and identity setup recorded; touched nothing"
 
 NAMESPACE="${NAMESPACE:-subagent-security-bubblewrap}"
 AWS_REGION="${AWS_REGION:-}"
@@ -93,6 +105,8 @@ export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION" AWS_MAX_ATTEMPTS=3 AWS_RETRY_
 for c in aws jq kubectl; do
   command -v "$c" >/dev/null 2>&1 || die "$c is required"
 done
+TIMEOUT="$(command -v timeout || command -v gtimeout)" ||
+  die "timeout (GNU coreutils; gtimeout on macOS) is required, so every call ends by the clock"
 
 lock_take 0 ||
   die "another setup, run or clean up of this sample holds $LOCK_DIR (process $(cat "$LOCK_DIR/pid" 2>/dev/null || echo unknown)); touched nothing"
@@ -107,9 +121,9 @@ in_budget() {
   return 1
 }
 # Each Kubernetes request gives up after a minute; each AWS CLI request after 10 seconds
-# connecting and 60 reading, three tries at most.
-kc() { in_budget || return 1; kubectl --context "$KUBE_CONTEXT" --request-timeout=60s "$@"; }
-aws() { in_budget || return 1; command aws --cli-connect-timeout 10 --cli-read-timeout 60 "$@"; }
+# connecting and 60 reading, three tries at most; and either is killed at CALL_TIMEOUT_S.
+kc() { in_budget || return 1; "$TIMEOUT" -k 5 "$CALL_TIMEOUT_S" kubectl --context "$KUBE_CONTEXT" --request-timeout=60s "$@"; }
+aws() { in_budget || return 1; "$TIMEOUT" -k 5 "$CALL_TIMEOUT_S" aws --cli-connect-timeout 10 --cli-read-timeout 60 "$@"; }
 gone_within() { # <seconds> <arguments for kc get...>: true once the object is gone
   local end=$((SECONDS + $1)) tries=$(( $1 / 10 )) got
   shift
@@ -128,46 +142,52 @@ identity_matches() {
   local now
   now="$(identity_now)" && [[ -n "$now" && "$(jq -cS . <<<"$now")" == "$want" ]]
 }
-if [[ "$have_record" == true ]]; then
-  want="$(jq -cSn --arg a "${ACCOUNT_ID:-}" --arg r "${CALLER_ROLE_ARN:-}" --arg c "${CLUSTER_ARN:-}" \
-    --arg e "${CLUSTER_ENDPOINT:-}" --arg g "$AWS_REGION" --arg k "$KUBE_CONTEXT" \
-    '{account: $a, role: $r, cluster_arn: $c, endpoint: $e, region: $g, context: $k}')"
-  [[ -n "${ACCOUNT_ID:-}" && -n "${CALLER_ROLE_ARN:-}" && -n "${CLUSTER_ARN:-}" && -n "${CLUSTER_ENDPOINT:-}" ]] ||
-    die "the run record does not hold the identity setup acted as; touched nothing"
-  identity_matches ||
-    die "this shell does not act as the account, role, cluster, endpoint, Region and kube context setup recorded ($want), or that could not be read; touched nothing"
-  CLEAN_RUNS_DONE=$(( ${CLEAN_RUNS_DONE:-0} + 1 ))
-  state_put CLEAN_RUNS_DONE "$CLEAN_RUNS_DONE"
-fi
+# The record names the account and role this run may act as, and it wins over .env.
+EXPECTED_ACCOUNT_ID="$ACCOUNT_ID" EXPECTED_ROLE_ARN="$CALLER_ROLE_ARN"
+want="$(jq -cSn --arg a "$ACCOUNT_ID" --arg r "$CALLER_ROLE_ARN" --arg c "$CLUSTER_ARN" \
+  --arg e "$CLUSTER_ENDPOINT" --arg g "$AWS_REGION" --arg k "$KUBE_CONTEXT" \
+  '{account: $a, role: $r, cluster_arn: $c, endpoint: $e, region: $g, context: $k}')"
+identity_matches ||
+  die "this shell does not act as the account, role, cluster, endpoint, Region and kube context setup recorded ($want), or that could not be read; touched nothing"
+CLEAN_RUNS_DONE=$(( ${CLEAN_RUNS_DONE:-0} + 1 ))
+state_put CLEAN_RUNS_DONE "$CLEAN_RUNS_DONE"
 
 say "1/5 the namespace's own objects"
 
-# Four states, and only one of them lets anything inside the namespace be deleted.
+# Five states, and only one of them lets anything inside the namespace be deleted. The
+# namespace is the run's lease: one of this name with another uid than the run recorded (or,
+# when setup stopped before it recorded one, any of this name) is another run's, which may
+# be in progress from another checkout or machine, so nothing at all is touched.
 ns_state=unknown ns_gone=false
 if ns_json="$(kc get namespace "$NAMESPACE" --ignore-not-found -o json 2>/dev/null)"; then
   if [[ -z "$ns_json" ]]; then
     ns_state=absent
-  elif [[ "$(jq -r '.metadata.labels["app.kubernetes.io/managed-by"] // ""' <<<"$ns_json")" == "$SAMPLE" ]]; then
+  elif [[ "$(jq -r '.metadata.labels["app.kubernetes.io/managed-by"] // ""' <<<"$ns_json")" != "$SAMPLE" ]]; then
+    ns_state=foreign
+  elif [[ -n "${NAMESPACE_UID:-}" && "$(jq -r '.metadata.uid // ""' <<<"$ns_json")" == "$NAMESPACE_UID" ]]; then
     ns_state=owned
   else
-    ns_state=foreign
+    ns_state=other_run
   fi
 fi
 case "$ns_state" in
   absent) echo "  namespace $NAMESPACE is already gone."; ns_gone=true ;;
+  other_run)
+    note_fail "namespace $NAMESPACE is not the one this run created (its uid is not the recorded ${NAMESPACE_UID:-none}): another run holds it, so this clean up touched nothing"
+    lock_release; exit 1 ;;
   foreign) note_fail "namespace $NAMESPACE is not this sample's (its managed-by label is not '$SAMPLE'); deleted nothing in it" ;;
   unknown) note_fail "could not determine whether namespace $NAMESPACE exists or whose it is; deleted nothing in it" ;;
   owned)
     # Which NodeClaims EKS Auto Mode launched for this run's pods, read from the
     # namespace's events while they still exist, and kept in the run record.
-    if [[ "$have_record" == true ]]; then
-      if nominated="$(nominated_claims 2>/dev/null)"; then
-        state_put NOMINATED_NODECLAIMS "$(printf '%s\n%s\n' "${NOMINATED_NODECLAIMS:-}" "$nominated" |
-          tr ' ' '\n' | grep . | sort -u | tr '\n' ' ' | sed 's/ *$//')"
-        state_load
-      else
-        note_fail "could not read the events in $NAMESPACE, so a NodeClaim launched for this run's pods may be left"
-      fi
+    # An event this cannot read, or events it cannot list, fail the whole clean up: the
+    # record is kept, so a NodeClaim launched for the run is never forgotten.
+    if nominated="$(nominated_claims 2>/dev/null)"; then
+      state_put NOMINATED_NODECLAIMS "$(printf '%s\n%s\n' "${NOMINATED_NODECLAIMS:-}" "$nominated" |
+        tr ' ' '\n' | grep . | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+      state_load
+    else
+      note_fail "could not read every Nominated event in $NAMESPACE, so a NodeClaim launched for this run's pods may be left"
     fi
     # Inside this sample's own namespace, the namespace label is the ownership check. The
     # analyst pod goes first: it is what holds sandbox capacity other demos on the cluster
@@ -195,8 +215,6 @@ if [[ "$delete_node" != true ]]; then
   echo "  left the node to EKS Auto Mode, which removes it once it is empty; --delete-node deletes it now."
 elif [[ "$ns_gone" != true ]]; then
   note_fail "namespace $NAMESPACE is not confirmed gone, so no node was deleted"
-elif [[ "$have_record" != true ]]; then
-  echo "  there is no run record, so there is no node this clean up can call the run's."
 else
   if [[ -n "${NODE_NAME:-}" && "${NODE_AT_START:-}" == true ]]; then
     echo "  the analyst pod ran on node $NODE_NAME, which the cluster had before the run; it is not this run's to delete."

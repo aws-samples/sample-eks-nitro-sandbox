@@ -121,8 +121,8 @@ global_settings:
       expiration: "2027-01-31"
     - rule_id: B603
       path: "examples/subagent-security/strands-box/tests/test_setup.py"
-      line_start: 235
-      line_end: 236
+      line_start: 282
+      line_end: 285
       reason: "Executes repository-owned setup and cleanup scripts using the preselected absolute Bash path and separate arguments. Case names and arguments are trusted fixtures; cloud and container commands use local substitutes."
       expiration: "2027-01-31"
     # Namespace is set at apply time, never hard-coded in the manifest.
@@ -370,7 +370,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_8
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'Idle exec target (sleep infinity, restartPolicy: Never, analyst-pod.yaml:66,103) that already has a readiness probe (analyst-pod.yaml:118-119); the controller runs as a kubectl exec child whose exit status run.sh checks (run.sh:100-105), so a liveness probe on the sleep process gates nothing'
+      reason: 'Idle exec target (a sleep until the run clean-up time, restartPolicy: Never, analyst-pod.yaml:67,106) that already has a readiness probe (analyst-pod.yaml:121-122); the controller runs as a kubectl exec child whose exit status run.sh checks (run.sh:107-112), so a liveness probe on the sleep process gates nothing'
       expiration: '2027-12-31'
     # Poller and autoscaler: single-replica first-party pods, no port or Service.
     - rule_id: CKV_K8S_8
@@ -407,7 +407,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/bubblewrap/deploy/supplier-api-pod.yaml'
-      reason: 'By design: the same ordinary synthetic supplier pod as analyst/deploy/supplier-api.yaml, as a bare pod bound to the analyst node (supplier-api-pod.yaml:1-11,23), behind that manifest''s ClusterIP Services only (supplier-api.yaml:24,38); a sample ships no network policy (AGENTS.md:546-561), and the page says nothing in this blueprint bounds egress and links the network policy sample (README.md:182-188,1115-1119)'
+      reason: 'By design: the same ordinary synthetic supplier pod as analyst/deploy/supplier-api.yaml, as a bare pod bound to the analyst node (supplier-api-pod.yaml:1-14,24), behind that manifest''s ClusterIP Services only (supplier-api.yaml:24,38); a sample ships no network policy (AGENTS.md:546-561), and the page says nothing in this blueprint bounds egress and links the network policy sample (README.md:187-193,1137-1141)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
@@ -415,7 +415,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'By design: bubblewrap confines the tool processes inside the pod, not the pod; a sample ships no network policy (AGENTS.md:546-561), and the page says nothing in this blueprint bounds the pod egress and links the network policy sample (README.md:182-188,1115-1119)'
+      reason: 'By design: bubblewrap confines the tool processes inside the pod, not the pod; a sample ships no network policy (AGENTS.md:546-561), and the page says nothing in this blueprint bounds the pod egress and links the network policy sample (README.md:187-193,1137-1141)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/agent-sandbox/brain-and-hands/deploy/brain.yaml'
@@ -726,7 +726,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_14
       path: 'examples/subagent-security/bubblewrap/deploy/supplier-api-pod.yaml'
-      reason: 'Image is the placeholder <SUPPLIER_API_IMAGE>; setup.sh substitutes the pushed image by its sha256 digest before create (setup.sh:395-396,401)'
+      reason: 'Image is the placeholder <SUPPLIER_API_IMAGE>; setup.sh substitutes the pushed image by its sha256 digest before create (setup.sh:447-448,454)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_14
       path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
@@ -858,14 +858,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/subagent-security/bubblewrap/deploy/supplier-api-pod.yaml'
-      line_start: 55
-      line_end: 55
+      line_start: 58
+      line_end: 58
       reason: 'secretName: references a Kubernetes Secret; the key is not in the file'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/subagent-security/bubblewrap/deploy/supplier-api-pod.yaml'
-      line_start: 57
-      line_end: 57
+      line_start: 60
+      line_end: 60
       reason: 'secretName: references a Kubernetes Secret; the TLS key is not in the file'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
@@ -1124,27 +1124,27 @@ global_settings:
     # bubblewrap needs a privileged root init container and a privileged working container (analyst-pod.yaml:20-30).
     - rule_id: CKV_K8S_16
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:21-31)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_20
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:21-31)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_28
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:21-31)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_31
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:21-31)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_37
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:21-31)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_40
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:20-30)'
+      reason: 'bwrap needs privileged containers to mount a private procfs; privileged overrides seccomp (analyst-pod.yaml:21-31)'
       expiration: '2027-12-31'
     # Base images come from build arguments that setup.sh reads from versions.json (a digest and a fixed tag).
     - rule_id: CKV_DOCKER_7
@@ -1329,8 +1329,8 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/subagent-security/bubblewrap/deploy/analyst-pod.yaml'
-      line_start: 133
-      line_end: 133
+      line_start: 136
+      line_end: 136
       reason: 'secretName: references a Kubernetes Secret (volume above); the key is not in the file'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
