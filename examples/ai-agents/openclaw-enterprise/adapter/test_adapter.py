@@ -389,6 +389,21 @@ class BuildPatchTests(unittest.TestCase):
         with self.assertRaisesRegex(AdmissionError, "unsupported.*network-profile"):
             build_patch(pod)
 
+    def test_final_validator_rejects_network_profile_tampering(self) -> None:
+        rendered = apply_patch(target_pod(), build_patch(target_pod()))
+
+        for value in (None, OCE_BROAD_EGRESS_PROFILE, "unexpected-profile"):
+            with self.subTest(value=value):
+                tampered = copy.deepcopy(rendered)
+                labels = tampered["metadata"]["labels"]
+                if value is None:
+                    labels.pop(NETWORK_PROFILE_LABEL)
+                else:
+                    labels[NETWORK_PROFILE_LABEL] = value
+
+                with self.assertRaisesRegex(AdmissionError, "final OCE Pod must use"):
+                    validate_pod(tampered)
+
     def test_preinjected_agentgateway_ca_contract_is_idempotent(self) -> None:
         pod = target_pod()
         gateway = pod["spec"]["containers"][0]
@@ -1326,6 +1341,37 @@ class BuildPatchTests(unittest.TestCase):
                     AdmissionError, f"unsafe bootstrap environment {name}"
                 ):
                     build_patch(pod)
+
+    def test_rejects_aws_credential_environment(self) -> None:
+        names = (
+            "AWS_ACCESS_KEY_ID",
+            "AWS_CONFIG_FILE",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_PROFILE",
+            "AWS_ROLE_ARN",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_SHARED_CREDENTIALS_FILE",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+        )
+        for value_source in (
+            {"value": "attacker-controlled"},
+            {"valueFrom": {"secretKeyRef": {"name": "aws", "key": "credential"}}},
+        ):
+            for name in names:
+                with self.subTest(name=name, value_source=value_source):
+                    pod = target_pod()
+                    pod["spec"]["containers"][-1].setdefault("env", []).append(
+                        {"name": name, **value_source}
+                    )
+                    with self.assertRaisesRegex(
+                        AdmissionError,
+                        f"prohibited AWS credential environment {name}",
+                    ):
+                        build_patch(pod)
 
     def test_rejects_exec_lifecycle_hooks_and_probes(self) -> None:
         exec_action = {"exec": {"command": ["/bin/sh", "-c", "id"]}}

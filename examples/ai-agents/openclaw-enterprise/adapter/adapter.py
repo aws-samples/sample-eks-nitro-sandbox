@@ -85,6 +85,22 @@ UNSAFE_BOOTSTRAP_ENV_NAMES = (
     "SHELLOPTS",
     "ZDOTDIR",
 )
+AWS_CREDENTIAL_ENV_NAMES = frozenset(
+    {
+        "AWS_ACCESS_KEY_ID",
+        "AWS_CONFIG_FILE",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+        "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+        "AWS_PROFILE",
+        "AWS_ROLE_ARN",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AWS_SHARED_CREDENTIALS_FILE",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+    }
+)
 IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 GATEWAY_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
 OCE_RESOURCE_ID_PATTERN = re.compile(
@@ -365,6 +381,10 @@ def _runtime_environment(container: dict[str, Any], location: str) -> list[Any]:
         if name.startswith("LD_") or name in UNSAFE_BOOTSTRAP_ENV_NAMES:
             raise AdmissionError(
                 f"{location} configures unsafe bootstrap environment {name}"
+            )
+        if name in AWS_CREDENTIAL_ENV_NAMES:
+            raise AdmissionError(
+                f"{location} configures prohibited AWS credential environment {name}"
             )
     required = {
         NODE_CA_ENV: AGW_CA_PATH,
