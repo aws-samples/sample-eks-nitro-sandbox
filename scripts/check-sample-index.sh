@@ -16,9 +16,9 @@
 # each sample <s> = <section>/<sample> it checks:
 #   - mkdocs.yml has exactly one page "- <Title>: <s>/README.md" (or a bare "- <path>",
 #     which mkdocs also shows in the menu) in its nav: block, under a section heading
-#     ("- <Section>:"). Each nav heading title holds the samples of one <section> folder,
-#     each folder's samples sit under one heading title, and no heading title appears
-#     twice under one parent.
+#     ("- <Section>:"). A heading title may hold samples from more than one <section>
+#     folder, but each folder's samples sit under one heading title, and no heading title
+#     appears twice under one parent.
 #   - docs/ROADMAP.md has a list item linking ../examples/<s>/README.md, marked
 #     "(available now)" on that line or in the "### " heading of the section it is under.
 #   - README.md at the top of the repository has a list item linking examples/<s>/README.md.

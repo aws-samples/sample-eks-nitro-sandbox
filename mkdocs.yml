@@ -104,8 +104,8 @@ nav:
   - Isolation:
       - Network policy: isolation/network-policy/README.md
       - Sandbox limits: isolation/sandbox-limits/README.md
-  # A menu section holds one examples/ folder (scripts/check-sample-index.sh), so the
-  # sections that gather two folders nest one sub-section per folder.
+  # A menu section may list samples from more than one examples/ folder, but each folder's
+  # samples stay under one section (scripts/check-sample-index.sh).
   - AI Agents:
       - Coding agents for developers: ai-agents/coding-agents-for-developers/README.md
       - Claude Managed Agents: managed-agents/claude-managed-agents/README.md

@@ -329,7 +329,7 @@ replace_line "$d/mkdocs.yml" "Hello: getting-started" \
   "      - Hello: getting-started/hello/README.md" "      - Signing: policy/signing/README.md"
 append_lines "$d/docs/ROADMAP.md" "- [cedar](../examples/policy/cedar/README.md) (available now): a Cedar policy."
 append_lines "$d/README.md" "- [Cedar](examples/policy/cedar/README.md): a Cedar policy."
-expect_findings "reject: a sample under another section's nav heading" "$d" \
+expect_findings "reject: one section folder split across nav headings" "$d" \
   "the policy/ samples are under more than one mkdocs.yml nav heading: 'Getting started', 'Policy'"
 
 d=$(new_repo reject-nav-heading-twice)
