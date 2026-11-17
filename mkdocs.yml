@@ -109,7 +109,6 @@ nav:
   - AI Agents:
       - Coding agents:
           - Coding agents for developers: ai-agents/coding-agents-for-developers/README.md
-      - OpenClaw Enterprise:
           - OpenClaw Enterprise on EKS: ai-agents/openclaw-enterprise/README.md
       - Managed agents:
           - Claude Managed Agents: managed-agents/claude-managed-agents/README.md
