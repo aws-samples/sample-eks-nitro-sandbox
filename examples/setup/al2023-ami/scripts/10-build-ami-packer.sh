@@ -25,7 +25,7 @@ require_run_id
 IDENTITY_MAY_BE_NEW="RESOURCE_PREFIX CLUSTER_NAME NAMESPACE" require_identity AWS_REGION RESOURCE_PREFIX CLUSTER_NAME NAMESPACE
 require_supported_k8s
 : "${EKS_AMI_REF:?set EKS_AMI_REF to the amazon-eks-ami tag/commit to build from (>= v20261112 for pod isolation)}"
-: "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a subnet in an AZ with enclave-capable capacity}"
+: "${BUILD_SUBNET_ID:?set BUILD_SUBNET_ID to a PUBLIC subnet (Packer reaches its builder over SSH) in an AZ with enclave-capable capacity}"
 case "$NODE_ARCH" in amd64) : "${BUILD_INSTANCE_TYPE:=m8i.4xlarge}" ;; arm64) : "${BUILD_INSTANCE_TYPE:=m8g.4xlarge}" ;; esac
 arch_matches_type "$BUILD_INSTANCE_TYPE" || die "BUILD_INSTANCE_TYPE '$BUILD_INSTANCE_TYPE' is not a $NODE_ARCH instance type; the AMI's architecture follows the builder"
 # Optional: the upstream build reads the public bundle unsigned when the builder has no profile.
