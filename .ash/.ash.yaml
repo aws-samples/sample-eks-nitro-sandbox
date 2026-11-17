@@ -119,6 +119,12 @@ global_settings:
       line_end: 8
       reason: "Subprocess import is required for the separately reviewed process launch in this file; the import executes no command."
       expiration: "2027-01-31"
+    - rule_id: B603
+      path: "examples/subagent-security/strands-box/tests/test_setup.py"
+      line_start: 235
+      line_end: 236
+      reason: "Executes repository-owned setup and cleanup scripts using the preselected absolute Bash path and separate arguments. Case names and arguments are trusted fixtures; cloud and container commands use local substitutes."
+      expiration: "2027-01-31"
     # Namespace is set at apply time, never hard-coded in the manifest.
     - rule_id: CKV_K8S_21
       path: 'examples/getting-started/hello-sandbox/*.yaml'
