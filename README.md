@@ -74,6 +74,7 @@ The same procurement analyst, with four choices for confining its tool processes
 ## Integrations
 
 - [Temporal workflows](examples/integrations/temporal/README.md): a self-hosted Temporal server where one durable workflow creates a sandbox, runs a step in it, suspends it, resumes it onto a new guest with its workspace intact and deletes it, retrying a failed activity and carrying on through its Worker pod being deleted mid-run.
+- [Istio sidecars](examples/integrations/istio/README.md): Istio with the `istio-init` init container and Envoy sidecar on Nitro sandboxes, with strict mutual TLS and an authorization policy, and a plain statement of what does not work today (the Istio CNI plugin, which is not on the roadmap for now, and ambient mesh, which is on the roadmap).
 
 ## Confidential
 

@@ -1,0 +1,12 @@
+# Require mutual TLS for every workload in the blueprint's namespace. It is scoped
+# to this namespace and named for the blueprint: a PeerAuthentication in
+# `istio-system`, or one named `default`, would be mesh-wide or could collide with
+# one another team owns.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: istio-sandbox-strict
+  namespace: <NAMESPACE>
+spec:
+  mtls:
+    mode: STRICT
