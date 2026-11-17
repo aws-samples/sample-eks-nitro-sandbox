@@ -158,10 +158,17 @@ own_output=()
 for fd in 1 2; do
   p="$(readlink -f "/proc/$$/fd/$fd" 2>/dev/null)" && [[ -f "$p" ]] && own_output+=("$p")
 done
-# A file the guard must see change, for the guard's own control case (G1).
+# A file the guard must see change, for the guard's own control case (G1), and a protected
+# sibling whose name starts with it, which nothing may change.
 guard_control="$base.guard-control"
-: > "$guard_control"
-trap 'chmod -R u+rwx "$base" 2>/dev/null; "$RM_BIN" -rf -- "$base" "$guard_control"' EXIT
+: > "$guard_control"; : > "$guard_control.sibling"
+trap 'chmod -R u+rwx "$base" 2>/dev/null; "$RM_BIN" -rf -- "$base" "$guard_control" "$guard_control.sibling"' EXIT
+# A guard listing without the one exact record of the control file: a line is dropped only
+# when its path field is exactly that path, never because the path merely contains it.
+drop_control() {
+  awk -v suffix=" $guard_control -> " '{ n = length($0) - length(suffix) + 1
+    if (n > 0 && substr($0, n) == suffix) next; print }'
+}
 
 # --- fixture --------------------------------------------------------------------------
 # A fresh case: C is its directory, R the fixture checkout, S the blueprint folder, T the run
@@ -202,11 +209,15 @@ new_case() {  # new_case <name> <sut dir>
   creds "$T" both
   state "$T/state.env"
   put "$T/rendered-pod.json"; put "$T/policy.signer.yaml"; put "$T/genpolicy.signer.log"
+  # aws.err is there before the run, as after any earlier lookup, so a lookup rewriting it
+  # does not change the run directory's own metadata.
+  put "$T/aws.err"
   put "$T/genpolicy-home-old/.docker/config.json"; put "$T/docker-config.bak"
   put "$T/sub/genpolicy-home/config.json"; put "$R/tmp/signer-policy-old/genpolicy-home/x"
   put "$R/tmp/other-sample/docker-config/config.json"; put "$S/docker-config/x"
   put "$O/target/.docker/config.json"; put "$O/file-target"
   args=() xenv=() drop=() cwd="$S" invoke=./scripts/clean.sh pshell=bash between=""
+  guard_exempt="" guard_saw_control=0 expect_removal="" fp_norm_T=0
   fails=() errors=()
 }
 rules() { printf '%s\n' "$@" >> "$CTL/rules"; }
@@ -258,13 +269,23 @@ run() {
     done
   fi
   : > "$CTL/rm.log"
+  # The run directory's own size and mtime are left out only when this run is expected to
+  # remove an entry from it: by default when a credential name is there to remove.
+  if [[ -n "$expect_removal" ]]; then fp_norm_T="$expect_removal"
+  elif [[ -e "$T/genpolicy-home" || -L "$T/genpolicy-home" || -e "$T/docker-config" || -L "$T/docker-config" ]]; then fp_norm_T=1
+  else fp_norm_T=0; fi
   pre_fp="$(fp)" pre_guard="$(guard)"
   ( cd "$cwd" && timeout 20 env -i HOME="$C/home" PATH="$bin" PWD="$cwd" LANG=C LC_ALL=C TZ=UTC \
       SPCT_CTL="$CTL" SPCT_CASE="$C" "${xenv[@]}" "$invoke" "${args[@]}" ) > "$C/out" 2> "$C/err"
   rc=$?
   [[ -z "$between" ]] || "$between"
   post_fp="$(fp)" post_guard="$(guard)"
-  [[ "$pre_guard" == "$post_guard" ]] || errors+=("REAL-CHECKOUT-CHANGED")
+  if [[ "$pre_guard" != "$post_guard" ]]; then
+    # Only G1 may change the guard, and only by its exact control record.
+    if [[ -n "$guard_exempt" && "$(drop_control <<<"$pre_guard")" == "$(drop_control <<<"$post_guard")" ]]; then
+      guard_saw_control=1
+    else errors+=("REAL-CHECKOUT-CHANGED"); fi
+  fi
   [[ ! -s "$CTL/unlisted.log" ]] || errors+=("UNLISTED-STUB-CALL:$(head -1 "$CTL/unlisted.log")")
   ! grep -q 'command not found' "$C/err" || errors+=("COMMAND-NOT-FOUND")
   [[ "$rc" != 124 ]] || fails+=("READ-BLOCKED")
@@ -276,10 +297,11 @@ run() {
 # hashed), aws.err (rewritten by every --delete-aws-resources lookup) and the harness's own
 # files. A directory's own mtime is left out, so a removal shows only as the entry going.
 fp() {
-  local trel="./${T#"$C"/}"
+  local trel="./${T#"$C"/}" tnorm=./.none
+  [[ "$fp_norm_T" != 1 ]] || tnorm="$trel"
   ( cd "$C" && find . \( -path ./ctl -o -path ./bin -o -path ./home -o -path ./out -o -path ./err \
       -o -path "$trel/genpolicy-home" -o -path "$trel/docker-config" -o -path "$trel/aws.err" \) -prune -o \
-      \( -type d \( -path "$trel" -o -path "$fp_norm" \) -printf 'd %m %p (entries checked one by one)\n' \) -o \
+      \( -type d \( -path "$tnorm" -o -path "$fp_norm" \) -printf 'd %m %p (entries checked one by one)\n' \) -o \
       \( -type d -printf 'd %m %s %T@ %p\n' \) -o \( -printf '%y %m %s %T@ %p -> %l\n' \) \
       \( -type f -exec sha256sum {} + -o -true \) ) 2>&1 | LC_ALL=C sort
 }
@@ -361,79 +383,78 @@ check_A7() { run; [[ "$rc" != 0 ]] || fails+=("EXIT:0"); [[ ! -e "$T" ]] || fail
 
 case_ E1; setup_E1() { new_case E1 "$1"; state "$T/state.env"; sed -i '/^ACCOUNT_ID=/d' "$T/state.env"
   rules 'aws|*|sts get-caller-identity *|255||Unable to locate credentials\n' "${H_RULES[@]}"; }
-check_E1() { run; want_rc 255; gone genpolicy-home docker-config; remote_lacks '^kubectl '; not_out "Clean up complete."; same_as_baseline; }
+check_E1() { run; want_rc 255; gone genpolicy-home docker-config; remote_lacks '^kubectl '; not_out "Clean up complete."; same_tree; same_as_baseline; }
 case_ E2; setup_E2() { new_case E2 "$1"; rules 'kubectl|*|get namespace * -o jsonpath=*|1||' "${H_RULES[@]}"; }
-check_E2() { run; want_rc 1; gone genpolicy-home docker-config; in_err "could not determine whether namespace"; same_as_baseline; }
+check_E2() { run; want_rc 1; gone genpolicy-home docker-config; in_err "could not determine whether namespace"; same_tree; same_as_baseline; }
 case_ E3; setup_E3() { new_case E3 "$1"; rules 'kubectl|*|delete pod *|42||' "${H_RULES[@]}"; }
-check_E3() { run; want_rc 42; gone genpolicy-home docker-config; not_out "Clean up complete."; same_as_baseline; }
+check_E3() { run; want_rc 42; gone genpolicy-home docker-config; not_out "Clean up complete."; same_tree; same_as_baseline; }
 case_ E4; setup_E4() { new_case E4 "$1"; rules 'aws|*|iam delete-role --role-name *|254||' "${D_RULES[@]}"; args=(--delete-aws-resources); }
-check_E4() { run; want_rc 254; gone genpolicy-home docker-config; remote_lacks '^aws (ecr|signer) '; not_out "Clean up complete."; same_as_baseline; }
+check_E4() { run; want_rc 254; gone genpolicy-home docker-config; remote_lacks '^aws (ecr|signer) '; not_out "Clean up complete."; same_tree; same_as_baseline; }
 case_ E5; setup_E5() { new_case E5 "$1"; rules 'aws|*|signer cancel-signing-profile *|253||' "${D_RULES[@]}"; args=(--delete-aws-resources); }
-check_E5() { run; want_rc 253; gone genpolicy-home docker-config; not_out "Clean up complete."; same_as_baseline; }
+check_E5() { run; want_rc 253; gone genpolicy-home docker-config; not_out "Clean up complete."; same_tree; same_as_baseline; }
 case_ E6; setup_E6() { new_case E6 "$1"; rules 'aws|*|iam get-role *|254||An error occurred (AccessDenied)\n' "${D_RULES[@]}"; args=(--delete-aws-resources); }
-check_E6() { run; want_rc 1; gone genpolicy-home docker-config; remote_has '^aws signer cancel-signing-profile '; same_as_baseline; }
+check_E6() { run; want_rc 1; gone genpolicy-home docker-config; remote_has '^aws signer cancel-signing-profile '; same_tree; same_as_baseline; }
 case_ E7; setup_E7() { new_case E7 "$1"; rules 'aws|*|eks list-pod-identity-associations *|255||' "${H_RULES[@]}"; }
-check_E7() { run; want_rc 1; gone genpolicy-home docker-config; in_err "could not determine whether a Pod Identity association"; same_as_baseline; }
+check_E7() { run; want_rc 1; gone genpolicy-home docker-config; in_err "could not determine whether a Pod Identity association"; same_tree; same_as_baseline; }
 
 case_ U1; setup_U1() { new_case U1 "$1"; rules "${H_RULES[@]}"; args=(--bogus); }
-check_U1() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_exact
+check_U1() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_exact; same_tree
   [[ "$(cat "$C/err")" == "unknown argument: --bogus" ]] || fails+=("USAGE-STDERR"); [[ ! -s "$C/out" ]] || fails+=("USAGE-STDOUT"); }
 case_ U1F; setup_U1F() { new_case U1F "$1"; rules "${H_RULES[@]}"; args=(--bogus); touch "$CTL/rm-fail-genpolicy-home"; }
-check_U1F() { run; want_rc 2; there genpolicy-home; gone docker-config; no_remote; rm_exact
+check_U1F() { run; want_rc 2; there genpolicy-home; gone docker-config; no_remote; rm_exact; same_tree
   in_err "unknown argument: --bogus"; in_err "INCOMPLETE: could not remove $(cd -P "$T" && pwd -P)/genpolicy-home"; local_fail_footer; }
 # A valid first argument followed by another one is still invalid usage.
 case_ U5; setup_U5() { new_case U5 "$1"; rules "${D_RULES[@]}"; args=(--delete-aws-resources --bogus); }
-check_U5() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_exact; not_out "Clean up complete."
+check_U5() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_exact; same_tree; not_out "Clean up complete."
   [[ "$(cat "$C/err")" == "unknown argument: --bogus" ]] || fails+=("USAGE-STDERR"); [[ ! -s "$C/out" ]] || fails+=("USAGE-STDOUT"); }
 case_ U5a; setup_U5a() { new_case U5a "$1"; rules "${H_RULES[@]}"; args=("" --bogus); "$RM_BIN" -rf "$T/genpolicy-home" "$T/docker-config"; }
-check_U5a() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_exact; in_err "unknown argument: --bogus"; }
+check_U5a() { run; want_rc 2; gone genpolicy-home docker-config; no_remote; rm_exact; same_tree; in_err "unknown argument: --bogus"; }
 case_ U5F; setup_U5F() { new_case U5F "$1"; rules "${D_RULES[@]}"; args=(--delete-aws-resources x); touch "$CTL/rm-fail-docker-config"; }
-check_U5F() { run; want_rc 2; gone genpolicy-home; there docker-config; no_remote; rm_exact
+check_U5F() { run; want_rc 2; gone genpolicy-home; there docker-config; no_remote; rm_exact; same_tree
   in_err "unknown argument: x"; in_err "/docker-config (a registry credential)"; local_fail_footer; }
-check_U2() { run; want_rc 1; gone genpolicy-home docker-config; in_err "no .env"; no_remote; same_as_baseline; }
+check_U2() { run; want_rc 1; gone genpolicy-home docker-config; in_err "no .env"; no_remote; same_tree; same_as_baseline; }
 # The guard's own control: a guarded file changes during a run, and the run must be
 # reported as could-not-check. Here that is the expected result, so it passes.
-case_ G1; setup_G1() { new_case G1 "$1"; rules "${H_RULES[@]}"; between=touch_guard_control; }
+case_ G1; setup_G1() { new_case G1 "$1"; rules "${H_RULES[@]}"; between=touch_guard_control guard_exempt=1; }
 touch_guard_control() { sleep 0.01; printf 'changed\n' >> "$guard_control"; }
-check_G1() { run
-  if [[ " ${errors[*]} " == *" REAL-CHECKOUT-CHANGED "* ]]; then errors=(); else fails+=("GUARD-BLIND"); fi; }
+check_G1() { run; [[ "$guard_saw_control" == 1 ]] || fails+=("GUARD-BLIND"); }
 case_ U2; setup_U2() { new_case U2 "$1"; rules "${H_RULES[@]}"; "$RM_BIN" -f "$S/.env"; }
 for t in aws kubectl jq; do
   case_ "U3$t"; eval "setup_U3$t() { new_case U3$t \"\$1\"; rules \"\${H_RULES[@]}\"; drop=($t); }"
-  eval "check_U3$t() { run; want_rc 1; gone genpolicy-home docker-config; in_err '$t is required'; no_remote; same_as_baseline; }"
+  eval "check_U3$t() { run; want_rc 1; gone genpolicy-home docker-config; in_err '$t is required'; no_remote; same_tree; same_as_baseline; }"
 done
 case_ U4; setup_U4() { new_case U4 "$1"; rules "${H_RULES[@]}"; sed -i 's/^CLUSTER_NAME=.*/CLUSTER_NAME=/' "$S/.env"; }
-check_U4() { run; [[ "$rc" != 0 ]] || fails+=("EXIT:0"); gone genpolicy-home docker-config; no_remote; same_as_baseline; }
+check_U4() { run; [[ "$rc" != 0 ]] || fails+=("EXIT:0"); gone genpolicy-home docker-config; no_remote; same_tree; same_as_baseline; }
 
 # Local removal failures: the other name is still tried, nothing remote runs, exit 1.
 case_ F1; setup_F1() { new_case F1 "$1"; rules "${H_RULES[@]}"; touch "$CTL/rm-fail-genpolicy-home"; }
-check_F1() { run; want_rc 1; there genpolicy-home; gone docker-config; no_remote; rm_exact; local_fail_footer
+check_F1() { run; want_rc 1; there genpolicy-home; gone docker-config; no_remote; rm_exact; same_tree; local_fail_footer
   in_err "INCOMPLETE: could not remove $(cd -P "$T" && pwd -P)/genpolicy-home (a registry credential)"; }
 case_ F2; setup_F2() { new_case F2 "$1"; rules "${H_RULES[@]}"; touch "$CTL/rm-fail-docker-config"; }
-check_F2() { run; want_rc 1; gone genpolicy-home; there docker-config; no_remote; rm_exact; local_fail_footer
+check_F2() { run; want_rc 1; gone genpolicy-home; there docker-config; no_remote; rm_exact; same_tree; local_fail_footer
   in_err "INCOMPLETE: could not remove $(cd -P "$T" && pwd -P)/docker-config (a registry credential)"; }
-case_ F4; setup_F4() { new_case F4 "$1"; rules "${H_RULES[@]}"; touch "$CTL/rm-fail-genpolicy-home" "$CTL/rm-fail-docker-config"; }
-check_F4() { run; want_rc 1; there genpolicy-home docker-config; no_remote; rm_exact; local_fail_footer
+case_ F4; setup_F4() { new_case F4 "$1"; rules "${H_RULES[@]}"; touch "$CTL/rm-fail-genpolicy-home" "$CTL/rm-fail-docker-config"; expect_removal=0; }
+check_F4() { run; want_rc 1; there genpolicy-home docker-config; no_remote; rm_exact; same_tree; local_fail_footer
   in_err "/genpolicy-home (a registry credential)"; in_err "/docker-config (a registry credential)"; }
 case_ F5; setup_F5() { new_case F5 "$1"; rules "${H_RULES[@]}"; chmod 500 "$T/genpolicy-home/.docker"; }
-check_F5() { run; chmod 700 "$T/genpolicy-home/.docker" 2>/dev/null; want_rc 1; there genpolicy-home; gone docker-config; no_remote; local_fail_footer; }
+check_F5() { run; chmod 700 "$T/genpolicy-home/.docker" 2>/dev/null; want_rc 1; there genpolicy-home; gone docker-config; no_remote; same_tree; local_fail_footer; }
 case_ F6; setup_F6() { new_case F6 "$1"; rules "${H_RULES[@]}"; touch "$CTL/rm-lie-docker-config"; }
-check_F6() { run; want_rc 1; gone genpolicy-home; there docker-config; no_remote; local_fail_footer
+check_F6() { run; want_rc 1; gone genpolicy-home; there docker-config; no_remote; same_tree; local_fail_footer
   in_err "/docker-config (a registry credential)"; }
 # rm reports a failure although the name is gone: the status alone must still count.
 case_ F7; setup_F7() { new_case F7 "$1"; rules "${H_RULES[@]}"; touch "$CTL/rm-failafter-genpolicy-home"; }
-check_F7() { run; want_rc 1; gone genpolicy-home docker-config; no_remote; rm_exact; local_fail_footer
+check_F7() { run; want_rc 1; gone genpolicy-home docker-config; no_remote; rm_exact; same_tree; local_fail_footer
   in_err "/genpolicy-home (a registry credential)"; }
-case_ X1; setup_X1() { new_case X1 "$1"; rules "${H_RULES[@]}"; echo 3 > "$CTL/dirname.fail"; }
-check_X1() { run; want_rc 1; there genpolicy-home docker-config; no_remote; no_rm; local_fail_footer
+case_ X1; setup_X1() { new_case X1 "$1"; rules "${H_RULES[@]}"; echo 3 > "$CTL/dirname.fail"; expect_removal=0; }
+check_X1() { run; want_rc 1; there genpolicy-home docker-config; no_remote; no_rm; same_tree; local_fail_footer
   in_err "could not find this checkout's own directory"; }
-case_ X1U; setup_X1U() { new_case X1U "$1"; rules "${H_RULES[@]}"; echo 3 > "$CTL/dirname.fail"; args=(--bogus); }
-check_X1U() { run; want_rc 2; there genpolicy-home docker-config; no_remote; no_rm; in_err "could not find this checkout's own directory"; }
+case_ X1U; setup_X1U() { new_case X1U "$1"; rules "${H_RULES[@]}"; echo 3 > "$CTL/dirname.fail"; args=(--bogus); expect_removal=0; }
+check_X1U() { run; want_rc 2; there genpolicy-home docker-config; no_remote; no_rm; same_tree; in_err "could not find this checkout's own directory"; }
 
 # Parents that are not plain directories: nothing removed, nothing remote, exit 1.
 parent_case() {  # parent_case <name> <path under R> <kind>
   case_ "$1"
-  eval "setup_$1() { new_case $1 \"\$1\"; rules \"\${H_RULES[@]}\"; make_parent '$2' '$3'; }"
+  eval "setup_$1() { new_case $1 \"\$1\"; rules \"\${H_RULES[@]}\"; make_parent '$2' '$3'; expect_removal=0; }"
   eval "check_$1() { run; chmod -R u+rwx \"\$R/tmp\" 2>/dev/null; want_rc 1; no_remote; no_rm; same_tree; local_fail_footer; }"
 }
 make_parent() {
@@ -499,7 +520,7 @@ case_ R4; setup_R4() { new_case R4 "$1"; rules "${H_RULES[@]}"; mv "$R" "$C/re p
   R="$C/re po" S="$C/re po/$rel" T="$C/re po/tmp/signer-policy" cwd="$C/re po/$rel"
   creds "$C/re/tmp/signer-policy" both; mkdir -p "$C/po"; creds "$C/po/tmp/signer-policy" both; }
 check_R4() { run; want_rc 0; gone genpolicy-home docker-config; same_tree; rm_exact; }
-case_ R5; setup_R5() { new_case R5 "$1"; rules "${H_RULES[@]}"; mkdir -p "$C/elsewhere"
+case_ R5; setup_R5() { new_case R5 "$1"; rules "${H_RULES[@]}"; expect_removal=0; mkdir -p "$C/elsewhere"
   ln -s "$S/scripts/clean.sh" "$C/elsewhere/clean.sh"; cwd="$C/elsewhere"; invoke=./clean.sh; }
 check_R5() { run; [[ "$rc" != 0 ]] || fails+=("EXIT:0"); there genpolicy-home docker-config; same_tree; no_remote; no_rm; }
 
@@ -603,6 +624,11 @@ page_setup() {
         state "$O/tmp/signer-policy/state.env" RELEASE_TWO=1.1.0; cwd="$O/a/b/c" ;;
     esac
   done
+  # The fixture's tmp/ loses its signer-policy entry only when the block succeeds; in every
+  # failure case its own size and mtime are compared like any other directory's.
+  for w in "$@"; do
+    case "$w" in nostate|statelink|norelease|rmfail|lsfail|tmplink|splink|nodir|wrongcwd) fp_norm=./.none ;; esac
+  done
 }
 prun() {
   local block shbin
@@ -651,7 +677,7 @@ pcase rmfail "rmfail"; page_check_rmfail() { block_failed; dir_kept; }
 pcase lsfail "lsfail"; page_check_lsfail() { block_failed; dir_kept; }
 pcase tmplink "tmplink"; page_check_tmplink() { block_failed; same_tree; no_docker; [[ ! -s "$CTL/rm.log" ]] || fails+=("RM-CALLED"); }
 pcase splink "splink"; page_check_splink() { block_failed; same_tree; no_docker; [[ ! -s "$CTL/rm.log" ]] || fails+=("RM-CALLED"); }
-pcase nodir "nodir"; page_check_nodir() { block_failed; no_docker; [[ ! -s "$CTL/rm.log" ]] || fails+=("RM-CALLED"); }
+pcase nodir "nodir"; page_check_nodir() { block_failed; same_tree; no_docker; [[ ! -s "$CTL/rm.log" ]] || fails+=("RM-CALLED"); }
 pcase wrongcwd "wrongcwd"; page_check_wrongcwd() { block_failed; dir_kept; no_docker; [[ -f "$O/tmp/signer-policy/state.env" ]] || fails+=("WRONG-ROOT-CHANGED"); }
 # Every other fenced block on the page is unchanged, and the block is one subshell.
 case_ P_static; setup_P_static() { new_case P_static "$1"; }
@@ -684,7 +710,7 @@ for c in "${CASES[@]}"; do
   "check_$c"
   report
 done
-[[ "$(grep -vF "$guard_control" <<<"$g0")" == "$(guard | grep -vF "$guard_control")" ]] ||
+[[ "$(drop_control <<<"$g0")" == "$(guard | drop_control)" ]] ||
   { echo "ERROR the real checkout changed during the run" >&2; n_err=$((n_err + 1)); }
 (( ${#notchecked[@]} == 0 )) || echo "NOT CHECKED (no --baseline): ${notchecked[*]}"
 echo "passed $n_pass, failed $n_fail, could not check $n_err"
