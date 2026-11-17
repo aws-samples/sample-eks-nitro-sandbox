@@ -266,10 +266,11 @@ def test_main_reads_both_credentials_from_files_and_serves(launcher_pod, caplog,
 
 @pytest.mark.parametrize("name", ["token", "ca.crt"])
 @pytest.mark.parametrize("state", ["missing", "empty", "whitespace", "directory"])
-def test_main_refuses_to_start_without_a_service_account_token(launcher_pod, name, state):
+def test_main_refuses_to_start_without_a_service_account_token(launcher_pod, caplog, capsys, name, state):
     # automountServiceAccountToken is false; without the hand-mounted volume the
     # launcher must stop at startup, naming the file, before it builds a client
     # or serves the intake. A file of only whitespace counts as empty.
+    caplog.set_level(logging.DEBUG)
     _, service_account = launcher_pod
     path = service_account / name
     path.unlink()
@@ -282,9 +283,12 @@ def test_main_refuses_to_start_without_a_service_account_token(launcher_pod, nam
     message = re.escape(f"{path} is missing, empty or only whitespace") + ".*refusing to start"
     with pytest.raises(RuntimeError, match=message) as exc:
         launch.main()
-    assert FAKE_SA_JWT not in str(exc.value)
     assert _RecordingDispatcher.built_with == []
     assert _FakeServer.created == []
+    # The token file's content, present whenever the CA file is the one refused.
+    printed = capsys.readouterr()
+    for text in (str(exc.value), caplog.text, printed.out, printed.err):
+        assert text.count(FAKE_SA_JWT) == 0
 
 
 @pytest.mark.parametrize("padding", [("", "\n"), ("  ", "  ")])
