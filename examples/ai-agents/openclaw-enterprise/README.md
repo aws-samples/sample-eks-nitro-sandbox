@@ -8,6 +8,8 @@ statement.
 
 See [Scoped validation procedure](VALIDATION.md) for the required checks,
 expected denials, and evidence placeholders.
+See [Tenant isolation boundary](TENANT-ISOLATION.md) for the compute, storage,
+network, credential, gateway, and database controls—and their limits.
 
 ## Outside the planned validation scope
 
@@ -214,4 +216,6 @@ those settings before publication.
 | [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json) | Pod Identity trust policy for the AgentGateway ServiceAccount. |
 | [`iam/bedrock-invoke.json`](iam/bedrock-invoke.json) | Restricted Amazon Bedrock invoke policy template. |
 | [`tests/test_adapter_contract.py`](tests/test_adapter_contract.py) | Static deployment and integration contracts; neighbouring files cover the build, gateway, and tenant configuration. |
+| [`tests/test_tenant_isolation_contract.py`](tests/test_tenant_isolation_contract.py) | Static contracts for compute, storage, network, credential, gateway, and documented database boundaries. |
+| [`TENANT-ISOLATION.md`](TENANT-ISOLATION.md) | Concise tenant isolation model, residual risks, and publication claim limits. |
 | [`VALIDATION.md`](VALIDATION.md) | Scoped validation procedure, expected results, and evidence placeholders. |
