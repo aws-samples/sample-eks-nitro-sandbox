@@ -11,6 +11,10 @@ Two OpenAI credentials, kept apart (see guard.py):
     launcher's authenticated Kubernetes API connection, never over the pod
     network, and a warm pod never holds it.
 
+The environment key is the launcher's only OpenAI credential. The launcher
+also holds the intake's bearer token (LAUNCHER_AUTH_TOKEN below) and the
+ServiceAccount token deploy/launcher.yaml mounts for the Kubernetes API.
+
 How the key reaches the sandbox: the launcher calls
 ``SandboxClient.create_sandbox(..., env={...})``. agent-sandbox writes those
 variables into ``SandboxClaim.spec.env``, and the controller injects them into
@@ -26,8 +30,8 @@ import os
 
 # --- OpenAI credentials ------------------------------------------------------
 # The application key: creates agents and sessions and reads every session.
-# scripts/ use it on the operator's machine; guard.py refuses a pod with it set
-# in its env or an entry named for it in LAUNCHER_CREDENTIALS_DIR (by name).
+# scripts/ use it on the operator's machine; guard.py refuses a pod, in either
+# role, with a variable of this name in its environment.
 ENV_API_KEY = "OPENAI_API_KEY"
 # The environment key: the executor's only credential, held by the launcher.
 # codex exec-server reads it as CODEX_API_KEY inside the sandbox. The launcher
@@ -65,7 +69,8 @@ ENV_LAUNCHER_AUTH_TOKEN = "LAUNCHER_AUTH_TOKEN"
 # deploy/launcher.yaml mounts the openai-env-key and launcher-auth Secrets here,
 # read-only, one file per key, each named like the variable above
 # (OPENAI_EXECUTOR_API_KEY, LAUNCHER_AUTH_TOKEN). Neither value is in the
-# launcher's environment. The sandbox is unchanged: it still reads
+# launcher's environment, and the launcher opens only those two files. A
+# sandbox has nothing at this path (guard.py refuses one that does): it reads
 # CODEX_API_KEY from the env its SandboxClaim sets (see sandbox.py).
 LAUNCHER_CREDENTIALS_DIR = "/var/run/secrets/openai-managed-agents"
 
@@ -136,16 +141,23 @@ def launcher_credential_path(name: str) -> str:
 def read_launcher_credential(name: str) -> str:
     """Return a launcher credential from its mounted file, or raise naming the file.
 
-    The error names the path, never the value, when the file is missing or empty.
+    ``open`` follows a symlink as usual, so the kubelet's own links are read
+    through. Every failure is a RuntimeError naming the path, and for an
+    unexpected read error only its class: never the value, the bytes read, or
+    the error's own message.
     """
     path = launcher_credential_path(name)
     try:
         with open(path, encoding="utf-8") as handle:
             value = handle.read().strip()
-    except FileNotFoundError:
+    except FileNotFoundError:  # also a link whose target is missing
         raise RuntimeError(f"{path} is required but missing") from None
+    except UnicodeDecodeError:  # its message quotes the offending byte
+        raise RuntimeError(f"{path} is not UTF-8 text") from None
+    except OSError as exc:  # a directory, an unreadable file, a link loop, ...
+        raise RuntimeError(f"could not read {path} ({type(exc).__name__})") from None
     if not value:
-        raise RuntimeError(f"{path} is required but empty")
+        raise RuntimeError(f"{path} is required but empty or only whitespace")
     return value
 
 

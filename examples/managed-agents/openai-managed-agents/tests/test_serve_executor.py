@@ -17,6 +17,7 @@ Run with: python -m pytest
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import signal
@@ -34,6 +35,11 @@ from launcher import config, serve
 REMOTE = "https://codex-cloud-environments.chatgpt.com/e/env_1"
 DISPATCH = {"session_id": "sesn_abc123", "environment_id": "env_abc123", "remote_url": REMOTE}
 
+# The credential and claim names a child's environment is checked for, by name.
+FORBIDDEN = (config.ENV_API_KEY, config.ENV_EXECUTOR_API_KEY, config.ENV_LAUNCHER_AUTH_TOKEN)
+CLAIM = (config.ENV_CODEX_API_KEY, config.ENV_SESSION_ID, config.ENV_ENVIRONMENT_ID, config.ENV_REMOTE_URL)
+WATCHED = FORBIDDEN + CLAIM
+
 FAKE_CODEX = r'''#!@PYTHON@
 import json, os, signal, socket, sys, time
 from pathlib import Path
@@ -41,8 +47,9 @@ from pathlib import Path
 out = Path(os.environ["FAKE_CODEX_DIR"])
 args = sys.argv[1:]
 role = "forwarder" if args[:2] == ["exec-server", "forward"] else "executor"
-rec = {"argv": args, "pid": os.getpid(), "has_key": bool(os.environ.get("CODEX_API_KEY")),
-       "started": time.time()}
+rec = {"argv": args, "pid": os.getpid(), "started": time.time(),
+       # Names only, never values: which credential and claim names it inherited.
+       "names": sorted(n for n in os.environ if n in @WATCHED@)}
 
 def save():
     tmp = out / f"{role}.json.tmp"
@@ -129,9 +136,11 @@ def fake(tmp_path, monkeypatch):
     rec = tmp_path / "rec"
     rec.mkdir()
     codex = tmp_path / "codex"
-    codex.write_text(FAKE_CODEX.replace("@PYTHON@", sys.executable))
+    codex.write_text(FAKE_CODEX.replace("@PYTHON@", sys.executable).replace("@WATCHED@", repr(WATCHED)))
     codex.chmod(0o755)
     port = _free_port()
+    for name in WATCHED:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(config.ENV_CODEX_PATH, str(codex))
     monkeypatch.setenv("FAKE_CODEX_DIR", str(rec))
     monkeypatch.setenv(config.ENV_CODEX_API_KEY, "env-key-value-not-read-here")
@@ -207,7 +216,7 @@ def test_spawns_the_executor_then_the_forwarder_with_the_exact_arguments(fake):
     assert forwarder["started"] >= executor["listening_at"]
     assert forwarder["executor_listening_at_start"] is True
     # Both inherit CODEX_API_KEY from serve's own environment.
-    assert executor["has_key"] is True and forwarder["has_key"] is True
+    assert executor["names"] == forwarder["names"] == [config.ENV_CODEX_API_KEY]
     # Ready is reported once, when the executor was already listening.
     assert fake.ready == [{"executor_listening": True}]
 
@@ -330,3 +339,116 @@ def test_executor_commands_are_built_from_the_dispatch():
         "/x/codex", "exec-server", "forward", "--remote", REMOTE,
         "--environment-id", "env_abc123", "--connect", "ws://127.0.0.1:4242",
     ]
+
+
+# --- serve.main with the real guard: what its children hold -------------------
+def test_serve_main_children_hold_the_claim_names_and_no_launcher_credential(fake, monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "setup_logging", lambda: None)
+    monkeypatch.setattr(config, "LAUNCHER_CREDENTIALS_DIR", str(tmp_path / "absent"))
+    monkeypatch.setenv(config.ENV_SESSION_ID, DISPATCH["session_id"])
+    monkeypatch.setenv(config.ENV_ENVIRONMENT_ID, DISPATCH["environment_id"])
+    monkeypatch.setenv(config.ENV_REMOTE_URL, REMOTE)
+    monkeypatch.setenv(config.ENV_DISPATCH_PORT, str(_free_port()))
+    monkeypatch.setenv("FAKE_FORWARDER_EXIT_AFTER", "0.5")
+    with pytest.raises(SystemExit):
+        serve.main()
+    executor, forwarder = _record(fake, "executor"), _record(fake, "forwarder")
+    assert executor["names"] == forwarder["names"] == sorted(CLAIM)
+
+
+# --- serve.main: a refusal comes before any write, child or listener ----------
+@pytest.fixture
+def effects(monkeypatch, tmp_path):
+    """serve.main's side effects, recorded in order instead of made."""
+    made = []
+    monkeypatch.setattr(config, "setup_logging", lambda: None)
+    monkeypatch.setattr(config, "LAUNCHER_CREDENTIALS_DIR", str(tmp_path / "credentials"))
+    monkeypatch.setattr(config, "WORKDIR", str(tmp_path / "workspace"))
+    for name in WATCHED:
+        monkeypatch.delenv(name, raising=False)
+
+    def refuse(what):
+        def call(*_a, **_k):
+            made.append(what)
+            raise AssertionError(f"serve.main reached {what}")
+        return call
+
+    monkeypatch.setattr(serve.os, "makedirs", lambda *_a, **_k: made.append("makedirs"))
+    monkeypatch.setattr(serve.subprocess, "Popen", refuse("child"))
+    monkeypatch.setattr(serve, "_readiness_listener", refuse("readiness"))
+    monkeypatch.setattr(serve, "_hold_readiness_port", lambda _port: made.append("warm-readiness"))
+    monkeypatch.setattr(serve, "_run_executor", lambda _d, _r: made.append("executor") or 0)
+    return made
+
+
+_CLAIM_VALUES = {
+    config.ENV_CODEX_API_KEY: "env-key-value",
+    config.ENV_SESSION_ID: DISPATCH["session_id"],
+    config.ENV_ENVIRONMENT_ID: DISPATCH["environment_id"],
+    config.ENV_REMOTE_URL: REMOTE,
+}
+
+
+def _serve_main_refusal() -> str:
+    with pytest.raises(RuntimeError) as exc:
+        serve.main()
+    return str(exc.value)
+
+
+@pytest.mark.parametrize("states", list(itertools.product(("absent", "empty", "blank", "valid"), repeat=4)),
+                         ids="-".join)
+def test_serve_main_starts_only_a_warm_or_a_whole_claim(effects, monkeypatch, states):
+    for (name, value), state in zip(_CLAIM_VALUES.items(), states):
+        if state != "absent":
+            monkeypatch.setenv(name, {"empty": "", "blank": " \t", "valid": value}[state])
+    if set(states) in ({"absent"}, {"valid"}):
+        with pytest.raises(SystemExit) as exc:
+            serve.main()
+        assert exc.value.code == 0
+        # A workspace is prepared only for a claim, after its session is read.
+        assert effects == (["warm-readiness"] if states[0] == "absent" else ["makedirs", "executor"])
+    else:
+        assert _serve_main_refusal().startswith("this sandbox was claimed but its claim env is incomplete")
+        assert effects == []
+
+
+@pytest.mark.parametrize("claimed", [False, True], ids=["warm", "claimed"])
+@pytest.mark.parametrize("value", ["", " ", "a-value"], ids=["empty", "blank", "set"])
+@pytest.mark.parametrize("name", FORBIDDEN)
+def test_serve_main_refuses_a_forbidden_name_before_any_side_effect(effects, monkeypatch, name, value, claimed):
+    if claimed:
+        for claim_name, claim_value in _CLAIM_VALUES.items():
+            monkeypatch.setenv(claim_name, claim_value)
+    monkeypatch.setenv(name, value)
+    assert _serve_main_refusal().startswith(f"{name} set in this serve pod's environment")
+    assert effects == []
+
+
+@pytest.mark.parametrize("claimed", [False, True], ids=["warm", "claimed"])
+@pytest.mark.parametrize("shape", ["empty-directory", "file", "dangling-link"])
+def test_serve_main_refuses_a_credentials_path_before_any_side_effect(effects, monkeypatch, tmp_path, shape, claimed):
+    if claimed:
+        for claim_name, claim_value in _CLAIM_VALUES.items():
+            monkeypatch.setenv(claim_name, claim_value)
+    path = tmp_path / "credentials"
+    if shape == "empty-directory":
+        path.mkdir()
+    elif shape == "file":
+        path.write_text("x")
+    else:
+        path.symlink_to(tmp_path / "missing")
+    assert _serve_main_refusal().startswith(f"{path} exists on this sandbox")
+    assert effects == []
+
+
+@pytest.mark.parametrize("name, bad, message", [
+    (config.ENV_SESSION_ID, "bad id", "session id or environment id is malformed"),
+    (config.ENV_ENVIRONMENT_ID, "env/../x", "session id or environment id is malformed"),
+    (config.ENV_REMOTE_URL, "http://codex-cloud-environments.chatgpt.com/e/env_1", "remote URL is malformed or not https"),
+])
+def test_serve_main_refuses_a_malformed_claim_before_any_side_effect(effects, monkeypatch, name, bad, message):
+    for claim_name, claim_value in _CLAIM_VALUES.items():
+        monkeypatch.setenv(claim_name, claim_value)
+    monkeypatch.setenv(name, bad)
+    assert message in _serve_main_refusal()
+    assert effects == []

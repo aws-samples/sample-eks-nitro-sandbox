@@ -33,7 +33,7 @@ spec:
       # kube-api-access volume below, at the path the automatic mount would use,
       # with a lifetime this file states.
       automountServiceAccountToken: false
-      enableServiceLinks: false   # keeps injected <SERVICE>_* names out of the guard's way
+      enableServiceLinks: false   # keeps injected <SERVICE>_* names out of the pod's environment
       securityContext:
         runAsNonRoot: true
         # The image's own user (Dockerfile, useradd --uid 10001). The sandbox
@@ -91,8 +91,9 @@ spec:
         # One file per credential, named after the key:
         #   OPENAI_EXECUTOR_API_KEY  the environment key: the launcher's only
         #     OpenAI credential, held here and given to each claimed sandbox
-        #     through the claim env. Never the application key: guard.py refuses
-        #     a pod with it set in its env or an entry named for it here (by name).
+        #     through the claim env. Never the application key: only these two
+        #     items are projected, and guard.py refuses a launcher with
+        #     OPENAI_API_KEY in its environment.
         #   LAUNCHER_AUTH_TOKEN  the intake's bearer token. The launcher refuses
         #     to start without it (fail closed) and rejects any claim or release
         #     POST whose token does not match. submit.py/cleanup.py send it from

@@ -12,10 +12,12 @@ script does exactly that, per session, in this order:
      so the recheck in step 1 is done here, where the application key lives, and
      the claim delete follows it immediately. (--keep-claim skips this, e.g. to
      let a follow-up turn keep using the pod.)
-  3. Delete the API session itself.
+  3. Delete the API session itself, only once its claim delete succeeded.
 
 Deleting the claim removes the pod; deleting the session does not, and deleting
-the pod does not delete the session. That is why both steps exist.
+the pod does not delete the session. That is why both steps exist. A claim
+delete that fails leaves that session in place, counts as a failure, and the
+script goes on to the next session and exits non-zero.
 
   set -a; . ./.env; set +a
   python scripts/cleanup.py sesn_abc sesn_def          # recheck, delete claim, delete session
@@ -40,8 +42,12 @@ DEFAULT_LAUNCHER_URL = "http://127.0.0.1:8080"
 CLAIM_DELETE_TIMEOUT = 30  # a claim delete is a quick Kubernetes API call, unlike /sessions dispatch
 
 
-def _delete_claim(launcher_url: str, token: str, session_id: str) -> None:
-    """Ask the launcher to delete this session's claim (called right after the recheck)."""
+def _delete_claim(launcher_url: str, token: str, session_id: str) -> bool:
+    """Ask the launcher to delete this session's claim; True only if it did.
+
+    Called right after the recheck. A 401 stops the whole clean up, because no
+    later request can succeed with the same token.
+    """
     # urlopen also opens file:// and other schemes; the launcher is an HTTP intake.
     if urllib.parse.urlsplit(launcher_url).scheme not in ("http", "https"):
         sys.exit(f"--launcher-url must start with http:// or https://: {launcher_url}")
@@ -54,13 +60,15 @@ def _delete_claim(launcher_url: str, token: str, session_id: str) -> None:
         with urllib.request.urlopen(req, timeout=CLAIM_DELETE_TIMEOUT) as resp:  # noqa: S310 - http(s) only, checked above
             info = json.loads(resp.read() or b"{}")
         print(f"{session_id}: deleted {info.get('claims_deleted', 0)} claim(s); the pod stops with the claim")
+        return True
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             sys.exit("launcher rejected the request (401): LAUNCHER_AUTH_TOKEN does not match the launcher-auth Secret.")
         print(f"{session_id}: launcher claim-delete returned {exc.code}; delete the SandboxClaim with kubectl")
     except urllib.error.URLError as exc:
-        print(f"{session_id}: could not reach the launcher ({exc}); is the port-forward running? "
+        print(f"{session_id}: could not reach the launcher ({type(exc).__name__}); is the port-forward running? "
               "Delete the SandboxClaim with kubectl, or re-run with the port-forward up.")
+    return False
 
 
 def main() -> None:
@@ -86,9 +94,13 @@ def main() -> None:
             session = client.beta.agents.sessions.retrieve(session_id)
             print(f"{session_id}: status={session.status} (rechecked before releasing the claim)")
 
-            # Step 2: delete the claim right after the recheck (unless kept).
-            if not args.keep_claim:
-                _delete_claim(args.launcher_url, token, session_id)
+            # Step 2: delete the claim right after the recheck (unless kept). If
+            # it fails, keep the session: deleting it would leave a claimed pod,
+            # which holds the environment key, with nothing to clean it up by.
+            if not args.keep_claim and not _delete_claim(args.launcher_url, token, session_id):
+                failed += 1
+                print(f"{session_id}: session not deleted, because its claim was not")
+                continue
 
             # Step 3: delete the API session itself.
             client.beta.agents.sessions.delete(session_id)

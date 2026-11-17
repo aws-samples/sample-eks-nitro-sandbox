@@ -12,10 +12,13 @@ Run with: python -m pytest
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import json
 import logging
+import os
 import re
+import shutil
 import threading
 import urllib.error
 import urllib.parse
@@ -37,16 +40,19 @@ class _FakeDispatcher:
         self.warmpool = "openai-sandbox-executor"
         self.dispatched_with = None
         self.deleted_session = None
-        self.raise_on_dispatch = False
+        self.raise_on_dispatch = None
+        self.raise_on_delete = None
 
     def dispatch(self, *, session_id, environment_id, remote_url):
         self.dispatched_with = (session_id, environment_id, remote_url)
         if self.raise_on_dispatch:
-            raise RuntimeError(SECRET_KEY)  # even an error must not leak a secret to the client
+            raise self.raise_on_dispatch
         return {"sandbox": "openai-sandbox-executor-xyz", "reused": False}
 
     def delete_claim_for_session(self, session_id):
         self.deleted_session = session_id
+        if self.raise_on_delete:
+            raise self.raise_on_delete
         return 1
 
 
@@ -67,7 +73,8 @@ def server():
         httpd.server_close()
 
 
-def _req(base, path, payload, token=None, method="POST", timeout=10):
+def _req(base, path, payload, token=None, method="POST", timeout=10, raw=False):
+    """POST (or GET) to the test intake; return the status and the parsed body, or its bytes if ``raw``."""
     headers = {"Content-Type": "application/json"}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
@@ -78,9 +85,10 @@ def _req(base, path, payload, token=None, method="POST", timeout=10):
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - http only, checked above
-            return resp.status, json.loads(resp.read() or b"{}")
+            status, body = resp.status, resp.read()
     except urllib.error.HTTPError as exc:
-        return exc.code, json.loads(exc.read() or b"{}")
+        status, body = exc.code, exc.read()
+    return (status, body) if raw else (status, json.loads(body or b"{}"))
 
 
 _GOOD = {"session_id": "sesn_a", "environment_id": "env_a", "remote_url": REMOTE}
@@ -300,22 +308,197 @@ def test_main_refuses_to_start_without_a_credential_file(launcher_pod, name):
 
 
 def test_main_never_reads_its_credentials_from_the_environment(launcher_pod, monkeypatch):
+    # The guard would refuse the variable first; with it out of the way, the read
+    # still finds the file missing and does not fall back to the environment.
     credentials, _ = launcher_pod
     (credentials / config.ENV_LAUNCHER_AUTH_TOKEN).unlink()
     monkeypatch.setenv(config.ENV_LAUNCHER_AUTH_TOKEN, INTAKE_FILE_VALUE)
-    with pytest.raises(RuntimeError, match=config.ENV_LAUNCHER_AUTH_TOKEN):
+    monkeypatch.setattr(launch.guard, "assert_safe", lambda role: None)
+    path = credentials / config.ENV_LAUNCHER_AUTH_TOKEN
+    with pytest.raises(RuntimeError) as exc:
+        launch.main()
+    assert str(exc.value) == f"{path} is required but missing"
+    assert _FakeServer.created == []
+
+
+@pytest.fixture
+def reads(monkeypatch):
+    """The names launch.main asks config to read, in order."""
+    names = []
+    real = config.read_launcher_credential
+
+    def record(name):
+        names.append(name)
+        return real(name)
+
+    monkeypatch.setattr(config, "read_launcher_credential", record)
+    return names
+
+
+def test_main_reads_the_environment_key_file_then_the_intake_token_file(launcher_pod, reads):
+    launch.main()
+    assert reads == [config.ENV_EXECUTOR_API_KEY, config.ENV_LAUNCHER_AUTH_TOKEN]
+    assert len(_FakeServer.created) == 1
+
+
+@pytest.mark.parametrize("value", ["", " \t\n", "a-value"], ids=["empty", "blank", "set"])
+@pytest.mark.parametrize("name", [config.ENV_API_KEY, config.ENV_EXECUTOR_API_KEY,
+                                  config.ENV_LAUNCHER_AUTH_TOKEN, config.ENV_CODEX_API_KEY])
+def test_main_runs_the_guard_before_reading_any_file(launcher_pod, reads, monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError) as exc:
+        launch.main()
+    assert str(exc.value).startswith(f"{name} set in this launch pod's environment; refusing to start.")
+    assert reads == []
+    assert _RecordingDispatcher.built_with == []
+    assert _FakeServer.created == []
+
+
+def test_main_stops_at_the_environment_key_before_reading_the_token(launcher_pod, reads):
+    credentials, _ = launcher_pod
+    (credentials / config.ENV_EXECUTOR_API_KEY).unlink()
+    with pytest.raises(RuntimeError, match="is required but missing"):
+        launch.main()
+    assert reads == [config.ENV_EXECUTOR_API_KEY]
+    assert _FakeServer.created == []
+
+
+def test_main_binds_nothing_when_the_dispatcher_cannot_be_built(launcher_pod, monkeypatch):
+    def no_client(_executor_key):
+        raise RuntimeError("no in-cluster configuration")
+
+    monkeypatch.setattr(launch.sandbox, "Dispatcher", no_client)
+    with pytest.raises(RuntimeError, match="no in-cluster configuration"):
         launch.main()
     assert _FakeServer.created == []
 
 
-# --- a dispatch error must not leak a secret to the client -------------------
-def test_dispatch_error_response_has_no_secret(server):
+# --- the two fixed credential files: every way a read can fail ----------------
+FILE_MARKER = "synthetic-file-text-must-not-appear"
+
+
+def _make_credential(state, credentials, name, monkeypatch):
+    """Put the credential file ``name`` in ``state``; return the path read and the expected error."""
+    path = credentials / name
+    if state == "parent-not-directory":
+        # The first read, the environment key's, is the one that fails.
+        shutil.rmtree(credentials)
+        credentials.write_text(FILE_MARKER)
+        path = credentials / config.ENV_EXECUTOR_API_KEY
+        return path, f"could not read {path} (NotADirectoryError)"
+    path.unlink()
+    if state == "missing":
+        return path, f"{path} is required but missing"
+    if state == "dangling-link":
+        path.symlink_to(f"elsewhere/{name}")
+        return path, f"{path} is required but missing"
+    if state in ("empty", "whitespace"):
+        path.write_text("" if state == "empty" else " \n\t \n")
+        return path, f"{path} is required but empty or only whitespace"
+    if state == "directory":
+        path.mkdir()
+        return path, f"could not read {path} (IsADirectoryError)"
+    if state == "link-loop":
+        path.symlink_to(name)
+        return path, f"could not read {path} (OSError)"
+    if state == "unreadable":
+        path.write_text(FILE_MARKER)
+        path.chmod(0)
+        return path, f"could not read {path} (PermissionError)"
+    if state == "not-utf8":
+        path.write_bytes(b"\xff\xfe" + FILE_MARKER.encode())
+        return path, f"{path} is not UTF-8 text"
+    assert state == "other-error"
+    path.write_text(FILE_MARKER)
+    real_open = open
+
+    def failing_open(file, *args, **kwargs):
+        if os.fspath(file) == str(path):
+            raise OSError(errno.EIO, FILE_MARKER, str(path))
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(config, "open", failing_open, raising=False)
+    return path, f"could not read {path} (OSError)"
+
+
+_FILE_STATES = ["missing", "dangling-link", "empty", "whitespace", "directory", "link-loop",
+                "unreadable", "not-utf8", "other-error", "parent-not-directory"]
+
+
+@pytest.mark.parametrize("state", _FILE_STATES)
+@pytest.mark.parametrize("name", [config.ENV_EXECUTOR_API_KEY, config.ENV_LAUNCHER_AUTH_TOKEN])
+def test_main_refuses_a_credential_file_it_cannot_use(launcher_pod, monkeypatch, caplog, capsys,
+                                                     name, state):
+    if state == "unreadable" and os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    caplog.set_level(logging.DEBUG)
+    credentials, _ = launcher_pod
+    _, expected = _make_credential(state, credentials, name, monkeypatch)
+    with pytest.raises(RuntimeError) as exc:
+        launch.main()
+    # The fixed message, with no chained error to carry the file's text.
+    assert str(exc.value) == expected
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None or exc.value.__suppress_context__
+    assert _RecordingDispatcher.built_with == []
+    assert _FakeServer.created == []
+    printed = capsys.readouterr()
+    for text in (str(exc.value), caplog.text, printed.out, printed.err):
+        assert text.count(FILE_MARKER) == 0
+
+
+@pytest.mark.parametrize("name", [config.ENV_EXECUTOR_API_KEY, config.ENV_LAUNCHER_AUTH_TOKEN])
+def test_main_follows_an_ordinary_relative_link_to_a_credential_file(launcher_pod, name):
+    credentials, _ = launcher_pod
+    value = EXECUTOR_FILE_VALUE if name == config.ENV_EXECUTOR_API_KEY else INTAKE_FILE_VALUE
+    (credentials / "target").mkdir()
+    (credentials / "target" / name).write_text(value)
+    (credentials / name).unlink()
+    (credentials / name).symlink_to(f"target/{name}")
+    launch.main()
+    assert _RecordingDispatcher.built_with == [EXECUTOR_FILE_VALUE]
+    assert _FakeServer.created[0].auth_token == INTAKE_FILE_VALUE
+
+
+# --- a failing route logs and returns the error's class, never its text -------
+ROUTE_MARKER = "synthetic-error-text-must-not-appear"
+
+
+def _raw_post(base, path, payload):
+    return _req(base, path, payload, token=TOKEN, raw=True)
+
+
+@pytest.mark.parametrize("route", ["dispatch", "claim-delete"])
+def test_a_failing_route_reveals_only_the_error_class(server, caplog, capsys, route):
     base, d = server
-    d.raise_on_dispatch = True
-    status, body = _req(base, "/sessions", _GOOD, token=TOKEN)
+    caplog.set_level(logging.DEBUG)
+    if route == "dispatch":
+        d.raise_on_dispatch = RuntimeError(ROUTE_MARKER)
+        status, raw = _raw_post(base, "/sessions", _GOOD)
+        operation = "dispatch failed"
+    else:
+        d.raise_on_delete = RuntimeError(ROUTE_MARKER)
+        status, raw = _raw_post(base, "/sessions/claim-delete", {"session_id": "sesn_a"})
+        operation = "claim delete failed"
     assert status == 502
-    assert SECRET_KEY not in json.dumps(body)
-    assert body["detail"] == "RuntimeError"  # the type only, never the message
+    assert json.loads(raw) == {"error": operation, "detail": "RuntimeError"}
+    (record,) = [r for r in caplog.records if r.name == "launcher.launch"]
+    assert record.levelno == logging.ERROR
+    assert record.getMessage() == f"{operation} for session sesn_a (RuntimeError)"
+    assert record.exc_info is None and record.exc_text is None
+    printed = capsys.readouterr()
+    for text in (raw.decode(), caplog.text, printed.out, printed.err):
+        assert text.count(ROUTE_MARKER) == 0
+
+
+def test_a_successful_dispatch_logs_no_bearer_token(server, caplog, capsys):
+    base, _ = server
+    caplog.set_level(logging.DEBUG)
+    status, raw = _raw_post(base, "/sessions", _GOOD)
+    assert status == 202
+    printed = capsys.readouterr()
+    for text in (raw.decode(), caplog.text, printed.out, printed.err):
+        assert text.count(TOKEN) == 0
 
 
 # --- serve._read_dispatch ----------------------------------------------------
@@ -347,7 +530,17 @@ def test_read_dispatch_rejects_bad_remote(monkeypatch):
         serve._read_dispatch()
 
 
-def test_read_dispatch_requires_key(monkeypatch):
-    _set_claim_env(monkeypatch, **{config.ENV_CODEX_API_KEY: None})
-    with pytest.raises(RuntimeError, match=config.ENV_CODEX_API_KEY):
+@pytest.mark.parametrize("name", [config.ENV_SESSION_ID, config.ENV_ENVIRONMENT_ID])
+@pytest.mark.parametrize("bad", ["has space", "semi;colon", "x" * 129])
+def test_read_dispatch_rejects_a_malformed_id(monkeypatch, name, bad):
+    _set_claim_env(monkeypatch, **{name: bad})
+    with pytest.raises(RuntimeError, match="session id or environment id is malformed"):
         serve._read_dispatch()
+
+
+def test_read_dispatch_leaves_the_key_to_the_guard(monkeypatch):
+    # One owner for the claim state: guard.assert_safe(ROLE_SERVE) refuses a
+    # claimed pod without CODEX_API_KEY (tests/test_guard.py); this only checks
+    # the session's format.
+    _set_claim_env(monkeypatch, **{config.ENV_CODEX_API_KEY: None})
+    assert serve._read_dispatch()["session_id"] == "sesn_a"

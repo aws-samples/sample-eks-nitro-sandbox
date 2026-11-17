@@ -108,7 +108,11 @@ def test_key_delivered_through_claim_env_not_the_network(patch_client):
     client = patch_client()
     result = _dispatcher().dispatch(session_id="sesn_a", environment_id="env_a", remote_url=REMOTE)
     assert result["reused"] is False
-    # The key and the whole session tuple went into the claim env.
+    # The key and the whole session tuple went into the claim env, and nothing
+    # else: not the intake token, not the launcher's own name for the key.
+    assert set(client.created_env) == {
+        config.ENV_CODEX_API_KEY, config.ENV_SESSION_ID, config.ENV_ENVIRONMENT_ID, config.ENV_REMOTE_URL,
+    }
     assert client.created_env[config.ENV_CODEX_API_KEY] == SECRET_KEY
     assert client.created_env[config.ENV_SESSION_ID] == "sesn_a"
     assert client.created_env[config.ENV_ENVIRONMENT_ID] == "env_a"

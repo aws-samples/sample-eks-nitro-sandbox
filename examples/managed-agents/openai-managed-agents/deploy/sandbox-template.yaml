@@ -11,7 +11,9 @@
 # THAT claim's pod with them injected, so the key reaches the pod through the
 # control plane, never over the pod network, and only on a pod created for a
 # specific session. serve.py reads the session from its own env and runs the
-# executor; a warm pod (no such env) refuses to hold any credential.
+# executor; guard.py refuses a warm pod (no such env) that has CODEX_API_KEY,
+# OPENAI_API_KEY, OPENAI_EXECUTOR_API_KEY or LAUNCHER_AUTH_TOKEN in its
+# environment.
 apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
@@ -40,8 +42,8 @@ spec:
       runtimeClassName: isolated-sandbox
       serviceAccountName: openai-sandbox-executor
       automountServiceAccountToken: false
-      # No <SERVICE>_HOST/_PORT variables: a Service whose name starts with
-      # "openai" would otherwise inject OPENAI_* names the guard refuses.
+      # No <SERVICE>_HOST/_PORT variables: the pod's environment holds only what
+      # the image and the claim set.
       enableServiceLinks: false
       # One session, then exit. The pod completes instead of restarting.
       restartPolicy: Never
@@ -74,9 +76,11 @@ spec:
               port: ready
             periodSeconds: 1
           # No env block in the template: a warm pod holds no key and refuses to
-          # start if it finds OPENAI_API_KEY, OPENAI_ORG_ID or OPENAI_ORGANIZATION
-          # in its own environment. A claimed pod gets its session and
-          # CODEX_API_KEY from SandboxClaim.spec.env, set by the launcher.
+          # start if it finds OPENAI_API_KEY, OPENAI_EXECUTOR_API_KEY,
+          # LAUNCHER_AUTH_TOKEN or CODEX_API_KEY in its own environment, or
+          # anything at /var/run/secrets/openai-managed-agents. A claimed pod
+          # gets its session and CODEX_API_KEY from SandboxClaim.spec.env, set
+          # by the launcher.
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

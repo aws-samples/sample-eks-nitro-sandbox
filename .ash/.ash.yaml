@@ -1126,19 +1126,19 @@ global_settings:
     # Intentional all-interface bind, documented at the call site.
     - rule_id: python.lang.security.audit.network.bind.avoid-bind-to-all-interfaces
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
-      reason: 'Kubelet probes the pod IP; no host port or Service publishes it and deny-all ingress governs it (serve.py:88-90)'
+      reason: 'Kubelet probes the pod IP; no host port or Service publishes it and deny-all ingress governs it (serve.py:89-91)'
       expiration: '2027-12-31'
     - rule_id: B104
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
-      line_start: 91
-      line_end: 91
-      reason: 'Kubelet probes the pod IP; no host port or Service publishes it and deny-all ingress governs it (serve.py:88-90)'
+      line_start: 92
+      line_end: 92
+      reason: 'Kubelet probes the pod IP; no host port or Service publishes it and deny-all ingress governs it (serve.py:89-91)'
       expiration: '2027-12-31'
     - rule_id: B104
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/launch.py'
-      line_start: 193
-      line_end: 193
-      reason: 'The ClusterIP Service and kubelet probes reach the pod IP; no host port publishes it, deny-all ingress admits no pod, every claim or release POST needs the bearer token, and GET / answers without it with no data (launch.py:185-192)'
+      line_start: 195
+      line_end: 195
+      reason: 'The ClusterIP Service and kubelet probes reach the pod IP; no host port publishes it, deny-all ingress admits no pod, every claim or release POST needs the bearer token, and GET / answers without it with no data (launch.py:187-194)'
       expiration: '2027-12-31'
     # openai-managed-agents (#150): the bandit findings ASH posted on #197. pytest asserts, the two
     # fixed-argument codex launches, urlopen after an http(s) check, and test fakes and names.
@@ -1160,23 +1160,27 @@ global_settings:
       path: 'examples/managed-agents/openai-managed-agents/tests/test_client.py'
       reason: 'Fixed argument list and no shell: [sys.executable, <driver the test wrote into its own pytest tmp_path>], with the environment built by the test. No value from a reader, a network response or the repository reaches the argument list'
       expiration: '2027-12-31'
+    - rule_id: B108
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_manifests.py'
+      reason: 'The /tmp strings are mountPath values compared against the sandbox template (an emptyDir mounted at /tmp); the test creates no file there'
+      expiration: '2027-12-31'
     - rule_id: B404
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
-      line_start: 45
-      line_end: 45
+      line_start: 46
+      line_end: 46
       reason: 'Subprocess import is required for the two codex launches in this file; the import executes no command.'
       expiration: '2027-12-31'
     - rule_id: B603
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
-      line_start: 225
-      line_end: 225
-      reason: 'Fixed argument list, no shell: codex exec-server --listen on loopback (serve.py:145); the codex path is CODEX_PATH from the Dockerfile (Dockerfile:53). No agent output forms the command.'
+      line_start: 226
+      line_end: 226
+      reason: 'Fixed argument list, no shell: codex exec-server --listen on loopback (serve.py:146); the codex path is CODEX_PATH from the Dockerfile (Dockerfile:53). No agent output forms the command.'
       expiration: '2027-12-31'
     - rule_id: B603
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/serve.py'
-      line_start: 240
-      line_end: 240
-      reason: 'Fixed argument list, no shell: codex exec-server forward (serve.py:148-157) with CODEX_PATH from the Dockerfile (Dockerfile:53) and the claim env ids, checked by ID_RE and URL_RE first (serve.py:66-69). No agent output forms the command.'
+      line_start: 241
+      line_end: 241
+      reason: 'Fixed argument list, no shell: codex exec-server forward (serve.py:149-158) with CODEX_PATH from the Dockerfile (Dockerfile:53) and the claim env ids, checked by ID_RE and URL_RE first (serve.py:71-74). No agent output forms the command.'
       expiration: '2027-12-31'
     - rule_id: B310
       path: 'examples/managed-agents/openai-managed-agents/scripts/submit.py'
@@ -1186,20 +1190,20 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: B310
       path: 'examples/managed-agents/openai-managed-agents/scripts/cleanup.py'
-      line_start: 54
-      line_end: 54
-      reason: 'urlopen only after the http/https scheme check (cleanup.py:46-47); the URL is the launcher intake, the operator port-forward by default'
+      line_start: 60
+      line_end: 60
+      reason: 'urlopen only after the http/https scheme check (cleanup.py:51-52); the URL is the launcher intake, the operator port-forward by default'
       expiration: '2027-12-31'
     - rule_id: B310
       path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
-      line_start: 80
-      line_end: 80
-      reason: 'urlopen only after the http scheme check (test_launcher.py:76-77); the URL is the in-process test intake on 127.0.0.1'
+      line_start: 87
+      line_end: 87
+      reason: 'urlopen only after the http scheme check (test_launcher.py:82-83); the URL is the in-process test intake on 127.0.0.1'
       expiration: '2027-12-31'
     - rule_id: B105
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/config.py'
-      line_start: 62
-      line_end: 62
+      line_start: 66
+      line_end: 66
       reason: 'Name of the environment variable that holds the token, not the token'
       expiration: '2027-12-31'
     - rule_id: B105
@@ -1209,33 +1213,21 @@ global_settings:
       reason: 'Fake sk- key a test uses to prove the key is never logged'
       expiration: '2027-12-31'
     - rule_id: B105
-      path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 995
-      line_end: 995
-      reason: 'Fake sk- key a test uses to prove the key never appears in output'
-      expiration: '2027-12-31'
-    - rule_id: B105
-      path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 1011
-      line_end: 1011
-      reason: 'Fake sk- key a test uses to prove the key never appears in output'
-      expiration: '2027-12-31'
-    - rule_id: B105
       path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
-      line_start: 29
-      line_end: 29
+      line_start: 32
+      line_end: 32
       reason: 'Fake bearer token for the in-process test intake'
       expiration: '2027-12-31'
     - rule_id: B105
       path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
-      line_start: 31
-      line_end: 31
+      line_start: 34
+      line_end: 34
       reason: 'Fake sk- key a test uses to prove the key never leaks to a client'
       expiration: '2027-12-31'
     - rule_id: B106
       path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
-      line_start: 99
-      line_end: 99
+      line_start: 107
+      line_end: 107
       reason: 'Wrong bearer token a test sends to prove the intake rejects it'
       expiration: '2027-12-31'
     # Pinned lines: names of Secrets, keys and env vars, and fake keys in tests; no secret values.
@@ -1259,20 +1251,20 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/config.py'
-      line_start: 31
-      line_end: 31
+      line_start: 35
+      line_end: 35
       reason: 'Name of the environment variable that holds the key, not the key'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/config.py'
-      line_start: 36
-      line_end: 36
+      line_start: 40
+      line_end: 40
       reason: 'Name of the environment variable that holds the key, not the key'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/src/launcher/config.py'
-      line_start: 39
-      line_end: 39
+      line_start: 43
+      line_end: 43
       reason: 'Name of the environment variable that holds the key, not the key'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
@@ -1283,20 +1275,20 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 995
-      line_end: 995
-      reason: 'Fake sk- key a test uses to prove the key never appears in output'
+      line_start: 49
+      line_end: 49
+      reason: 'Fake key value a test sets as a claimed pod CODEX_API_KEY; no real key'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
-      path: 'examples/managed-agents/openai-managed-agents/tests/test_guard.py'
-      line_start: 1011
-      line_end: 1011
-      reason: 'Fake sk- key a test uses to prove the key never appears in output'
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_serve_executor.py'
+      line_start: 385
+      line_end: 385
+      reason: 'Fake key value a test sets as a claimed pod CODEX_API_KEY; no real key'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/managed-agents/openai-managed-agents/tests/test_launcher.py'
-      line_start: 31
-      line_end: 31
+      line_start: 34
+      line_end: 34
       reason: 'Fake sk- key a test uses to prove the key never leaks to a client'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD

@@ -67,7 +67,7 @@ Service. The launcher claims a Nitro sandbox and gives it the session and the en
 key through the SandboxClaim env; the executor's forwarder dials out to OpenAI, and its egress
 policy allows only the two OpenAI hosts.*
 
-![OpenAI's Agents API holds the model, harness and self-hosted session, and returns an environment id and remote URL. On the operator's machine, scripts hold the application key, create the session, and hand its environment id and remote URL to an ordinary openai-launcher pod over a ClusterIP Service port-forward, authenticated with a bearer token. The launcher, holding only the environment key, claims a pod from a SandboxWarmPool of two and sets the session id, environment id, remote URL and environment key in the SandboxClaim env; the controller cold-starts the claimed pod with them injected, so the key reaches the pod through the control plane and never over the pod network, and a warm pod holds no key. The claimed pod is an isolated-sandbox Nitro sandbox running codex exec-server, as an executor on the pod's loopback and a forwarder that dials out, with the key in its env; it runs Bash and apply-patch tool calls in /workspace, a follow-up turn reuses the same pod, and its deny-by-default ApplicationNetworkPolicy denies all ingress and allows egress only to DNS, api.openai.com and codex-cloud-environments.chatgpt.com while refusing the internet, AWS APIs and other pods. The executor's forwarder dials out to OpenAI.](images/openai-managed-agents.png)
+![OpenAI's Agents API holds the model, harness and self-hosted session, and returns an environment id and remote URL. On the operator's machine, scripts hold the application key, create the session, and hand its environment id and remote URL to an ordinary openai-launcher pod over a ClusterIP Service port-forward, authenticated with a bearer token. The launcher, holding the environment key as its only OpenAI credential, claims a pod from a SandboxWarmPool of two and sets the session id, environment id, remote URL and environment key in the SandboxClaim env; the controller cold-starts the claimed pod with them injected, so the key reaches the pod through the control plane and never over the pod network, and a warm pod holds no key. The claimed pod is an isolated-sandbox Nitro sandbox running codex exec-server, as an executor on the pod's loopback and a forwarder that dials out, with the key in its env; it runs Bash and apply-patch tool calls in /workspace, a follow-up turn reuses the same pod, and its deny-by-default ApplicationNetworkPolicy denies all ingress and allows egress only to DNS, api.openai.com and codex-cloud-environments.chatgpt.com while refusing the internet, AWS APIs and other pods. The executor's forwarder dials out to OpenAI.](images/openai-managed-agents.png)
 
 This folder was built against these releases:
 
@@ -89,7 +89,7 @@ The files:
 | File | What it is |
 |---|---|
 | [`Dockerfile`](Dockerfile), [`pyproject.toml`](pyproject.toml) | The `openai-sandbox-executor` image: one image for the launcher and the sandbox, with `codex exec-server` installed |
-| `src/launcher/` | [`launch.py`](src/launcher/launch.py) (the authenticated intake that claims a sandbox per session), [`serve.py`](src/launcher/serve.py) (run one session's executor and its forwarder; no network intake), [`sandbox.py`](src/launcher/sandbox.py) (claim a sandbox and deliver the session through the claim env), [`guard.py`](src/launcher/guard.py) (refuse any key a role must not hold) |
+| `src/launcher/` | [`launch.py`](src/launcher/launch.py) (the authenticated intake that claims a sandbox per session), [`serve.py`](src/launcher/serve.py) (run one session's executor and its forwarder; no network intake), [`sandbox.py`](src/launcher/sandbox.py) (claim a sandbox and deliver the session through the claim env), [`guard.py`](src/launcher/guard.py) (refuse, by name, the credential variables each role must not hold) |
 | [`deploy/sandbox-template.yaml`](deploy/sandbox-template.yaml) | The `SandboxTemplate` that runs the executor, and a `SandboxWarmPool` of two |
 | [`deploy/launcher.yaml`](deploy/launcher.yaml) | The launcher Deployment and its ClusterIP Service intake |
 | [`deploy/launcher-ingress.yaml`](deploy/launcher-ingress.yaml) | A deny-by-default ingress policy so no in-cluster pod may reach the launcher |
@@ -438,7 +438,7 @@ agent-sandbox `SandboxTemplate` CRD; confirm it against the controller version y
 The `readinessProbe` is a bare TCP connect on the readiness port, so the claim reports Ready
 once `serve.py` opens that port, on a warm pod and on a claimed pod alike. The pod runs as a
 non-root user with its own empty `/workspace`, and has no ServiceAccount token, so a command
-the model runs cannot reach the Kubernetes API.
+the model runs has no ServiceAccount credential to authenticate to the Kubernetes API with.
 
 The launcher, an ordinary pod, runs as the same non-root user, UID 10001. It does call the
 Kubernetes API, to create and watch `SandboxClaim`s, so [`launcher.yaml`](deploy/launcher.yaml)
@@ -678,10 +678,13 @@ A claimed pod adds `CODEX_API_KEY` and the three `OPENAI_*` session variables to
 application key.
 
 The sandbox also refuses to start if the **application** key is placed in its own environment:
-`serve.py`'s guard rejects `OPENAI_API_KEY` (and any foreign OpenAI/Codex credential) in any
-pod, and refuses a claimed pod whose session env is incomplete. The application key never
-reaches the launcher or the sandbox; the launcher holds the environment key, a claimed pod
-holds it for its one session, and a warm pod holds neither.
+`serve.py`'s guard refuses a sandbox, warm or claimed, with `OPENAI_API_KEY`,
+`OPENAI_EXECUTOR_API_KEY` or `LAUNCHER_AUTH_TOKEN` in its environment, and refuses a claimed pod
+whose session env is incomplete. The launcher refuses those three names and `CODEX_API_KEY` in
+its own environment. The application key never reaches the launcher or the sandbox; the
+launcher holds the environment key as its only OpenAI credential, beside its intake token and
+its ServiceAccount token, a claimed pod holds the environment key for its one session, and a
+warm pod holds neither.
 
 **Step 10: A follow-up turn in the same pod.** Send a second turn to the same session. It runs
 in the same claimed pod, so the file the first turn wrote is still there. `submit.py` opens the
@@ -782,7 +785,7 @@ place. This ensures pods can only send cluster-external traffic to the IPs of al
 domains."
 ([EKS network policy documentation](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html).)
 Because the filtering lives on the node rather than in the guest, a command the model runs
-inside the sandbox, even as root, cannot change it.
+inside the sandbox, where it runs as the non-root UID 10001, cannot change it.
 
 **Why the two refused hosts fail differently.** Both hosts are refused the same way: their
 IPv4 addresses are not in the allow list, so an IPv4 connection attempt gets no reply and

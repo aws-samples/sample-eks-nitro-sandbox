@@ -101,7 +101,9 @@ class _Handler(BaseHTTPRequestHandler):
                 session_id=session_id, environment_id=environment_id, remote_url=remote_url
             )
         except Exception as exc:  # noqa: BLE001 - report the failure to the operator
-            log.exception("dispatch failed for session %s", session_id)
+            # The class only: an exception's message or traceback can carry
+            # whatever the failing call put in it.
+            log.error("dispatch failed for session %s (%s)", session_id, type(exc).__name__)
             self._json(502, {"error": "dispatch failed", "detail": type(exc).__name__})
             return
         self._json(202, {"session_id": session_id, **result})
@@ -122,7 +124,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             deleted = self.server.dispatcher.delete_claim_for_session(session_id)  # type: ignore[attr-defined]
         except Exception as exc:  # noqa: BLE001
-            log.exception("claim delete failed for session %s", session_id)
+            log.error("claim delete failed for session %s (%s)", session_id, type(exc).__name__)
             self._json(502, {"error": "claim delete failed", "detail": type(exc).__name__})
             return
         self._json(200, {"session_id": session_id, "claims_deleted": deleted})

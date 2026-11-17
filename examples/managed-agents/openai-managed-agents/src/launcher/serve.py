@@ -31,8 +31,9 @@ that receives a credential:
     recycles it. It holds no key.
 
 The key never crosses the pod network and never touches a warm pod: the guard
-refuses to start a warm pod that holds any credential, and a claimed pod gets
-its key through the control plane.
+refuses to start a warm pod with CODEX_API_KEY, OPENAI_API_KEY,
+OPENAI_EXECUTOR_API_KEY or LAUNCHER_AUTH_TOKEN in its environment, and a
+claimed pod gets its key through the control plane.
 """
 
 from __future__ import annotations
@@ -57,7 +58,11 @@ URL_RE = re.compile(r"^https://[A-Za-z0-9._\-]+(:\d+)?(/[A-Za-z0-9._~:/?#\[\]@!$
 
 
 def _read_dispatch() -> dict[str, str]:
-    """Read and validate this claimed pod's session from its own environment."""
+    """Read and validate this claimed pod's session from its own environment.
+
+    The guard has already required all four claim names, CODEX_API_KEY among
+    them, with non-blank values; this checks the session's format.
+    """
     dispatch = {
         "session_id": config.require(config.ENV_SESSION_ID),
         "environment_id": config.require(config.ENV_ENVIRONMENT_ID),
@@ -67,10 +72,6 @@ def _read_dispatch() -> dict[str, str]:
         raise RuntimeError("the injected session id or environment id is malformed")
     if not URL_RE.match(dispatch["remote_url"]):
         raise RuntimeError("the injected remote URL is malformed or not https")
-    # The key is read by the child process from its own CODEX_API_KEY; this
-    # process only confirms its presence by name, never its value.
-    if not os.environ.get(config.ENV_CODEX_API_KEY):
-        raise RuntimeError(f"{config.ENV_CODEX_API_KEY} is not set on this claimed sandbox")
     return dispatch
 
 
@@ -272,7 +273,6 @@ def _run_executor(dispatch: dict[str, str], on_ready: Callable[[], None]) -> int
 def main() -> None:
     config.setup_logging()
     guard.assert_safe(guard.ROLE_SERVE)
-    os.makedirs(config.WORKDIR, exist_ok=True)
     port = config.optional_int(config.ENV_DISPATCH_PORT, config.DEFAULT_DISPATCH_PORT)
 
     if not guard.dispatched():
@@ -281,6 +281,8 @@ def main() -> None:
         sys.exit(0)
 
     dispatch = _read_dispatch()
+    # Only a valid claim gets a workspace prepared, then its two children.
+    os.makedirs(config.WORKDIR, exist_ok=True)
     log.info("serving session %s in %s", dispatch["session_id"], config.WORKDIR)
     # A claimed pod runs the executor instead of waiting on the network, but its
     # readinessProbe is the same bare TCP connect on the readiness port. Open
