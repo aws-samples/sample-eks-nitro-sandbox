@@ -291,9 +291,46 @@ node to run on).
 > provision a node**: it never does. A pod without the RuntimeClass has no such overhead, so it
 > can trigger the scale-from-zero. With `JOIN_MODE=karpenter` or `both`, `setup.sh` therefore
 > applies the ordinary contrast pod to the NodePool as well, and the isolated pod schedules once
-> the new node reports its sandbox capacity. That sequence has only been exercised against stubs
-> since it was added; the node-group path is the one proved live. For a sandbox-only workload,
-> use the managed node group, or EKS Auto Mode, which models this natively.
+> the new node reports its sandbox capacity. The run below shows that sequence on a live cluster.
+> For a sandbox-only workload, use the managed node group, or EKS Auto Mode, which models this
+> natively.
+
+### Run with both consumers (`JOIN_MODE=both`)
+
+One `./setup.sh` run on an EKS 1.37 cluster in `us-east-1` with Karpenter v1.15.2 already
+installed. It built the AMI, joined it to a managed node group and to the Karpenter NodePool,
+then applied the isolated pod and the ordinary pod. Karpenter provisioned a node for the pending
+ordinary pod, and the isolated pod then ran on that node. The AMI and node names are replaced
+with placeholders; the rest is the run's output, abridged.
+
+```text
+[...] AMI for this run: ami-0123456789abcdef0
+[...] node group al2023-ami-<run-id>-ng is ACTIVE
+[...] === join path: Karpenter ===
+[...] applying Karpenter EC2NodeClass and NodePool (AMI ami-0123456789abcdef0)
+ec2nodeclass.karpenter.k8s.aws/al2023-nitro-sandbox created
+nodepool.karpenter.sh/al2023-nitro-sandbox created
+[...] waiting for a Karpenter node with label eks.amazonaws.com/nitro-sandbox=true
+pod/isolated-sandbox-hello created
+pod/ordinary-hello created
+[...] Karpenter node <karpenter-node> runs this run's AMI ami-0123456789abcdef0
+[...] managed node group node <nodegroup-node> runs this run's AMI ami-0123456789abcdef0
+```
+
+```text
+$ kubectl get nodeclaims
+NAME                         TYPE        CAPACITY    ZONE         NODE              READY
+al2023-nitro-sandbox-msxlj   c8a.large   on-demand   us-east-1c   <karpenter-node>  True
+
+$ kubectl -n al2023-ami-both get pods -o wide
+NAME                     READY   STATUS    NODE
+isolated-sandbox-hello   1/1     Running   <karpenter-node>
+ordinary-hello           1/1     Running   <karpenter-node>
+```
+
+`./test.sh` then passed 8 of 8 on that run: the isolated pod's guest kernel was `6.18.56`
+against the host's `6.18.62-127.179.amzn2023.x86_64`, it had virtio disks `vda vdb vdc`, its
+only IPv4 address was `127.0.0.1`, and it had no route.
 
 ## Optional: build with EC2 Image Builder
 
