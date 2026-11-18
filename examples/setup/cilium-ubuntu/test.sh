@@ -31,6 +31,9 @@
 # stays read-only and does not flip the live Helm value. The both-ways proof that the stage 6 and 7 denies are the policy
 # (not a timeout that would show with or without the rule) is likewise done once, offline,
 # against a scratch policy object, and recorded on the page; it is not part of this script.
+# Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
+# shellcheck source=../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../scripts/lib/require-bash.sh"
 set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SAMPLE_DIR/scripts/common.sh"

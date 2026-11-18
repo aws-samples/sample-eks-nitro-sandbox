@@ -12,6 +12,9 @@
 #
 # In AWS it reuses only a repository or role that carries the sample's ManagedBy
 # tag, and stops when it finds one of those names belonging to something else.
+# Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"

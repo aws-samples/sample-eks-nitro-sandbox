@@ -31,6 +31,9 @@
 #   STORAGE_CLASS  force a specific class, overriding the choice (default: empty, choose)
 #   KUBECTL        the kubectl command, e.g.                     (default "kubectl")
 #                  KUBECTL="kubectl --context my-cluster"
+# Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"

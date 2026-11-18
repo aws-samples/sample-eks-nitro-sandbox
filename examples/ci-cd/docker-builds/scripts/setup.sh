@@ -14,6 +14,9 @@
 #   STORAGE_CLASS  the EBS StorageClass for the layer cache (default: the cluster default
 #                  when it fits: provisioner ebs.csi.eks.amazonaws.com, gp3, encrypted)
 #   KUBE_CONTEXT   the kube context to pin this run to      (default: the current context)
+# Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -116,6 +119,11 @@ echo "Step 3/5: the egress policy"
 push_rules=""
 # shellcheck disable=SC1090
 [[ -f "$STATE_FILE" ]] && . "$STATE_FILE"
+if [[ "${ECR_PUSH_READY:-false}" == "true" && -z "${ECR_ASSOCIATION_ID:-}" ]]; then
+  # An earlier ecr-setup.sh run on bash 3.2 wrote this combination without creating anything.
+  echo "  the state file says the push is ready but records no Pod Identity association; the push rules are not added. Run ./scripts/ecr-setup.sh again."
+  ECR_PUSH_READY=false
+fi
 if [[ "${ECR_PUSH_READY:-false}" == "true" && "${ECR_NAMESPACE:-}" != "$NAMESPACE" ]]; then
   # The recorded push belongs to another run, so its rules are not added here: this
   # namespace's pods get the policy without a credential path.
@@ -125,8 +133,10 @@ elif [[ "${ECR_PUSH_READY:-false}" == "true" ]]; then
     "$SAMPLE_DIR/deploy/egress-push-rules.yaml")"
   echo "  including the optional push rules (the state file records an ECR push set up in ${ECR_AWS_REGION})."
 fi
+# The block goes in through the environment, not awk -v: BSD awk, which macOS ships, rejects a
+# newline in a -v value.
 render deploy/egress-policy.yaml \
-  | awk -v rules="$push_rules" '{ if ($0 == "<ECR_PUSH_RULES>") { if (rules != "") print rules } else print }' \
+  | PUSH_RULES="$push_rules" awk '{ if ($0 == "<ECR_PUSH_RULES>") { if (ENVIRON["PUSH_RULES"] != "") print ENVIRON["PUSH_RULES"] } else print }' \
   | kc apply -f -
 echo "  waiting for the egress PolicyEndpoint..."
 for _ in $(seq 1 60); do

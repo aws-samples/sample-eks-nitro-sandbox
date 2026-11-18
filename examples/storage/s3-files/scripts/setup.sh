@@ -49,6 +49,9 @@
 #   S3_BUCKET_NAME   the bucket to create                    (default derived from prefix+account+region)
 #   ENV_FILE         where resource IDs are written          (default <sample>/.env)
 #   KUBECTL          the kubectl command                     (default "kubectl")
+# Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"

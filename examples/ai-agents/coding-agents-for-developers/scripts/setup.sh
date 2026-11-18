@@ -18,6 +18,9 @@
 #   4. Render and apply the per-CLI SandboxTemplate, SandboxWarmPool and egress policy,
 #      and the app Deployment, Service and RBAC.
 #   5. Print the kubectl port-forward command to open the app.
+# Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
 set -euo pipefail
 
 SAMPLE=coding-agents-for-developers
@@ -358,9 +361,11 @@ for cli in "${clis[@]}"; do
   # placeholder only as a whole line (^<...>$) so a comment that mentions the name by text
   # is left untouched. <MOUNT_TARGET_CIDRS> must always be non-empty (checked above).
   if [ "$cli" = "kiro-cli" ]; then extra="$(kiro_cli_egress)"; else extra=""; fi
-  awk -v repl="$extra" -v mtc="$mount_target_cidrs" '
-      /^<KIRO_CLI_EGRESS>$/   { if (repl != "") printf "%s", repl ORS; next }
-      /^<MOUNT_TARGET_CIDRS>$/ { printf "%s", mtc; next }
+  # Both blocks go in through the environment, not awk -v: BSD awk, which macOS ships, rejects
+  # a newline in a -v value.
+  REPL="$extra" MTC="$mount_target_cidrs" awk '
+      /^<KIRO_CLI_EGRESS>$/   { if (ENVIRON["REPL"] != "") printf "%s", ENVIRON["REPL"] ORS; next }
+      /^<MOUNT_TARGET_CIDRS>$/ { printf "%s", ENVIRON["MTC"]; next }
       { print }' \
       "$ROOT/deploy/egress-policy.yaml" \
     | sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
