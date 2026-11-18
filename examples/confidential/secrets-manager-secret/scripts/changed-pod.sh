@@ -14,6 +14,11 @@
 # Needs scripts/setup.sh to have run: it reads the resource record setup.sh wrote.
 set -euo pipefail
 
+# No argument, or --delete, and nothing else. Checked before anything reads the cluster.
+if [[ $# -gt 1 || ( -n "${1:-}" && "$1" != "--delete" ) ]]; then
+  echo "unknown argument: $*" >&2; exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SAMPLE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SHARED_DIR="$(cd "$SAMPLE_DIR/../_shared" && pwd)"
@@ -39,11 +44,27 @@ CHANGED_ENV_VALUE="changed"
 
 export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
 
+# Both paths below delete a pod in the namespace, and the run also applies one, so check who
+# owns the namespace first, as clean.sh does. A lookup that fails is "could not determine",
+# never "absent", and changes nothing.
+ns_exists="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name)" ||
+  die "could not determine whether namespace $NAMESPACE exists (kubectl lookup failed); changed nothing"
+if [[ -z "$ns_exists" ]]; then
+  [[ "${1:-}" == "--delete" ]] ||
+    die "namespace $NAMESPACE is not there; run ./scripts/setup.sh first"
+  echo "Namespace $NAMESPACE is not there, so there is no changed pod to delete."
+  exit 0
+fi
+ns_label="$(kc get namespace "$NAMESPACE" \
+  -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}')" ||
+  die "could not determine whether namespace $NAMESPACE is this sample's (kubectl lookup failed); changed nothing"
+[[ "$ns_label" == "$MANAGED_BY" ]] ||
+  die "namespace $NAMESPACE is not this sample's (managed-by='$ns_label'); changed nothing in it"
+
 if [[ "${1:-}" == "--delete" ]]; then
   kc delete pod "$CHANGED_POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m
   exit 0
 fi
-[[ "${1:-}" == "" ]] || { echo "unknown argument: $1" >&2; exit 2; }
 
 for c in aws jq kubectl base64 gzip; do command -v "$c" >/dev/null 2>&1 || die "$c is required"; done
 command -v "$GENPOLICY" >/dev/null 2>&1 || die "$GENPOLICY is not on PATH"

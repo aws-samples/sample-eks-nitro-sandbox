@@ -8,7 +8,7 @@ admission_policy: |+
       resource == Workload::Container::"main"
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8" &&
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:9fe633adc51efb90218dcbdfee79220fffbfb7e2dd45014389b090687302a9a8" &&
       context.working_dir == "/" &&
       context.run_as_user == 65534 &&
       context.run_as_group == 65534 &&
@@ -84,20 +84,20 @@ admission_policy: |+
                            {"name": "AWS_DEFAULT_REGION", "value": "us-west-2"},
                            {"name": "AWS_STS_REGIONAL_ENDPOINTS",
                             "value": "regional"},
-                           {"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-                            "value": "http://169.254.170.23/v1/credentials"},
                            {"name": "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
                             "value": "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token"}]) &&
       context.env_names == ["PATH", "AWS_REGION", "AWS_DEFAULT_REGION",
                         "AWS_STS_REGIONAL_ENDPOINTS",
-                        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
                         "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
                         "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT",
                         "KUBERNETES_SERVICE_PORT_HTTPS", "KUBERNETES_PORT",
                         "KUBERNETES_PORT_443_TCP",
                         "KUBERNETES_PORT_443_TCP_PROTO",
                         "KUBERNETES_PORT_443_TCP_PORT",
-                        "KUBERNETES_PORT_443_TCP_ADDR"]
+                        "KUBERNETES_PORT_443_TCP_ADDR",
+                        "AWS_CONTAINER_CREDENTIALS_FULL_URI"] &&
+      (context.env.contains({"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI", "value": "http://169.254.170.23/v1/credentials"}) ||
+       context.env.contains({"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI", "value": "http://[fd00:ec2::23]/v1/credentials"}))
   };
 
 
@@ -113,14 +113,14 @@ admission_policy: |+
       context.ecs_exec_enabled
   };
 
-  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8
+  // PrepareImage: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:9fe633adc51efb90218dcbdfee79220fffbfb7e2dd45014389b090687302a9a8
   permit(
       principal,
       action == Agent::Action::"PrepareImage",
       resource
   )
   when {
-      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:690b253fb55d8234cc2158ab18d4e6c8e4c85f2b3c6800eeaee0db0fb7e377e8"
+      context.image_ref == "<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/encrypted-image-sample@sha256:9fe633adc51efb90218dcbdfee79220fffbfb7e2dd45014389b090687302a9a8"
   };
 
 
@@ -215,4 +215,3 @@ runtime_policy: |+
       context.binary_logger_path == "" &&
       context.binary_logger_args.isEmpty()
   };
-

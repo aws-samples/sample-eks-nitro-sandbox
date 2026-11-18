@@ -42,7 +42,21 @@ export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
 if [[ "${1:-}" == "--delete" ]]; then
   # Deleting it is part of the demonstration, not just tidying: a pod left behind would
   # go on retrying the pull for as long as it exists.
-  kc delete pod "$CHANGED_POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m
+  # Check who owns the namespace before deleting anything inside it, as clean.sh does. A
+  # lookup that fails is "could not determine", never "gone", and deletes nothing.
+  ns_exists="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name)" ||
+    die "could not determine whether namespace $NAMESPACE exists (kubectl lookup failed); deleted nothing"
+  if [[ -z "$ns_exists" ]]; then
+    echo "Namespace $NAMESPACE is not there, so there is no changed pod to delete."
+    exit 0
+  fi
+  ns_label="$(kc get namespace "$NAMESPACE" \
+    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}')" ||
+    die "could not determine whether namespace $NAMESPACE is this sample's (kubectl lookup failed); deleted nothing"
+  [[ "$ns_label" == "encrypted-image" ]] ||
+    die "namespace $NAMESPACE is not this sample's (managed-by='$ns_label'); deleted nothing in it"
+  kc delete pod "$CHANGED_POD_NAME" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m ||
+    die "could not delete pod $CHANGED_POD_NAME in namespace $NAMESPACE"
   exit 0
 fi
 [[ "${1:-}" == "" ]] || { echo "unknown argument: $1" >&2; exit 2; }
