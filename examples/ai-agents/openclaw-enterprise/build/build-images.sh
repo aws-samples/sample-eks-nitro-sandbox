@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Build all sample images inside AWS CodeBuild and export digest-qualified ECR refs.
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
+
 set -euo pipefail
 
 die() {

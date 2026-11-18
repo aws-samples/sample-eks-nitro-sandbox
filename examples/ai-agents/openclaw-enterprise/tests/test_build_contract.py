@@ -592,6 +592,20 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     assert "skopeo copy" not in script
 
 
+def test_build_script_checks_bash_four_before_using_mapfile() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    executable_lines = [
+        line
+        for line in script.splitlines()[1:]
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert "mapfile -t openclaw_source_args" in script
+    assert executable_lines[0] == (
+        '. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"'
+    )
+
+
 def test_adapter_base_image_is_allowlisted_and_digest_pinned() -> None:
     dockerfile = ADAPTER_DOCKERFILE.read_text(encoding="utf-8")
     base_images = re.findall(r"^FROM\s+(\S+)", dockerfile, re.MULTILINE)
