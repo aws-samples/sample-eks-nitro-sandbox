@@ -1617,6 +1617,47 @@ global_settings:
       line_end: 54
       reason: 'Test fixture: openssl is taken from PATH on purpose, as the tests'' other tools are'
       expiration: '2027-12-31'
+    # ci-cd/gitlab-ci (#147): GitLab and the runner manager are ordinary pods by design; only
+    # the job pods are sandboxes. The GitLab single-container image has no non-root mode.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: ordinary GitLab pod behind a ClusterIP Service only (gitlab.yaml:37); a sample ships no network policy (AGENTS.md:546-552), and the page says this blueprint ships none and links the network policy blueprint (README.md:94-102)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: the image runs gitlab-ctl reconfigure at every start, which writes service definitions and settings under /opt/gitlab and groups in /etc/group, so the root filesystem stays writable (gitlab.yaml:86)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: the GitLab single-container image starts as root to run gitlab-ctl reconfigure, then starts each service as its own user; upstream has no non-root mode (gitlab.yaml:84)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: GitLab runs as root and keeps the runtime default capabilities to chown its data, start each service as its own user and bind nginx on port 80; NET_RAW is dropped (gitlab.yaml:88)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: the GitLab single-container image starts as root to run gitlab-ctl reconfigure, then starts each service as its own user; upstream has no non-root mode (gitlab.yaml:84)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'By design: ordinary runner manager pod with no port and no Service, which only calls out to GitLab and the API server (runner.yaml:122); a sample ships no network policy (AGENTS.md:546-552), and the page says this blueprint ships none and links the network policy blueprint (README.md:94-102)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'gitlab-runner is the container process (runner.yaml:137), so a crash ends the container and the Deployment restarts it; the manager has no health endpoint, and the online check waits on GitLab last-contact time instead (bootstrap-runner.sh:302)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Single replica with no port or Service (runner.yaml:122), so a readiness probe gates nothing'
+      expiration: '2027-12-31'
+    # ci-cd/gitlab-ci (#147), pinned line: the keyword detector on the line that reads the mounted file.
+    - rule_id: CKV_SECRET_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      line_start: 115
+      line_end: 115
+      reason: 'False positive: GitLab reads the initial root password from a Kubernetes Secret-mounted file; the quoted string is the mounted file path, not a credential value.'
+      expiration: '2027-12-31'
     # ---- integrations/istio: pods are plain on purpose ----
     # workloads.yaml holds four pods: echo, client-a and client-b in Nitro sandboxes (runtimeClassName
     # isolated-sandbox), and client-plain, an ordinary pod with no sandbox and no sidecar, the plaintext
@@ -1757,115 +1798,6 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
       reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
-      expiration: '2027-01-31'
-    # Baseline: ci-cd/gitlab-ci
-    - rule_id: CKV2_K8S_6
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_20
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_23
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_35
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_38
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV2_K8S_6
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_20
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_23
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_38
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_3
-      path: 'examples/ci-cd/gitlab-ci/pipeline/ci/Dockerfile'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     # Baseline: confidential/signer-policy
     - rule_id: CKV_DOCKER_3

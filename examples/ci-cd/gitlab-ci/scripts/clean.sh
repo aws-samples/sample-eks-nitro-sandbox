@@ -15,8 +15,9 @@
 #   6. confirms the namespace is gone, that no job pod is left and that the EBS volume was
 #      deleted. Anything it could not confirm is reported, and the script exits non-zero.
 #
-# What it does NOT remove: nothing, because this sample installs nothing shared and creates
-# no cluster-wide object, no IAM role and no Pod Identity association. The EBS volume is the
+# What it does NOT remove: a node the cluster added for GitLab or a job pod. Nodes are the
+# cluster's, not this sample's. The sample installs nothing shared and creates no
+# cluster-wide object, no IAM role and no Pod Identity association. The EBS volume is the
 # only thing it puts in the account, and it belongs to GitLab's claim.
 set -uo pipefail
 
@@ -189,7 +190,9 @@ of this sample is GitLab, its claim and its EBS volume, the runner manager with 
 ServiceAccount, Role and RoleBinding, the root-password and runner-config Secrets, and any
 job pod; plus the ordinary comparison pod, by its exact name.
 
-Nothing is left behind: this sample installs nothing shared, changes no cluster-wide setting,
-and creates no IAM role, Pod Identity association or ECR repository. To remove the sandbox
-runtime class and the cluster itself, see the Hello sandbox clean up.
+That is everything this sample owns: it installs nothing shared, changes no cluster-wide
+setting, and creates no IAM role, Pod Identity association or ECR repository. Nodes are
+outside it: a node the cluster added for GitLab or a job pod is the cluster's to manage, not
+this sample's, and may remain. To remove the sandbox runtime class and the cluster itself,
+see the Hello sandbox clean up.
 EOF
