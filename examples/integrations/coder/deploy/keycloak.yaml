@@ -7,15 +7,21 @@
 # KC_HOSTNAME. Health and metrics are on the management port 9000, which the
 # probes use and the Ingress never routes.
 #
-# Realm: Keycloak imports the realm `coder` (deploy/realm.json, rendered by
-# setup.sh and stored in the Secret keycloak-realm) on its first start with
-# --import-realm. The realm holds the OIDC client Coder uses and no users. If the
-# realm already exists, Keycloak skips the import.
+# Realm: Keycloak imports the realm `coder` (deploy/realm.json, with <DOMAIN>
+# filled in by setup.sh and stored in the ConfigMap keycloak-realm) on its first
+# start with --import-realm. The realm holds the OIDC client Coder uses and no
+# users. If the realm already exists, Keycloak skips the import. The realm file
+# holds no secret: its client secret is the placeholder ${CODER_OIDC_CLIENT_SECRET},
+# which Keycloak resolves from this container's environment during the import.
 #
 # Secrets, all created by scripts/setup.sh from mode-600 files, none in this file:
-#   keycloak-admin      username, password  Keycloak's bootstrap admin (master realm)
-#   postgres-passwords  keycloak            the keycloak database role's password
-#   keycloak-realm      coder-realm.json    the realm, with the OIDC client secret
+#   keycloak-admin      password       Keycloak's bootstrap admin (master realm)
+#   postgres-passwords  keycloak       the keycloak database role's password
+#   coder-oidc          client-secret  the OIDC client secret, shared with coderd
+#
+# setup.sh applies the Service first (label app.kubernetes.io/component:
+# keycloak-service), so the Ingress has a backend before the distribution
+# exists, and the Deployment once the distribution's domain is known.
 #
 # <NAMESPACE> and <DOMAIN> are filled in by scripts/setup.sh at apply time.
 # Never apply this file with the placeholders in place.
@@ -28,6 +34,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keycloak
     app.kubernetes.io/part-of: coder
+    app.kubernetes.io/component: keycloak-server
 spec:
   # One replica. Keycloak keeps its state in PostgreSQL, so more replicas can be
   # added later; they find each other through the database (the default
@@ -45,8 +52,7 @@ spec:
       # Keycloak calls no Kubernetes API.
       automountServiceAccountToken: false
       securityContext:
-        # The image runs as uid 1000 (keycloak). fsGroup makes the mounted
-        # realm file group-readable by it.
+        # The image runs as uid 1000 (keycloak).
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
@@ -104,15 +110,19 @@ spec:
             # Its password is random (setup.sh, openssl) and is the only way into
             # the Keycloak admin console at https://<DOMAIN>/auth/admin/.
             - name: KC_BOOTSTRAP_ADMIN_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: keycloak-admin
-                  key: username
+              value: admin
             - name: KC_BOOTSTRAP_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: keycloak-admin
                   key: password
+            # Read only by the realm import, which replaces ${CODER_OIDC_CLIENT_SECRET}
+            # in the realm file with it. The same Secret gives coderd the value.
+            - name: CODER_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: coder-oidc
+                  key: client-secret
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -150,9 +160,8 @@ spec:
               memory: 2Gi
       volumes:
         - name: realm
-          secret:
-            secretName: keycloak-realm
-            defaultMode: 0440
+          configMap:
+            name: keycloak-realm
 ---
 # Only the HTTP port. The management port 9000 is not in the Service, so nothing
 # outside the pod (the ALB included) can reach health or metrics.
@@ -164,6 +173,13 @@ metadata:
   labels:
     app.kubernetes.io/name: keycloak
     app.kubernetes.io/part-of: coder
+    app.kubernetes.io/component: keycloak-service
+  annotations:
+    # The ALB health check for the Keycloak target group. The Ingress's own
+    # health check path is Coder's /healthz, and an annotation on a Service
+    # takes precedence over the one on the Ingress. The discovery document
+    # answers 200 on the routed port once the realm coder exists.
+    alb.ingress.kubernetes.io/healthcheck-path: /auth/realms/coder/.well-known/openid-configuration
 spec:
   type: ClusterIP
   selector:

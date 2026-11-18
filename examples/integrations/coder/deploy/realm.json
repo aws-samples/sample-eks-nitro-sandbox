@@ -20,7 +20,7 @@
       "protocol": "openid-connect",
       "publicClient": false,
       "clientAuthenticatorType": "client-secret",
-      "secret": "<OIDC_CLIENT_SECRET>",
+      "secret": "${CODER_OIDC_CLIENT_SECRET}",
       "rootUrl": "https://<DOMAIN>",
       "baseUrl": "/",
       "redirectUris": [

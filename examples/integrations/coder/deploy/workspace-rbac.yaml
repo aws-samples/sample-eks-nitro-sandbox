@@ -49,7 +49,7 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "create", "update", "patch", "delete"]
-  # The home volume: one ReadWriteOnce claim per workspace. Created with the
+  # The home volume: one ReadWriteOncePod claim per workspace. Created with the
   # workspace, kept across stop and start, deleted with the workspace.
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]

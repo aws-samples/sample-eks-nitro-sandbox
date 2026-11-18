@@ -2,7 +2,7 @@
 # Community Edition (no license key).
 #
 # Installed by scripts/setup.sh with:
-#   helm install coder coder-v2/coder --version 2.38.10 -n <NAMESPACE> -f <rendered copy of this file>
+#   helm install coder oci://ghcr.io/coder/chart/coder --version 2.38.10 -n <NAMESPACE> -f <rendered copy of this file>
 #
 # How people reach coderd: the chart's Service is ClusterIP, and the only way in
 # from outside the cluster is CloudFront -> internal ALB -> this Service (see

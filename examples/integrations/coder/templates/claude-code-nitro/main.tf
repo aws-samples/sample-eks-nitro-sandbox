@@ -208,7 +208,8 @@ module "claude-code" {
 }
 
 # ---------------------------------------------------------------------------
-# Persistent home: one ReadWriteOnce EBS volume per workspace. It has no count, so it stays
+# Persistent home: one ReadWriteOncePod EBS volume per workspace, so only one pod can ever
+# mount it (a block device attaches to one sandbox at a time). It has no count, so it stays
 # when the workspace is stopped and is removed only when the workspace is deleted.
 # ---------------------------------------------------------------------------
 
@@ -230,7 +231,7 @@ resource "kubernetes_persistent_volume_claim_v1" "home" {
   wait_until_bound = false
 
   spec {
-    access_modes       = ["ReadWriteOnce"]
+    access_modes       = ["ReadWriteOncePod"]
     storage_class_name = var.storage_class
     resources {
       requests = {

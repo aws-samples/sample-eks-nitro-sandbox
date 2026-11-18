@@ -8,11 +8,14 @@
 #                        subnet-aaaa, subnet-bbbb, subnet-cccc
 #   <SECURITY_GROUP_ID>  the blueprint's ALB security group, coder-alb-origin
 #
-# It applies the file in two parts, selected by the app.kubernetes.io/component label:
+# It applies the file in parts, selected by the app.kubernetes.io/component label:
 #   ingress-class  IngressClassParams and IngressClass, cluster-scoped, created with
-#                  `kubectl create` only when absent. Setup stops when either already
-#                  exists, whether it carries the blueprint's mark or not.
-#   ingress        the Ingress, applied once the coder and keycloak Services exist.
+#                  `kubectl create` only when absent, and reused only when they carry
+#                  app.kubernetes.io/part-of: coder. Setup stops otherwise.
+#   ingress        the Ingress, applied twice. First without the lines between the two
+#                  coder-route markers, so only Keycloak is routed while Coder has no
+#                  owner. Then whole, once Coder's owner exists and its password login is
+#                  off. Neither apply needs the coder Service before it exists.
 ---
 # Cluster-scoped. Auto Mode reads the load balancer's AWS settings from here: it ignores
 # annotations on an IngressClass.
@@ -110,7 +113,7 @@ spec:
                 name: keycloak
                 port:
                   number: 8080
-          # Everything else is Coder.
+          # coder-route: begin. Everything else is Coder. Added by setup's second apply.
           - path: /
             pathType: Prefix
             backend:
@@ -118,3 +121,4 @@ spec:
                 name: coder
                 port:
                   number: 80
+          # coder-route: end
