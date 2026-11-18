@@ -103,14 +103,14 @@ the Karpenter `NodePool`'s `kubernetes.io/arch` requirement is rendered from `NO
 The arm64 path was run end to end on a Graviton builder (`m8g.4xlarge`) and node (`m8g.xlarge`).
 The build produced an `arm64` AMI, the node joined with the sandbox capacity, and an
 `isolated-sandbox` pod reached `Running` with its own guest kernel — the same evidence the x86_64
-walkthrough below shows, on `aarch64`:
+walkthrough below shows, on `aarch64`. The node name is replaced by `<node-name>`:
 
 ```text
 $ kubectl get nodes -o wide
 NAME                       STATUS   VERSION               OS-IMAGE                        KERNEL-VERSION                             ARCH
-ip-10-0-0-1.ec2.internal   Ready    v1.37.1-eks-9adbfea   Amazon Linux 2023.12.20261112   6.18.62-127.179.amzn2023.aarch64           arm64
+<node-name>   Ready    v1.37.1-eks-9adbfea   Amazon Linux 2023.12.20261112   6.18.62-127.179.amzn2023.aarch64           arm64
 
-$ kubectl get node ip-10-0-0-1.ec2.internal \
+$ kubectl get node <node-name> \
     -o jsonpath='{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox}'
 20
 
@@ -188,17 +188,18 @@ A custom AMI forces a launch template, which carries the AL2023 **NodeConfig MIM
 `EnclaveOptions.Enabled=true` with IMDSv2 hop-limit-1
 ([`scripts/lib/launch_spec.py`](scripts/lib/launch_spec.py)). The node group lands in **private
 subnets** (an EKS node gets no public IP, so a node group in a public subnet never registers).
+The node name is replaced by `<node-name>`.
 
 ```text
 $ kubectl get nodes
 NAME                              STATUS   ROLES    AGE     VERSION
-ip-10-0-0-1.ec2.internal          Ready    <none>   6m24s   v1.37.1-eks-9adbfea
+<node-name>          Ready    <none>   6m24s   v1.37.1-eks-9adbfea
 
-$ kubectl get node ip-10-0-0-1.ec2.internal \
+$ kubectl get node <node-name> \
     --show-labels | grep eks.amazonaws.com/nitro-sandbox
 ...,eks.amazonaws.com/nitro-sandbox=true,...
 
-$ kubectl get node ip-10-0-0-1.ec2.internal \
+$ kubectl get node <node-name> \
     -o jsonpath='{.status.allocatable.eks\.amazonaws\.com/nitro-sandbox}'
 20
 ```
@@ -237,7 +238,7 @@ kernel tables, `/proc/net/fib_trie` and `/proc/net/route`, so it needs no tool i
 $ ./test.sh
 [2026-11-17T04:18:55Z] kube context <KUBE_CONTEXT> is cluster <CLUSTER_NAME> (<API_ENDPOINT>)
 == 1/5 the sandbox node is Ready and carries eks.amazonaws.com/nitro-sandbox=true ==
-  node: ip-10-0-0-1.ec2.internal  Ready: True
+  node: <node-name>  Ready: True
   PASS  the sandbox node is Ready
   PASS  the node carries eks.amazonaws.com/nitro-sandbox=true
 == 2/5 the node advertises sandbox capacity ==
@@ -423,14 +424,14 @@ the current `test.sh`, network check included, is the block in Step 3:
 
 ```text
 $ ./test.sh                                  # x86_64 Image Builder AMI
-  node: ip-10-0-0-1.ec2.internal  Ready: True
+  node: <node-name>  Ready: True
   eks.amazonaws.com/nitro-sandbox allocatable: 20
   isolated pod kernel: 6.18.56
   ordinary pod kernel: 6.18.62-127.179.amzn2023.x86_64
   isolated pod /sys/block: dm-0 vda vdb vdc
 
 $ ./test.sh                                  # arm64 Image Builder AMI
-  node: ip-10-0-0-1.ec2.internal  Ready: True
+  node: <node-name>  Ready: True
   eks.amazonaws.com/nitro-sandbox allocatable: 20
   isolated pod kernel: 6.18.56
   ordinary pod kernel: 6.18.62-127.179.amzn2023.aarch64

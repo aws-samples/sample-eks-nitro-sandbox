@@ -94,9 +94,10 @@ for an existing cluster, not creating or managing the cluster itself.
   AMI for EKS Pod Isolation with the upstream `amazon-eks-ami` Packer flow
   (`enable_pod_isolation=true`), and add it to an existing standard (non-Auto-Mode) cluster two
   ways: a Karpenter `EC2NodeClass` and a managed node group, each enabling Nitro via the enclave
-  option on the launch template. The node-group path and the AMI build are proved live; the
-  Karpenter path provisions the enclave node but cannot yet schedule a sandbox pod on self-managed
-  Karpenter ([aws/karpenter-provider-aws#9904](https://github.com/aws/karpenter-provider-aws/issues/9904)).
+  option on the launch template. The node-group path and the AMI build are proved live. On the
+  Karpenter path a sandbox pod alone cannot trigger scale-from-zero on self-managed Karpenter
+  ([aws/karpenter-provider-aws#9904](https://github.com/aws/karpenter-provider-aws/issues/9904)),
+  so the sample's ordinary contrast pod triggers the node and the sandbox pod then schedules onto it.
   Spec: [#231](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/231).
 - [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
   disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and

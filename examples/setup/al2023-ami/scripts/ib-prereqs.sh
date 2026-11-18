@@ -32,7 +32,7 @@ mkdir -p "$RUN_STATE_DIR"
 TAGS_CLI="Key=$TAGS_OWNER_KEY,Value=$TAGS_OWNER_VALUE Key=$TAGS_RUN_KEY,Value=$RUN_ID Key=auto-delete,Value=no"
 rec()    { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | tail -n 1; }
 rec1()   { sed -n "s/^$1=//p" "$STATE" 2>/dev/null | head -n 1; }   # identity: the first record is the run's
-record() { printf '%s=%s\n' "$1" "$2" >> "$STATE"; }
+record() { printf '%s=%s\n' "$1" "$2" >> "$STATE" || die "could not record $1 in $STATE"; }
 aw()     { aws --region "$AWS_REGION" "$@"; }
 jtags()  { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("Tags") or []))'; }
 
@@ -86,6 +86,8 @@ if [ "$mode" = up ]; then
     --query 'SecurityGroups[0]' --output json; rc=$?
   case $rc in
     0) printf '%s' "$PROBE_OUT" | jtags | tags_match || die "security group $NAME exists and is not run $RUN_ID's"
+       [ "$(printf '%s' "$PROBE_OUT" | json_get 'len(d.get("IpPermissions") or [])')" = 0 ] \
+         || die "security group $NAME has an inbound rule; the build group must be outbound only"
        sg=$(printf '%s' "$PROBE_OUT" | json_get 'd["GroupId"]') ;;
     1) sg=$(aw ec2 create-security-group --group-name "$NAME" --vpc-id "$vpc" \
          --description "Image Builder build instance for $NAME (outbound only)" \
