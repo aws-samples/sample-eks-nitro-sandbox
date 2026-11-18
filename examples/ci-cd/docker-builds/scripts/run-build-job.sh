@@ -53,6 +53,10 @@ if [[ "$PUSH" == true ]]; then
   . "$STATE_FILE"
   [[ "${ECR_PUSH_READY:-false}" == "true" ]] \
     || die "--push needs ./scripts/ecr-setup.sh to have completed (the state file does not record a ready push)"
+  # An earlier ecr-setup.sh run on bash 3.2 wrote a ready file with nothing recorded in it.
+  [[ -n "${ECR_REPO_NAME:-}" && -n "${ECR_ROLE_NAME:-}" && -n "${ECR_ASSOCIATION_ID:-}" ]] \
+    || die "the state file says the push is ready but does not record the repository, the role and the
+association, so nothing was set up. Run ./scripts/ecr-setup.sh again."
   # The association is namespaced, so a push set up for another namespace is not this run's.
   [[ "${ECR_NAMESPACE:-}" == "$NAMESPACE" ]] \
     || die "the recorded Amazon ECR push belongs to namespace '${ECR_NAMESPACE:-unknown}', not '$NAMESPACE'.
@@ -109,7 +113,7 @@ sed -e "s|<NAMESPACE>|$NAMESPACE|g" \
     -e "s|<ECR_REPO>|$ECR_REPO|g" \
     -e "s|<AWS_REGION>|$AWS_REGION_RENDER|g" \
     deploy/build-job.yaml \
-  | awk -v block="$init_block" '{ if ($0 == "<ECR_INIT_CONTAINER>") { if (block != "") print block } else print }' \
+  | INIT_BLOCK="$init_block" awk '{ if ($0 == "<ECR_INIT_CONTAINER>") { if (ENVIRON["INIT_BLOCK"] != "") print ENVIRON["INIT_BLOCK"] } else print }' \
   | sed -e "s|<AWS_REGION>|$AWS_REGION_RENDER|g" -e "s|<ECR_REGISTRY>|$ECR_REGISTRY|g" \
   | kc apply -f -
 

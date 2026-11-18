@@ -15,6 +15,7 @@ examples/
 │   └── warm-pool/
 ├── setup/
 │   ├── ubuntu-ami/
+│   ├── al2023-ami/
 │   └── cilium-ubuntu/
 ├── isolation/
 │   ├── network-policy/
@@ -57,6 +58,7 @@ examples/
 │   └── gitlab-ci/
 ├── integrations/
 │   ├── temporal/
+│   ├── istio/
 │   └── opensandbox/
 └── confidential/
     ├── encrypted-image/
@@ -90,6 +92,15 @@ for an existing cluster, not creating or managing the cluster itself.
   image 1.36.5/2026-11-06 and Firecracker v1.18.0 from the locations the Amazon EKS User Guide
   names. Spec: [#10](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/10); moved to
   the public releases in [#218](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/218).
+- [al2023-ami](../examples/setup/al2023-ami/README.md) (available now): build a custom Amazon Linux 2023 node
+  AMI for EKS Pod Isolation with the upstream `amazon-eks-ami` Packer flow
+  (`enable_pod_isolation=true`), and add it to an existing standard (non-Auto-Mode) cluster two
+  ways: a Karpenter `EC2NodeClass` and a managed node group, each enabling Nitro via the enclave
+  option on the launch template. The node-group path and the AMI build are proved live. On the
+  Karpenter path a sandbox pod alone cannot trigger scale-from-zero on self-managed Karpenter
+  ([aws/karpenter-provider-aws#9904](https://github.com/aws/karpenter-provider-aws/issues/9904)),
+  so the sample's ordinary contrast pod triggers the node and the sandbox pod then schedules onto it.
+  Spec: [#231](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/231).
 - [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
   disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
   the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
@@ -179,6 +190,7 @@ The [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) resources,
 Other platforms that create and manage sandboxes.
 
 - [temporal](../examples/integrations/temporal/README.md) (available now): Temporal workflows that create, drive, suspend, resume and remove sandboxes. Spec: [#26](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/26).
+- [istio](../examples/integrations/istio/README.md) (available now): Istio sidecars with the `istio-init` init container on Nitro sandboxes, with strict mutual TLS and an authorization policy, and what does not work today: the Istio CNI plugin (not on the roadmap for now) and ambient mesh (on the roadmap). Spec: [#239](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/239).
 - opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
 
 ### Confidential (`confidential`)

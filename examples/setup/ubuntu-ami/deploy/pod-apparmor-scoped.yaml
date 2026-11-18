@@ -20,6 +20,7 @@ spec:
     appArmorProfile:
       type: Localhost
       localhostProfile: ubuntu-ami-sample-profile
+    seccompProfile: { type: RuntimeDefault }
   nodeSelector:
     eks.amazonaws.com/nodegroup: "@NODEGROUP@"
   tolerations:
@@ -29,6 +30,8 @@ spec:
       effect: NoSchedule
   automountServiceAccountToken: false
   enableServiceLinks: false
+  # One-shot and serving nothing: test.sh waits for it to run, reads it and deletes it by name, so
+  # a liveness or readiness probe would gate nothing.
   restartPolicy: Never
   # Non-zero, so the API object stays until kubelet has stopped the container: a pod the profile
   # keeps from stopping then stays Terminating, which test.sh catches.
@@ -36,8 +39,17 @@ spec:
   containers:
     - name: main
       image: public.ecr.aws/amazonlinux/amazonlinux:2023
-      # Exits on SIGTERM, so a stop that AppArmor allows completes at once.
+      # Exits on SIGTERM, so a stop that AppArmor allows completes at once. It listens on nothing.
       command: ["sh", "-c", "trap 'exit 0' TERM; sleep 3600 & wait"]
+      # Root, with a writable root filesystem, because the test writes to /etc as root. One
+      # capability is added back, DAC_OVERRIDE: /etc/shadow has mode 0000 in this image, so
+      # without it the kernel refuses the write on the file's mode before AppArmor is asked, and
+      # the profile's DENIED line, which is what the test shows, is never logged.
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+          add: ["DAC_OVERRIDE"]
       resources:
         requests:
           cpu: "100m"
