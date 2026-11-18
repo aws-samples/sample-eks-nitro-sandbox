@@ -47,6 +47,7 @@ The files:
 | [`iam/`](iam/) | The Pod Identity trust policy and the Bedrock-only permissions policy |
 | [`service-account.yaml`](service-account.yaml) | The `coding-agent` ServiceAccount the role is associated with |
 | [`egress-policy.yaml`](egress-policy.yaml) | The egress network policy: DNS, Pod Identity, Bedrock, `github.com` and `api.github.com` only |
+| [`coredns-cidr.sh`](coredns-cidr.sh) | Works out the cluster's DNS address for the policy's DNS rule |
 | [`fix-issue.yaml`](fix-issue.yaml) | The agent pod from the post |
 | [`sample-app/`](sample-app/) | A small Python app with a known bug, for the agent to fix |
 
@@ -143,7 +144,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }   # .10 of the service CIDR (README step 5)
+        - ipBlock: { cidr: <COREDNS_CIDR> }   # the cluster's DNS address (README step 5)
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -180,27 +181,24 @@ The guide's section [Determining the CoreDNS IP address](https://docs.aws.amazon
 gives the rule. The address comes from the service CIDR and stays the same for the life of
 the cluster. For IPv4, take the `.10` address, so `10.100.0.0/16` gives `10.100.0.10/32`. For
 IPv6, append `a` to the network address, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`.
-Read the CIDR with `aws eks describe-cluster --name <cluster> --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text`.
-
-The command below reads the service CIDR from the EKS API and takes its `.10` address,
-the method the guide gives. It applies the policy only if the CIDR is an IPv4 network
-EKS allows (a `/12` to `/24` ending in `.0`), because `ApplicationNetworkPolicy` does not
-validate `cidr` and would store a malformed rule that matches nothing (#104). On an IPv6
-cluster, use the `::a` address of `serviceIpv6Cidr` and fill in `<COREDNS_IP>` by hand.
+To see your cluster's IP family and service CIDRs:
 
 ```bash
-SERVICE_CIDR=$(aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION \
-  --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text \
-  | grep -Ex '((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}0/(1[2-9]|2[0-4])')
-if [ -z "$SERVICE_CIDR" ]; then
-  echo "no IPv4 service CIDR read for $CLUSTER_NAME: nothing was applied" >&2
-else
-  COREDNS_IP="${SERVICE_CIDR%.0/*}.10"
-  echo "cluster DNS address: $COREDNS_IP"
-  sed "s|<COREDNS_IP>|$COREDNS_IP|" egress-policy.yaml | kubectl apply -f -
-  until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/coding-agent-egress-'; do sleep 2; done
+aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --output text \
+  --query 'cluster.kubernetesNetworkConfig.[ipFamily,serviceIpv4Cidr,serviceIpv6Cidr]'
+```
+
+[`coredns-cidr.sh`](coredns-cidr.sh) runs that command and applies the rule. It stops with an
+error if the service CIDR is missing or malformed, because `ApplicationNetworkPolicy` does
+not validate `cidr` and would store a malformed rule that matches nothing (#104). Each
+command below runs only if the one before it worked, so nothing is applied after that error:
+
+```bash
+COREDNS_CIDR=$(./coredns-cidr.sh $CLUSTER_NAME $AWS_REGION) &&
+  echo "cluster DNS address: $COREDNS_CIDR" &&
+  sed "s|<COREDNS_CIDR>|$COREDNS_CIDR|" egress-policy.yaml | kubectl apply -f - &&
+  until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/coding-agent-egress-'; do sleep 2; done &&
   kubectl get applicationnetworkpolicies,policyendpoints
-fi
 ```
 
 Wait for the `PolicyEndpoint` named after `coding-agent-egress` before you start the

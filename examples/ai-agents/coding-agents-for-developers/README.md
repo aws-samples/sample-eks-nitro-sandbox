@@ -93,6 +93,7 @@ the images record what they installed.
 | [`deploy/app-policy.yaml`](deploy/app-policy.yaml) | The app's network policy: no ingress from the pod network |
 | [`iam/`](iam/) | The Bedrock, Codex, App and Mount role policies and trusts, and the per-session mount session policy |
 | [`scripts/setup.sh`](scripts/setup.sh), [`scripts/clean.sh`](scripts/clean.sh) | Create everything and apply it; remove it |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the egress policy |
 | `.env.example` | The local values the blueprint needs; copy to `.env`, which git ignores |
 
 ## Quick start
@@ -806,7 +807,7 @@ spec:
         - { protocol: TCP, port: 7681 }
   egress:
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -838,7 +839,7 @@ spec:
 | `podSelector`, `agent-cli: <CLI>` | Selects this CLI's session pods. |
 | `policyTypes`, `Ingress` and `Egress` | Default-deny both ways, so only the rules below are allowed. |
 | `ingress` from `app: agent-app` on 7681 | Admits the app's pods, to `session-bridge` only (see [How the terminal reaches the pod](#how-the-terminal-reaches-the-pod)). Everything else in is denied, including other session pods. The label is what the rule trusts, so whoever can create pods in this namespace can pass it; the bridge's token and pinned certificate still stand behind it. The session's start and stop use the Kubernetes exec API, which is not pod network traffic. |
-| `egress` to `<COREDNS_IP>` on 53 | DNS on UDP and TCP 53 to the cluster's DNS address only. That address is the `.10` address of the cluster's IPv4 service CIDR (`10.100.0.0/16` gives `10.100.0.10`), the nameserver in every pod's `resolv.conf`. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. `setup.sh` reads the CIDR with `aws eks describe-cluster`, takes its `.10` address as the Amazon EKS User Guide describes in [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address), and fills it in. It stops before creating anything if the cluster has no IPv4 service CIDR. Port 53 to any address would let code in the sandbox reach any DNS server on the internet. That code could then send data out over DNS or reach a VPN listening on port 53. |
+| `egress` to `<COREDNS_CIDR>` on 53 | DNS on UDP and TCP 53 to the cluster's DNS address only. It is the nameserver in every pod's `resolv.conf`. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. [`coredns-cidr.sh`](scripts/coredns-cidr.sh) reads the service CIDR with `aws eks describe-cluster`. It applies the rule in the Amazon EKS User Guide, [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4 it takes the `.10` address, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6 it appends `a` to the network address, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. `setup.sh` stops before creating anything if the service CIDR is missing or malformed. Port 53 to any address would let code in the sandbox reach any DNS server on the internet. That code could then send data out over DNS or reach a VPN listening on port 53. |
 | `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the pod's role (the Bedrock role, or the Codex role for Codex). kiro-cli's pods have no role, so the agent gives them no credential. |
 | `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, including `api.github.com` for the GitHub CLI, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |
 | `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. They are ENIs in the cluster VPC reached by resolved IP, so `setup.sh` resolves this file system's mount-target IPs and fills in one `/32` per target -- egress on 2049 is allowed to the blueprint's own mount targets only, not to anything on 2049 in the VPC. |

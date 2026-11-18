@@ -1,5 +1,5 @@
 # Egress policy for the session sandbox pods, one per CLI. setup.sh renders it for each
-# CLI, filling <CLI>, <COREDNS_IP> (the cluster's DNS address), <MOUNT_TARGET_CIDRS> (the
+# CLI, filling <CLI>, <COREDNS_CIDR> (the cluster's DNS address), <MOUNT_TARGET_CIDRS> (the
 # S3 Files mount-target IPs, one ipBlock each) and <AWS_REGION>. One ingress is allowed: the app's pods, to session-bridge on TCP
 # 7681. Everything else in is denied, including from other session pods.
 #
@@ -29,14 +29,14 @@ spec:
       ports:
         - { protocol: TCP, port: 7681 }
   egress:
-    # DNS on port 53 to one address only: <COREDNS_IP>, the cluster's DNS address (the .10
-    # address of its service CIDR), which is the nameserver in every pod's resolv.conf. On
-    # EKS Auto Mode the node answers it; there is no kube-dns Service. setup.sh reads the
-    # service CIDR with aws eks describe-cluster and fills the address in. Port 53 to any
-    # address would let code in the sandbox reach any DNS server on the internet. That code
-    # could then send data out over DNS or reach a VPN listening on port 53 (#226).
+    # DNS on port 53 to one address only: <COREDNS_CIDR>, the cluster's DNS address, which
+    # is the nameserver in every pod's resolv.conf. On EKS Auto Mode the node answers it;
+    # there is no kube-dns Service. scripts/coredns-cidr.sh works it out from the service
+    # CIDR (10.100.0.10/32, or fd12:3456:789a::a/128 on IPv6) and setup.sh fills it in.
+    # Port 53 to any address would let code in the sandbox reach any DNS server on the
+    # internet, and so send data out over DNS or reach a VPN listening on port 53 (#226).
     - to:
-        - ipBlock: { cidr: <COREDNS_IP>/32 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

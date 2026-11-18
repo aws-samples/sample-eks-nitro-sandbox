@@ -243,6 +243,12 @@ EFS_CSI_NODE_ROLE_ARN="$(aws_r eks describe-pod-identity-association --cluster-n
   || die "unexpected CSI node role ARN: $EFS_CSI_NODE_ROLE_ARN"
 echo "  CSI node principal (read, not changed): $EFS_CSI_NODE_ROLE_ARN"
 write_env
+# The cluster's DNS address for the egress policy's DNS rule (see coredns-cidr.sh). Read it
+# now, before anything is created; it stops on a missing or malformed service CIDR.
+# shellcheck source=coredns-cidr.sh
+. "$SAMPLE_DIR/scripts/coredns-cidr.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr "$CLUSTER_NAME" "$AWS_REGION")" ||
+  die "could not work out the DNS address of cluster $CLUSTER_NAME (see the line above)"
 
 # ---- 2. The sample's own AWS resources. ----
 echo "Step 2/5: create the sample's security group, file system, mount targets and access point"
@@ -470,15 +476,16 @@ fi
 rm -f "$ns_errf"
 
 # The egress policy: render the checked-in deploy/egress-policy.yaml so the file the page shows
-# is the file that is applied. The DNS rule is already a literal 0.0.0.0/0 in the file (DNS is
-# allowed to any address), so the only thing to render is <MOUNT_TARGET_BLOCK>, expanded into
-# one `- ipBlock: { cidr: <ip>/32 }` line per mount-target IP, preserving the block's indentation.
+# is the file that is applied. It fills <COREDNS_CIDR>, the cluster's DNS address read in step 1,
+# and expands <MOUNT_TARGET_BLOCK> into one `- ipBlock: { cidr: <ip>/32 }` line per
+# mount-target IP, preserving the block's indentation.
 # Done in Python so neither the shell word-splits the IP list nor a placeholder in a comment is
 # corrupted.
-python3 - "$SAMPLE_DIR/deploy/egress-policy.yaml" $MOUNT_TARGET_IPS <<'PY' | $KUBECTL apply -n "$NAMESPACE" -f -
+python3 - "$SAMPLE_DIR/deploy/egress-policy.yaml" "$COREDNS_CIDR" $MOUNT_TARGET_IPS <<'PY' | $KUBECTL apply -n "$NAMESPACE" -f -
 import re, sys
 path = sys.argv[1]
-mt_ips = sys.argv[2:]
+coredns_cidr = sys.argv[2]
+mt_ips = sys.argv[3:]
 with open(path) as f:
     out = []
     for line in f.read().splitlines():
@@ -488,7 +495,7 @@ with open(path) as f:
             out.extend(f"{indent}- ipBlock: {{ cidr: {ip}/32 }}" for ip in mt_ips)
         else:
             out.append(line)
-text = "\n".join(out)
+text = "\n".join(out).replace("<COREDNS_CIDR>", coredns_cidr)
 text = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
 sys.stdout.write(text + "\n")
 PY

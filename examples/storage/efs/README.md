@@ -64,7 +64,8 @@ The files:
 | File | What it is |
 |---|---|
 | [`deploy/efs.yaml`](deploy/efs.yaml) | The blueprint's non-default `nitro-sandbox-efs` StorageClass, a static access-point PV (mount options `tls,iam`), its `ReadWriteMany` PVC, a workload ServiceAccount with no identity, and the writer and reader `isolated-sandbox` pods. |
-| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS on port 53 to any address and NFS (TCP 2049) to the mount targets, deny all ingress. |
+| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS to the cluster's DNS address and NFS (TCP 2049) to the mount targets, deny all ingress. |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the egress policy |
 | [`iam/file-system-policy.json`](iam/file-system-policy.json) | The EFS file system policy template: TLS required, this access point only, `ClientMount`/`ClientWrite` only, the CSI node principal only. |
 | [`scripts/setup.sh`](scripts/setup.sh) | Checks the EFS CSI driver (shared, reused, never changed); creates the NFS security group, file system, mount targets and access point; applies the file system policy; then deploys the namespace, the egress policy, the StorageClass, the PV, the PVC and the two pods. |
 | [`scripts/clean.sh`](scripts/clean.sh) | Deletes the Kubernetes objects; `--delete-aws-resources` also releases the access point, mount targets, file system and security group. |
@@ -325,11 +326,12 @@ blueprint restricts their egress with an `ApplicationNetworkPolicy`, an EKS Auto
 NetworkPolicy, and does not set `sandbox.amazonaws.com/network-isolated` on them, because that
 would remove the device used to reach the mount target.
 
-[`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) allows DNS on port 53 to any address
+[`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) allows DNS to the cluster's DNS address
 and NFS to the mount targets, and denies everything else, including all ingress. It is shown
-here as it is in the repository, with its one placeholder: `setup.sh` (Step 5, the deploy)
-expands `<MOUNT_TARGET_BLOCK>` into one `ipBlock` line per mount-target IP, from the addresses
-it recorded in `.env`. The DNS rule is a literal `0.0.0.0/0` and needs no substitution.
+here as it is in the repository, with its two placeholders: `setup.sh` (Step 5, the deploy)
+fills `<COREDNS_CIDR>` with the cluster's DNS address and expands `<MOUNT_TARGET_BLOCK>` into one `ipBlock` line per mount-target IP, from the addresses
+it recorded in `.env`. It reads the DNS address in Step 1 and stops there if the service CIDR
+is missing or malformed.
 
 ```yaml
 spec:
@@ -341,7 +343,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -355,15 +357,16 @@ spec:
 | --- | --- |
 | `podSelector: app=efs-shared` | Selects the writer and reader pods. |
 | `policyTypes: [Ingress, Egress]` | Governs both directions; with no ingress rule, all ingress is denied. |
-| First egress rule, `0.0.0.0/0` port 53 | DNS to any address on UDP and TCP 53. On EKS Auto Mode CoreDNS runs as a per-node systemd service rather than a pod behind a ClusterIP, so the resolver a pod reaches is node-local; allowing port 53 to any address keeps name resolution working wherever Auto Mode places it. DNS is name resolution only, so opening it broadly is safe; the rule still opens only the two DNS ports. |
+| First egress rule, `<COREDNS_CIDR>` port 53 | DNS on UDP and TCP 53 to the cluster's DNS address only. It is the nameserver in every pod's `resolv.conf`. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. [`coredns-cidr.sh`](scripts/coredns-cidr.sh) reads the service CIDR with `aws eks describe-cluster`. It applies the rule in the Amazon EKS User Guide, [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4 that is the `.10` address, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6 it is the network address with `a` appended, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. Port 53 to any address would let code in the sandbox reach any DNS server on the internet. That code could then send data out over DNS or reach a VPN listening on port 53. |
 | Second egress rule, `<MOUNT_TARGET_BLOCK>` | NFS (TCP 2049) to each EFS mount-target IP, one per Availability Zone. `setup.sh` expands one `- ipBlock: { cidr: <ip>/32 }` line per address from `aws efs describe-mount-targets`. |
 
 Network policy is turned on once per cluster through the `amazon-vpc-cni` ConfigMap, as the
 [coding agent](../../getting-started/coding-agent/README.md) page describes; `setup.sh` waits
 for the policy's `PolicyEndpoint` to appear before it starts the pods. The policy is enforced
-on the node, outside the guest, so a command inside the sandbox cannot change it. Its limit:
-DNS is open on port 53 to any address, so a resolver is always reachable, and a pod can
-always reach its own node. Everything beyond DNS and the mount targets is denied.
+on the node, outside the guest, so a command inside the sandbox cannot change it. Its limits:
+a pod can always reach its own node. The cluster's resolver also still answers any name, so a
+process in the sandbox can still encode data in the names it looks up. Everything beyond DNS
+to the cluster's DNS address and the mount targets is denied.
 
 With only DNS and NFS allowed, an outbound internet connection from inside the sandbox is
 refused:

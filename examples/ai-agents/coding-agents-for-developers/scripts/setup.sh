@@ -85,20 +85,15 @@ npol="$("${KCTL[@]}" get configmap -n kube-system amazon-vpc-cni \
   || die "network policy enforcement is off. Turn it on once per cluster:
   kubectl apply -f ../../getting-started/coding-agent/enable-network-policy.yaml"
 
-# The cluster's DNS address, for the egress policy's DNS rule. It is the .10 address of the
-# cluster's IPv4 service CIDR, so 10.100.0.0/16 gives 10.100.0.10. The Amazon EKS User Guide
-# gives this method in "Use Network Policies with EKS Auto Mode". Read it now, before
-# anything is created. Stop unless the CIDR is an IPv4 network EKS allows (a /12 to /24
-# ending in .0). ApplicationNetworkPolicy does not validate cidr, and a malformed rule would
-# match nothing and leave the pods without DNS. This sample supports IPv4 clusters only.
-SERVICE_CIDR="$(aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" \
-  --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text)" \
-  || die "could not read the service CIDR of $CLUSTER_NAME; retry setup"
-cidr_re='^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}0/(1[2-9]|2[0-4])$'
-[[ "$SERVICE_CIDR" =~ $cidr_re ]] \
-  || die "cluster $CLUSTER_NAME has no IPv4 service CIDR this sample can use (found: ${SERVICE_CIDR:-none}). This sample needs an IPv4 cluster."
-COREDNS_IP="${SERVICE_CIDR%.0/*}.10"
-echo "cluster DNS address: $COREDNS_IP (from service CIDR $SERVICE_CIDR)"
+# The cluster's DNS address, for the egress policy's DNS rule: 10.100.0.10/32 for the IPv4
+# service CIDR 10.100.0.0/16, or fd12:3456:789a::a/128 for the IPv6 one fd12:3456:789a::/108.
+# coredns-cidr.sh reads it from the cluster and says how. Read it now, before anything is
+# created; the helper stops on a missing or malformed service CIDR.
+# shellcheck source=coredns-cidr.sh
+. "$HERE/coredns-cidr.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr "$CLUSTER_NAME" "$AWS_REGION")" \
+  || die "could not work out the DNS address of cluster $CLUSTER_NAME (see the line above)"
+echo "cluster DNS address: $COREDNS_CIDR"
 
 # The EFS CSI node role needs ClientMount on this file system AND the ability to let the
 # app's per-session credential mount: on this cluster the mount uses the credential the
@@ -378,7 +373,7 @@ for cli in "${clis[@]}"; do
       /^<MOUNT_TARGET_CIDRS>$/ { printf "%s", mtc; next }
       { print }' \
       "$ROOT/deploy/egress-policy.yaml" \
-    | sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<COREDNS_IP>|$COREDNS_IP|g" \
+    | sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" \
     | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 done
 

@@ -97,6 +97,7 @@ The files:
 | [`deploy/rbac.yaml`](deploy/rbac.yaml) | The identities, and what the launcher may do: manage `SandboxClaims` and read `Sandboxes` |
 | [`scripts/setup_agent.py`](scripts/setup_agent.py), [`submit.py`](scripts/submit.py), [`cleanup.py`](scripts/cleanup.py) | Run on your machine with the application key: create the agent, start a session, clean up sessions and claims |
 | [`scripts/check-egress.py`](scripts/check-egress.py) | The egress check (the two allowed hosts and two refused), piped into a sandbox from your machine |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the network policy. Run it on your machine. |
 | `.env.example` | The values the blueprint needs; copy it to `.env`, which git ignores |
 
 ## How the hand-off works
@@ -364,7 +365,7 @@ spec:
   ingress: []        # deny all ingress; the sandbox has no network intake
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -376,12 +377,29 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-Apply both policies, and wait for the sandbox policy's `PolicyEndpoint`:
+The DNS rule allows the cluster's DNS address only. The Amazon EKS User Guide gives the rule in
+[Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4, take the `.10` address of the
+service CIDR, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6, append `a` to the network
+address, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. To see your cluster's IP
+family and service CIDRs:
 
 ```bash
-kubectl apply -f deploy/egress-policy.yaml
-kubectl apply -f deploy/launcher-ingress.yaml
-until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/openai-sandbox-executor-egress-'; do sleep 2; done
+aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --output text \
+  --query 'cluster.kubernetesNetworkConfig.[ipFamily,serviceIpv4Cidr,serviceIpv6Cidr]'
+```
+
+[`coredns-cidr.sh`](scripts/coredns-cidr.sh) runs that command and applies the rule. It stops
+with an error if the service CIDR is missing or malformed, and each command below runs only if
+the one before it worked, so nothing is applied after that error.
+
+Apply both policies, the sandbox policy with that address filled in, and wait for the sandbox
+policy's `PolicyEndpoint`:
+
+```bash
+COREDNS_CIDR=$(scripts/coredns-cidr.sh $CLUSTER_NAME $AWS_REGION) &&
+  sed "s|<COREDNS_CIDR>|$COREDNS_CIDR|" deploy/egress-policy.yaml | kubectl apply -f - &&
+  kubectl apply -f deploy/launcher-ingress.yaml &&
+  until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/openai-sandbox-executor-egress-'; do sleep 2; done
 ```
 
 **Step 6: Deploy the sandbox and the launcher.** Here is the part of
@@ -722,7 +740,7 @@ its YAML does one job:
 | `podSelector`, `app: openai-sandbox-executor` | Selects the sandbox pods. The launcher is not selected. |
 | `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions, so only the rules below are allowed. |
 | `ingress`, empty | No pod may connect to a sandbox. The launcher delivers the session through the claim env, not the network, so a sandbox needs no inbound rule. |
-| `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the sandbox look up names, with DNS allowed to any address. |
+| `egress`, to `<COREDNS_CIDR>` on UDP and TCP 53 | Lets the sandbox look up names at the cluster's DNS address only, the nameserver in every pod's `resolv.conf`. Port 53 to any address would let a command the model runs reach any DNS server on the internet. That command could then send data out over DNS or reach a VPN listening on port 53. |
 | `egress`, to the two `domainNames` on TCP 443 | Lets the executor's forwarder register at `api.openai.com` and exchange commands and results with `codex-cloud-environments.chatgpt.com`. |
 
 Anything that matches no rule is refused: the public internet, AWS service endpoints such as
