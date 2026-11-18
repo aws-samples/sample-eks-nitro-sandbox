@@ -104,6 +104,8 @@ nav:
   - Isolation:
       - Network policy: isolation/network-policy/README.md
       - Sandbox limits: isolation/sandbox-limits/README.md
+  - Security:
+      - Runtime detection: security/runtime-detection/README.md
   # A menu section may list samples from more than one examples/ folder, but each folder's
   # samples stay under one section (scripts/check-sample-index.sh).
   - AI Agents:
