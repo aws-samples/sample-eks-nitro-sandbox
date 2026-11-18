@@ -300,7 +300,7 @@ def test_central_gateway_has_separate_tenant_slots_and_one_bedrock_identity() ->
         "header": {"name": "authorization", "prefix": "Bearer "}
     }
     assert len(api_key["keys"]) >= 2
-    assert all(key["allowedModels"] == ["claude-haiku"] for key in api_key["keys"])
+    assert all(key["allowedModels"] == ["nova-lite"] for key in api_key["keys"])
 
     hash_sources = {
         entry["valueFrom"]["secretKeyRef"]["key"]

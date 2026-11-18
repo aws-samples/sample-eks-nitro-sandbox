@@ -182,6 +182,86 @@ def test_webhook_pod_has_restricted_security_and_no_service_account_token() -> N
     assert container["readinessProbe"]["httpGet"]["scheme"] == "HTTPS"
 
 
+def test_webhook_replicas_spread_across_hosts_and_prefer_zones() -> None:
+    documents = _yaml_documents(DEPLOY / "adapter-webhook.yaml")
+    deployment = _one(
+        documents,
+        "Deployment",
+        "openclaw-enterprise-nitro-adapter",
+    )
+    constraints = deployment["spec"]["template"]["spec"]["topologySpreadConstraints"]
+    selector = {
+        "matchLabels": {"app.kubernetes.io/name": "openclaw-enterprise-nitro-adapter"}
+    }
+
+    assert deployment["spec"]["replicas"] == 2
+    assert constraints == [
+        {
+            "maxSkew": 1,
+            "topologyKey": "kubernetes.io/hostname",
+            "whenUnsatisfiable": "DoNotSchedule",
+            "nodeTaintsPolicy": "Honor",
+            "labelSelector": selector,
+        },
+        {
+            "maxSkew": 1,
+            "topologyKey": "topology.kubernetes.io/zone",
+            "whenUnsatisfiable": "ScheduleAnyway",
+            "labelSelector": selector,
+        },
+    ]
+
+
+def test_managed_namespace_label_is_immutable_and_fails_closed() -> None:
+    documents = _yaml_documents(DEPLOY / "adapter-webhook.yaml")
+    name = "protect-openclaw-enterprise-namespace-label"
+    policy = _one(documents, "ValidatingAdmissionPolicy", name)
+    binding = _one(documents, "ValidatingAdmissionPolicyBinding", name)
+
+    assert policy["apiVersion"] == "admissionregistration.k8s.io/v1"
+    assert policy["spec"]["failurePolicy"] == "Fail"
+    assert set(policy["spec"]) == {
+        "failurePolicy",
+        "matchConstraints",
+        "validations",
+    }
+    assert policy["spec"]["matchConstraints"] == {
+        "resourceRules": [
+            {
+                "apiGroups": [""],
+                "apiVersions": ["v1"],
+                "operations": ["UPDATE"],
+                "resources": [
+                    "namespaces",
+                    "namespaces/status",
+                    "namespaces/finalize",
+                ],
+                "scope": "Cluster",
+            }
+        ]
+    }
+    validation = policy["spec"]["validations"]
+    assert len(validation) == 1
+    assert validation[0]["expression"] == (
+        "!has(oldObject.metadata.labels) || "
+        "!("
+        "'app.kubernetes.io/managed-by' in oldObject.metadata.labels"
+        ") || "
+        "oldObject.metadata.labels['app.kubernetes.io/managed-by'] "
+        "!= 'openclaw-enterprise' || "
+        "(has(object.metadata.labels) && "
+        "'app.kubernetes.io/managed-by' in object.metadata.labels && "
+        "object.metadata.labels['app.kubernetes.io/managed-by'] "
+        "== 'openclaw-enterprise')"
+    )
+
+    assert binding["apiVersion"] == "admissionregistration.k8s.io/v1"
+    assert binding["spec"] == {
+        "policyName": name,
+        "validationActions": ["Deny"],
+    }
+
+
 def test_webhook_certificate_and_service_names_match() -> None:
     documents = _yaml_documents(DEPLOY / "adapter-webhook.yaml")
     certificate = _one(

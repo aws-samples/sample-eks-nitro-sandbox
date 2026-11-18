@@ -72,7 +72,7 @@ aws cloudformation deploy \
     SampleGitRevision="$(git rev-parse HEAD)" \
     BuilderImageRepositoryName="replace-with-reviewed-builder-repository" \
     BuilderImageDigest="sha256:replace-with-64-lowercase-hex-characters" \
-    TrustedBuildInvokerArn="arn:aws:iam::123456789012:role/replace-with-release-role"
+    TrustedBuildInvokerArn="arn:aws:iam::<ACCOUNT_ID>:role/<RELEASE_ROLE_NAME>"
 ```
 
 Assume the generated invocation role and start the fixed workflow. Its definition

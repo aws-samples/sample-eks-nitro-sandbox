@@ -1,207 +1,427 @@
 # OpenClaw Enterprise on EKS with Nitro sandboxes
 
-This sample adds an admission adapter and supporting infrastructure to run
-OpenClaw Enterprise (OCE) gateway workloads in Nitro sandboxes. It is a
-sample-specific compatibility layer, not an upstream OCE support statement.
+This blueprint installs OpenClaw Enterprise (OCE) on Amazon EKS and runs two
+tenant runtimes in separate Nitro sandboxes. Both tenants call Amazon Nova Lite
+through one private, shared AgentGateway. Tenant runtimes receive no AWS
+identity.
 
-See [Tenant isolation boundary](TENANT-ISOLATION.md) for the compute, storage,
-network, credential, gateway, and database controls—and their limits.
+Live validation is still pending. Commands below therefore use explicit output
+placeholders instead of claiming a successful run.
 
-## Scope and limitations
+![Architecture showing two OCE tenant runtimes in separate Nitro sandboxes using a shared AgentGateway](images/openclaw-enterprise-architecture.png)
 
-- This sample does not cover human SSO, sustained-load testing, high
-  availability, or deliberate node-drain testing.
-- This sample does not add a second sandbox boundary for nested OpenClaw
-  execution inside the Nitro sandbox.
-- The private model gateway and VM-isolated runtime storage adaptation target
-  the documented OCE pod shape. Verify compatibility before changing OCE
-  versions.
+*Figure 1: OCE manages the tenant runtimes. AgentGateway is the only component
+that receives AWS identity and calls Amazon Bedrock.*
+
+Editable diagrams:
+[architecture](images/openclaw-enterprise-architecture.drawio),
+[model request](images/openclaw-enterprise-model-request.drawio), and
+[pod admission](images/openclaw-enterprise-pod-admission.drawio).
+
+## Prerequisites
+
+- An EKS Auto Mode cluster with the `isolated-sandbox` RuntimeClass.
+- Access to Amazon Bedrock model `amazon.nova-lite-v1:0` in `us-west-2`.
+- Private OCE authentication and Agent DNS names that resolve from the cluster.
+- cert-manager installed in the cluster.
+- A reviewed, digest-pinned CodeBuild builder image in private Amazon ECR.
+- AWS CLI v2, Bash, Git, Go, Helm, `jq`, `kubectl`, OpenSSL, Python 3, and
+  [Mike Farah `yq`](https://github.com/mikefarah/yq) version 4.
+- Kubernetes permission to create cluster-scoped admission resources and a
+  StorageClass, update the `amazon-vpc-cni` ConfigMap field, and create
+  `pods/portforward` requests.
+- AWS permission to manage the blueprint IAM role and EKS Pod Identity
+  association.
+
+Clone the repository and enter its root directory:
+
+```bash
+git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
+cd sample-eks-nitro-sandbox
+```
+
+Keep credentials, account details, generated state, receipts, and validation
+evidence outside the repository.
 
 ## Architecture
 
-- The [admission adapter](adapter/adapter.py) runs as the two fail-closed webhooks defined
-  in [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml). The mutating
-  webhook receives every Pod creation request in OCE-managed namespaces,
-  adapts the embedded `gateway` workload role, and rejects unsupported pod
-  shapes. It replaces OCE's
-  `openclaw.dev/network-profile=broad-egress-v1` label with
-  `nitro-central-gateway-v1`. The validating webhook rechecks the final stored
-  Pod shape and denies every ephemeral-container update in those namespaces.
-- The [CodeBuild source-build path](build/README.md) builds the adapter, a separate
-  ownership helper, and pinned OCE controller and runtime source into four
-  private ECR repositories. It waits for image scans and exports
-  digest-qualified deployment references.
-- [`deploy/agentgateway.yaml`](deploy/agentgateway.yaml) exposes AgentGateway only
-  as an HTTPS ClusterIP Service. This central AgentGateway alone receives AWS
-  identity through EKS Pod Identity and invokes the centrally configured
-  Amazon Bedrock model.
-- [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh)
-  installs the AgentGateway CA as an immutable tenant ConfigMap and applies
-  default-deny egress. Its allow policies select
-  `openclaw.dev/network-profile=nitro-central-gateway-v1` and permit only DNS
-  plus HTTPS to the central AgentGateway Service.
+OCE creates and controls each tenant runtime. Its native shared
+`modelProvider` uses the `openai-responses` protocol and the private HTTPS URL
+`https://agentgateway.openclaw-enterprise-agw.svc.cluster.local/v1`.
+AgentGateway authenticates separate tenant keys and makes the Bedrock request
+with EKS Pod Identity.
 
-### Controller trust chain
+The admission adapter is a compatibility layer for the pinned OCE pod shape. It
+sets the RuntimeClass, replaces the incompatible state PVC mount, installs the
+private CA trust, and applies the related strict Nitro compatibility changes.
+It does not implement or redirect model routing.
 
-The trust boundary follows Kubernetes controller ownership:
+Read [Tenant isolation boundary](TENANT-ISOLATION.md) before adapting this
+design.
 
-1. The OCE worker may create or update gateway Deployments.
-2. The Kubernetes Deployment controller may create or update their
-   ReplicaSets.
-3. Only configured ReplicaSet-controller identities may create Pods in
-   OCE-managed namespaces.
+![Model request path from each OCE runtime through private HTTPS AgentGateway to Amazon Bedrock](images/openclaw-enterprise-model-request.png)
 
-The admission adapter then verifies the expected Deployment, ReplicaSet, and
-Pod provenance and shape. A tenant cannot qualify a direct Pod request by
-copying trusted labels because its caller identity is outside this controller
-chain. The request fails before forged labels can grant the trusted workload
-path.
+*Figure 2: Tenant runtimes use OCE's native model provider path. The shared,
+stateless AgentGateway holds no tenant runtime state.*
 
-The adapter is a compatibility layer for one pinned OCE embedded-gateway pod
-shape, not an upstream OCE compatibility guarantee. It verifies the controller
-owner, labels, ServiceAccount, PVC, projected service-principal token, runtime
-image, two initial init containers, and final adapted Pod. It rejects sidecars,
-extra init containers, custom service-account token projections, and other
-unsupported variants. Unrelated volumes may remain only when they do not violate
-the protected state, path, token, or image contracts. For each compatible
-gateway pod, the adapter:
+## Versions
 
-- Selects the `isolated-sandbox` runtime class. It adds the restricted network
-  profile when the label is absent, replaces OCE's `broad-egress-v1` profile,
-  and rejects any other profile.
-- Rewrites the designated runtime's `runtime-state` layout for Nitro Pods. It
-  replaces the `/home/node` `subPath: home` mount with a whole-volume mount,
-  rebases nested `subPath` values from `home/<path>` to `<path>`, and patches
-  the expected `prepare-private-state` script to create those descendants at
-  the volume root.
-- Replaces OCE `openclaw-gateway-state` PVC `subPath` mounts below
-  `/home/node/.openclaw` with one PVC-root mount at `/home/node/.openclaw`, so
-  `client` remains a real directory. A follow-up init container creates
-  relative aliases inside `/gateway-state` only when a mount path and target
-  differ. Before applying mount-specific checks, it rejects every volume mount
-  path that is not a canonical absolute path, including paths with repeated
-  separators or traversal segments.
-- Sets `automountServiceAccountToken: false` and removes the exact
-  auto-injected `kube-api-access-*` volume and mount shape. It allows only the
-  exact OCE service-principal token projection and rejects other
-  service-account token projections. It pins the runtime's `HOME` to
-  `/home/node` and allows only empty scratch volumes, the verified agent-state
-  claim, and the exact OCE configuration, service-principal token, and
-  AgentGateway CA inputs.
-- Mounts the tenant `agentgateway-ca` ConfigMap at `/etc/agentgateway-ca`, sets
-  `NODE_EXTRA_CA_CERTS=/etc/agentgateway-ca/ca.crt`, removes OCE's
-  `runtime-temporary` mount at `/tmp`, requires a read-only root filesystem,
-  and sets `TMPDIR=/dev/shm`. It rejects other mounts that overlap `/tmp` or
-  `/dev/shm`.
-- Protects immutable `gateway-*-rev-*` ConfigMaps so only the OCE worker can
-  create, update, or delete the configuration mounted by a runtime.
-
-The adapter deployment includes a NetworkPolicy that permits ingress only on
-its TLS listener port, 8443, and adds no egress allowance. Kubernetes
-NetworkPolicies are additive, so cluster operators must review other policies
-that select these pods. The adapter initiates no network connections.
-- Adds a dedicated root init container from the separately configured
-  `OCE_OWNERSHIP_INIT_IMAGE`. The adapter requires an exact digest, rejects the
-  workload runtime image as the helper, and denies the pod when the setting is
-  absent or invalid. The init mounts the `runtime-state` volume root at
-  `/home/node` and sets it to mode `0700`, UID 1000 and GID 1000. It treats
-  `.openclaw/control` as a migration-only optional directory: the helper repairs
-  it when present and skips it when absent on a clean PVC. Core runtime
-  directories remain mandatory and fail closed. Permission repair stays
-  limited to `/home/node`, `/home/node/.openclaw`, each direct mapped target,
-  `client/credentials.sqlite`, and the runtime pin database with its known
-  SQLite sidecars.
-- Replaces each runtime container's security context with a fixed allowlist:
-  UID and GID 1000, non-root execution, `privileged: false`, no privilege
-  escalation, a read-only root filesystem, all Linux capabilities dropped, and
-  the `RuntimeDefault` seccomp profile. It rejects privileged, unmasked
-  `/proc`, and unconfined seccomp overrides. The runtime command never performs
-  the privileged repair.
-- Replaces the expected OCE state-preparation init container's security
-  context with non-root UID and GID 1000, a read-only root filesystem, all
-  Linux capabilities dropped, and `RuntimeDefault` seccomp. Any other prep
-  contract is rejected rather than adapted.
-- Rejects an ordinary runtime or sidecar container that mounts
-  `openclaw-gateway-state` at `/gateway-state`. Only the expected init-container
-  path and the adapter-generated helpers receive the PVC root.
-- Revalidates the complete post-mutation Pod through a separate validating
-  webhook and denies ephemeral containers with `failurePolicy: Fail`. This
-  catches a later mutator changing a trusted field and prevents a debug
-  container from bypassing creation-time checks. It also means an unavailable
-  adapter blocks matching Pod creation and ephemeral-container updates.
-- Requires exact `repository@sha256:<digest>` image references. The adapter
-  rejects `envFrom` and explicit unsafe loader or shell-bootstrap variables on
-  adapted runtime containers. It also rejects arbitrary environment value
-  sources and accepts only OCE's Pod UID, gateway password, and
-  revision-bound harness secret references.
-
-Nitro presents OCE's `/tmp` `subPath` mount as group- and world-writable without
-the sticky bit, which OpenClaw's secure temporary-directory check rejects. The
-Nitro runtime already provides pod-local, writable, sticky `/dev/shm`, so
-OpenClaw can create its user-owned `0700` temporary directory there without a
-separate repair step. Because `/dev/shm` is memory-backed and capacity-limited,
-this workaround suits OpenClaw's small temporary control files, not large
-scratch data.
-
-Nitro presents OCE's `/home/node` `subPath` mount root as mode `2777`, owned by
-root with GID 1000. The whole-volume rewrite avoids exposing that mount root to
-the runtime. A small, statically linked Go helper owns this narrow
-ownership-repair boundary and exits before OpenClaw starts. It opens only an
-explicit relative-path allowlist beneath `/home/node` with Linux `openat2`
-constraints, rejects symbolic links and multiply linked regular files, and
-changes ownership and mode through the checked file descriptor. It repairs the
-required directories plus existing migration-only control state and known
-OpenClaw SQLite files and sidecars without walking the PVC recursively. This is
-an exact-path compatibility repair, not a general PVC repair. Keeping the
-helper in a separate scratch image avoids running the much larger workload
-image with ownership capabilities. The runtime still runs as non-root without
-Linux capabilities, but operators must build, scan, pin, and deploy the
-additional helper image correctly.
-
-The tenant allow policies select only the adapter's
-`nitro-central-gateway-v1` profile. Adapted runtime pods therefore do not match
-OCE's public HTTPS egress policy for `broad-egress-v1`. The tenant script
-resolves the AgentGateway ClusterIP and renders it as an explicit `/32`; it
-does not permit direct traffic to AgentGateway Pod IPs.
-
-## One-time EKS Auto Mode prerequisite
-
-Enable the VPC CNI network policy controller once per cluster before testing
-tenant isolation:
-
-```bash
-KUBE_CONTEXT='<explicit-kube-context>'
-kubectl config get-contexts "$KUBE_CONTEXT"
-kubectl --context "$KUBE_CONTEXT" --namespace kube-system \
-  patch configmap amazon-vpc-cni \
-  --type merge \
-  --patch '{"data":{"enable-network-policy":"true","enable-network-policy-controller":"true"}}'
-```
-
-Schedule workloads on nodes created after this change. Existing
-nodes do not gain network-policy enforcement in place.
-
-See [`scripts/README.md`](scripts/README.md) for tenant configuration and
-verification boundaries.
-
-Image digests, tenant identifiers, endpoints, credentials, and account details
-are deployment-specific. Do not commit them to source control. Configure the
-Amazon Bedrock region and model in the AgentGateway manifest for your
-deployment.
+| Component | Version or constraint |
+|---|---|
+| OpenClaw Enterprise | Commit `86c8c12310f691bb21651118ffffd6bfd460e9ff` |
+| AgentGateway | `v1.7.0`, digest-pinned in `deploy/agentgateway.yaml` |
+| Amazon Bedrock model | `amazon.nova-lite-v1:0` in `us-west-2` |
+| Adapter, controller, ownership helper, runtime | Digest-qualified outputs from one successful CodeBuild run |
+| `yq` | Mike Farah `yq` version 4 |
 
 ## Files
 
 | Path | Purpose |
 |---|---|
-| [`adapter/adapter.py`](adapter/adapter.py) | Admission mutation logic; its neighbouring files contain the webhook server and unit tests. |
-| [`build/README.md`](build/README.md) | CodeBuild, ECR and source-build resources. |
-| [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml) | Admission adapter deployment plus mutating and validating webhook configurations. |
-| [`deploy/agentgateway.yaml`](deploy/agentgateway.yaml) | Private AgentGateway, TLS, Service and ingress policy. |
-| [`deploy/tenant-model-gateway.yaml.tpl`](deploy/tenant-model-gateway.yaml.tpl) | Tenant default-deny and allowed egress policy template. |
-| [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Tenant CA and network-policy configuration. |
-| [`iam/pod-identity-trust.json`](iam/pod-identity-trust.json) | Pod Identity trust policy for the AgentGateway ServiceAccount. |
-| [`iam/bedrock-invoke.json`](iam/bedrock-invoke.json) | Restricted Amazon Bedrock invoke policy template. |
-| [`tests/test_adapter_contract.py`](tests/test_adapter_contract.py) | Static deployment and integration contracts; neighbouring files cover the build, gateway, and tenant configuration. |
-| [`tests/test_tenant_isolation_contract.py`](tests/test_tenant_isolation_contract.py) | Static contracts for compute, storage, network, credential, gateway, and documented database boundaries. |
-| [`TENANT-ISOLATION.md`](TENANT-ISOLATION.md) | Tenant isolation model, residual risks, and claim limits. |
-| [`VALIDATION.md`](VALIDATION.md) | Reproducible source, admission, network, credential, and model-path checks. |
+| `build/` | Build and scan the four deployable images. |
+| `deploy/` | Define AgentGateway, the admission adapter, storage, and network-policy settings. |
+| `scripts/setup-storage-class.sh` | Create or verify the blueprint-owned EKS Auto Mode StorageClass. |
+| `scripts/setup-agentgateway-pod-identity.sh` | Create or verify AgentGateway's IAM role, Bedrock policy, and Pod Identity association. |
+| `scripts/install-oce.sh` | Install the exact OCE revision in a terminal-managed topology. |
+| `scripts/configure-tenant-model-gateway.sh` | Add private CA trust and restricted egress to one OCE tenant namespace. |
+| `scripts/validate-live.sh` | Run the destructive two-tenant validation. |
+| `scripts/cleanup.sh` | Remove resources only after ownership checks pass. |
+
+**Step 1: Set local values and check access**
+
+Use one explicit kube context and kubeconfig throughout:
+
+```bash
+export SAMPLE_DIR='examples/ai-agents/openclaw-enterprise'
+export KUBECONFIG='<absolute-kubeconfig-path>'
+export KUBE_CONTEXT='<eks-kube-context>'
+export AWS_ACCOUNT_ID='<12-digit-account-id>'
+export AWS_REGION='us-west-2'
+export EKS_CLUSTER_NAME='<eks-cluster-name>'
+export PRIVATE_STATE_DIR='<private-directory-outside-the-repository>'
+
+chmod 600 "$KUBECONFIG"
+install -d -m 700 "$PRIVATE_STATE_DIR"
+kubectl --context "$KUBE_CONTEXT" config get-contexts "$KUBE_CONTEXT"
+kubectl --context "$KUBE_CONTEXT" get --raw=/readyz
+yq --version | grep -Eq 'version v?4\.'
+```
+
+```text
+TODO: output from the fresh run
+```
+
+**Step 2: Build and scan the images**
+
+Follow [Build the images](build/README.md#build-the-images). Wait for the
+workflow to succeed, then export its four digest-qualified outputs:
+
+```bash
+: "${ADAPTER_IMAGE:?set the successful CodeBuild output}"
+: "${CONTROLLER_IMAGE:?set the successful CodeBuild output}"
+: "${OWNERSHIP_INIT_IMAGE:?set the successful CodeBuild output}"
+: "${RUNTIME_IMAGE:?set the successful CodeBuild output}"
+```
+
+Use all four outputs from the same build. Do not substitute image tags.
+
+```text
+TODO: output from the fresh run
+```
+
+**Step 3: Configure storage and Auto Mode network policy**
+
+Create or verify the non-default, encrypted `gp3` StorageClass:
+
+```bash
+export RUNTIME_STORAGE_CLASS="$(
+  "$SAMPLE_DIR/scripts/setup-storage-class.sh" \
+    --kube-context "$KUBE_CONTEXT"
+)"
+test "$RUNTIME_STORAGE_CLASS" = 'openclaw-enterprise-gp3'
+```
+
+The script creates the StorageClass only when it is absent. It refuses to patch
+or adopt an existing resource with the same name unless the complete storage
+and ownership contract already matches.
+
+Enable the EKS Auto Mode network-policy controller:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" apply \
+  --server-side \
+  --field-manager=openclaw-enterprise-blueprint \
+  --filename "$SAMPLE_DIR/deploy/auto-mode-network-policy.yaml"
+```
+
+Do not patch `enable-network-policy`. EKS Auto Mode owns the network-policy
+implementation. This blueprint owns only the
+`enable-network-policy-controller` ConfigMap field when server-side apply
+succeeds without an ownership conflict.
+
+```text
+TODO: output from the fresh run
+```
+
+**Step 4: Install AgentGateway and Pod Identity**
+
+Create the AgentGateway namespace and ServiceAccount before the Pod Identity
+association:
+
+```bash
+yq ea '
+  select(
+    .kind == "Namespace" or
+    (.kind == "ServiceAccount" and .metadata.name == "agentgateway")
+  )
+' "$SAMPLE_DIR/deploy/agentgateway.yaml" |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
+
+"$SAMPLE_DIR/scripts/setup-agentgateway-pod-identity.sh" \
+  --aws-region "$AWS_REGION" \
+  --aws-account-id "$AWS_ACCOUNT_ID" \
+  --eks-cluster-name "$EKS_CLUSTER_NAME" \
+  --kube-context "$KUBE_CONTEXT"
+```
+
+Record the returned association ID for cleanup:
+
+```bash
+export POD_IDENTITY_ASSOCIATION_ID='<association-id-from-script-output>'
+```
+
+Create distinct tenant keys and the AgentGateway session key:
+
+```bash
+umask 077
+openssl rand -hex 32 >"$PRIVATE_STATE_DIR/tenant-a-agentgateway.key"
+openssl rand -hex 32 >"$PRIVATE_STATE_DIR/tenant-b-agentgateway.key"
+openssl dgst -sha256 -r "$PRIVATE_STATE_DIR/tenant-a-agentgateway.key" |
+  awk '{print $1}' >"$PRIVATE_STATE_DIR/tenant-a-sha256"
+openssl dgst -sha256 -r "$PRIVATE_STATE_DIR/tenant-b-agentgateway.key" |
+  awk '{print $1}' >"$PRIVATE_STATE_DIR/tenant-b-sha256"
+openssl rand -hex 32 >"$PRIVATE_STATE_DIR/agentgateway-session.key"
+
+kubectl --context "$KUBE_CONTEXT" \
+  --namespace openclaw-enterprise-agw create secret generic agw-client-key \
+  --from-file=tenant-a-sha256="$PRIVATE_STATE_DIR/tenant-a-sha256" \
+  --from-file=tenant-b-sha256="$PRIVATE_STATE_DIR/tenant-b-sha256" \
+  --dry-run=client --output=yaml |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
+
+kubectl --context "$KUBE_CONTEXT" \
+  --namespace openclaw-enterprise-agw create secret generic agw-session-key \
+  --from-file=key="$PRIVATE_STATE_DIR/agentgateway-session.key" \
+  --dry-run=client --output=yaml |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
+
+kubectl --context "$KUBE_CONTEXT" apply \
+  --filename "$SAMPLE_DIR/deploy/agentgateway.yaml"
+kubectl --context "$KUBE_CONTEXT" \
+  --namespace openclaw-enterprise-agw rollout status \
+  deployment/agentgateway
+```
+
+```text
+TODO: output from the fresh run
+```
+
+**Step 5: Install the admission adapter**
+
+Render all three digest-qualified image references before applying the
+manifest:
+
+```bash
+"$SAMPLE_DIR/scripts/render-adapter-manifest.sh" \
+  "$SAMPLE_DIR/deploy/adapter-webhook.yaml" \
+  "$ADAPTER_IMAGE" \
+  "$OWNERSHIP_INIT_IMAGE" \
+  "$RUNTIME_IMAGE" |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
+
+kubectl --context "$KUBE_CONTEXT" \
+  --namespace openclaw-enterprise-adapter rollout status \
+  deployment/openclaw-enterprise-nitro-adapter
+```
+
+Do not apply the raw adapter manifest. It contains image placeholders. Wait for
+the adapter before creating the first OCE Agent because its admission webhooks
+fail closed.
+
+![Admission flow binding OCE controllers, revisions, and pods to the expected Nitro-compatible shape](images/openclaw-enterprise-pod-admission.png)
+
+*Figure 3: The adapter accepts only the pinned controller chain and expected pod
+shape before applying the Nitro compatibility patch.*
+
+```text
+TODO: output from the fresh run
+```
+
+**Step 6: Install the pinned OCE revision**
+
+Clone OCE into a clean directory and verify the exact revision:
+
+```bash
+export OCE_SOURCE_DIR='<clean-openclaw-enterprise-checkout>'
+git clone https://github.com/openclaw/openclaw-enterprise.git "$OCE_SOURCE_DIR"
+git -C "$OCE_SOURCE_DIR" switch --detach \
+  86c8c12310f691bb21651118ffffd6bfd460e9ff
+test "$(git -C "$OCE_SOURCE_DIR" rev-parse HEAD)" = \
+  86c8c12310f691bb21651118ffffd6bfd460e9ff
+test -z "$(git -C "$OCE_SOURCE_DIR" status --porcelain)"
+```
+
+Use the disposable PostgreSQL mode only on an EKS cluster tagged
+`Environment=validation`:
+
+```bash
+export OCE_NAMESPACE='openclaw-system'
+export OCE_STATE_DIR="$PRIVATE_STATE_DIR/oce-install"
+export OCE_RECEIPT_DIR="$OCE_STATE_DIR/receipt"
+export OCE_VALIDATION_POSTGRES_IMAGE='<postgres-repository>@sha256:<digest>'
+
+"$SAMPLE_DIR/scripts/install-oce.sh" \
+  --aws-account-id "$AWS_ACCOUNT_ID" \
+  --aws-region "$AWS_REGION" \
+  --eks-cluster-name "$EKS_CLUSTER_NAME" \
+  --kubeconfig "$KUBECONFIG" \
+  --kube-context "$KUBE_CONTEXT" \
+  --oce-source "$OCE_SOURCE_DIR" \
+  --build-occ \
+  --controller-image "$CONTROLLER_IMAGE" \
+  --runtime-image "$RUNTIME_IMAGE" \
+  --auth-base-url 'https://<private-auth-host>' \
+  --agent-domain '<private-agent-domain>' \
+  --admin-email '<initial-admin-email>' \
+  --runtime-storage-class "$RUNTIME_STORAGE_CLASS" \
+  --pod-cidr '<cluster-pod-cidr>' \
+  --cluster-api-cidr '<eks-private-api-ip>/32' \
+  --state-dir "$OCE_STATE_DIR" \
+  --receipt "$OCE_RECEIPT_DIR" \
+  --namespace "$OCE_NAMESPACE" \
+  --validation-postgres \
+  --validation-postgres-image "$OCE_VALIDATION_POSTGRES_IMAGE"
+```
+
+This optional database is a single validation-only pod with `emptyDir`
+storage. Its data disappears when the pod or system namespace is removed.
+
+For an external database, omit the two validation flags and provide protected
+application URL, migration URL, and CA files plus at least one exact database
+`/32` CIDR. Both URLs must use a DNS hostname, `sslmode=verify-full`, and
+`sslrootcert=/etc/openclaw/database-ca/ca.pem`. The CA file must contain only
+trusted PEM CA certificates. See `install-oce.sh --help`.
+
+The installer uses `occ installation install`. It deliberately disables direct
+Pod API clients with an unmatched label selector. It also disables browser
+gateway routing and agent native administration. Use local `kubectl
+port-forward` for API administration.
+
+```text
+TODO: output from the fresh run
+```
+
+**Step 7: Onboard two tenants from the terminal**
+
+Follow [Onboard two tenants](scripts/README.md#onboard-two-tenants) once for
+tenant A and once for tenant B. Use separate OCE Namespaces, backing Kubernetes
+namespaces, AgentGateway keys, Agents, and validator service keys.
+
+Open the private OCE API on loopback in a dedicated terminal:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" \
+  --namespace "$OCE_NAMESPACE" \
+  port-forward --address=127.0.0.1 \
+  service/openclaw-enterprise-api 18080:8080
+```
+
+In another terminal:
+
+```bash
+export OCC_URL='http://127.0.0.1:18080'
+export OCC_SERVICE_KEY_FILE='<protected-bootstrap-service-key-response.json>'
+chmod 600 "$OCC_SERVICE_KEY_FILE"
+jq -e '.data.key | type == "string" and length > 0' \
+  "$OCC_SERVICE_KEY_FILE" >/dev/null
+```
+
+The local Kubernetes identity needs permission to read the Service and its
+selected Pod and to create `pods/portforward`. Port-forwarding bypasses
+in-cluster NetworkPolicy for the operator path and gives local processes on the
+workstation access to the forwarded API. Bind only to `127.0.0.1`, protect the
+service key, and stop the process when administration is complete.
+
+```text
+TODO: output from the fresh run
+```
+
+**Step 8: Validate the two-tenant boundary**
+
+Run the static contracts and the destructive live procedure in
+[Validation](VALIDATION.md). The live validator starts and stops its own local
+loopback port-forward. It does not deploy an API client pod.
+
+Do not publish successful output until a fresh run has completed against the
+exact OCE revision and image digests.
+
+```text
+TODO: output from the fresh run
+```
+
+## Good to know
+
+- The central AgentGateway is shared and stateless. It stores no tenant runtime
+  state, but its availability, bearer-key configuration, and Bedrock IAM role
+  remain shared trust and blast-radius boundaries.
+- The blueprint tests OCE authorization through the native API. It does not
+  claim database-level tenant isolation.
+- The adapter supports only the pinned OCE revision and expected pod shape. A
+  different revision needs a new compatibility review and live validation.
+- NetworkPolicy enforcement depends on the EKS Auto Mode controller setting.
+  Kubernetes objects alone do not prove live enforcement.
+- The validation procedure is destructive to tenant A's runtime pod. Use
+  retained validation tenants.
+- The blueprint does not validate human SSO, sustained load, high
+  availability, node drain, nested OpenClaw execution isolation, or a different
+  OCE revision.
+
+## Clean up
+
+Stop every local OCE API port-forward, then run cleanup with the original
+state, receipt, context, tenant namespaces, and Pod Identity values:
+
+```bash
+"$SAMPLE_DIR/scripts/cleanup.sh" \
+  --kubeconfig "$KUBECONFIG" \
+  --kube-context "$KUBE_CONTEXT" \
+  --state-dir "$OCE_STATE_DIR" \
+  --receipt "$OCE_RECEIPT_DIR" \
+  --namespace "$OCE_NAMESPACE" \
+  --release oce \
+  --tenant-namespace '<tenant-a-kubernetes-namespace>' \
+  --tenant-namespace '<tenant-b-kubernetes-namespace>' \
+  --aws-region "$AWS_REGION" \
+  --aws-account-id "$AWS_ACCOUNT_ID" \
+  --eks-cluster-name "$EKS_CLUSTER_NAME" \
+  --pod-identity-association-id "$POD_IDENTITY_ASSOCIATION_ID" \
+  --iam-role-name openclaw-enterprise-agentgateway \
+  --iam-inline-policy-name openclaw-enterprise-bedrock-invoke
+```
+
+Cleanup verifies the installation receipt and resource ownership before it
+uninstalls the OCE release, deletes the blueprint-owned system, adapter, and
+AgentGateway namespaces, removes the supplied tenant namespaces' blueprint
+ConfigMap and NetworkPolicies, and deletes the verified Pod Identity and IAM
+resources.
+
+It preserves the OCE-created tenant namespaces and any external database. It
+deletes the blueprint StorageClass only when no PVC still references it. It
+removes `enable-network-policy-controller` only when
+`openclaw-enterprise-blueprint` is the field's sole manager and the value is
+still `true`; otherwise it preserves the field. Cleanup exits non-zero when a
+blueprint-owned resource must be preserved for safety.
+
+```text
+TODO: output from the fresh run
+```

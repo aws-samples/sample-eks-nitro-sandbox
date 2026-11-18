@@ -13,8 +13,9 @@ SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = SAMPLE / "deploy" / "agentgateway.yaml"
 IAM = SAMPLE / "iam"
 NAMESPACE = "openclaw-enterprise-agw"
-PROFILE = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-MODEL = "anthropic.claude-haiku-4-5-20251001-v1:0"
+REGION = "us-west-2"
+MODEL = "amazon.nova-lite-v1:0"
+MODEL_ALIAS = "nova-lite"
 
 
 def _documents() -> list[dict[str, Any]]:
@@ -115,11 +116,11 @@ def test_client_key_comes_only_from_a_kubernetes_secret():
     assert api_key["keys"] == [
         {
             "keyHash": "${AGW_TENANT_A_KEY_SHA256}",
-            "allowedModels": ["claude-haiku"],
+            "allowedModels": [MODEL_ALIAS],
         },
         {
             "keyHash": "${AGW_TENANT_B_KEY_SHA256}",
-            "allowedModels": ["claude-haiku"],
+            "allowedModels": [MODEL_ALIAS],
         },
     ]
 
@@ -146,12 +147,14 @@ def test_client_key_comes_only_from_a_kubernetes_secret():
     assert not any(document["kind"] == "Secret" for document in _documents())
 
 
-def test_bedrock_model_uses_implicit_aws_authentication():
+def test_bedrock_model_uses_direct_regional_foundation_model_inference():
     config = yaml.safe_load(_one("ConfigMap")["data"]["config.yaml"])
     model = config["llm"]["models"][0]
 
     assert model["provider"] == "bedrock"
     assert model["auth"] == {"aws": {}}
+    assert model["name"] == MODEL_ALIAS
+    assert model["params"] == {"model": MODEL, "awsRegion": REGION}
 
 
 def test_deployment_uses_an_immutable_image_and_restricted_container():
@@ -245,33 +248,24 @@ def test_agentgateway_ingress_is_limited_to_managed_oce_workloads():
     ]
 
 
-def test_bedrock_policy_covers_only_the_profile_and_its_destination_models():
-    account_id = "111122223333"
-    profile_arn = f"arn:aws:bedrock:us-west-2:{account_id}:inference-profile/{PROFILE}"
-    policy = json.loads(
-        (IAM / "bedrock-invoke.json")
-        .read_text(encoding="utf-8")
-        .replace("<ACCOUNT_ID>", account_id)
-    )
-    assert len(policy["Statement"]) == 2
+def test_bedrock_policy_covers_only_the_configured_regional_foundation_model():
+    policy = json.loads((IAM / "bedrock-invoke.json").read_text(encoding="utf-8"))
+    assert len(policy["Statement"]) == 1
 
-    profile, models = policy["Statement"]
+    statement = policy["Statement"][0]
     expected_actions = {
         "bedrock:InvokeModel",
         "bedrock:InvokeModelWithResponseStream",
     }
-    assert set(profile["Action"]) == expected_actions
-    assert profile["Resource"] == profile_arn
-    assert profile["Condition"]["StringEquals"] == {"aws:RequestedRegion": "us-west-2"}
-
-    assert set(models["Action"]) == expected_actions
-    assert set(models["Resource"]) == {
-        f"arn:aws:bedrock:{region}::foundation-model/{MODEL}"
-        for region in ("us-east-1", "us-east-2", "us-west-2")
+    assert set(statement["Action"]) == expected_actions
+    assert statement["Resource"] == (
+        f"arn:aws:bedrock:{REGION}::foundation-model/{MODEL}"
+    )
+    assert statement["Condition"]["StringEquals"] == {
+        "aws:RequestedRegion": REGION
     }
-    assert models["Condition"]["StringEquals"] == {
-        "bedrock:InferenceProfileArn": profile_arn
-    }
+    assert "inference-profile" not in json.dumps(policy)
+    assert "bedrock:InferenceProfileArn" not in json.dumps(policy)
     assert "*" not in json.dumps(policy)
 
 

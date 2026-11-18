@@ -6,6 +6,7 @@ metadata:
   name: openclaw-enterprise-agw
   labels:
     app.kubernetes.io/name: agentgateway
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -15,6 +16,8 @@ kind: ServiceAccount
 metadata:
   name: agentgateway
   namespace: openclaw-enterprise-agw
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 automountServiceAccountToken: false
 ---
 apiVersion: cert-manager.io/v1
@@ -22,6 +25,8 @@ kind: Issuer
 metadata:
   name: agentgateway-selfsigned
   namespace: openclaw-enterprise-agw
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   selfSigned: {}
 ---
@@ -30,6 +35,8 @@ kind: Certificate
 metadata:
   name: agentgateway-root
   namespace: openclaw-enterprise-agw
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   isCA: true
   commonName: agentgateway-root
@@ -43,6 +50,8 @@ kind: Issuer
 metadata:
   name: agentgateway-ca
   namespace: openclaw-enterprise-agw
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   ca:
     secretName: agentgateway-ca
@@ -52,6 +61,8 @@ kind: Certificate
 metadata:
   name: agentgateway-serving
   namespace: openclaw-enterprise-agw
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   secretName: agentgateway-tls
   dnsNames:
@@ -66,6 +77,8 @@ kind: ConfigMap
 metadata:
   name: agentgateway-config
   namespace: openclaw-enterprise-agw
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 data:
   config.yaml: |
     config:
@@ -91,16 +104,16 @@ data:
               prefix: "Bearer "
           keys:
             - keyHash: ${AGW_TENANT_A_KEY_SHA256}
-              allowedModels: ["claude-haiku"]
+              allowedModels: ["nova-lite"]
             - keyHash: ${AGW_TENANT_B_KEY_SHA256}
-              allowedModels: ["claude-haiku"]
+              allowedModels: ["nova-lite"]
       models:
-        - name: claude-haiku
+        - name: nova-lite
           provider: bedrock
           auth:
             aws: {}
           params:
-            model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+            model: amazon.nova-lite-v1:0
             awsRegion: us-west-2
 ---
 apiVersion: apps/v1
@@ -110,6 +123,7 @@ metadata:
   namespace: openclaw-enterprise-agw
   labels:
     app.kubernetes.io/name: agentgateway
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   replicas: 2
   strategy:
@@ -125,6 +139,7 @@ spec:
       labels:
         app: agentgateway
         app.kubernetes.io/name: agentgateway
+        app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
     spec:
       serviceAccountName: agentgateway
       automountServiceAccountToken: false
@@ -230,6 +245,8 @@ kind: PodDisruptionBudget
 metadata:
   name: agentgateway
   namespace: openclaw-enterprise-agw
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   minAvailable: 1
   selector:
@@ -243,6 +260,7 @@ metadata:
   namespace: openclaw-enterprise-agw
   labels:
     app.kubernetes.io/name: agentgateway
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   type: ClusterIP
   selector:
@@ -258,6 +276,8 @@ kind: NetworkPolicy
 metadata:
   name: allow-managed-oce-workloads
   namespace: openclaw-enterprise-agw
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   podSelector:
     matchLabels:
