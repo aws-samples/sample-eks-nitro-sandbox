@@ -1,0 +1,30 @@
+{
+  "name": "eks-nitro-sandbox-build-config",
+  "description": "EKS Nitro Sandbox AMI build: the build instance comes from an enclave-enabled Auto Scaling group",
+  "instanceTypes": ["INSTANCE_TYPE_OF_THE_GROUP"],
+  "instanceProfileName": "INSTANCE_PROFILE_NAME",
+  "securityGroupIds": ["SECURITY_GROUP_ID"],
+  "subnetId": "SUBNET_ID",
+  "terminateInstanceOnFailure": true,
+  "resourceTags": {
+    "ManagedBy": "al2023-ami",
+    "RunId": "RUN_ID",
+    "auto-delete": "no"
+  },
+  "instanceMetadataOptions": {
+    "httpTokens": "required",
+    "httpPutResponseHopLimit": 1
+  },
+  "logging": {
+    "s3Logs": {
+      "s3BucketName": "S3_BUCKET_NAME",
+      "s3KeyPrefix": "imagebuilder-logs/"
+    }
+  },
+  "parentInstance": {
+    "autoScalingGroup": {
+      "name": "ASG_NAME_WITH_ENCLAVE_ENABLED",
+      "capacityWaitTimeoutSeconds": 1800
+    }
+  }
+}
