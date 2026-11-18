@@ -242,6 +242,9 @@ function makePane(body, session, pane) {
   const ws = new WebSocket(`${proto}://${location.host}/ws?session=${encodeURIComponent(session)}&pane=${pane}`);
   ws.binaryType = "arraybuffer";
   const sendResize = () => {
+    // A hidden pane (another tab is showing, or the window is minimized) has no size, and
+    // fitting it would send a tiny one to tmux. Its size is sent when it is shown again.
+    if (!body.offsetWidth || !body.offsetHeight) return;
     fit.fit();
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ resize: [term.cols, term.rows] }));
   };
@@ -334,7 +337,11 @@ function openTerminal(session, cli, display) {
 
 function focusWindow(session) {
   const w = windows.get(session);
-  if (w) { w.win.classList.remove("hidden"); w.win.style.zIndex = ++zTop; removeChip(session); }
+  if (w) {
+    w.win.classList.remove("hidden"); w.win.style.zIndex = ++zTop; removeChip(session);
+    // A socket that opened while the window was minimized skipped its resize; send it now.
+    w.showPane(w.win.dataset.pane || "agent");
+  }
 }
 
 function minimize(session) {

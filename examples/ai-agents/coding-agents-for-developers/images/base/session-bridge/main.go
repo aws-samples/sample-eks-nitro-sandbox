@@ -280,8 +280,8 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "expected a WebSocket upgrade", http.StatusBadRequest)
 		return
 	}
-	cols, rows := dim(r.URL.Query().Get("cols"), 200), dim(r.URL.Query().Get("rows"), 50)
 	q, qerr := url.ParseQuery(r.URL.RawQuery)
+	cols, rows := dim(q.Get("cols"), 200), dim(q.Get("rows"), 50)
 	target, ok := paneTarget(q["pane"])
 	if qerr != nil || !ok {
 		http.Error(w, "terminal: unknown pane", http.StatusBadRequest)
