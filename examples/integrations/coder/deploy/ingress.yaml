@@ -1,0 +1,120 @@
+# The blueprint's only way in: an internal Application Load Balancer that EKS Auto Mode
+# creates from this Ingress, reached only by the CloudFront distribution through a
+# CloudFront VPC origin. Viewers use https://<DOMAIN>; nothing else can reach the ALB.
+#
+# ./scripts/setup.sh fills in, before it applies anything:
+#   <NAMESPACE>          the control-plane namespace (NAMESPACE in .env, default coder)
+#   <SUBNET_IDS>         the cluster's private subnets, comma separated, for example
+#                        subnet-aaaa, subnet-bbbb, subnet-cccc
+#   <SECURITY_GROUP_ID>  the blueprint's ALB security group, coder-alb-origin
+#
+# It applies the file in two parts, selected by the app.kubernetes.io/component label:
+#   ingress-class  IngressClassParams and IngressClass, cluster-scoped, created with
+#                  `kubectl create` only when absent. Setup stops when either already
+#                  exists, whether it carries the blueprint's mark or not.
+#   ingress        the Ingress, applied once the coder and keycloak Services exist.
+---
+# Cluster-scoped. Auto Mode reads the load balancer's AWS settings from here: it ignores
+# annotations on an IngressClass.
+apiVersion: eks.amazonaws.com/v1
+kind: IngressClassParams
+metadata:
+  name: coder-alb
+  labels:
+    app.kubernetes.io/part-of: coder
+    app.kubernetes.io/component: ingress-class
+spec:
+  # Private IP addresses only. CloudFront reaches it through the VPC origin.
+  scheme: internal
+  ipAddressType: ipv4
+  # Register pod IPs directly, so the Services stay ClusterIP.
+  targetType: ip
+  # Named subnets rather than every subnet that carries the internal-elb tag, so the ALB
+  # lands only in this cluster's private subnets. Setup still checks that each one carries
+  # kubernetes.io/role/internal-elb, as the Amazon EKS User Guide requires.
+  subnets:
+    ids: [<SUBNET_IDS>]
+  # Only the blueprint's namespace can use this class, so no other workload on the
+  # cluster can create a load balancer by naming it.
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: <NAMESPACE>
+  loadBalancerAttributes:
+    # Coder terminals and code-server hold WebSockets open. CloudFront closes a WebSocket
+    # after 10 minutes with no bytes from the origin, so the ALB waits as long and is never
+    # the one to cut the connection first. Coder sends a ping every 15 seconds.
+    - key: idle_timeout.timeout_seconds
+      value: "600"
+    # Drop requests with header names that are not valid HTTP.
+    - key: routing.http.drop_invalid_header_fields.enabled
+      value: "true"
+  # No `tags` here. Auto Mode adds these to every load balancer resource it creates, and
+  # the cluster role's AmazonEKSLoadBalancingPolicy allows only Auto Mode's own tag keys on
+  # those calls, so a ManagedBy tag would make Auto Mode's create calls fail. Setup tags the
+  # ALB and its target groups with ManagedBy=coder and auto-delete=no after Auto Mode has
+  # created them.
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: coder-alb
+  labels:
+    app.kubernetes.io/part-of: coder
+    app.kubernetes.io/component: ingress-class
+  # Not the cluster's default class: an Ingress must name it.
+spec:
+  controller: eks.amazonaws.com/alb
+  parameters:
+    apiGroup: eks.amazonaws.com
+    kind: IngressClassParams
+    name: coder-alb
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: coder
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: coder
+    app.kubernetes.io/component: ingress
+  annotations:
+    # One HTTP listener. Viewers use HTTPS to CloudFront; CloudFront reaches the ALB over
+    # HTTP inside the VPC.
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    # The blueprint's own security group instead of one Auto Mode would open to
+    # 0.0.0.0/0. It has no inbound rule until setup adds the single rule that admits
+    # CloudFront's VPC origin security group.
+    alb.ingress.kubernetes.io/security-groups: <SECURITY_GROUP_ID>
+    # With our own security group, Auto Mode also attaches the cluster's shared backend
+    # security group to the ALB and allows it into the pods' security group on the target
+    # ports only. Without this, the targets never become healthy.
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    # Health check for the coder target group. The keycloak Service carries its own
+    # alb.ingress.kubernetes.io/healthcheck-path for the Keycloak target group: a
+    # Service annotation takes precedence over the Ingress one.
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-port: traffic-port
+    alb.ingress.kubernetes.io/success-codes: "200"
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "15"
+spec:
+  ingressClassName: coder-alb
+  rules:
+    - http:
+        paths:
+          # Keycloak serves everything under /auth (KC_HTTP_RELATIVE_PATH=/auth). Its
+          # management port, 9000, is not routed.
+          - path: /auth
+            pathType: Prefix
+            backend:
+              service:
+                name: keycloak
+                port:
+                  number: 8080
+          # Everything else is Coder.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: coder
+                port:
+                  number: 80

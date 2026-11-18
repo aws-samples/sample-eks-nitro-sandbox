@@ -1,0 +1,189 @@
+# PostgreSQL for the Coder control plane and for Keycloak: one pod, one EBS
+# volume, two databases.
+#
+#   coder     owned by the role coder, used by coderd (CODER_PG_CONNECTION_URL)
+#   keycloak  owned by the role keycloak, used by Keycloak (KC_DB_*)
+#
+# Each role connects only to its own database: the init script revokes CONNECT
+# from PUBLIC on both. The superuser postgres is used by nothing but this pod.
+#
+# Passwords: the Secret postgres-passwords holds three keys (postgres, coder,
+# keycloak). scripts/setup.sh generates each value with openssl, writes it to a
+# mode-600 file under LOCAL_DIR and creates the Secret from those files with
+# `kubectl create secret generic --from-file`. No password appears in this file,
+# in the init script or on any command line: the image reads the superuser
+# password from POSTGRES_PASSWORD_FILE, and the init script reads the other two
+# from the mounted files into psql variables over standard input.
+#
+# The Service is ClusterIP and the Ingress never routes to it, so PostgreSQL is
+# reachable only from inside the cluster.
+#
+# This is the smallest datastore that runs the blueprint on one cluster. For a
+# larger deployment, Coder and Keycloak each point at a managed PostgreSQL
+# (Amazon RDS or Aurora) instead; nothing else in the blueprint changes.
+#
+# <NAMESPACE> and <STORAGE_CLASS> are filled in by scripts/setup.sh at apply
+# time. Never apply this file with the placeholders in place.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: coder
+data:
+  # The image runs every executable *.sh in /docker-entrypoint-initdb.d once,
+  # after initdb, and only when the data directory is empty. The volume below
+  # mounts this file with mode 0555 so it is executed, not sourced.
+  10-coder-keycloak.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The passwords travel in the environment of psql and are read with
+    # \getenv, so they never appear in argv. :'name' quotes them as SQL
+    # literals, so any character in a password is safe.
+    CODER_DB_PASSWORD="$(cat /run/secrets/postgres/coder)" \
+    KEYCLOAK_DB_PASSWORD="$(cat /run/secrets/postgres/keycloak)" \
+    psql -v ON_ERROR_STOP=1 --no-psqlrc --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'EOSQL'
+    \getenv coder_pw CODER_DB_PASSWORD
+    \getenv keycloak_pw KEYCLOAK_DB_PASSWORD
+    CREATE ROLE coder LOGIN PASSWORD :'coder_pw';
+    CREATE ROLE keycloak LOGIN PASSWORD :'keycloak_pw';
+    CREATE DATABASE coder OWNER coder;
+    CREATE DATABASE keycloak OWNER keycloak;
+    REVOKE CONNECT ON DATABASE coder FROM PUBLIC;
+    REVOKE CONNECT ON DATABASE keycloak FROM PUBLIC;
+    EOSQL
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: coder
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: <STORAGE_CLASS>
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: coder
+spec:
+  replicas: 1
+  # One ReadWriteOnce volume: the old pod must be gone before a new one mounts it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: coder
+    spec:
+      # PostgreSQL calls no Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        # The image's postgres user is uid/gid 999. fsGroup makes the EBS volume
+        # and the Secret files group-readable by it.
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:18.7
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/secrets/postgres/postgres
+            # PostgreSQL 18 images moved PGDATA to a version-specific directory,
+            # /var/lib/postgresql/18/docker, and the VOLUME to /var/lib/postgresql.
+            # Stated here so the mount below and the data directory cannot drift.
+            # It also keeps the EBS volume's lost+found out of the data directory.
+            - name: PGDATA
+              value: /var/lib/postgresql/18/docker
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Mount at /var/lib/postgresql, the PostgreSQL 18 image's VOLUME, not
+            # at the old /var/lib/postgresql/data.
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: passwords
+              mountPath: /run/secrets/postgres
+              readOnly: true
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # -h 127.0.0.1: during first start the image runs a temporary server on
+          # the Unix socket only. Probing TCP reports ready only once the real
+          # server, with both databases, is listening.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "postgres"]
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: passwords
+          secret:
+            secretName: postgres-passwords
+            defaultMode: 0440
+        - name: init
+          configMap:
+            name: postgres-init
+            defaultMode: 0555
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: coder
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

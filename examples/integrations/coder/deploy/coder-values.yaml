@@ -1,0 +1,106 @@
+# Helm values for the Coder control plane (coderd), chart coder-v2/coder 2.38.10,
+# Community Edition (no license key).
+#
+# Installed by scripts/setup.sh with:
+#   helm install coder coder-v2/coder --version 2.38.10 -n <NAMESPACE> -f <rendered copy of this file>
+#
+# How people reach coderd: the chart's Service is ClusterIP, and the only way in
+# from outside the cluster is CloudFront -> internal ALB -> this Service (see
+# deploy/ingress.yaml). The browser and every workspace agent use the same
+# access URL, https://<DOMAIN>.
+#
+# How people sign in: OIDC against the Keycloak realm `coder`. Password login is
+# on only while setup creates the owner from inside the cluster, before the
+# Coder route is published; setup then renders this file again with
+# <DISABLE_PASSWORD_AUTH> set to true and runs `helm upgrade`, which leaves
+# Keycloak as the only way to sign in.
+#
+# Secrets, created by scripts/setup.sh from mode-600 files, none in this file:
+#   coder-db-url  url            postgres://coder:...@postgres.<NAMESPACE>.svc.cluster.local:5432/coder?sslmode=disable
+#   coder-oidc    client-secret  the Keycloak client secret, the same value as in the realm
+#
+# <NAMESPACE>, <DOMAIN> and <DISABLE_PASSWORD_AUTH> are filled in by
+# scripts/setup.sh. Never install this file with the placeholders in place.
+coder:
+  # One replica for the blueprint.
+  replicaCount: 1
+
+  service:
+    type: ClusterIP
+
+  serviceAccount:
+    name: coder
+    # The chart would grant the coder ServiceAccount write access to pods, PVCs
+    # and Deployments in this (control-plane) namespace. Off: the only
+    # permission the provisioner gets is deploy/workspace-rbac.yaml, a Role in
+    # the workspace namespace.
+    workspacePerms: false
+    enableDeployments: false
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+
+  env:
+    # The one URL the browser and the workspace agents both use. Setting it
+    # here also stops the chart from adding its in-cluster default.
+    - name: CODER_ACCESS_URL
+      value: "https://<DOMAIN>"
+
+    - name: CODER_PG_CONNECTION_URL
+      valueFrom:
+        secretKeyRef:
+          name: coder-db-url
+          key: url
+
+    # Sign in with Keycloak. coderd reads the issuer's discovery document at
+    # startup and exits if it cannot, so the Keycloak route on the
+    # distribution must answer before this release starts.
+    - name: CODER_OIDC_ISSUER_URL
+      value: "https://<DOMAIN>/auth/realms/coder"
+    - name: CODER_OIDC_CLIENT_ID
+      value: "coder"
+    - name: CODER_OIDC_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: coder-oidc
+          key: client-secret
+    - name: CODER_OIDC_SCOPES
+      value: "openid,profile,email"
+    - name: CODER_OIDC_EMAIL_FIELD
+      value: "email"
+    - name: CODER_OIDC_USERNAME_FIELD
+      value: "preferred_username"
+    - name: CODER_OIDC_SIGN_IN_TEXT
+      value: "Sign in with Keycloak"
+    # A Keycloak user who signs in for the first time gets a Coder account with
+    # the member role. Only setup can create Keycloak users: the realm has
+    # self-registration off. The admin is not created this way: setup creates
+    # it in Coder beforehand as an OIDC user with the owner role, and the first
+    # sign-in with its email links to that account.
+    - name: CODER_OIDC_ALLOW_SIGNUPS
+      value: "true"
+
+    # "false" while setup creates the owner, then "true" for good. With it on,
+    # Coder refuses every password sign-in and refuses to create password users.
+    - name: CODER_DISABLE_PASSWORD_AUTH
+      value: "<DISABLE_PASSWORD_AUTH>"
+
+    # Session cookies only over HTTPS. This is already Coder's default when the
+    # access URL is https://; stated so the setting is visible.
+    - name: CODER_SECURE_AUTH_COOKIE
+      value: "true"
+
+    # No sign-in or Git provider other than Keycloak.
+    - name: CODER_OAUTH2_GITHUB_DEFAULT_PROVIDER_ENABLE
+      value: "false"
+    - name: CODER_EXTERNAL_AUTH_GITHUB_DEFAULT_PROVIDER_ENABLE
+      value: "false"
+
+    # Telemetry is on by default and sends the first user's email address.
+    # A blueprint does not opt a reader in: turn it back on if you choose to.
+    - name: CODER_TELEMETRY_ENABLE
+      value: "false"

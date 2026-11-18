@@ -1,0 +1,72 @@
+# What Coder's built-in provisioner may do in the workspace namespace, and the
+# ServiceAccount the workspace pods run as.
+#
+# coderd runs as the ServiceAccount coder in <NAMESPACE>. When an admin's
+# template builds a workspace, coderd's Terraform provisioner calls the
+# Kubernetes API with that ServiceAccount's token. The Helm values turn off the
+# chart's own Role (workspacePerms: false), so this Role is the provisioner's
+# only permission: it is namespaced, it covers exactly the objects the template
+# makes (one Deployment and one PersistentVolumeClaim per workspace), and it
+# grants nothing in any other namespace and nothing cluster-wide.
+#
+# Left out on purpose, each because the template never uses it:
+#   pods, pods/exec, pods/log  the Deployment controller creates and deletes the
+#                              pod; the provisioner never touches it, and nobody
+#                              gets a shell through the Kubernetes API
+#   services                   the template creates no Service; code-server and
+#                              the terminal are reached through the Coder agent
+#   secrets, configmaps        the template creates neither
+#   deletecollection           the provisioner deletes one named object at a time
+#
+# RBAC selects by resource type, not by owner, so this Role reaches every
+# Deployment and claim in <WORKSPACE_NAMESPACE>. Keep only Coder workspaces there.
+#
+# <NAMESPACE> and <WORKSPACE_NAMESPACE> are filled in by scripts/setup.sh at
+# apply time. Never apply this file with the placeholders in place.
+---
+# The identity of every workspace pod. EKS Pod Identity associates it with the
+# IAM role that may call Bedrock, so Claude Code gets AWS credentials with no
+# key. It needs no Kubernetes permission, so nothing binds a Role to it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: coder-workspace
+  namespace: <WORKSPACE_NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: coder
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: coder-workspace-provisioner
+  namespace: <WORKSPACE_NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: coder
+rules:
+  # The workspace itself: a Deployment with one replica, created on start and
+  # destroyed on stop and delete. The Terraform Kubernetes provider reads,
+  # creates, updates and deletes it by name.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  # The home volume: one ReadWriteOnce claim per workspace. Created with the
+  # workspace, kept across stop and start, deleted with the workspace.
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: coder-workspace-provisioner
+  namespace: <WORKSPACE_NAMESPACE>
+  labels:
+    app.kubernetes.io/part-of: coder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: coder-workspace-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: coder
+    namespace: <NAMESPACE>
