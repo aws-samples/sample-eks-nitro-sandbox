@@ -1,0 +1,46 @@
+# Karpenter NodePool that provisions nodes from the AL2023 Nitro Sandbox EC2NodeClass above.
+# The nodes it launches register with eks.amazonaws.com/nitro-sandbox=true (baked into the AMI
+# by the pod-isolation NodeConfig drop-in), which is the label a sandboxed pod's node selector
+# carries, so isolated-sandbox / confidential-sandbox pods schedule onto them.
+#
+# A NoSchedule taint keeps ordinary pods off these nodes; the hello-world sandbox pod tolerates
+# it. You do not need to list enclave-capable instance families here: the EC2NodeClass's
+# enclaveOptions filter already removes unsupported instance types. The requirements below only
+# keep nodes to on-demand and to the architecture NODE_ARCH selects; adjust to your needs.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: al2023-nitro-sandbox
+  # The ownership mark clean.sh checks before it deletes this object.
+  labels:
+    app.kubernetes.io/part-of: "@RESOURCE_PREFIX@"
+    app.kubernetes.io/instance: "@RUN_ID@"
+spec:
+  template:
+    metadata:
+      labels:
+        sandbox.blueprint/al2023-ami: "true"
+    spec:
+      taints:
+        - key: sandbox.blueprint/al2023-ami
+          value: "true"
+          effect: NoSchedule
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: al2023-nitro-sandbox
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        # @NODE_ARCH@ is amd64 by default; set NODE_ARCH=arm64 in config.env to run the arm64
+        # (Graviton) AMI. It must match the architecture of the AMI in amiSelectorTerms above:
+        # the AMI's architecture follows the instance the build ran on.
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["@NODE_ARCH@"]
+  limits:
+    cpu: "16"
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 1m

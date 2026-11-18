@@ -183,6 +183,12 @@ global_settings:
       path: 'examples/storage/ebs/deploy/statefulset-ebs.yaml'
       reason: 'Replicas are network-isolated: no network to restrict (AGENTS.md, Security rules)'
       expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
+      line_start: 11
+      line_end: 11
+      reason: 'Pod carries app: encrypted-image (pod.yaml:11), selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml:22-32, which checkov does not read as a NetworkPolicy'
+      expiration: '2027-12-31'
     # Not applicable on Kubernetes.
     - rule_id: CKV_DOCKER_2
       path: '**/Dockerfile'
@@ -363,6 +369,30 @@ global_settings:
     - rule_id: CKV_K8S_8
       path: 'examples/isolation/sandbox-limits/deploy/probe-*.yaml'
       reason: 'Probe pods already carry a readiness probe; a liveness probe on a sleep loop gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
+      line_start: 75
+      line_end: 89
+      reason: 'One-shot evidence pod: it prints its readings, then sleeps, and listens on nothing (pod.yaml:75-89); its Cedar policy denies exec (policy/policy.generated.yaml:132-133), so a liveness probe gates nothing and a restart would only rerun the readings'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
+      line_start: 75
+      line_end: 89
+      reason: 'Ready is the result: the container starts only once KMS releases the layer key, and setup.sh and changed-pod.sh read that; it serves nothing (pod.yaml:75-89) and its Cedar policy denies exec (policy/policy.generated.yaml:132-133)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
+      line_start: 79
+      line_end: 103
+      reason: 'One-shot control pod: a bounded kms:Decrypt loop that stops at the first answer, then it sleeps and listens on nothing (credentials-pod.yaml:79-103); a restart would only repeat the request, so a probe gates nothing'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
+      line_start: 79
+      line_end: 103
+      reason: 'One-shot control pod that serves nothing (credentials-pod.yaml:79-103); setup.sh waits for it to start, then for its log marker (setup.sh:897-903), so a readiness probe gates nothing'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_8
       path: 'examples/subagent-security/nono/deploy/analyst-pod.yaml'
@@ -646,6 +676,12 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/encrypted-image/deploy/plain-pod.yaml'
       reason: 'Ordinary control pod: same image as the sandboxed pod with no runtimeClassName; plain on purpose (plain-pod.yaml:14)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
+      line_start: 10
+      line_end: 12
+      reason: 'Control pod kept outside the egress policy on purpose, so the KMS key policy, not the network, is what refuses its decrypt (credentials-pod.yaml:10-12)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/s3-encrypted-file/deploy/plain-pod.yaml'
@@ -1482,6 +1518,134 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
       reason: 'Booted with no network, so kubelet has nothing to probe over; it only sleeps and test.sh drives it with kubectl exec (pod-isolated-sandbox.yaml:1-3,22,28-29)'
+    # ---- #231 al2023-ami: the two plain hello-world pods (isolated + ordinary contrast) ----
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_11
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_13
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_15
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_43
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_11
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_13
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_15
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_43
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
       expiration: '2027-12-31'
     # Cilium: the clients are selected by the CiliumNetworkPolicy in policy.yaml, which checkov does not read; the
     # rest are its destinations and the host-network probe the sample needs to show the socket load balancer.
@@ -1580,6 +1744,47 @@ global_settings:
       line_start: 54
       line_end: 54
       reason: 'Test fixture: openssl is taken from PATH on purpose, as the tests'' other tools are'
+      expiration: '2027-12-31'
+    # ci-cd/gitlab-ci (#147): GitLab and the runner manager are ordinary pods by design; only
+    # the job pods are sandboxes. The GitLab single-container image has no non-root mode.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: ordinary GitLab pod behind a ClusterIP Service only (gitlab.yaml:37); a sample ships no network policy (AGENTS.md:546-552), and the page says this blueprint ships none and links the network policy blueprint (README.md:94-102)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: the image runs gitlab-ctl reconfigure at every start, which writes service definitions and settings under /opt/gitlab and groups in /etc/group, so the root filesystem stays writable (gitlab.yaml:86)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: the GitLab single-container image starts as root to run gitlab-ctl reconfigure, then starts each service as its own user; upstream has no non-root mode (gitlab.yaml:84)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: GitLab runs as root and keeps the runtime default capabilities to chown its data, start each service as its own user and bind nginx on port 80; NET_RAW is dropped (gitlab.yaml:88)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      reason: 'By design: the GitLab single-container image starts as root to run gitlab-ctl reconfigure, then starts each service as its own user; upstream has no non-root mode (gitlab.yaml:84)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'By design: ordinary runner manager pod with no port and no Service, which only calls out to GitLab and the API server (runner.yaml:122); a sample ships no network policy (AGENTS.md:546-552), and the page says this blueprint ships none and links the network policy blueprint (README.md:94-102)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'gitlab-runner is the container process (runner.yaml:137), so a crash ends the container and the Deployment restarts it; the manager has no health endpoint, and the online check waits on GitLab last-contact time instead (bootstrap-runner.sh:302)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
+      reason: 'Single replica with no port or Service (runner.yaml:122), so a readiness probe gates nothing'
+      expiration: '2027-12-31'
+    # ci-cd/gitlab-ci (#147), pinned line: the keyword detector on the line that reads the mounted file.
+    - rule_id: CKV_SECRET_6
+      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
+      line_start: 115
+      line_end: 115
+      reason: 'False positive: GitLab reads the initial root password from a Kubernetes Secret-mounted file; the quoted string is the mounted file path, not a credential value.'
       expiration: '2027-12-31'
     # ---- integrations/istio: pods are plain on purpose ----
     # workloads.yaml holds four pods: echo, client-a and client-b in Nitro sandboxes (runtimeClassName
@@ -1697,31 +1902,6 @@ global_settings:
       path: 'examples/ai-agents/coding-agents-for-developers/images/pi/Dockerfile'
       reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
       expiration: '2027-01-31'
-    # Baseline: confidential/encrypted-image
-    - rule_id: CKV2_K8S_6
-      path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/confidential/encrypted-image/deploy/credentials-pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
-      expiration: '2027-01-31'
-    - rule_id: CKV2_K8S_6
-      path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/confidential/encrypted-image/deploy/pod.yaml'
-      reason: 'Baseline: confidential/encrypted-image merged before the ASH gate; hardening tracked in #142'
-      expiration: '2027-01-31'
     # Baseline: confidential/s3-encrypted-file
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'
@@ -1746,115 +1926,6 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/confidential/s3-encrypted-file/deploy/pod.yaml'
       reason: 'Baseline: confidential/s3-encrypted-file merged before the ASH gate; hardening tracked in #144'
-      expiration: '2027-01-31'
-    # Baseline: ci-cd/gitlab-ci
-    - rule_id: CKV2_K8S_6
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_20
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_23
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_35
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_38
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/ci-cd/gitlab-ci/deploy/gitlab.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV2_K8S_6
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_20
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_22
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_23
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_28
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_30
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_37
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_38
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/ci-cd/gitlab-ci/deploy/runner.yaml'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_3
-      path: 'examples/ci-cd/gitlab-ci/pipeline/ci/Dockerfile'
-      reason: 'Baseline: ci-cd/gitlab-ci merged before the ASH gate; hardening tracked in #147'
       expiration: '2027-01-31'
     # Baseline: confidential/signer-policy
     - rule_id: CKV_DOCKER_3
