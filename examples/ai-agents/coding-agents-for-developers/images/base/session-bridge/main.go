@@ -41,6 +41,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -280,8 +281,9 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cols, rows := dim(r.URL.Query().Get("cols"), 200), dim(r.URL.Query().Get("rows"), 50)
-	target, ok := paneTarget(r.URL.Query().Get("pane"))
-	if !ok {
+	q, qerr := url.ParseQuery(r.URL.RawQuery)
+	target, ok := paneTarget(q["pane"])
+	if qerr != nil || !ok {
 		http.Error(w, "terminal: unknown pane", http.StatusBadRequest)
 		return
 	}
@@ -564,14 +566,18 @@ func setSize(f *os.File, cols, rows int) error {
 	return ioctl(f, syscall.TIOCSWINSZ, unsafe.Pointer(&ws))
 }
 
-// paneTarget maps the ?pane= query to the tmux session to attach: the agent (the default)
-// or the shell. Anything else is refused, so the query can never name another session.
-func paneTarget(pane string) (string, bool) {
-	switch pane {
-	case "", "agent":
+// paneTarget maps the ?pane= values to the tmux session to attach: the agent when the
+// parameter is absent, otherwise exactly one value that is "agent" or "shell". An empty
+// value, a repeated one or any other string is refused, so the query can never name another
+// session and an ambiguous request is not quietly answered with the agent.
+func paneTarget(panes []string) (string, bool) {
+	switch len(panes) {
+	case 0:
 		return "agent", true
-	case "shell":
-		return "shell", true
+	case 1:
+		if panes[0] == "agent" || panes[0] == "shell" {
+			return panes[0], true
+		}
 	}
 	return "", false
 }

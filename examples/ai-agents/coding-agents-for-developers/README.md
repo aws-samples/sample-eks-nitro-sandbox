@@ -281,7 +281,7 @@ things a session needs while it runs:
 
 | Request | What it does |
 |---|---|
-| `GET /v1/terminal` | A WebSocket to a PTY running `tmux attach` as the session's user, to the agent's session or, with `?pane=shell`, to the shell session beside it (any other `pane` is refused). The app relays the browser's terminal to it, keystrokes and resizes both ways. |
+| `GET /v1/terminal` | A WebSocket to a PTY running `tmux attach` as the session's user, to the agent's session or, with `?pane=shell`, to the shell session beside it (an empty, repeated or any other `pane` value is refused; no `pane` means the agent). The app relays the browser's terminal to it, keystrokes and resizes both ways. |
 | `GET /v1/activity` | The last time the terminal had input or output, which the app reads every minute to find idle sessions. |
 | `PUT /v1/credential` | Replaces the session's mount credential. It accepts only a well-formed credential, so a bad request leaves the running one in place. |
 
