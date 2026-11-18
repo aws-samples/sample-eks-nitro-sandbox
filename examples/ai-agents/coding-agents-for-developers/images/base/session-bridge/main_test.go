@@ -113,3 +113,18 @@ func TestReadFrame(t *testing.T) {
 		}
 	}
 }
+
+func TestPaneTarget(t *testing.T) {
+	for _, c := range []struct {
+		in, want string
+		ok       bool
+	}{
+		{"", "agent", true}, {"agent", "agent", true}, {"shell", "shell", true},
+		{"Shell", "", false}, {"agent;id", "", false}, {"../x", "", false},
+	} {
+		got, ok := paneTarget(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("paneTarget(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}

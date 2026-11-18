@@ -175,7 +175,15 @@ Then browse to http://127.0.0.1:8080
 
 ## What a session looks like
 
-Each terminal is a floating window wired to the CLI running in its sandbox pod. These are
+Each terminal is a floating window with two tabs: the first is the coding agent, and the
+second, **Terminal**, is a plain bash login shell in the same pod and the same project
+folder. Ask the agent to write a program, switch to **Terminal**, run it, and switch back to
+carry on the conversation, all without leaving the window or the agent. The shell is a
+second tmux session beside the agent's (`tmux attach -t shell`), opened the first time you
+click the tab and kept after that, so a program left running there is still running when
+you come back. Typing `exit` in it starts a fresh shell. It runs as the same unprivileged
+user and under the same egress policy as the agent, so it can reach nothing the agent
+cannot. The agent's tab is wired to the CLI running in its sandbox pod. These are
 the six CLIs answering the same prompt, each on its own model: four on the Bedrock
 inference profile in the app's agent list (Claude Sonnet here), Codex on a GPT model
 served through the Bedrock "Mantle" OpenAI-compatible endpoint, and Kiro CLI through the
@@ -267,7 +275,7 @@ things a session needs while it runs:
 
 | Request | What it does |
 |---|---|
-| `GET /v1/terminal` | A WebSocket to a PTY running `tmux attach` as the session's user. The app relays the browser's terminal to it, keystrokes and resizes both ways. |
+| `GET /v1/terminal` | A WebSocket to a PTY running `tmux attach` as the session's user, to the agent's session or, with `?pane=shell`, to the shell session beside it (any other `pane` is refused). The app relays the browser's terminal to it, keystrokes and resizes both ways. |
 | `GET /v1/activity` | The last time the terminal had input or output, which the app reads every minute to find idle sessions. |
 | `PUT /v1/credential` | Replaces the session's mount credential. It accepts only a well-formed credential, so a bad request leaves the running one in place. |
 
@@ -395,7 +403,7 @@ only Delete removes the folder.*
 |---|---|
 | New agent | The app writes the session's record, then claims a warm pod and creates the access point at the same time, mounts the folder and starts the CLI. The pool boots a replacement. If no pod or no access point can be had, the app releases the claim and removes the record, so the list has no row for a session that never ran. |
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
-| No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
+| No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`, over the agent and the shell tab, so a program running in the shell keeps the session). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
 | Close the window | Same as idle: the session is stopped, the claim and the access point released, the folder stays, and the session moves to the session list. |
 | Restore | The app claims a new warm pod (a new pod UID) and creates a new access point on the same folder, at the same time, mounts it and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
 | Delete | The session leaves the list at once: the app marks its record and finishes the Delete in the background. If the session is running, the app first empties its folder through the mount, in the pod, as it stops the session. Then it deletes every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports a change to the bucket only after 60 seconds with no writes to the file, so a file written just before Delete can arrive after the first pass: the app lists the prefix again every 15 seconds and deletes whatever came back, until the prefix has stayed empty for 90 seconds, a minute and a half to three minutes in all on these runs. Only then does it delete an access point, if one is left, and last the session's record. A closed session has no access point and its folder is drained the same way. Until the record is gone a Restore of the session is refused, and a Delete that fails, or that an app restart cuts short, is run again by the sweep a minute later. |

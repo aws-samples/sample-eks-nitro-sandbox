@@ -8,7 +8,8 @@
 //     writes only the certificate to a root-only file, which the app reads once over exec
 //     and pins. The key never leaves this process.
 //   - answers three requests, each carrying the token as a bearer token:
-//     GET /v1/terminal    a WebSocket: a PTY running `tmux attach` as the dev user. Binary
+//     GET /v1/terminal    a WebSocket: a PTY running `tmux attach` as the dev user, to the
+//     agent's tmux session or, with ?pane=shell, to a plain bash session beside it. Binary
 //     frames are input; a text frame {"resize":[cols,rows]} resizes the PTY.
 //     GET /v1/activity    the last time the terminal had input or output, as an epoch.
 //     PUT /v1/credential  replaces the session's mount credential file.
@@ -175,13 +176,17 @@ func (b *bridge) auth(h http.HandlerFunc) http.HandlerFunc {
 // --- activity ---
 
 // The newest of tmux's session_activity (moves on key input) and each window's
-// window_activity (moves when the pane prints), or "none" when the session is gone.
+// window_activity (moves when the pane prints), over the agent session and the shell
+// session beside it, or "none" when the agent session is gone. The shell counts, so a
+// developer running the program they built in the shell tab does not lose the session
+// while the agent waits at its prompt.
 // Reading session_activity alone released an agent that was still working on its own:
 // with a pane printing every 15 s and no keys, it aged past ten minutes while
 // window_activity stayed under five seconds. A CLI waiting at its prompt prints nothing,
 // so it still goes idle.
 const activityScript = `if tmux has-session -t agent 2>/dev/null; then ` +
-	`{ tmux display-message -p -t agent '#{session_activity}'; tmux list-windows -t agent -F '#{window_activity}'; } | sort -n | tail -1; ` +
+	`{ for s in agent shell; do tmux has-session -t $s 2>/dev/null || continue; ` +
+	`tmux display-message -p -t $s '#{session_activity}'; tmux list-windows -t $s -F '#{window_activity}'; done; } | sort -n | tail -1; ` +
 	`else echo none; fi`
 
 var epochRE = regexp.MustCompile(`^[0-9]{9,11}$`)
@@ -274,9 +279,14 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cols, rows := dim(r.URL.Query().Get("cols"), 200), dim(r.URL.Query().Get("rows"), 50)
+	target, ok := paneTarget(r.URL.Query().Get("pane"))
+	if !ok {
+		http.Error(w, "terminal: unknown pane", http.StatusBadRequest)
+		return
+	}
 
 	// Start the PTY before upgrading, so a failure is an HTTP error the app can report.
-	master, cmd, err := startTmuxAttach(cols, rows)
+	master, cmd, err := startTmuxAttach(cols, rows, target)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("terminal: %v", err), http.StatusInternalServerError)
 		return
@@ -308,7 +318,7 @@ func (b *bridge) terminal(w http.ResponseWriter, r *http.Request) {
 		reap()
 		return
 	}
-	log.Printf("terminal attached for %s (%dx%d)", r.RemoteAddr, cols, rows)
+	log.Printf("terminal %s attached for %s (%dx%d)", target, r.RemoteAddr, cols, rows)
 
 	// Every write has a deadline, so a peer that stops reading cannot hold the write lock,
 	// and with it the clean up below, for longer than writeTimeout.
@@ -553,12 +563,24 @@ func setSize(f *os.File, cols, rows int) error {
 	return ioctl(f, syscall.TIOCSWINSZ, unsafe.Pointer(&ws))
 }
 
-// startTmuxAttach opens a PTY pair and runs `tmux -u attach -t agent` on it as the dev user,
+// paneTarget maps the ?pane= query to the tmux session to attach: the agent (the default)
+// or the shell. Anything else is refused, so the query can never name another session.
+func paneTarget(pane string) (string, bool) {
+	switch pane {
+	case "", "agent":
+		return "agent", true
+	case "shell":
+		return "shell", true
+	}
+	return "", false
+}
+
+// startTmuxAttach opens a PTY pair and runs `tmux -u attach -t <target>` on it as the dev user,
 // the identity whose tmux server the entrypoint started (root's tmux looks at a different
 // socket and reports "no sessions"). The UTF-8 locale and `-u` matter: tmux decides at
 // attach time whether the client takes UTF-8, and without them it downgrades every
 // box-drawing, status and smart-quote glyph the agent TUIs draw to `_`.
-func startTmuxAttach(cols, rows int) (*os.File, *exec.Cmd, error) {
+func startTmuxAttach(cols, rows int, target string) (*os.File, *exec.Cmd, error) {
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return nil, nil, err
@@ -583,7 +605,7 @@ func startTmuxAttach(cols, rows int) (*os.File, *exec.Cmd, error) {
 		return nil, nil, err
 	}
 	defer slave.Close()
-	cmd := exec.Command(asDev[0], append(asDev[1:], "tmux", "-u", "attach", "-t", "agent")...)
+	cmd := exec.Command(asDev[0], append(asDev[1:], "tmux", "-u", "attach", "-t", target)...)
 	cmd.Env, cmd.Dir = cleanEnv, "/"
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
