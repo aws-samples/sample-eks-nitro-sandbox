@@ -196,30 +196,11 @@ async function loadSessions() {
 const windows = new Map();
 let zTop = 10;
 
-function openTerminal(session, cli, display) {
-  const label = display || session;
-  if (windows.has(session)) return focusWindow(session);
-
-  const win = document.createElement("div");
-  win.className = "term-window";
-  // Cascade new windows, but wrap the offset so a fourth or fifth window does not march off
-  // the bottom-right edge (and behind the dock). Keep each fully on screen.
-  const step = (windows.size % 6) * 30;
-  win.style.left = `${64 + step}px`;
-  win.style.top = `${72 + step}px`;
-  win.style.zIndex = ++zTop;
-  win.innerHTML = `
-    <div class="term-titlebar">
-      <span class="title">${cli} · ${label}</span>
-      <span class="dots">
-        <button data-act="min" title="Minimize">–</button>
-        <button data-act="close" title="Close">×</button>
-      </span>
-    </div>
-    <div class="term-body"></div>
-    <div class="resize-handle"></div>`;
-  $("#windows").appendChild(win);
-
+// One xterm bound to one tmux session in the pod over its own WebSocket. pane is "agent"
+// (the CLI) or "shell" (a plain bash in the same project folder). The window holds one of
+// each, as two tabs, so a developer can ask the agent to build something, then switch to
+// the shell and run it without leaving the agent's conversation.
+function makePane(body, session, pane) {
   const term = new window.Terminal({
     // Name a full-coverage monospace font for each OS before the generic fallback: the
     // agent TUIs draw box-drawing (▎ ─ │), status glyphs (● ✻ ⚠) and accented text, and
@@ -244,7 +225,7 @@ function openTerminal(session, cli, display) {
   const uni = new window.Unicode11Addon.Unicode11Addon();
   term.loadAddon(uni);
   term.unicode.activeVersion = "11";
-  term.open(win.querySelector(".term-body"));
+  term.open(body);
   // WebGL renderer: the agent TUIs (Codex especially) repaint the whole screen on every
   // keystroke, and the default DOM renderer is slow to paint that burst, which is most of
   // the perceived input lag. The WebGL renderer draws it on the GPU, so repaints keep up.
@@ -258,25 +239,80 @@ function openTerminal(session, cli, display) {
   fit.fit();
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws?session=${encodeURIComponent(session)}`);
+  const ws = new WebSocket(`${proto}://${location.host}/ws?session=${encodeURIComponent(session)}&pane=${pane}`);
   ws.binaryType = "arraybuffer";
+  const sendResize = () => {
+    // A hidden pane (another tab is showing, or the window is minimized) has no size, and
+    // fitting it would send a tiny one to tmux. Its size is sent when it is shown again.
+    if (!body.offsetWidth || !body.offsetHeight) return;
+    fit.fit();
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ resize: [term.cols, term.rows] }));
+  };
   ws.onopen = () => sendResize();
   ws.onmessage = (e) => term.write(new Uint8Array(e.data));
   ws.onclose = () => term.write("\r\n[detached]\r\n");
   term.onData((d) => ws.readyState === ws.OPEN && ws.send(d));
+  return { term, ws, sendResize };
+}
 
-  const sendResize = () => {
-    fit.fit();
-    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ resize: [term.cols, term.rows] }));
+function openTerminal(session, cli, display) {
+  const label = display || session;
+  if (windows.has(session)) return focusWindow(session);
+
+  const win = document.createElement("div");
+  win.className = "term-window";
+  // Cascade new windows, but wrap the offset so a fourth or fifth window does not march off
+  // the bottom-right edge (and behind the dock). Keep each fully on screen.
+  const step = (windows.size % 6) * 30;
+  win.style.left = `${64 + step}px`;
+  win.style.top = `${72 + step}px`;
+  win.style.zIndex = ++zTop;
+  win.innerHTML = `
+    <div class="term-titlebar">
+      <span class="title">${cli} · ${label}</span>
+      <span class="dots">
+        <button data-act="min" title="Minimize">–</button>
+        <button data-act="close" title="Close">×</button>
+      </span>
+    </div>
+    <div class="term-tabs" role="tablist">
+      <button class="term-tab active" role="tab" aria-selected="true" data-pane="agent">${cli}</button>
+      <button class="term-tab" role="tab" aria-selected="false" data-pane="shell">Terminal</button>
+    </div>
+    <div class="term-body" data-pane="agent"></div>
+    <div class="term-body hidden" data-pane="shell"></div>
+    <div class="resize-handle"></div>`;
+  $("#windows").appendChild(win);
+
+  // The agent's tab connects now. The shell tab connects the first time it is opened, then
+  // stays connected, so its scrollback and any program running in it are there when the
+  // developer switches back. Both panes are tmux sessions in the pod, so closing the browser
+  // only detaches them.
+  const panes = { agent: makePane(win.querySelector('.term-body[data-pane="agent"]'), session, "agent") };
+  const showPane = (name) => {
+    for (const tab of win.querySelectorAll(".term-tab")) {
+      const on = tab.dataset.pane === name;
+      tab.classList.toggle("active", on);
+      tab.setAttribute("aria-selected", String(on));
+    }
+    for (const body of win.querySelectorAll(".term-body")) body.classList.toggle("hidden", body.dataset.pane !== name);
+    // A pane is fitted only while visible (a hidden element has no size), so fit it now.
+    if (!panes[name]) panes[name] = makePane(win.querySelector(`.term-body[data-pane="${name}"]`), session, name);
+    else panes[name].sendResize();
+    panes[name].term.focus();
+    win.dataset.pane = name;
   };
+  for (const tab of win.querySelectorAll(".term-tab")) tab.onclick = () => showPane(tab.dataset.pane);
+  const onResize = () => panes[win.dataset.pane || "agent"].sendResize();
 
-  windows.set(session, { win, term, ws, cli, label });
+  windows.set(session, { win, panes, cli, label, showPane });
   win.addEventListener("mousedown", () => { win.style.zIndex = ++zTop; });
   const closeBtn = win.querySelector('[data-act="close"]');
   closeBtn.addEventListener("mousedown", (e) => e.stopPropagation());
   closeBtn.onclick = async (e) => {
     e.stopPropagation();
-    ws.close(); win.remove(); windows.delete(session);
+    for (const p of Object.values(panes)) p.ws.close();
+    win.remove(); windows.delete(session);
     closing.add(session);
     redraw(session); // Closing..., at once
     try {
@@ -296,12 +332,16 @@ function openTerminal(session, cli, display) {
   minBtn.addEventListener("mousedown", (e) => e.stopPropagation());
   minBtn.onclick = (e) => { e.stopPropagation(); minimize(session); };
   makeDraggable(win, win.querySelector(".term-titlebar"));
-  makeResizable(win, win.querySelector(".resize-handle"), sendResize);
+  makeResizable(win, win.querySelector(".resize-handle"), onResize);
 }
 
 function focusWindow(session) {
   const w = windows.get(session);
-  if (w) { w.win.classList.remove("hidden"); w.win.style.zIndex = ++zTop; removeChip(session); }
+  if (w) {
+    w.win.classList.remove("hidden"); w.win.style.zIndex = ++zTop; removeChip(session);
+    // A socket that opened while the window was minimized skipped its resize; send it now.
+    w.showPane(w.win.dataset.pane || "agent");
+  }
 }
 
 function minimize(session) {
