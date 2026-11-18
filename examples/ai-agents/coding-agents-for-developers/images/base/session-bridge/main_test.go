@@ -7,6 +7,9 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -125,6 +128,43 @@ func TestPaneTarget(t *testing.T) {
 		got, ok := paneTarget(c.in)
 		if got != c.want || ok != c.ok {
 			t.Errorf("paneTarget(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestActivityScript runs the real script with a stub tmux that knows which sessions exist
+// and what activity each reports, so it covers every combination of the two sessions.
+func TestActivityScript(t *testing.T) {
+	dir := t.TempDir()
+	stub := `#!/bin/sh
+# usage: tmux has-session -t S | display-message -p -t S FMT | list-windows -t S -F FMT
+case "$1" in
+has-session) case " $STUB_SESSIONS " in *" $3 "*) exit 0;; esac; exit 1;;
+display-message) eval "echo \$STUB_SESSION_$5";;
+list-windows) eval "echo \$STUB_WINDOW_$3";;
+esac
+`
+	if err := os.WriteFile(dir+"/tmux", []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, sessions, want string
+	}{
+		{"both", "agent shell", "1700000999"},
+		{"agent only", "agent", "1700000200"},
+		{"shell only keeps the session", "shell", "1700000999"},
+		{"neither", "", "none"},
+	} {
+		cmd := exec.Command("/bin/sh", "-c", activityScript)
+		cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin", "STUB_SESSIONS=" + c.sessions,
+			"STUB_SESSION_agent=1700000100", "STUB_WINDOW_agent=1700000200",
+			"STUB_SESSION_shell=1700000500", "STUB_WINDOW_shell=1700000999"}
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := strings.TrimSpace(string(out)); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }

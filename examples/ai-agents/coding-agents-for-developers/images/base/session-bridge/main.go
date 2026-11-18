@@ -177,14 +177,15 @@ func (b *bridge) auth(h http.HandlerFunc) http.HandlerFunc {
 
 // The newest of tmux's session_activity (moves on key input) and each window's
 // window_activity (moves when the pane prints), over the agent session and the shell
-// session beside it, or "none" when the agent session is gone. The shell counts, so a
-// developer running the program they built in the shell tab does not lose the session
-// while the agent waits at its prompt.
+// session beside it, or "none" when neither session exists. The shell counts, even after
+// the agent's session has ended (the agent's tab ends with the CLI), so a developer running
+// the program they built in the shell tab does not lose the session while the agent waits
+// at its prompt or is gone.
 // Reading session_activity alone released an agent that was still working on its own:
 // with a pane printing every 15 s and no keys, it aged past ten minutes while
 // window_activity stayed under five seconds. A CLI waiting at its prompt prints nothing,
 // so it still goes idle.
-const activityScript = `if tmux has-session -t agent 2>/dev/null; then ` +
+const activityScript = `if tmux has-session -t agent 2>/dev/null || tmux has-session -t shell 2>/dev/null; then ` +
 	`{ for s in agent shell; do tmux has-session -t $s 2>/dev/null || continue; ` +
 	`tmux display-message -p -t $s '#{session_activity}'; tmux list-windows -t $s -F '#{window_activity}'; done; } | sort -n | tail -1; ` +
 	`else echo none; fi`
