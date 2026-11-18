@@ -1,0 +1,129 @@
+<mxfile host="65bd71144e" pages="1">
+  <diagram id="arch" name="Architecture">
+    <mxGraphModel dx="2400" dy="1400" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="0" pageScale="1" pageWidth="2400" pageHeight="1400" background="#ffffff">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Packer build icon (outside AWS Cloud, left) -->
+        <mxCell id="packer" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;amazon-eks-ami&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;Packer build&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=24;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.gear;fontFamily=Arial,Helvetica,sans-serif;spacing=0;" vertex="1" parent="1">
+          <mxGeometry x="40" y="360" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- AMI icon (center, outside AWS Cloud) -->
+        <mxCell id="ami" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;AL2023 -pod-isolation AMI&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;kernel 6.18.51+&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=24;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ami;fontFamily=Arial,Helvetica,sans-serif;spacing=0;" vertex="1" parent="1">
+          <mxGeometry x="360" y="360" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Edge: packer to AMI -->
+        <mxCell id="e-packer-ami" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;endArrow=block;endFill=1;endSize=10;startArrow=none;fontFamily=Arial,Helvetica,sans-serif;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="packer" target="ami">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- AWS Cloud frame -->
+        <mxCell id="aws" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;AWS Cloud&lt;/div&gt;" style="fillColor=none;strokeColor=#232F3E;dashed=0;verticalAlign=top;fontStyle=1;fontColor=#232F3E;whiteSpace=nowrap;fontSize=14;html=1;strokeWidth=2;spacing=0;rounded=0;align=left;spacingTop=6;spacingLeft=62;fontFamily=Arial,Helvetica,sans-serif;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_aws_cloud_alt;grStroke=1;grIconSize=48;" vertex="1" parent="1">
+          <mxGeometry x="600" y="40" width="1320" height="840" as="geometry" />
+        </mxCell>
+
+        <!-- Managed node group icon -->
+        <mxCell id="nodegroup" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Managed node group&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;launch template&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=24;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eks;fontFamily=Arial,Helvetica,sans-serif;spacing=0;" vertex="1" parent="1">
+          <mxGeometry x="760" y="160" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Karpenter icon -->
+        <mxCell id="karpenter" value="&lt;div style=&quot;line-height:28.80px&quot;&gt;Karpenter&lt;/div&gt;&lt;div style=&quot;line-height:27.20px&quot;&gt;&lt;i&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;EC2NodeClass&lt;/span&gt;&lt;/i&gt;&lt;/div&gt;" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#232F3D;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=24;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.gear;fontFamily=Arial,Helvetica,sans-serif;spacing=0;" vertex="1" parent="1">
+          <mxGeometry x="760" y="600" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Edge: AMI to node group -->
+        <mxCell id="e-ami-ng" value="feeds" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;endArrow=block;endFill=1;endSize=10;startArrow=none;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="ami" target="nodegroup">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="560" y="400" />
+              <mxPoint x="560" y="200" />
+            </Array>
+            <mxPoint x="12" y="40" as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Edge: AMI to Karpenter -->
+        <mxCell id="e-ami-karp" value="feeds" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;endArrow=block;endFill=1;endSize=10;startArrow=none;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;align=left;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="ami" target="karpenter">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="560" y="400" />
+              <mxPoint x="560" y="640" />
+            </Array>
+            <mxPoint x="12" y="-80" as="offset" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- EKS cluster frame -->
+        <mxCell id="cluster" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;EKS cluster&lt;/div&gt;" style="fillColor=none;strokeColor=#ED7100;dashed=0;verticalAlign=top;fontStyle=1;fontColor=#ED7100;whiteSpace=nowrap;fontSize=14;html=1;strokeWidth=2;spacing=0;rounded=0;align=left;spacingTop=6;spacingLeft=62;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="120" width="760" height="720" as="geometry" />
+        </mxCell>
+
+        <!-- EKS cluster tab icon -->
+        <mxCell id="cluster-tab" value="" style="sketch=0;outlineConnect=0;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.eks;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="120" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- EKS node frame -->
+        <mxCell id="node" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;EKS node (EC2 instance)&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;eks.amazonaws.com/nitro-sandbox=true&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="fillColor=none;strokeColor=#ED7100;dashed=0;verticalAlign=top;fontStyle=1;fontColor=#ED7100;whiteSpace=nowrap;fontSize=14;html=1;strokeWidth=2;spacing=0;rounded=0;align=left;spacingTop=4;spacingLeft=62;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="200" width="680" height="600" as="geometry" />
+        </mxCell>
+
+        <!-- EKS node tab icon -->
+        <mxCell id="node-tab" value="" style="sketch=0;outlineConnect=0;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+          <mxGeometry x="1160" y="200" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- Nitro sandbox frame -->
+        <mxCell id="sandbox" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandbox&lt;/div&gt;" style="fillColor=none;strokeColor=#DD344C;dashed=0;verticalAlign=top;fontStyle=1;fontColor=#DD344C;whiteSpace=nowrap;fontSize=14;html=1;strokeWidth=2;spacing=0;rounded=0;align=left;spacingTop=6;spacingLeft=62;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="300" width="600" height="460" as="geometry" />
+        </mxCell>
+
+        <!-- Nitro sandbox tab icon -->
+        <mxCell id="sandbox-tab" value="" style="sketch=0;outlineConnect=0;fillColor=#ED7100;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.ec2;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="300" width="48" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- Pod box -->
+        <mxCell id="pod" value="&lt;div style=&quot;font-size:22px;line-height:26.40px&quot;&gt;Nitro sandbox pod&lt;/div&gt;&lt;div style=&quot;font-size:18px;line-height:22px&quot;&gt;&lt;span style=&quot;font-weight:normal&quot;&gt;&lt;span style=&quot;color:#5F6B7A&quot;&gt;runtimeClassName: isolated-sandbox&lt;/span&gt;&lt;/span&gt;&lt;/div&gt;" style="fillColor=none;strokeColor=#232F3E;dashed=0;verticalAlign=top;fontStyle=1;fontColor=#232F3E;whiteSpace=nowrap;fontSize=14;html=1;strokeWidth=2;spacing=0;rounded=0;align=left;spacingTop=4;spacingLeft=16;fontFamily=Arial,Helvetica,sans-serif;" vertex="1" parent="1">
+          <mxGeometry x="1240" y="400" width="520" height="320" as="geometry" />
+        </mxCell>
+
+        <!-- Container icons inside pod -->
+        <mxCell id="container1" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.container_1;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="520" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="container2" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;fillColor=#ED7100;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.container_2;" vertex="1" parent="1">
+          <mxGeometry x="1600" y="520" width="80" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- Edge: node group to node -->
+        <mxCell id="e-ng-node" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;endArrow=block;endFill=1;endSize=10;startArrow=none;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="nodegroup" target="node">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1000" y="200" />
+              <mxPoint x="1000" y="350" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- Edge: Karpenter to node -->
+        <mxCell id="e-karp-node" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;strokeColor=#545B64;strokeWidth=2.5;endArrow=block;endFill=1;endSize=10;startArrow=none;fontSize=18;fontStyle=2;fontColor=#414D5C;fontFamily=Arial,Helvetica,sans-serif;labelBackgroundColor=none;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" edge="1" parent="1" source="karpenter" target="node">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1000" y="640" />
+              <mxPoint x="1000" y="650" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

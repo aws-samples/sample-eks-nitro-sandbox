@@ -65,9 +65,27 @@ spec:
         app: gitlab
         app.kubernetes.io/part-of: gitlab-ci
     spec:
+      # GitLab calls nothing on the Kubernetes API (no cluster integration, gitlab_kas off),
+      # so its pod gets no ServiceAccount token.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: gitlab
           image: gitlab/gitlab-ce:19.5.0-ce.0
+          # The GitLab single-container image has no non-root mode: at every start
+          # gitlab-ctl reconfigure runs as root, rewrites its own install tree and the
+          # service groups in /etc/group, chowns its data and then starts each service as
+          # its own user. So it stays root, with a writable root filesystem and the runtime's
+          # default capabilities, less NET_RAW, which nothing here uses: the probes and the
+          # runner talk HTTP. It gains no privileges beyond those it starts with.
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["NET_RAW"]
           env:
             # external_url is what GitLab builds the links on its own pages from, so it is
             # set to the reader's port-forward and not to the Service: a reader following a
@@ -92,14 +110,9 @@ spec:
                 puma['worker_processes'] = 2
                 sidekiq['max_concurrency'] = 9
                 gitlab_rails['gitlab_shell_ssh_port'] = 22
-            # The initial root password, from the Secret scripts/setup.sh creates. It is
-            # never an argument to any command: GitLab reads it from this variable, and the
-            # reader reads it back out of the Secret.
-            - name: GITLAB_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: <ROOT_SECRET>
-                  key: password
+                # The initial root password, read from the file the Secret below mounts.
+                # GitLab uses it only on the first boot, which seeds the database.
+                gitlab_rails['initial_root_password'] = File.read('/etc/gitlab-root/password').strip
           ports:
             - name: http
               containerPort: 80
@@ -133,6 +146,16 @@ spec:
             periodSeconds: 15
             timeoutSeconds: 10
             failureThreshold: 4
+          # GitLab's own liveness endpoint, by exec for the same reason as the readiness
+          # probe. Loose on purpose: a GitLab busy with a pipeline can answer slowly, and a
+          # restart would cut that pipeline off. Like readiness, it starts only once the
+          # startup probe has passed.
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "curl -sf -o /dev/null http://localhost/-/liveness"]
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
           resources:
             # GitLab in one container runs Puma, Sidekiq, Postgres, Redis, Gitaly and nginx
             # together, so unlike most pods in these samples it is given a size: with no
@@ -148,7 +171,18 @@ spec:
             - { name: data, mountPath: /var/opt/gitlab,    subPath: opt }
             - { name: data, mountPath: /etc/gitlab,        subPath: etc }
             - { name: data, mountPath: /var/log/gitlab,    subPath: log }
+            # Outside /etc/gitlab, which is a directory on the data volume.
+            - { name: root-password, mountPath: /etc/gitlab-root, readOnly: true }
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: gitlab-data
+        # The initial root password, from the Secret scripts/setup.sh creates, as a read-only
+        # file rather than an environment variable, so it is in no process's environment. It
+        # is never an argument to any command, and the reader reads it back out of the Secret.
+        - name: root-password
+          secret:
+            secretName: <ROOT_SECRET>
+            defaultMode: 0400
+            items:
+              - { key: password, path: password }
