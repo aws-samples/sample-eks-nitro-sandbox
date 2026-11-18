@@ -342,29 +342,10 @@ wait_target_groups() {
   printf '%s' "$tgs"
 }
 
-# tag_alb <target group arns> : Auto Mode cannot add our tags itself (see deploy/ingress.yaml),
-# so tag what it created with your credentials: the load balancer, its target groups,
-# listener and listener rules.
-tag_alb() {
-  local listeners l rules="" r
-  listeners="$(aws_r elbv2 describe-listeners --load-balancer-arn "$ALB_ARN" \
-    --query 'Listeners[].ListenerArn' --output text)" || die "could not list the listeners of $ALB_ARN"
-  for l in $listeners; do
-    # shellcheck disable=SC2016  # a JMESPath literal, not a shell expansion
-    r="$(aws_r elbv2 describe-rules --listener-arn "$l" \
-      --query 'Rules[?IsDefault==`false`].RuleArn' --output text)" || die "could not list the rules of $l"
-    rules="$rules $r"
-  done
-  # AddTags takes a list of ARNs, but Elastic Load Balancing refuses more than one resource
-  # per call ("Only one resource can be tagged at a time"), so tag each one on its own.
-  for r in "$ALB_ARN" $1 $listeners $rules; do
-    aws_r elbv2 add-tags --resource-arns "$r" \
-      --tags "Key=$TAG_KEY,Value=$TAG_VAL" Key=auto-delete,Value=no >/dev/null \
-      || die "could not tag $r"
-  done
-  echo "tagged the ALB, its target groups, listener and rules $TAG_KEY=$TAG_VAL auto-delete=no"
-}
-
+# The ALB, its listener, rules and target groups belong to EKS Auto Mode and carry only Auto
+# Mode's own tags (eks:eks-cluster-name, ingress.eks.amazonaws.com/stack). Setup adds none:
+# Auto Mode removes any tag it did not set on its next update of the Ingress, the cluster
+# role is not allowed to, and that update then fails, so the / route would never be added.
 # audit_alb_sgs closed|open : read from AWS what can reach the ALB. The blueprint's group
 # has no inbound rule (closed) or exactly one, TCP 80 from CloudFront's VPC origin group
 # (open). Any other group on the ALB (Auto Mode's shared backend group) has none.

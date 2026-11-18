@@ -244,6 +244,7 @@ This folder was built against these releases:
 | Coder Terraform provider ([coder/terraform-provider-coder](https://github.com/coder/terraform-provider-coder/releases/tag/v2.20.0)) | 2.20.0 |
 | Kubernetes Terraform provider ([hashicorp/terraform-provider-kubernetes](https://github.com/hashicorp/terraform-provider-kubernetes/releases/tag/v3.5.0)) | 3.5.0 |
 | code-server module ([registry.coder.com/coder/code-server](https://registry.coder.com/modules/coder/code-server)) | 1.6.0 |
+| code-server, installed by the module ([coder/code-server](https://github.com/coder/code-server/releases/tag/v4.145.2)) | 4.145.2 |
 | Claude Code module ([registry.coder.com/coder/claude-code](https://registry.coder.com/modules/coder/claude-code)) | 5.5.2 |
 | Workspace image ([codercom/enterprise-base](https://hub.docker.com/r/codercom/enterprise-base/tags?name=ubuntu-20261112)) | `ubuntu-20261112` |
 | Keycloak ([keycloak/keycloak](https://github.com/keycloak/keycloak/releases/tag/26.8.2)) | 26.8.2, as `quay.io/keycloak/keycloak:26.8.2` |
@@ -806,10 +807,19 @@ The blueprint runs one of everything. To grow it:
   first one, and CloudFront creates `CloudFront-VPCOrigins-Service-SG` with the first VPC
   origin in the VPC. Neither belongs to this blueprint, so the clean up reports them and
   leaves them.
-- **You can drop the `auto-delete=no` tag.** Every AWS resource the blueprint creates carries
+- **You can drop the `auto-delete=no` tag.** Every AWS resource the scripts create carries
   `ManagedBy=coder`, which is how the clean up finds them, and `auto-delete=no`, for accounts
   whose housekeeping deletes untagged resources. If yours has no such rule, remove it from the
   scripts.
+- **The ALB carries EKS Auto Mode's tags, not the blueprint's.** Auto Mode creates the load
+  balancer, its listener, rules and target groups from the Ingress, and tags them
+  `eks:eks-cluster-name` and `ingress.eks.amazonaws.com/stack` (`coder/coder` here). It removes
+  any other tag when it next updates them, and the cluster role's
+  `AmazonEKSLoadBalancingPolicy` does not allow that, so a hand-added tag makes the update
+  fail. To give Auto Mode's load balancers tags of your own, the Amazon EKS User Guide
+  ([*Create an IngressClass to configure an Application Load Balancer*](https://docs.aws.amazon.com/eks/latest/userguide/auto-configure-alb.html))
+  has you allow them on the cluster role and set `tags` in the IngressClassParams. The clean up
+  removes the ALB by deleting the Ingress.
 
 ## Clean up
 

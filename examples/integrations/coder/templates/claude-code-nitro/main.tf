@@ -190,6 +190,9 @@ module "code-server" {
   version  = "1.6.0"
   agent_id = coder_agent.main.id
   folder   = "/home/coder"
+  # The module installs the newest code-server unless told a version. Pin it so every
+  # workspace runs the same editor.
+  install_version = "4.145.2"
 }
 
 # Claude Code, installed and set up so a developer never has to install it or sign in.
@@ -324,6 +327,12 @@ resource "kubernetes_deployment_v1" "workspace" {
           env {
             name  = "CODER_AGENT_TOKEN"
             value = coder_agent.main.token
+          }
+
+          # The workspace runs no Docker, so the agent has no dev containers to look for.
+          env {
+            name  = "CODER_AGENT_DEVCONTAINERS_ENABLE"
+            value = "false"
           }
 
           # The guest's memory follows this memory request. It is the only size the

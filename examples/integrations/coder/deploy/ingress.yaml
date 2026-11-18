@@ -51,11 +51,10 @@ spec:
     # Drop requests with header names that are not valid HTTP.
     - key: routing.http.drop_invalid_header_fields.enabled
       value: "true"
-  # No `tags` here. Auto Mode adds these to every load balancer resource it creates, and
-  # the cluster role's AmazonEKSLoadBalancingPolicy allows only Auto Mode's own tag keys on
-  # those calls, so a ManagedBy tag would make Auto Mode's create calls fail. Setup tags the
-  # ALB and its target groups with ManagedBy=coder and auto-delete=no after Auto Mode has
-  # created them.
+  # No `tags` here, and setup adds none to the ALB later. The cluster role's
+  # AmazonEKSLoadBalancingPolicy allows only Auto Mode's own tag keys, so a tag here makes
+  # Auto Mode's create calls fail, and a tag added afterwards makes its next update fail when
+  # it tries to remove it. The ALB carries Auto Mode's tags, and deleting the Ingress deletes it.
 ---
 apiVersion: networking.k8s.io/v1
 kind: IngressClass

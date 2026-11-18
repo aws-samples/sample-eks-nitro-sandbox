@@ -214,7 +214,8 @@ aws_r elbv2 describe-tags --resource-arns "$ALB_ARN" --output json | jq -e --arg
   || die "load balancer $ALB_ARN is not the one Auto Mode made for ingress $NAMESPACE/$INGRESS_NAME"
 state_set ALB_ARN "$ALB_ARN"
 aws_r elbv2 wait load-balancer-available --load-balancer-arns "$ALB_ARN" || die "load balancer $ALB_ARN did not become active"
-tag_alb "$(wait_target_groups 1)"
+# Called directly, not in $( ), so its die stops this script.
+wait_target_groups 1 >/dev/null
 echo "security groups on the ALB:"
 audit_alb_sgs closed
 echo "ALB $ALB_DNS is internal and active; nothing can reach it yet"
@@ -407,7 +408,8 @@ echo "sign-in methods: $(jq -c '{password: .password.enabled, oidc: .oidc.enable
 step "10/13 Route / to Coder"
 render ingress.yaml | require_rendered ingress.yaml | kc apply -l app.kubernetes.io/component=ingress -f - \
   || die "could not add the Coder route to ingress/$INGRESS_NAME"
-tag_alb "$(wait_target_groups 2)"
+# Called directly, not in $( ), so its die stops this script.
+wait_target_groups 2 >/dev/null
 wait_url "https://$DOMAIN/healthz" 200 10
 
 step "11/13 Anonymous requests through https://$DOMAIN, before any Keycloak user exists"

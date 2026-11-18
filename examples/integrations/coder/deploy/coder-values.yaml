@@ -94,10 +94,12 @@ coder:
     - name: CODER_SECURE_AUTH_COOKIE
       value: "true"
 
-    # No sign-in or Git provider other than Keycloak.
+    # No sign-in provider other than Keycloak. (Coder's default GitHub external
+    # auth provider is not turned off here: coderd 2.38.10 reads every
+    # CODER_EXTERNAL_AUTH_* variable as a numbered provider and refuses to start
+    # on CODER_EXTERNAL_AUTH_GITHUB_DEFAULT_PROVIDER_ENABLE. It is used only by
+    # templates that ask for GitHub access, and this template does not.)
     - name: CODER_OAUTH2_GITHUB_DEFAULT_PROVIDER_ENABLE
-      value: "false"
-    - name: CODER_EXTERNAL_AUTH_GITHUB_DEFAULT_PROVIDER_ENABLE
       value: "false"
 
     # Telemetry is on by default and sends the first user's email address.
