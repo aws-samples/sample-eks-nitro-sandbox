@@ -355,10 +355,13 @@ tag_alb() {
       --query 'Rules[?IsDefault==`false`].RuleArn' --output text)" || die "could not list the rules of $l"
     rules="$rules $r"
   done
-  # shellcheck disable=SC2086  # one argument per ARN
-  aws_r elbv2 add-tags --resource-arns "$ALB_ARN" $1 $listeners $rules \
-    --tags "Key=$TAG_KEY,Value=$TAG_VAL" Key=auto-delete,Value=no >/dev/null \
-    || die "could not tag the ALB, its target groups, listener and rules"
+  # AddTags takes a list of ARNs, but Elastic Load Balancing refuses more than one resource
+  # per call ("Only one resource can be tagged at a time"), so tag each one on its own.
+  for r in "$ALB_ARN" $1 $listeners $rules; do
+    aws_r elbv2 add-tags --resource-arns "$r" \
+      --tags "Key=$TAG_KEY,Value=$TAG_VAL" Key=auto-delete,Value=no >/dev/null \
+      || die "could not tag $r"
+  done
   echo "tagged the ALB, its target groups, listener and rules $TAG_KEY=$TAG_VAL auto-delete=no"
 }
 
