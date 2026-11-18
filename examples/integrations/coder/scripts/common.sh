@@ -92,6 +92,39 @@ hm() {
 }
 aws_r() { aws --region "$AWS_REGION" "$@"; }
 
+# check_alb_private : the ALB must be internal, sit in exactly the private subnets setup chose
+# (none with a route to an internet gateway), and hold no public IP address on any of its
+# network interfaces. Silent when it holds. When it does not, or cannot be confirmed, the
+# Ingress is deleted at once, so EKS Auto Mode removes the load balancer, and setup stops:
+# nothing public is left in your account.
+check_alb_private() {
+  local lb got want rts s pub
+  lb="$(aws_r elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --output json)" \
+    || alb_not_private "could not read load balancer $ALB_ARN"
+  [[ "$(jq -r '.LoadBalancers[0].Scheme' <<<"$lb")" == internal ]] || alb_not_private "it is not internal"
+  got="$(jq -r '[.LoadBalancers[0].AvailabilityZones[].SubnetId] | sort | join(" ")' <<<"$lb")"
+  want="$(tr ',' ' ' <<<"$SUBNET_IDS_CSV" | xargs -n1 | sort | xargs)"
+  [[ -n "$got" && "$got" == "$want" ]] || alb_not_private "it is in subnets '$got', not the private subnets '$want'"
+  rts="$(aws_r ec2 describe-route-tables --filters "Name=vpc-id,Values=$VPC_ID" --output json)" \
+    || alb_not_private "could not read the route tables of $VPC_ID"
+  for s in $got; do
+    jq -e --arg s "$s" '([.RouteTables[] | select(any(.Associations[]?; .SubnetId == $s))][0]
+        // [.RouteTables[] | select(any(.Associations[]?; .Main == true))][0]) as $rt
+      | $rt != null and (any($rt.Routes[]?; (.GatewayId // "") | startswith("igw-")) | not)' \
+      <<<"$rts" >/dev/null || alb_not_private "subnet $s has a route to an internet gateway"
+  done
+  pub="$(aws_r ec2 describe-network-interfaces --filters "Name=description,Values=ELB ${ALB_ARN#*:loadbalancer/}" \
+    --query 'NetworkInterfaces[?Association.PublicIp != null].NetworkInterfaceId' --output text)" \
+    || alb_not_private "could not read the ALB's network interfaces"
+  [[ -z "$pub" || "$pub" == None ]] || alb_not_private "network interfaces $pub have public IP addresses"
+}
+alb_not_private() {
+  echo "error: the ALB is not private: $1" >&2
+  echo "deleting ingress/$INGRESS_NAME so EKS Auto Mode removes the load balancer" >&2
+  kc delete ingress "$INGRESS_NAME" --ignore-not-found >&2 || echo "error: could not delete ingress/$INGRESS_NAME; delete it now" >&2
+  die "stopped. Run ./scripts/cleanup.sh, then check the scheme and subnets in deploy/ingress.yaml"
+}
+
 require_commands() {
   local c
   for c in "$@"; do command -v "$c" >/dev/null 2>&1 || die "missing required command: $c"; done

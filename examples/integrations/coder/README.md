@@ -129,6 +129,33 @@ spec:
   ipAddressType: ipv4
 ```
 
+Setup names the subnets too: the cluster's private subnets, the ones with no route to an
+internet gateway. Once Auto Mode has created the ALB, setup checks that it is internal, sits in
+exactly those subnets and has no public IP address on any of its network interfaces. If any of
+that is not so, setup deletes the Ingress, so Auto Mode removes the load balancer, and stops.
+You can read the same three things yourself:
+
+```bash
+lb_arn="$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+  --query "LoadBalancers[?starts_with(LoadBalancerName,'k8s-coder-coder')].LoadBalancerArn" --output text)"
+aws elbv2 describe-load-balancers --region "$AWS_REGION" --load-balancer-arns "$lb_arn" \
+  --query 'LoadBalancers[0].{Scheme:Scheme,Subnets:AvailabilityZones[].SubnetId}'
+aws ec2 describe-route-tables --region "$AWS_REGION" \
+  --filters "Name=association.subnet-id,Values=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
+    --load-balancer-arns "$lb_arn" --query 'join(`,`, LoadBalancers[0].AvailabilityZones[].SubnetId)' --output text)" \
+  --query 'RouteTables[].{Subnets:Associations[].SubnetId,DefaultRoute:Routes[?DestinationCidrBlock==`0.0.0.0/0`].[GatewayId,NatGatewayId][]}'
+aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+  --filters "Name=description,Values=ELB ${lb_arn#*:loadbalancer/}" \
+  --query 'NetworkInterfaces[].{PrivateIp:PrivateIpAddress,PublicIp:Association.PublicIp}'
+```
+
+```text
+TODO: output from the fresh run
+```
+
+The scheme is `internal`, each subnet's default route goes to a NAT gateway rather than an
+internet gateway, and no network interface has a public IP address.
+
 The ALB's security group, `coder-alb-origin`, is the blueprint's own, and it has one inbound
 rule: TCP 80 from `CloudFront-VPCOrigins-Service-SG`, the group CloudFront creates and manages
 for its VPC origins in your VPC. So the distribution is the only way to the ALB:

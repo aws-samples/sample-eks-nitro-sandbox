@@ -214,6 +214,8 @@ aws_r elbv2 describe-tags --resource-arns "$ALB_ARN" --output json | jq -e --arg
   || die "load balancer $ALB_ARN is not the one Auto Mode made for ingress $NAMESPACE/$INGRESS_NAME"
 state_set ALB_ARN "$ALB_ARN"
 aws_r elbv2 wait load-balancer-available --load-balancer-arns "$ALB_ARN" || die "load balancer $ALB_ARN did not become active"
+# Internal, in the private subnets chosen above, no public IP address; otherwise it is removed.
+check_alb_private
 # Called directly, not in $( ), so its die stops this script.
 wait_target_groups 1 >/dev/null
 echo "security groups on the ALB:"
