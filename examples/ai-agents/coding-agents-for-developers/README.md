@@ -183,7 +183,13 @@ second tmux session beside the agent's (`tmux attach -t shell`), opened the firs
 click the tab and kept after that, so a program left running there is still running when
 you come back. Typing `exit` in it starts a fresh shell. It runs as the same unprivileged
 user and under the same egress policy as the agent, so it can reach nothing the agent
-cannot. The agent's tab is wired to the CLI running in its sandbox pod. These are
+cannot. The agent's tab is wired to the CLI running in its sandbox pod.
+
+![A terminal window titled "claude-code" with two tabs, "claude-code" and "Terminal", the second selected. The Terminal tab shows a bash prompt as the dev user in the project folder. It ran a script the agent might have written, which printed "built by the agent, run in the shell", then pwd printed /workspace/project, id -un printed dev, and a loop is printing "tick 1" to "tick 10". Behind the window, the session list.](figures/screenshots/shell-tab.png)
+
+The loop above was started in the **Terminal** tab. The window then switched to the agent tab
+for 5 seconds and back, and the loop had kept running, printing `tick 10`. The agent tab was
+unchanged after the switch. These are
 the six CLIs answering the same prompt, each on its own model: four on the Bedrock
 inference profile in the app's agent list (Claude Sonnet here), Codex on a GPT model
 served through the Bedrock "Mantle" OpenAI-compatible endpoint, and Kiro CLI through the
