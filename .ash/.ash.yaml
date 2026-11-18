@@ -1518,6 +1518,134 @@ global_settings:
     - rule_id: CKV_K8S_9
       path: 'examples/setup/ubuntu-ami/deploy/pod-isolated-sandbox.yaml'
       reason: 'Booted with no network, so kubelet has nothing to probe over; it only sleeps and test.sh drives it with kubectl exec (pod-isolated-sandbox.yaml:1-3,22,28-29)'
+    # ---- #231 al2023-ami: the two plain hello-world pods (isolated + ordinary contrast) ----
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_11
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_13
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_15
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_43
+      path: 'examples/setup/al2023-ami/deploy/pod-isolated-sandbox.yaml'
+      reason: 'Hello-world proof pod booted with sandbox.amazonaws.com/network-isolated (only loopback, no route) to show its own guest kernel, boot and virtio disks; plain on purpose (pod-isolated-sandbox.yaml:1-5,13)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_11
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_13
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_15
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_20
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_22
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_28
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_30
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_31
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_37
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_43
+      path: 'examples/setup/al2023-ami/deploy/pod-ordinary.yaml'
+      reason: 'Ordinary contrast pod for the host-kernel and device comparison beside the isolated pod; plain on purpose (pod-ordinary.yaml:1-5)'
       expiration: '2027-12-31'
     # Cilium: the clients are selected by the CiliumNetworkPolicy in policy.yaml, which checkov does not read; the
     # rest are its destinations and the host-network probe the sample needs to show the socket load balancer.
