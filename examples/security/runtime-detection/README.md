@@ -15,21 +15,25 @@ cd sample-eks-nitro-sandbox/examples/security/runtime-detection
 Most runtime security tools for Kubernetes watch the node's kernel. Falco and Cilium Tetragon,
 in their usual DaemonSet form, load eBPF programs into it, and GuardDuty Runtime Monitoring
 inspects the node's processes and cgroups. A pod in a Nitro sandbox runs its containers in a
-lightweight VM with its own kernel, so their system calls never reach the node's kernel, and
-those tools see nothing of them. The Amazon EKS User Guide says so for GuardDuty: its agent
+lightweight VM with its own kernel, so their system calls run on that guest kernel and not on
+the node's. The node's tools report the node and its ordinary pods, and not what runs inside a
+sandbox. The Amazon EKS User Guide says the same for GuardDuty, whose agent
 "cannot monitor activity inside isolated or confidential pods"
 ([GuardDuty integration](https://docs.aws.amazon.com/eks/latest/userguide/integration-guardduty.html),
 [Observability for sandboxed pods](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-observability.html)).
 
-This blueprint shows that gap with a control, and then closes it:
+This blueprint shows that with a control, and then adds a detector inside the sandbox:
 
-- **What goes blind.** The same pod runs twice on one node, differing only in
-  `runtimeClassName: isolated-sandbox`. Both run the same four benign test events. The node's
-  Falco and Tetragon report every event in the ordinary pod and none in the sandboxed pod.
-- **A detector inside the guest.** A sidecar in the sandboxed pod watches the guest kernel,
-  catches the same four events, and prints alerts to stdout. The node's log agent ships them to
-  Amazon CloudWatch Logs like any container log.
-- **What it cannot see.** The sidecar sees its own guest only: not the node, and not other pods.
+- **Each tool is compared from the node and from inside.** The same pod runs twice on one
+  node, differing only in `runtimeClassName: isolated-sandbox`. Both run the same four benign
+  test events. The node's Falco and Tetragon report every event in the ordinary pod and none in
+  the sandboxed pod. [Each tool, from the node and from inside the sandbox](#each-tool-from-the-node-and-from-inside-the-sandbox)
+  compares Falco, Tetragon and GuardDuty feature by feature, and shows what each needs to run
+  inside.
+- **A detector runs inside the guest.** A sidecar in the sandboxed pod uses the guest kernel's audit
+  subsystem, catches the same four events, and prints alerts to stdout. The node's log agent
+  ships them to Amazon CloudWatch Logs like any container log.
+- **The detector sees one guest.** It sees its own guest, and not the node or other pods.
 - **The catch.** The detector shares the guest with the workload it watches, so a workload that
   gains root in the guest can stop it. A heartbeat check turns that silence into an alert.
 
@@ -76,9 +80,10 @@ Tetragon has no alert rules of its own: it logs every process start, and
 [`deploy/tetragon-policy.yaml`](deploy/tetragon-policy.yaml) adds a kernel probe event for a read
 of `/etc/shadow` and one for each outbound TCP connection, so every test event leaves a record.
 
-The optional [GuardDuty stage](#optional-guardduty-runtime-monitoring) adds a fifth event: a DNS
-lookup of `guarddutyc2activityb.com`, the domain GuardDuty documents for testing its
-`C&CActivity.B!DNS` findings. The lookup sends a DNS query and connects to nothing.
+The optional [GuardDuty stage](#optional-guardduty-runtime-monitoring) adds a fifth event, DNS
+lookups of `guarddutyc2activityb.com` and `xmr.pool.minergate.com`, two domains GuardDuty raises
+`C&CActivity.B!DNS` and `BitcoinTool.B!DNS` findings for. Each lookup sends a DNS query and
+connects to nothing.
 
 ## Versions
 
@@ -88,7 +93,8 @@ lookup of `guarddutyc2activityb.com`, the domain GuardDuty documents for testing
 | Falco rules | `falco-rules:5.0.0`, installed once by the chart's `falcoctl` (set in `falco-values.yaml`) | 5.0.0 |
 | [Tetragon Helm chart](https://github.com/cilium/tetragon/tree/main/install/kubernetes/tetragon) | `cilium/tetragon` chart `1.8.0` (Tetragon `v1.8.0`) | 1.8.0 |
 | App and detector image ([`python`](https://gallery.ecr.aws/docker/library/python)) | `public.ecr.aws/docker/library/python:3.12-slim` | 3.12-slim |
-| GuardDuty EKS runtime monitoring add-on (`aws-guardduty-agent`), optional stage only | `v1.17.3-eksbuild.2` | v1.17.3-eksbuild.2 (the default for Kubernetes 1.36) |
+| GuardDuty EKS runtime monitoring add-on (`aws-guardduty-agent`), optional stage only | `v1.17.3-eksbuild.2` | v1.17.4-eksbuild.2 on 2026-11-18 (the default for Kubernetes 1.36) |
+| Falco `collector` and `json` plugins, in-guest setup only | the versions `falcoctl artifact install collector json` installed on 2026-11-18 | not pinned |
 
 The in-guest detector is a single Python file using the standard library only.
 
@@ -231,32 +237,261 @@ The run printed a space at the end of each disk list; the block trims it. The sa
 its own kernel build (`#1`), booted with the pod, and virtio disks. The ordinary pod reports the
 node's build (`#2`), the node's uptime and the instance's `nvme` disks.
 
-## Why Falco and Tetragon cannot simply run in the guest
+## Each tool, from the node and from inside the sandbox
 
-The obvious fix is to run Falco or Tetragon inside the sandbox. On this cluster neither can start
-there, because the guest kernel lacks what their eBPF probes attach to. A privileged probe pod in
-`isolated-sandbox` found:
+Each table below compares one tool in three places. The first is a node DaemonSet watching the
+ordinary pod, the second is the same DaemonSet watching the sandboxed pod, and the third is the
+tool run inside a sandboxed pod. Each cell comes from a run on the test cluster on November 18,
+2026 (Kubernetes 1.36, amd64 nodes, guest kernel `6.18.62`), and holds one of these values:
 
-- `bpf()` works: creating a BPF map succeeds.
-- No BTF: `/sys/kernel/btf/vmlinux` does not exist.
-- No tracing: `tracefs` is not a known file system, and `/proc/kallsyms` has no tracepoint,
-  kprobe or ftrace symbols.
+- **works**: the default install showed it.
+- **works with a setting**: it showed after the setting the cell names.
+- **limit**: it did not show, even with the settings tried.
 
-Falco `0.45.2` with `engine.kind=modern_ebpf`, privileged, in a sandboxed pod:
+### What the guest kernel offers
+
+A sandbox boots its own kernel, and node runtime tools need specific kernel features. A
+privileged pod in `isolated-sandbox`, with `hostPID: true`, ran `bpftool feature probe kernel`
+(bpftool `v7.8.1`) and looked at the guest's file systems. The tracing lines, from that run:
 
 ```text
+bpf() syscall restricted to privileged users (without recovery)
+JIT compiler is enabled
+skipping kernel config, can't open file: No such file or directory
+eBPF program_type kprobe is NOT available
+eBPF program_type tracepoint is NOT available
+eBPF program_type perf_event is NOT available
+eBPF program_type raw_tracepoint is NOT available
+eBPF program_type tracing is NOT available
+eBPF program_type lsm is NOT available
+```
+
+| Guest kernel feature | What the run showed | Used by |
+|---|---|---|
+| `bpf()` and networking or cgroup BPF programs | available (`socket_filter`, `xdp`, `cgroup_skb`, `sched_cls` and others) | network tools |
+| Tracing BPF programs (kprobe, tracepoint, raw tracepoint, fentry, LSM) | not in this kernel | Falco, Tetragon, GuardDuty agent |
+| BTF (`/sys/kernel/btf/vmlinux`) | not in this kernel | Falco `modern_ebpf`, Tetragon, GuardDuty agent |
+| `tracefs` | not in this kernel (`/proc/filesystems` has no `tracefs`) | Tetragon |
+| Loadable modules from a pod | no `/lib/modules`; the guest's root file system is read-only and verified | Falco `kmod` |
+| Linux audit | available | the in-guest detector on this page |
+
+Table source, one row per kernel feature: one privileged probe pod in `isolated-sandbox` on November 18, 2026, with `bpftool feature probe kernel`, `/proc/filesystems` and `/proc/kallsyms`.
+
+The networking and cgroup BPF program types work, the tracing ones are not in the kernel, and
+the audit subsystem works.
+
+### Falco
+
+#### From the node
+
+Falco `0.45.2` with the `modern_ebpf` driver attaches to the node's kernel. In
+step 2 it raised all four rules for `app-standard`, each with the pod, namespace and image, and
+none for `app-sandboxed` on the same node. DNS has no rule in Falco's default set; a test-only
+rule on `connect` to UDP port 53 matched the ordinary pod's lookups:
+
+```text
+19:16:13.375114105: Notice DNS query socket opened | connection=192.168.135.227:44551->10.100.0.10:53 process=python3 pod=app-standard ns=runtime-detection-i250 container_id=8053c5f40f38 container_name=app container_image_repository=public.ecr.aws/docker/library/python container_image_tag=3.12-slim ...
+```
+
+The block is one of five such lines, abridged to the start of the alert's text. The same lookup in
+`app-sandboxed` raised none.
+
+#### Inside the sandbox
+
+Falco needs a driver that reads system calls from the kernel it runs on.
+Each driver, in a privileged pod in `isolated-sandbox` (abridged to the error lines):
+
+```text
+######## falco -o engine.kind=modern_ebpf
 libpman: prog 'BPF_TRACE_RAW_TP' is not supported
-2026-11-16T19:21:44+0000: An error occurred in an event source, forcing termination...
 Error: Initialization issues during scap_init
+######## falco -o engine.kind=kmod
+2026-11-18T19:09:53+0000: Could not find modprobe binary in /usr/sbin or /sbin
+Error: error opening device /host/dev/falco0. Make sure you have root credentials and that the falco module is loaded: No such file or directory
+######## falco -o engine.kind=nodriver
+Error: the directory '/host/proc/' doesn't exist on the system. Check the usage of the 'HOST_ROOT' env variable.
 ```
 
-Tetragon `v1.8.0`, privileged, in a sandboxed pod (abridged to its error):
+`modern_ebpf` needs raw tracepoints and BTF, and `kmod` needs a kernel module, so neither has
+a source of system calls in the guest. The legacy `ebpf` driver is no longer a valid
+`engine.kind` in Falco `0.45`.
+
+#### How to set it up inside
+
+Falco also runs with no driver, as a rules engine for events from a
+plugin. In a sandboxed pod with no privilege and every capability dropped, Falco `0.45.2` ran
+with `engine.kind: nodriver` and the Falco
+[`collector` and `json` plugins](https://falco.org/docs/concepts/plugins/registered-plugins/),
+installed by `falcoctl` in an init container. The collector takes JSON over HTTP on
+`127.0.0.1`, and this rule matches the in-guest detector's alerts:
+
+```yaml
+engine:
+  kind: nodriver
+load_plugins: [collector, json]
+plugins:
+  - name: collector
+    library_path: /plugins/libcollector.so
+    init_config: '{"buffer": 0, "addr": "127.0.0.1:54827"}'
+  - name: json
+    library_path: /plugins/libjson.so
+```
+
+```yaml
+- rule: In-guest audit alert
+  desc: An alert from the in-guest audit detector, re-raised by Falco inside the sandbox.
+  condition: json.value[/detector] = "guest-audit" and json.value[/rule] exists
+  output: guest-audit alert rule=%json.value[/rule] detail=%json.value[/output]
+  priority: WARNING
+  source: collector
+```
+
+A line in the detector's alert format, posted to the collector from inside the pod, came out as
+a Falco alert on the pod's stdout (abridged to its first fields):
 
 ```text
-level=error msg="Failed to execute tetragon" error="tetragon, aborting kernel autodiscovery failed: kernel version \"6.18.62\" BTF search failed kernel is not included in supported list. ...
+{"hostname":"guest-falco-collector-i250","output":"19:12:44.168838000: Warning guest-audit alert rule=Read sensitive file untrusted detail=file=/etc/shadow pid=1785 ppid=1643 uid=0 comm=cat exe=/usr/bin/cat", ... "rule":"In-guest audit alert","source":"collector", ...}
 ```
 
-The guest kernel does have the Linux audit subsystem. That is what the in-guest detector uses.
+This gives Falco's rule language and outputs inside the sandbox. The events still come from the
+guest's audit subsystem, so Falco sees only what a source such as the detector sends it. The
+detector on this page writes to stdout and does not post to the collector; connecting the two
+is left to the reader.
+
+| Feature | Node DaemonSet, ordinary pod | Node DaemonSet, sandboxed pod | Inside the sandbox |
+|---|---|---|---|
+| Process start (`execve`) | works | limit | limit |
+| File access (`/etc/shadow`) | works | limit | limit |
+| Network connect | works | limit | limit |
+| DNS lookup | works with a setting (a custom rule) | limit | limit |
+| Process tree (parent and grandparents) | works | limit | limit |
+| Pod and namespace names | works | limit | limit |
+| Container image | works | limit | limit |
+| Rules and alert format | works | limit | works with a setting (`nodriver` and the `collector` plugin) |
+| Alert delivery | container log | none raised | container log |
+
+Table source: the runs above on November 18, 2026, one ordinary and one sandboxed pod on one node, the four test events plus a DNS lookup. Each cell is works, works with a setting, or limit. A limit in the first two columns means the run raised no event for that pod.
+
+Falco's syscall drivers need tracing BPF programs and BTF, or a kernel module, in the kernel the
+pod runs on. This may change in future releases.
+
+### Tetragon
+
+#### From the node
+
+Tetragon `v1.8.0` logs each process start and, with the namespaced policy in
+[`deploy/tetragon-policy.yaml`](deploy/tetragon-policy.yaml), kernel probe events. Each event
+carries the pod, namespace, container image and parent binary. For this table the run added two test-only policies: a kprobe on `udp_sendmsg`, which logged the ordinary pod's DNS queries to
+`10.100.0.10:53`, and a `Sigkill` action on a write to `/tmp/enforce-i250`. The write in each pod:
+
+```text
+== app-standard
+dns: 104.20.23.154
+command terminated with exit code 137
+kubectl exec exit=137
+== app-sandboxed
+dns: 104.20.23.154
+write exit=0
+kubectl exec exit=0
+```
+
+Tetragon killed the ordinary pod's shell (`137` is `SIGKILL`) and logged it as
+`KPROBE_ACTION_SIGKILL`. It logged nothing for `app-sandboxed`. That write completed.
+
+#### Inside the sandbox
+
+Tetragon looks for the kernel's BTF first. With its defaults, privileged,
+in a sandboxed pod (abridged to the warning and the error):
+
+```text
+level=warn msg="TraceFS not available; fallback at using debugFS. Please file an issue on cilium/tetragon sharing your OS info" tracefs=/sys/kernel/tracing debugfs=/sys/kernel/debug
+level=error msg="Failed to execute tetragon" error="tetragon, aborting kernel autodiscovery failed: kernel version \"6.18.62\" BTF search failed kernel is not included in supported list. Please check Tetragon requirements documentation, then use --btf option to specify BTF path and/or '--kernel' to specify kernel version"
+```
+
+Tetragon's `--btf` option takes a BTF file. [BTFHub](https://github.com/aquasecurity/btfhub-archive)
+has files for Amazon Linux, CentOS, Debian, Fedora, Oracle Linux, RHEL, SLES and Ubuntu kernels,
+not for this guest. With `--btf` set to the node's own BTF file, for the same kernel version,
+Tetragon read it and then stopped at its first BPF programs:
+
+```text
+level=info msg="BTF file: user specified btf file found" btf-file=/tmp/node-vmlinux.btf
+level=error msg="detect modify return syscall" error="failed to load: attach Tracing/ModifyReturn: fmod_ret __x64_sys_getcpu not supported"
+level=error msg="detect link pin" error="load program: invalid argument:"
+level=error msg="Failed to execute tetragon" error="sensor __base__ from collection __base__ failed to load: tetragon, aborting could not load sensor BPF maps: map 'execve_calls' not found from '/var/lib/tetragon/bpf_execve_event_v61.o'"
+```
+
+A BTF file describes the kernel's types; Tetragon also needs the kprobe, tracepoint and fentry
+program types to attach. Tetragon has no mode without them.
+
+#### How to set it up inside
+
+No supported setting tried made Tetragon start in the guest.
+
+| Feature | Node DaemonSet, ordinary pod | Node DaemonSet, sandboxed pod | Inside the sandbox |
+|---|---|---|---|
+| Process start (`process_exec`) | works | limit | limit |
+| File access (kprobe on `security_file_permission`) | works with a setting (a policy) | limit | limit |
+| Network connect (kprobe on `tcp_connect`) | works with a setting (a policy) | limit | limit |
+| DNS query (kprobe on `udp_sendmsg`) | works with a setting (a policy) | limit | limit |
+| Process tree (parent binary) | works | limit | limit |
+| Pod and namespace names | works | limit | limit |
+| Container image | works | limit | limit |
+| Enforcement (`Sigkill`) | works with a setting (a policy) | limit | limit |
+| Event delivery | container log (`export-stdout`) | none raised | limit |
+
+Table source: the runs above on November 18, 2026, the same two pods on one node, the four test events, a DNS lookup and a write to `/tmp/enforce-i250`. Each cell is works, works with a setting, or limit. Inside the sandbox every cell is a limit because Tetragon did not start.
+
+Tetragon needs BTF, tracefs and tracing BPF programs in the kernel the pod runs on. This may
+change in future releases.
+
+### GuardDuty Runtime Monitoring
+
+#### From the node
+
+The GuardDuty agent add-on runs on each node, and the
+[optional GuardDuty stage](#optional-guardduty-runtime-monitoring) below has its run. The agent
+named `app-standard` in two DNS findings, with its namespace, image and process. The same
+lookups from `app-sandboxed` showed only as queries the node's own `coredns` and
+`systemd-resolved` relayed, in findings that name the node instance and no pod. The four other
+test events raised no runtime finding from either pod in the run.
+
+#### Inside the sandbox
+
+The add-on's image (`aws-guardduty-agent:v1.17.3`) with the add-on's
+environment ran in a privileged sandboxed pod with `hostPID: true` (abridged to its probe and
+dependency lines):
+
+```text
+2026-11-18T19:19:38.865276Z  INFO amzn_guardduty_agent_probe::adapter: Tracing not supported, disabling fentry/fexit probes
+2026-11-18T19:19:38.865723Z  INFO amzn_guardduty_agent_probe::adapter: Failed to detect xattr args, disabling all xattr probes: Failed to load vmlinux BTF: Error: failed to load BTF from vmlinux
+2026-11-18T19:19:38.866564Z ERROR amzn_guardduty_agent_probe::adapter: Fatal: eBPF probes failed to load: Error: No such process (os error 3). Agent shutting down.
+2026-11-18T19:19:38.879763Z ERROR amzn_guardduty_agent: Dependency check failed - containerd.sock and docker.sock not read/writeable
+```
+
+The agent needs the same tracing BPF programs and BTF, and a container runtime socket, which a
+sandboxed pod does not have.
+
+#### How to set it up inside
+
+The agent is supported as the EKS add-on on the node. No supported
+setting runs it inside a sandbox.
+
+| Feature | Node agent, ordinary pod | Node agent, sandboxed pod | Inside the sandbox |
+|---|---|---|---|
+| DNS finding for a test domain (`Backdoor:Runtime/C&CActivity.B!DNS`, `CryptoCurrency:Runtime/BitcoinTool.B!DNS`) | works | limit: shown as the node's `coredns` and `systemd-resolved`, no pod | limit |
+| Shell, `/etc/shadow` read, new binary, API server contact | no finding in this run | no finding in this run | limit |
+| Process and its path | works | limit | limit |
+| Pod and namespace names | works | limit | limit |
+| Container image | works | limit | limit |
+| Finding delivery | GuardDuty findings | node instance only | limit |
+
+Table source: the optional GuardDuty stage's run on November 18, 2026, Runtime Monitoring on for 18 minutes, the same two pods on one node. Each cell is works, limit, or no finding in this run. Inside the sandbox every cell is a limit because the agent did not start.
+
+The GuardDuty agent runs on the node and needs tracing BPF programs, BTF and a container runtime
+socket. This may change in future releases.
+
+The guest kernel does have the Linux audit subsystem, with no extra kernel feature. That is what
+the in-guest detector below uses.
 
 ## The fix: a detector inside the guest
 
@@ -382,7 +617,7 @@ applies to them like any log.
 ## The detector sees its own guest, and nothing else
 
 Step 4 already showed one side of this: the same events in `app-sandboxed` and `app-standard`
-raised nothing in the detector, because they never reach its guest kernel. The other side is what
+raised nothing in the detector, because they run on other kernels. The other side is what
 the detector can list. [`scripts/show-guest-view.sh`](scripts/show-guest-view.sh), from the same
 run, abridged to the detector container, with the guest's random D-Bus machine ID cut:
 
@@ -454,7 +689,7 @@ detector restarts: 1
 
 The kubelet restarted the sidecar, which started again and replaced its own rule from before. But
 between the kill and the restart nothing was watched, and a workload with `CAP_AUDIT_CONTROL`
-could remove the rule instead and leave the detector running blind. So treat in-guest alerts as evidence from inside a boundary you do not fully trust:
+could remove the rule instead and leave the detector running with nothing to report. So treat in-guest alerts as evidence from inside a boundary you do not fully trust:
 
 - **The sandbox still protects the node and the other pods.** Whatever the workload does to the
   detector, it stays inside its own VM, as the previous section shows. Losing the detector loses
@@ -512,7 +747,7 @@ from them. This blueprint did not test them; each is described by its own docume
 ## Optional: GuardDuty Runtime Monitoring
 
 GuardDuty Runtime Monitoring is billed per account, so this stage is optional: every stage above
-runs without it at no extra AWS cost. The User Guide states the gap: the GuardDuty agent "cannot
+runs without it at no extra AWS cost. The User Guide says the GuardDuty agent "cannot
 monitor activity inside isolated or confidential pods", because it inspects host processes and
 cgroups ([GuardDuty integration](https://docs.aws.amazon.com/eks/latest/userguide/integration-guardduty.html)).
 This stage shows it with the same control as above. It needs only the two app pods from step 2,
@@ -545,7 +780,7 @@ aws eks create-addon --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" \
   --tags ManagedBy=runtime-detection
 ```
 
-On the test cluster the agent pods were running within a minute, and GuardDuty's coverage report
+In the earlier run, on November 16, 2026, the agent pods were running within a minute, and GuardDuty's coverage report
 (`aws guardduty list-coverage`) showed the cluster `HEALTHY`, 3 nodes covered, management type
 `MANUAL`.
 
@@ -556,8 +791,9 @@ for p in app-standard app-sandboxed; do
   scripts/trigger-events.sh "$p"
   for i in 1 2 3; do
     kubectl -n "$NAMESPACE" exec "$p" -c app -- python3 -c 'import socket
-try: socket.gethostbyname("guarddutyc2activityb.com")
-except OSError: pass'
+for d in ("guarddutyc2activityb.com", "xmr.pool.minergate.com"):
+    try: socket.gethostbyname(d)
+    except OSError: pass'
   done
 done
 ```
@@ -577,23 +813,30 @@ The run's findings, one line each: time, type, severity, the workload the findin
 process (printed by a helper in `tmp/` with the same fields):
 
 ```text
-2026-11-16T21:52:49.242Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=runtime-detection-i250/app-standard process=python3 count=6
-2026-11-16T21:52:49.242Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=None/None process=coredns count=2
-2026-11-16T21:52:49.243Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=None/None process=systemd-resolve count=2
+2026-11-18T19:33:46.858Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=runtime-detection-i250/app-standard process=python3 count=6
+2026-11-18T19:33:46.859Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=None/None process=coredns count=2
+2026-11-18T19:33:46.859Z Backdoor:Runtime/C&CActivity.B!DNS sev=8.0 workload=None/None process=systemd-resolve count=2
+2026-11-18T19:33:46.860Z CryptoCurrency:Runtime/BitcoinTool.B!DNS sev=8.0 workload=runtime-detection-i250/app-standard process=python3 count=6
+2026-11-18T19:33:46.860Z CryptoCurrency:Runtime/BitcoinTool.B!DNS sev=8.0 workload=None/None process=coredns count=2
+2026-11-18T19:33:46.861Z CryptoCurrency:Runtime/BitcoinTool.B!DNS sev=8.0 workload=None/None process=systemd-resolve count=2
 ```
 
-These appeared about three minutes after a second round of events, run at 21:50 UTC, 17 minutes
-after the agent started. A first round, one minute after the agent started, had raised no runtime
-finding by then.
+These appeared about two minutes after a second round of events, run at 19:31 UTC, four minutes
+after the agent on the pods' node stayed up. In its first minutes that agent restarted three
+times, and its last exit logged `Exiting due to AccessDeniedException` from its publisher. It
+then ran without restarts. A first round of events during those minutes raised no runtime
+finding. The findings for `app-standard` name its namespace, its image
+(`public.ecr.aws/docker/library/python:3.12-slim`) and the process path
+`/usr/local/bin/python3.12`.
 
-- **The ordinary pod is named.** The agent saw `python3` in `app-standard` query the test domain.
+- **The ordinary pod is named.** The agent saw `python3` in `app-standard` query both test domains.
 - **The sandboxed pod is not.** No finding names `app-sandboxed`. Its query left the sandbox to the
   node's own DNS resolvers, `coredns` and `systemd-resolved`, which the agent sees as processes on
   the node, outside any pod; those two findings name the node instance and do not say which pod
   sent the query.
 - **The other four test events raised no GuardDuty runtime finding in this run**, from either pod.
 
-GuardDuty's DNS logs, which do not use the agent, also raised `Backdoor:EC2/C&CActivity.B!DNS` for
+In an earlier run of this stage, on November 16, 2026, GuardDuty's DNS logs, which do not use the agent, also raised `Backdoor:EC2/C&CActivity.B!DNS` for
 the domain, on the node instance both pods ran on. It names the instance, not a pod.
 
 **Step G4: Turn it off again.** Delete the add-on, set `RUNTIME_MONITORING` back to what you
@@ -610,8 +853,9 @@ aws guardduty update-detector --region "$AWS_REGION" --detector-id "$DETECTOR_ID
 ```
 
 The add-on leaves an empty `amazon-guardduty` namespace; delete it too. Then read the detector
-again and compare it with what you recorded. On the test account Runtime Monitoring was on for 28
-minutes, and afterwards every detector feature read back as before, with EKS Protection left on.
+again and compare it with what you recorded. On the test account Runtime Monitoring was on for 18
+minutes in this run (28 in the earlier one), and afterwards every detector feature read back as
+before, with EKS Protection left on.
 
 ## Confidential pods
 
