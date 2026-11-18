@@ -33,7 +33,8 @@
 # against a scratch policy object, and recorded on the page; it is not part of this script.
 # Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
 # shellcheck source=../../../scripts/lib/require-bash.sh
-. "$(dirname "$0")/../../../scripts/lib/require-bash.sh"
+. "$(dirname "$0")/../../../scripts/lib/require-bash.sh" \
+  || { echo "error: cannot load the bash version check (../../../scripts/lib/require-bash.sh); run this script by its own path." >&2; exit 1; }
 set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SAMPLE_DIR/scripts/common.sh"

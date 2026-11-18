@@ -16,7 +16,8 @@
 #   KUBE_CONTEXT   the kube context to pin this run to      (default: the current context)
 # Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
 # shellcheck source=../../../../scripts/lib/require-bash.sh
-. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh" \
+  || { echo "error: cannot load the bash version check (../../../../scripts/lib/require-bash.sh); run this script by its own path." >&2; exit 1; }
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -119,9 +120,10 @@ echo "Step 3/5: the egress policy"
 push_rules=""
 # shellcheck disable=SC1090
 [[ -f "$STATE_FILE" ]] && . "$STATE_FILE"
-if [[ "${ECR_PUSH_READY:-false}" == "true" && -z "${ECR_ASSOCIATION_ID:-}" ]]; then
+if [[ "${ECR_PUSH_READY:-false}" == "true" ]] \
+   && [[ -z "${ECR_REPO_NAME:-}" || -z "${ECR_ROLE_NAME:-}" || -z "${ECR_ASSOCIATION_ID:-}" ]]; then
   # An earlier ecr-setup.sh run on bash 3.2 wrote this combination without creating anything.
-  echo "  the state file says the push is ready but records no Pod Identity association; the push rules are not added. Run ./scripts/ecr-setup.sh again."
+  echo "  the state file says the push is ready but does not record the repository, the role and the association; the push rules are not added. Run ./scripts/ecr-setup.sh again."
   ECR_PUSH_READY=false
 fi
 if [[ "${ECR_PUSH_READY:-false}" == "true" && "${ECR_NAMESPACE:-}" != "$NAMESPACE" ]]; then

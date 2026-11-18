@@ -24,7 +24,8 @@
 # Overridable: NAMESPACE, ENV_FILE, KUBECTL, AWS.
 # Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
 # shellcheck source=../../../../scripts/lib/require-bash.sh
-. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh" \
+  || { echo "error: cannot load the bash version check (../../../../scripts/lib/require-bash.sh); run this script by its own path." >&2; exit 1; }
 set -uo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
