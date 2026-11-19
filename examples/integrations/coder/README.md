@@ -159,7 +159,54 @@ aws ec2 describe-network-interfaces --region "$AWS_REGION" \
 ```
 
 ```text
-TODO: output from the fresh run
+{
+    "Scheme": "internal",
+    "Subnets": [
+        "subnet-064c1e9b95280fbed",
+        "subnet-0aab227e5b17d0483",
+        "subnet-0ee7cfcee58f7b9bd"
+    ]
+}
+[
+    {
+        "Subnets": [
+            "subnet-0aab227e5b17d0483"
+        ],
+        "DefaultRoute": [
+            "nat-0c1cf14372433e7d0"
+        ]
+    },
+    {
+        "Subnets": [
+            "subnet-0ee7cfcee58f7b9bd"
+        ],
+        "DefaultRoute": [
+            "nat-0c1cf14372433e7d0"
+        ]
+    },
+    {
+        "Subnets": [
+            "subnet-064c1e9b95280fbed"
+        ],
+        "DefaultRoute": [
+            "nat-0c1cf14372433e7d0"
+        ]
+    }
+]
+[
+    {
+        "PrivateIp": "192.168.171.75",
+        "PublicIp": null
+    },
+    {
+        "PrivateIp": "192.168.127.10",
+        "PublicIp": null
+    },
+    {
+        "PrivateIp": "192.168.133.24",
+        "PublicIp": null
+    }
+]
 ```
 
 The scheme is `internal`, each subnet's default route goes to a NAT gateway rather than an
@@ -190,7 +237,40 @@ aws ec2 describe-security-groups --region "$AWS_REGION" \
 ```
 
 ```text
-TODO: output from the fresh run
+[
+    {
+        "GroupId": "sg-0272a116aa32759c3",
+        "Inbound": [
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 80,
+                "ToPort": 80,
+                "UserIdGroupPairs": [
+                    {
+                        "Description": "CloudFront VPC origins only",
+                        "UserId": "<ACCOUNT_ID>",
+                        "GroupId": "sg-0a2c402bd3e8b3cd0"
+                    }
+                ],
+                "IpRanges": [],
+                "Ipv6Ranges": [],
+                "PrefixListIds": []
+            }
+        ]
+    }
+]
+[
+    {
+        "GroupId": "sg-0a2c402bd3e8b3cd0",
+        "GroupName": "CloudFront-VPCOrigins-Service-SG",
+        "VpcId": "vpc-08ed2dc98d5c6f966"
+    },
+    {
+        "GroupId": "sg-0a5bed614ffffeb89",
+        "GroupName": "CloudFront-VPCOrigins-Service-SG",
+        "VpcId": "vpc-05fcd23615ab431ad"
+    }
+]
 ```
 
 The ALB has two backend rules: `/auth` and everything under it goes to Keycloak, and every
@@ -354,7 +434,157 @@ cp .env.example .env    # optional: set KUBE_CONTEXT, and anything else you want
 ```
 
 ```text
-TODO: output from the fresh run
+cluster sandbox-demo in us-west-2, kube context coder-run1 (current)
+namespaces: coder (Coder, Keycloak, PostgreSQL) and coder-workspaces (workspaces)
+
+== 1/13 Checks, namespaces, secrets, PostgreSQL and the Keycloak Service ==
+cluster sandbox-demo: EKS Auto Mode, load balancing on, VPC vpc-08ed2dc98d5c6f966; the kube context points at it
+private subnets for the ALB, each tagged kubernetes.io/role/internal-elb: subnet-0ee7cfcee58f7b9bd, subnet-0aab227e5b17d0483, subnet-064c1e9b95280fbed
+checks passed: nothing that exists is outside the blueprint, and no install is present
+no default class fits; created storageclass/coder-gp3
+created namespace coder, labelled app.kubernetes.io/part-of=coder
+created namespace coder-workspaces, labelled app.kubernetes.io/part-of=coder
+created secret/postgres-passwords from files in tmp/coder
+created secret/keycloak-admin from files in tmp/coder
+created secret/coder-oidc from files in tmp/coder
+created secret/coder-db-url from files in tmp/coder
+configmap/postgres-init created
+persistentvolumeclaim/postgres-data created
+deployment.apps/postgres created
+service/postgres created
+deployment "postgres" successfully rolled out
+service/keycloak created
+
+== 2/13 The internal ALB, closed, with only the Keycloak route ==
+created security group coder-alb-origin (sg-0272a116aa32759c3) with no inbound rule
+ingressclassparams.eks.amazonaws.com/coder-alb created
+ingressclass.networking.k8s.io/coder-alb created
+ingress.networking.k8s.io/coder created
+waiting for EKS Auto Mode to create the ALB (up to 10 minutes)
+security groups on the ALB:
+  sg-0272a116aa32759c3: no inbound rule
+  sg-0e1e31e147091dc08: no inbound rule
+ALB internal-k8s-coder-coder-e7b0d1d880-1064859065.us-west-2.elb.amazonaws.com is internal and active; nothing can reach it yet
+
+== 3/13 The CloudFront VPC origin and distribution ==
+created VPC origin coder-sandbox-demo (vo_2M2PibrCFBDCwcTJWyuuOw)
+waiting for the VPC origin to deploy (up to 20 minutes)
+created distribution ECJ4OJBGC3SH: https://dXXXX.cloudfront.net
+waiting for distribution ECJ4OJBGC3SH to deploy (up to 35 minutes)
+
+== 4/13 Keycloak, with the realm coder and no users ==
+deployment.apps/keycloak created
+service/keycloak unchanged
+deployment "keycloak" successfully rolled out
+
+== 5/13 Open the ALB to CloudFront's VPC origins only ==
+security groups on the ALB:
+  sg-0272a116aa32759c3: inbound TCP 80 from sg-0a2c402bd3e8b3cd0 (CloudFront-VPCOrigins-Service-SG) only
+  sg-0e1e31e147091dc08: no inbound rule
+https://dXXXX.cloudfront.net/auth/realms/coder/.well-known/openid-configuration answers 200
+
+== 6/13 The workspace namespace: ServiceAccount, provisioner Role, IAM role, Pod Identity ==
+serviceaccount/coder-workspace created
+role.rbac.authorization.k8s.io/coder-workspace-provisioner created
+rolebinding.rbac.authorization.k8s.io/coder-workspace-provisioner created
+created IAM role coder-workspace-bedrock-sandbox-demo
+policy bedrock-invoke (tmp/coder/workspace-bedrock-policy.json):
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeConfiguredModel",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:us-west-2:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5-5",
+        "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5-5"
+      ]
+    }
+  ]
+}
+created Pod Identity association a-2mpuddsdfrfos26dv: coder-workspaces/coder-workspace -> coder-workspace-bedrock-sandbox-demo
+
+== 7/13 Install Coder (OIDC on, password login on, not routed) ==
+Pulled: ghcr.io/coder/chart/coder:2.38.10
+Digest: sha256:2cb0a1331803b4d2eb26bed07f1e3dacdb682d74f3a59016a102e6fd05d6e404
+DESCRIPTION: Install complete
+
+== 8/13 Create the Coder owner from inside the cluster ==
+Attempting to authenticate with argument URL: 'http://127.0.0.1:8080'
+  Your Coder deployment hasn't been set up!
+Welcome to Coder, bootstrap! You're authenticated.Get started by creating a template: coder templates init
+A new user has been created!
+Share the instructions below to get them started.
+—————————————————————————————————————————————————
+Download the Coder command line for your operating system:
+https://github.com/coder/coder/releases
+
+Run coder login http://127.0.0.1:8080 to authenticate.
+
+Your email is:  admin@example.com
+Login is authenticated through the configured OIDC provider.
+
+Create a workspace  coder create!
+Successfully deleted bootstrap.
+ID:             0e42b022-e9bc-4217-af4f-99f23c1e9bd7  
+Username:       admin  
+Full name:      Coder admin  
+Email:          admin@example.com  
+Status:         active  
+Created At:     Nov 19 05:18:25  
+
+Roles:          Owner  
+
+Organizations:  coder  
+Token has been deleted.
+GET /api/v2/users/first: {"message":"The initial user has already been created!"}
+
+== 9/13 Turn Coder password login off ==
+Pulled: ghcr.io/coder/chart/coder:2.38.10
+Digest: sha256:2cb0a1331803b4d2eb26bed07f1e3dacdb682d74f3a59016a102e6fd05d6e404
+Release "coder" has been upgraded. Happy Helming!
+DESCRIPTION: Upgrade complete
+deployment "coder" successfully rolled out
+sign-in methods: {"password":false,"oidc":true}
+
+== 10/13 Route / to Coder ==
+ingress.networking.k8s.io/coder configured
+https://dXXXX.cloudfront.net/healthz answers 200
+
+== 11/13 Anonymous requests through https://dXXXX.cloudfront.net, before any user exists in the coder realm ==
+GET http://dXXXX.cloudfront.net/    301 https://dXXXX.cloudfront.net/
+GET /api/v2/users/me                         401
+POST /api/v2/users/first                     409
+GET /api/v2/users/authmethods                {"password":false,"oidc":true}
+GET /auth/admin/                             302 https://dXXXX.cloudfront.net/auth/admin/master/console/
+
+== 12/13 Create the Keycloak users (admin and 2 developers) ==
+Logging into http://127.0.0.1:8080/auth as user admin of realm master
+Created new user with id '49cbe5e9-af26-443b-bbe6-d4c5761d63d1'
+created Keycloak user admin (admin@example.com)
+Logging into http://127.0.0.1:8080/auth as user admin of realm master
+Created new user with id '26b3ec1e-3e06-4402-9182-16b1fa2e3585'
+created Keycloak user dev1 (dev1@example.com)
+Logging into http://127.0.0.1:8080/auth as user admin of realm master
+Created new user with id '4c6af215-6242-45a1-b646-dff3e82748f2'
+created Keycloak user dev2 (dev2@example.com)
+
+== 13/13 Template variables and next steps ==
+Coder:          https://dXXXX.cloudfront.net
+Keycloak admin: https://dXXXX.cloudfront.net/auth/admin/  (user admin, password in tmp/coder/keycloak-admin-password)
+Users:          tmp/coder/users.txt  (mode 600: user, email, password)
+
+Publish the template as the Coder admin (sign in through Keycloak as admin in the browser):
+  coder login https://dXXXX.cloudfront.net
+  coder templates push claude-code-nitro --directory examples/integrations/coder/templates/claude-code-nitro \
+    --variables-file tmp/coder/template-variables.yaml --yes
+Tear it down:   ./scripts/cleanup.sh
 ```
 
 Setup prints thirteen step headers in the order of the previous section, then the Coder and
@@ -369,7 +599,7 @@ echo "https://$DOMAIN"
 ```
 
 ```text
-TODO: output from the fresh run
+https://dXXXX.cloudfront.net
 ```
 
 **Step 2: Check the endpoint before any user exists in the `coder` realm.** Setup's step 11
@@ -379,7 +609,12 @@ that point the only Keycloak account is Keycloak's own admin in the `master` rea
 password is random. Here is that part of the setup output:
 
 ```text
-TODO: output from the fresh run
+== 11/13 Anonymous requests through https://dXXXX.cloudfront.net, before any user exists in the coder realm ==
+GET http://dXXXX.cloudfront.net/    301 https://dXXXX.cloudfront.net/
+GET /api/v2/users/me                         401
+POST /api/v2/users/first                     409
+GET /api/v2/users/authmethods                {"password":false,"oidc":true}
+GET /auth/admin/                             302 https://dXXXX.cloudfront.net/auth/admin/master/console/
 ```
 
 Read it line by line. Plain HTTP is redirected to HTTPS. Coder's API answers an anonymous
@@ -400,7 +635,16 @@ curl -sS -o /dev/null -w '%{http_code}\n' "https://$DOMAIN/"
 ```
 
 ```text
-TODO: output from the fresh run
+301 https://dXXXX.cloudfront.net/
+{"message":"You are signed out or your session has expired. Please sign in again to continue.","detail":"Cookie \"coder_session_token\" or query parameter must be provided."}
+
+401
+{"message":"The initial user has already been created!"}
+
+200
+{"password":false,"oidc":true}
+302 https://dXXXX.cloudfront.net/auth/admin/master/console/
+200
 ```
 
 `GET /api/v2/users/first` answers that the first user has already been created, and `/`
@@ -419,7 +663,12 @@ coder login "https://$DOMAIN"
 ```
 
 ```text
-TODO: output from the fresh run
+Attempting to authenticate with argument URL: 'https://dXXXX.cloudfront.net'
+Open the following in your browser:
+
+	https://dXXXX.cloudfront.net/cli-auth
+
+> Paste your token here:   Welcome to Coder, admin! You're authenticated.
 ```
 
 The template's variables are in `tmp/coder/template-variables.yaml`, which setup wrote:
@@ -447,7 +696,54 @@ coder users list -o json | jq -r '.[] | [.username, .login_type, ([.roles[].name
 ```
 
 ```text
-TODO: output from the fresh run
+namespace: coder-workspaces
+service_account: coder-workspace
+storage_class: coder-gp3
+bedrock_model: us.anthropic.claude-sonnet-5-5
+aws_region: us-west-2
+coder_internal_url: http://coder.coder.svc.cluster.local
+Provisioner tags: <none>
+=== ✔ Queued [0ms]
+==> ⧗ Running
+==> ⧗ Running
+=== ✔ Running [7ms]
+==> ⧗ Setting up
+=== ✔ Setting up [72ms]
+==> ⧗ Initializing Terraform Directory
+If you'd like to know more about provider signing, you can read about it here:
+https://developer.hashicorp.com/terraform/cli/plugins/signing
+
+=== ✔ Initializing Terraform Directory [2779ms]
+==> ⧗ Parsing template parameters
+=== ✔ Parsing template parameters [22ms]
+==> ⧗ Detecting persistent resources
+=== ✔ Detecting persistent resources [1719ms]
+==> ⧗ Detecting ephemeral resources
+=== ✔ Detecting ephemeral resources [1638ms]
+==> ⧗ Cleaning Up
+=== ✔ Cleaning Up [13ms]
+┌──────────────────────────────────────────────────┐
+│ Template Preview                                 │
+├──────────────────────────────────────────────────┤
+│ RESOURCE                                         │
+├──────────────────────────────────────────────────┤
+│ coder_env.anthropic_model                        │
+├──────────────────────────────────────────────────┤
+│ coder_env.aws_region                             │
+├──────────────────────────────────────────────────┤
+│ coder_env.use_bedrock                            │
+├──────────────────────────────────────────────────┤
+│ kubernetes_deployment_v1.workspace               │
+│ └─ main (linux, amd64)                           │
+├──────────────────────────────────────────────────┤
+│ kubernetes_persistent_volume_claim_v1.home       │
+└──────────────────────────────────────────────────┘
+
+The claude-code-nitro template has been created at Nov 19 05:24:03! Developers
+can provision a workspace with this template using:
+
+Updated version at Nov 19 05:24:03!
+admin	oidc	owner
 ```
 
 The push runs `terraform` inside `coderd` and publishes the template. `admin` is a Keycloak
@@ -467,7 +763,62 @@ coder list
 ```
 
 ```text
-TODO: output from the fresh run
+Attempting to authenticate with argument URL: 'https://dXXXX.cloudfront.net'
+Open the following in your browser:
+
+	https://dXXXX.cloudfront.net/cli-auth
+
+> Paste your token here:   Welcome to Coder, dev1! You're authenticated.
+No preset applied.
+Using default value for Home volume (GiB): '10'
+Planning workspace...
+=== ✔ Queued [0ms]
+==> ⧗ Running
+==> ⧗ Running
+=== ✔ Running [7ms]
+==> ⧗ Setting up
+=== ✔ Setting up [72ms]
+==> ⧗ Initializing Terraform Directory
+=== ✔ Initializing Terraform Directory [1199ms]
+==> ⧗ Detecting persistent resources
+=== ✔ Detecting persistent resources [1673ms]
+==> ⧗ Cleaning Up
+=== ✔ Cleaning Up [12ms]
+┌──────────────────────────────────────────────────────────────────┐
+│ Workspace Preview                                                │
+├──────────────────────────────────────────────────────────────────┤
+│ RESOURCE                                    ACCESS               │
+├──────────────────────────────────────────────────────────────────┤
+│ coder_env.anthropic_model                                        │
+├──────────────────────────────────────────────────────────────────┤
+│ coder_env.aws_region                                             │
+├──────────────────────────────────────────────────────────────────┤
+│ coder_env.use_bedrock                                            │
+├──────────────────────────────────────────────────────────────────┤
+│ kubernetes_deployment_v1.workspace                               │
+│ └─ main (linux, amd64)                      coder ssh claude     │
+├──────────────────────────────────────────────────────────────────┤
+│ kubernetes_persistent_volume_claim_v1.home                       │
+└──────────────────────────────────────────────────────────────────┘
+=== ✔ Queued [0ms]
+==> ⧗ Running
+==> ⧗ Running
+=== ✔ Running [100ms]
+==> ⧗ Setting up
+=== ✔ Setting up [78ms]
+==> ⧗ Initializing Terraform Directory
+
+=== ✔ Initializing Terraform Directory [399ms]
+==> ⧗ Planning Infrastructure
+=== ✔ Planning Infrastructure [990ms]
+==> ⧗ Starting workspace
+=== ✔ Starting workspace [1407ms]
+==> ⧗ Cleaning Up
+=== ✔ Cleaning Up [14ms]
+
+The claude workspace has been created at Nov 19 05:24:15!
+WORKSPACE      TEMPLATE           STATUS   HEALTHY  LAST BUILT  CURRENT VERSION     OUTDATED  STARTS AT  STOPS AFTER  
+  dev1/claude  claude-code-nitro  Started  false    <1m         agreeable_sutton81  false  
 ```
 
 The workspace is a Deployment that Coder's provisioner creates in `coder-workspaces`. Here is
@@ -509,7 +860,43 @@ kubectl auth can-i create pods -n "$NAMESPACE" --as "system:serviceaccount:$NAME
 ```
 
 ```text
-TODO: output from the fresh run
+NAME                                READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES                                     SELECTOR
+deployment.apps/coder-dev1-claude   0/1     1            0           1s    dev          codercom/enterprise-base:ubuntu-20261112   com.coder.workspace.id=fa819e97-95fc-47d2-88a9-c8f7bd6c84f6
+
+NAME                                    READY   STATUS    RESTARTS   AGE   IP       NODE     NOMINATED NODE   READINESS GATES
+pod/coder-dev1-claude-b4c56fcdc-xmbp8   0/1     Pending   0          1s    <none>   <none>   <none>           <none>
+
+NAME                                           STATUS    VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE   VOLUMEMODE
+persistentvolumeclaim/coder-dev1-claude-home   Pending                                      coder-gp3      <unset>                 1s    Filesystem
+Warning: the list may be incomplete: webhook authorizer does not support user rule resolution
+Resources                                       Non-Resource URLs                      Resource Names   Verbs
+selfsubjectreviews.authentication.k8s.io        []                                     []               [create]
+selfsubjectaccessreviews.authorization.k8s.io   []                                     []               [create]
+selfsubjectrulesreviews.authorization.k8s.io    []                                     []               [create]
+persistentvolumeclaims                          []                                     []               [get create update patch delete]
+deployments.apps                                []                                     []               [get create update patch delete]
+clustertrustbundles.certificates.k8s.io         []                                     []               [get list watch]
+                                                [/.well-known/openid-configuration/]   []               [get]
+                                                [/.well-known/openid-configuration]    []               [get]
+                                                [/api/*]                               []               [get]
+                                                [/api]                                 []               [get]
+                                                [/apis/*]                              []               [get]
+                                                [/apis]                                []               [get]
+                                                [/healthz]                             []               [get]
+                                                [/healthz]                             []               [get]
+                                                [/livez]                               []               [get]
+                                                [/livez]                               []               [get]
+                                                [/openapi/*]                           []               [get]
+                                                [/openapi]                             []               [get]
+                                                [/openid/v1/jwks/]                     []               [get]
+                                                [/openid/v1/jwks]                      []               [get]
+                                                [/readyz]                              []               [get]
+                                                [/readyz]                              []               [get]
+                                                [/version/]                            []               [get]
+                                                [/version/]                            []               [get]
+                                                [/version]                             []               [get]
+                                                [/version]                             []               [get]
+no
 ```
 
 One Deployment, one pod and one `Bound` claim belong to `dev1`. Coder's ServiceAccount may
@@ -547,7 +934,22 @@ kubectl -n "$NAMESPACE" delete pod ordinary
 ```
 
 ```text
-TODO: output from the fresh run
+pod/ordinary created
+pod/ordinary condition met
+--- workspace pod coder-dev1-claude-b4c56fcdc-xmbp8 ---
+runtimeClassName=isolated-sandbox node= started=
+Error from server (BadRequest): pod coder-dev1-claude-b4c56fcdc-xmbp8 does not have a host assigned
+Error from server (BadRequest): pod coder-dev1-claude-b4c56fcdc-xmbp8 does not have a host assigned
+--- ordinary pod ---
+runtimeClassName= node=i-0022443da6d73e4b7 started=2026-11-19T05:24:19Z
+6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
+340.50
+29b14678-a93b-4ebb-a7db-94c01a2bffab
+dm-0 nvme0n1 nvme1n1 zram0
+c6i.large
+MemTotal:        3905024 kB
+2026-11-19T05:24:24Z
+pod "ordinary" deleted from coder namespace
 ```
 
 The runtime class shows what was asked for; the rest shows what ran. Both pods are on the
@@ -615,7 +1017,67 @@ aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --region "
 ```
 
 ```text
-TODO: output from the fresh run
+{
+    "PolicyNames": [
+        "bedrock-invoke"
+    ]
+}
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "InvokeConfiguredModel",
+            "Effect": "Allow",
+            "Action": [
+                "bedrock:InvokeModel",
+                "bedrock:InvokeModelWithResponseStream"
+            ],
+            "Resource": [
+                "arn:aws:bedrock:us-west-2:<ACCOUNT_ID>:inference-profile/us.anthropic.claude-sonnet-5-5",
+                "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-5-5",
+                "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-5-5",
+                "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-5-5"
+            ]
+        }
+    ]
+}
+{
+    "AttachedPolicies": []
+}
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "EksPodIdentity",
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "pods.eks.amazonaws.com"
+            },
+            "Action": [
+                "sts:AssumeRole",
+                "sts:TagSession"
+            ],
+            "Condition": {
+                "StringEquals": {
+                    "aws:RequestTag/eks-cluster-arn": "arn:aws:eks:us-west-2:<ACCOUNT_ID>:cluster/sandbox-demo",
+                    "aws:RequestTag/kubernetes-service-account": "coder-workspace",
+                    "aws:RequestTag/kubernetes-namespace": "coder-workspaces"
+                }
+            }
+        }
+    ]
+}
+{
+    "associations": [
+        {
+            "clusterName": "sandbox-demo",
+            "namespace": "coder-workspaces",
+            "serviceAccount": "coder-workspace",
+            "associationArn": "arn:aws:eks:us-west-2:<ACCOUNT_ID>:podidentityassociation/sandbox-demo/a-2mpuddsdfrfos26dv",
+            "associationId": "a-2mpuddsdfrfos26dv"
+        }
+    ]
+}
 ```
 
 The role has one inline policy, `bedrock-invoke`, and no attached policies. It may call
@@ -637,7 +1099,35 @@ coder ssh --wait=yes claude -- '~/.local/bin/claude -p "In one sentence, say hel
 ```
 
 ```text
-TODO: output from the fresh run
+==> ⧗ Waiting for the workspace agent to connect
+=== ✔ Waiting for the workspace agent to connect [62143ms]
+==> ⧗ Running workspace agent startup scripts (non-blocking)
+Notice: The startup scripts are still running and your workspace may be incomplete.
+For more information and troubleshooting, see https://coder.com/docs/@v2.38.10/admin/templates/troubleshooting#your-workspace-may-be-incomplete and https://coder.com/docs/admin/templates/troubleshooting
+ANTHROPIC_MODEL
+AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+AWS_CONTAINER_CREDENTIALS_FULL_URI
+AWS_DEFAULT_REGION
+AWS_REGION
+AWS_STS_REGIONAL_ENDPOINTS
+CLAUDE_CODE_USE_BEDROCK
+==> ⧗ Running workspace agent startup scripts
+==> ℹ︎ To connect immediately, reconnect with --wait=no or CODER_SSH_WAIT=no, see --help for more information.
+#=#=#  
+                                                                           0.8%
+###                                                                        4.4%
+###                                                                        4.5%
+#####                                                                      7.1%
+#####                                                                      7.6%
+#####                                                                      8.2%
+######                                                                     8.7%
+######                                                                     9.2%
+#######                                                                    9.7%
+#######                                                                   10.3%
+#######                                                                   10.8%
+########  
+=== ✔ Running workspace agent startup scripts [120500ms]
+Hello from /home/coder, a non-git workspace on Linux, and I'm ready to help.
 ```
 
 The names show Bedrock mode, the model, the Region and the Pod Identity credential endpoint
@@ -692,7 +1182,56 @@ coder ssh claude -- 'cat ~/notes.txt; cut -d" " -f1 /proc/uptime'
 ```
 
 ```text
-TODO: output from the fresh run
+-rw-r--r-- 1 coder coder 24 Nov 19 05:27 /home/coder/notes.txt
+pod=cd629b49-adf9-4e48-b800-b56c4cb0ba3e
+volumeHandle=vol-0842e0996fcb81f35
+=== ✔ Queued [0ms]
+==> ⧗ Running
+==> ⧗ Running
+=== ✔ Running [101ms]
+==> ⧗ Setting up
+=== ✔ Setting up [73ms]
+==> ⧗ Initializing Terraform Directory
+
+=== ✔ Initializing Terraform Directory [408ms]
+==> ⧗ Planning Infrastructure
+=== ✔ Planning Infrastructure [1043ms]
+==> ⧗ Stopping workspace
+=== ✔ Stopping workspace [1295ms]
+==> ⧗ Cleaning Up
+=== ✔ Cleaning Up [15ms]
+
+The claude workspace has been stopped at Nov 19 05:27:26!
+pod/coder-dev1-claude-b4c56fcdc-xmbp8 condition met
+NAME                                           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/coder-dev1-claude-home   Bound    pvc-ce54b223-05f8-4aaf-866d-cd6c70750cee   10Gi       RWOP           coder-gp3      <unset>                 3m14s
+=== ✔ Queued [0ms]
+==> ⧗ Running
+==> ⧗ Running
+=== ✔ Running [77ms]
+==> ⧗ Setting up
+=== ✔ Setting up [75ms]
+==> ⧗ Initializing Terraform Directory
+If you'd like to know more about provider signing, you can read about it here:
+https://developer.hashicorp.com/terraform/cli/plugins/signing
+
+=== ✔ Initializing Terraform Directory [1916ms]
+==> ⧗ Planning Infrastructure
+=== ✔ Planning Infrastructure [1019ms]
+==> ⧗ Starting workspace
+=== ✔ Starting workspace [1365ms]
+==> ⧗ Cleaning Up
+=== ✔ Cleaning Up [15ms]
+
+The claude workspace has been started at Nov 19 05:27:33!
+pod/coder-dev1-claude-7c9fddccfd-ndd4k condition met
+pod=1ce935e6-ab3f-42c5-b04c-cd5f56c64d22
+volumeHandle=vol-0842e0996fcb81f35
+==> ⧗ Running workspace agent startup scripts (non-blocking)
+Notice: The startup scripts are still running and your workspace may be incomplete.
+For more information and troubleshooting, see https://coder.com/docs/@v2.38.10/admin/templates/troubleshooting#your-workspace-may-be-incomplete and https://coder.com/docs/admin/templates/troubleshooting
+written before the stop
+19.79
 ```
 
 While the workspace is stopped there is no Deployment and no pod, and the claim is still
@@ -712,7 +1251,60 @@ coder create claude --template claude-code-nitro --use-parameter-defaults --yes
 ```
 
 ```text
-TODO: output from the fresh run
+Attempting to authenticate with argument URL: 'https://dXXXX.cloudfront.net'
+Open the following in your browser:
+
+	https://dXXXX.cloudfront.net/cli-auth
+
+> Paste your token here:   Welcome to Coder, dev2! You're authenticated.
+No preset applied.
+Using default value for Home volume (GiB): '10'
+Planning workspace...
+=== ✔ Queued [0ms]
+==> ⧗ Running
+==> ⧗ Running
+=== ✔ Running [22ms]
+==> ⧗ Setting up
+=== ✔ Setting up [42ms]
+==> ⧗ Initializing Terraform Directory
+=== ✔ Initializing Terraform Directory [2156ms]
+==> ⧗ Detecting persistent resources
+=== ✔ Detecting persistent resources [916ms]
+==> ⧗ Cleaning Up
+=== ✔ Cleaning Up [19ms]
+┌──────────────────────────────────────────────────────────────────┐
+│ Workspace Preview                                                │
+├──────────────────────────────────────────────────────────────────┤
+│ RESOURCE                                    ACCESS               │
+├──────────────────────────────────────────────────────────────────┤
+│ coder_env.anthropic_model                                        │
+├──────────────────────────────────────────────────────────────────┤
+│ coder_env.aws_region                                             │
+├──────────────────────────────────────────────────────────────────┤
+│ coder_env.use_bedrock                                            │
+├──────────────────────────────────────────────────────────────────┤
+│ kubernetes_deployment_v1.workspace                               │
+│ └─ main (linux, amd64)                      coder ssh claude     │
+├──────────────────────────────────────────────────────────────────┤
+│ kubernetes_persistent_volume_claim_v1.home                       │
+└──────────────────────────────────────────────────────────────────┘
+=== ✔ Queued [0ms]
+==> ⧗ Running
+==> ⧗ Running
+=== ✔ Running [81ms]
+==> ⧗ Setting up
+=== ✔ Setting up [47ms]
+==> ⧗ Initializing Terraform Directory
+
+=== ✔ Initializing Terraform Directory [248ms]
+==> ⧗ Planning Infrastructure
+=== ✔ Planning Infrastructure [528ms]
+==> ⧗ Starting workspace
+=== ✔ Starting workspace [808ms]
+==> ⧗ Cleaning Up
+=== ✔ Cleaning Up [21ms]
+
+The claude workspace has been created at Nov 19 05:28:15!
 ```
 
 Then wait for `dev2`'s pod, and compare the two workspace pods. `coder create` returns once
@@ -731,7 +1323,24 @@ coder users list -o json | jq -r '.[] | [.username, .login_type, ([.roles[].name
 ```
 
 ```text
-TODO: output from the fresh run
+pod/coder-dev2-claude-5968d47754-b9qwr condition met
+POD                                  USER   RUNTIMECLASS       NODE                  STARTED
+coder-dev1-claude-7c9fddccfd-ndd4k   dev1   isolated-sandbox   i-0d6e481d969fe9e10   2026-11-19T05:27:32Z
+coder-dev2-claude-5968d47754-b9qwr   dev2   isolated-sandbox   i-0d6e481d969fe9e10   2026-11-19T05:28:18Z
+--- pod/coder-dev1-claude-7c9fddccfd-ndd4k ---
+ae3b9009-5b65-4734-913b-041b68243a34
+43.33
+dm-0 vda vdb vdc vdd
+--- pod/coder-dev2-claude-5968d47754-b9qwr ---
+087b6d7b-be82-4c4a-9fcb-89c821ee7cb7
+5.19
+dm-0 vda vdb vdc vdd
+NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+coder-dev1-claude-home   Bound    pvc-ce54b223-05f8-4aaf-866d-cd6c70750cee   10Gi       RWOP           coder-gp3      <unset>                 4m16s
+coder-dev2-claude-home   Bound    pvc-7484bb55-cef0-4cec-949b-a32af8bd3e13   10Gi       RWOP           coder-gp3      <unset>                 15s
+admin	oidc	owner
+dev1	oidc
+dev2	oidc
 ```
 
 Each developer has a pod with `runtimeClassName: isolated-sandbox`, and each pod reports its
@@ -940,7 +1549,62 @@ Run the clean up from this folder. It reads the same `.env` and the state setup 
 ```
 
 ```text
-TODO: output from the fresh run
+cluster sandbox-demo in us-west-2, kube context coder-run1 (current)
+namespaces: coder (Coder, Keycloak, PostgreSQL) and coder-workspaces (workspaces)
+
+== 1/12 Checks ==
+cluster sandbox-demo: EKS Auto Mode, load balancing on, VPC vpc-08ed2dc98d5c6f966; the kube context points at it
+namespace coder is the blueprint's
+namespace coder-workspaces is the blueprint's
+
+== 2/12 Workspaces and their EBS home volumes ==
+deployment.apps "coder-dev1-claude" deleted from coder-workspaces namespace
+deployment.apps "coder-dev2-claude" deleted from coder-workspaces namespace
+persistentvolumeclaim "coder-dev1-claude-home" deleted from coder-workspaces namespace
+persistentvolumeclaim "coder-dev2-claude-home" deleted from coder-workspaces namespace
+  pv/pvc-7484bb55-cef0-4cec-949b-a32af8bd3e13: gone
+  pv/pvc-ce54b223-05f8-4aaf-866d-cd6c70750cee: gone
+
+== 3/12 Coder (Helm release coder) ==
+release "coder" uninstalled
+
+== 4/12 The workspace Pod Identity association and IAM role ==
+deleted Pod Identity association a-2mpuddsdfrfos26dv
+deleted IAM role coder-workspace-bedrock-sandbox-demo
+
+== 5/12 Close the ALB to CloudFront ==
+security group sg-0272a116aa32759c3 has no inbound rule
+
+== 6/12 The CloudFront distribution (disable, wait, delete) ==
+disabled distribution ECJ4OJBGC3SH; waiting for that to deploy (up to 35 minutes)
+deleted distribution ECJ4OJBGC3SH
+
+== 7/12 The CloudFront VPC origin ==
+deleting VPC origin vo_2M2PibrCFBDCwcTJWyuuOw (up to 20 minutes)
+deleted VPC origin vo_2M2PibrCFBDCwcTJWyuuOw
+
+== 8/12 The Ingress, and with it the ALB ==
+ingress.networking.k8s.io "coder" deleted from coder namespace
+the ALB is gone
+
+== 9/12 The ALB security group ==
+deleted security group sg-0272a116aa32759c3
+
+== 10/12 The IngressClass and its parameters ==
+deleted ingressclass/coder-alb
+deleted ingressclassparams/coder-alb
+
+== 11/12 PostgreSQL's volume, and the blueprint's StorageClass ==
+  pv/pvc-78c27bb9-b786-4c25-86be-1745da6aa17d: gone
+deleted storageclass/coder-gp3
+
+== 12/12 The namespaces ==
+deleted namespace coder-workspaces
+deleted namespace coder
+
+Left in place, owned by EKS Auto Mode and CloudFront rather than the blueprint:
+  sg-0a2c402bd3e8b3cd0	CloudFront-VPCOrigins-Service-SG
+clean up complete. The generated passwords and users.txt are still in tmp/coder; delete them when you are done.
 ```
 
 It deletes every workspace's Deployment and home claim, the Coder release, Keycloak,
