@@ -1,0 +1,37 @@
+# Karpenter NodeOverlay (ALPHA: needs the nodeOverlay feature gate) that advertises the
+# eks.amazonaws.com/nitro-sandbox slot capacity to Karpenter's SCHEDULER.
+#
+# Why this is needed: the isolated-sandbox / confidential-sandbox RuntimeClasses add a per-pod
+# overhead of eks.amazonaws.com/nitro-sandbox: "1". No EC2 instance type advertises that resource
+# until the node has booted, so self-managed Karpenter's scheduler sees "no instance type has
+# enough resources" and never provisions a node for a sandbox pod. This overlay tells the
+# scheduler the capacity up front. Tracking issue: aws/karpenter-provider-aws#9904 — when
+# Karpenter models this resource per instance type natively, this overlay is no longer needed.
+#
+# Capacity rule (public EC2 docs, Nitro Sandboxes considerations): up to 5 sandboxes per vCPU,
+# capped at 896 per instance, HALVED on CPU-overcommit instance types. The values below are the
+# conservative floor the NodePool's instances report; a node that reports MORE is fine (the pod
+# requests only 1 slot). Requires Karpenter v1.15.2 or later (NodeOverlay v1alpha1 + the
+# nodeOverlay feature gate). Enable with: Karpenter Helm `--set settings.featureGates.nodeOverlay=true`.
+#
+# This overlay applies only to nodes in this blueprint's NodePool (matched by the NodePool's
+# sandbox.blueprint/al2023-ami label), so it does not affect other workloads on the cluster.
+apiVersion: karpenter.sh/v1alpha1
+kind: NodeOverlay
+metadata:
+  name: al2023-nitro-sandbox
+spec:
+  requirements:
+    - key: sandbox.blueprint/al2023-ami
+      operator: In
+      values: ["true"]
+    # Only consider instances with enough vCPU that at least a few sandbox slots exist after the
+    # per-pod overhead; instance-cpu is in whole vCPUs.
+    - key: karpenter.k8s.aws/instance-cpu
+      operator: Gt
+      values: ["1"]
+  capacity:
+    # 4 vCPU -> 20 (5/vCPU), matching an observed c6i.xlarge; the NodePool pins on-demand and one architecture.
+    # If you widen the NodePool to larger instances, raise this (5 x vCPU, max 896; half on
+    # CPU-overcommit types) or split into per-size overlays.
+    eks.amazonaws.com/nitro-sandbox: "20"

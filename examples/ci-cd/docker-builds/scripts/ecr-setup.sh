@@ -119,8 +119,10 @@ if [[ -f "$STATE_FILE" ]]; then
           ECR_ACCOUNT_ID ECR_AWS_REGION ECR_CLUSTER_NAME ECR_STATE_END
     # shellcheck disable=SC1090
     . "$STATE_FILE" >/dev/null 2>&1 || exit 3
-    # The end marker, not `.`'s status, is what says the file was written whole: see
-    # write_state. It does not catch a hand-edited line that fails at run time.
+    # The end marker, not the status of the dot command, is what says the file was written
+    # whole: see write_state. It does not catch a hand-edited line that fails at run time.
+    # Keep quotes, backticks and parentheses out of comments in this block: bash 3.2 reads
+    # them as syntax inside a command substitution and then parses the script differently.
     [[ "${ECR_STATE_END:-}" == 1 ]] || exit 3
     printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s' \
       "${ECR_NAMESPACE:-}" "${ECR_REPO_NAME:-}" "${ECR_ROLE_NAME:-}" "${ECR_ASSOCIATION_ID:-}" \
@@ -269,20 +271,29 @@ bound to $bound, not this sample's role $ROLE_ARN; refusing to adopt it"
   echo "  reusing association $assoc (bound to this sample's role)."
 fi
 
-STATE_READY=true
-write_state
-
 echo "Step 4/4: add the push rules to the egress policy"
 push_rules="$(sed -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" deploy/egress-push-rules.yaml)"
+[[ -n "$push_rules" ]] || die "deploy/egress-push-rules.yaml rendered empty, so the egress policy would get no push rules"
 # The policy is applied again with the push rules, so its DNS rule needs the cluster's DNS
 # address again (see coredns-cidr-from-service.sh).
 # shellcheck source=coredns-cidr-from-service.sh
 . "$SAMPLE_DIR/scripts/coredns-cidr-from-service.sh"
 COREDNS_CIDR="$(cluster_coredns_cidr_from_service kc)" \
   || die "could not work out the DNS address of the cluster (see the line above)"
+# The block goes in through the environment, not awk -v: BSD awk, which macOS ships, rejects a
+# newline in a -v value.
 sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" deploy/egress-policy.yaml \
-  | awk -v rules="$push_rules" '{ if ($0 == "<ECR_PUSH_RULES>") print rules; else print }' \
+  | PUSH_RULES="$push_rules" awk '{ if ($0 == "<ECR_PUSH_RULES>") print ENVIRON["PUSH_RULES"]; else print }' \
   | kc apply -f -
+
+# Ready is recorded last, once the rules are applied, and only when the three resources it
+# stands for were all recorded. Recording it earlier let a failure in this step leave a file
+# that said the push was ready when it was not, and the build Job would try to use it.
+[[ -n "$STATE_REPO" && -n "$STATE_ROLE" && -n "$STATE_ASSOC" ]] \
+  || die "the push is not set up: the repository, the role and the association were not all recorded,
+so the state file was left as not ready. Run this script again."
+STATE_READY=true
+write_state
 
 echo
 echo "The push is ready: $REGISTRY/$ECR_REPO_NAME"

@@ -36,14 +36,15 @@ COPY analyst/fixtures/ /opt/analyst/fixtures/
 COPY nono/src/ /opt/nono/
 COPY nono/policies/ /opt/nono/policies/
 
-# The controller runs as an ordinary user, not root. nono's filesystem and network
-# controls come from Landlock and seccomp, which need no privilege.
-RUN useradd --create-home --uid 1000 analyst \
+# The controller runs as an ordinary user, uid and gid 10001, not root. nono's filesystem
+# and network controls come from Landlock and seccomp, which need no privilege.
+RUN groupadd --gid 10001 analyst \
+    && useradd --create-home --uid 10001 --gid 10001 analyst \
     && mkdir -p /var/lib/analyst \
     && chown analyst:analyst /var/lib/analyst
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PYTHONPATH=/opt/analyst \
     NONO_NO_SAVE_PROMPT=1 NONO_NO_MIGRATE=1
-USER 1000:1000
+USER 10001:10001
 WORKDIR /var/lib/analyst
 CMD ["sleep", "infinity"]
