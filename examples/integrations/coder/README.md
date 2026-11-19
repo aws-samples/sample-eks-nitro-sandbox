@@ -1458,14 +1458,8 @@ workspace's next start.
 
 ## Community Edition and Coder Premium
 
-This blueprint runs Community Edition, which is free and needs no license. Figure 4 puts the
-two editions side by side, and the table below gives each row with its source.
-
-*Figure 4: Community Edition and Coder Premium side by side. The rows under "In both editions" are the same in both columns; the second box in each column shows what is specific to that edition.*
-
-![Two boxes side by side. The left box is titled Community Edition (this blueprint), with the sub line free, no license. It holds two dashed groups. The first, In both editions, lists OIDC sign-in with any provider, Turn password sign-in off, Assign roles by hand (Owner, User Admin, Template Admin, Auditor), and Unlimited users and workspaces. The second, In Community Edition, lists One coderd replica and The built-in provisioners in coderd run the builds. The right box is titled Coder Premium, with the sub line priced per user. Its first group, In both editions, lists the same four rows. Its second group, Only in Coder Premium, lists Sync roles, groups and organizations from the identity provider, Groups, More than one coderd replica (high availability), Audit logs, Template permissions (who may use or edit each template), Workspace quotas, External provisioners, and AI Gateway and Agent Firewall.](images/coder-editions.png)
-
-Each row was read on Coder's own pages:
+This blueprint runs Community Edition, which is free and needs no license. The table compares
+the two editions; each row was read on Coder's own pages, linked in its last column:
 
 | Capability | Community Edition | Coder Premium | Source |
 |---|---|---|---|
