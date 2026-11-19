@@ -441,7 +441,7 @@ probe "GET /api/v2/users/me" "^401 " "https://$DOMAIN/api/v2/users/me"
 # A well-formed first-user request, so Coder answers about the user count, not the body.
 probe "POST /api/v2/users/first" "^409 " -X POST -H 'Content-Type: application/json' \
   --data-binary @- "https://$DOMAIN/api/v2/users/first" \
-  <<<'{"email":"probe@example.com","username":"probe","password":"refused-probe-1"}'
+  <<<'{"email":"probe@example.com","username":"probe","password":"refused-probe-1"}'  # pragma: allowlist secret -- a request Coder must refuse; no account gets it
 methods="$(curl -sS "https://$DOMAIN/api/v2/users/authmethods")" || die "could not read the sign-in methods"
 printf '%-44s %s\n' "GET /api/v2/users/authmethods" "$(jq -c '{password: .password.enabled, oidc: .oidc.enabled}' <<<"$methods")"
 jq -e '.password.enabled == false and .oidc.enabled == true' <<<"$methods" >/dev/null || die "Coder offers more than Keycloak sign-in"

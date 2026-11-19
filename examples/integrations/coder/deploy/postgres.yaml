@@ -7,7 +7,7 @@
 # Each role connects only to its own database: the init script revokes CONNECT
 # from PUBLIC on both. The superuser postgres is used by nothing but this pod.
 #
-# Passwords: the Secret postgres-passwords holds three keys (postgres, coder,
+# Passwords: the Secret postgres-passwords holds three keys (postgres, coder,  # pragma: allowlist secret -- key names
 # keycloak). scripts/setup.sh generates each value with openssl, writes it to a
 # mode-600 file under LOCAL_DIR and creates the Secret from those files with
 # `kubectl create secret generic --from-file`. No password appears in this file,
@@ -164,7 +164,7 @@ spec:
             claimName: postgres-data
         - name: passwords
           secret:
-            secretName: postgres-passwords
+            secretName: postgres-passwords  # pragma: allowlist secret -- the Secret's name, not a value
             defaultMode: 0440
         - name: init
           configMap:

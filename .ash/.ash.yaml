@@ -2203,6 +2203,53 @@ global_settings:
       path: 'examples/integrations/coder/templates/claude-code-nitro/main.tf'
       reason: 'Coder tracks workspace readiness through its agent connection; no Service routes to the workspace pod'
       expiration: '2027-12-31'
+    # grype matches advisories filed against the Coder server (Go module
+    # github.com/coder/coder/v2) to the coder Terraform provider in the template's lock file,
+    # because both are named coder/coder and the provider's 2.20.0 falls in the server's
+    # version ranges. The provider is not the server. The server this blueprint installs is
+    # 2.38.10 (deploy and README Versions), outside every range below; the newest of them,
+    # CVE-2026-118687, is fixed in 2.37.4. Checked against the GitHub advisory database and the
+    # CVE records on 2026-11-18. Each is scoped to the lock file and expires in six months.
+    - rule_id: CVE-2026-111927-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (fixed in 2.29.20, 2.33.12, 2.34.8, 2.35.4), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-118687-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (fixed in 2.29.21, 2.34.12, 2.35.9, 2.36.7, 2.37.4), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-44454-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (GHSA: github.com/coder/coder/v2 below 2.29.7 and 2.30.2), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-46354-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (GHSA: github.com/coder/coder/v2 below 2.33.3), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-55075-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (GHSA: github.com/coder/coder/v2 below 2.34.2), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-55076-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (GHSA: github.com/coder/coder/v2 below 2.34.2), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-55077-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (GHSA: github.com/coder/coder/v2 below 2.34.2), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-55427-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (GHSA: github.com/coder/coder/v2 below 2.34.2), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-55428-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (GHSA: github.com/coder/coder/v2 below 2.34.2), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
+    - rule_id: CVE-2026-55429-registry.terraform.io/coder/coder
+      path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
+      reason: 'Coder server advisory (GHSA: github.com/coder/coder/v2 below 2.34.2), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
+      expiration: '2027-05-31'
 scanners:
   cdk-nag:
     enabled: false  # no CloudFormation or CDK here; it fails to parse the multi-document Kubernetes manifests
