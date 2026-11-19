@@ -175,8 +175,7 @@ chmod 600 "$cluster_config"
 "${KC[@]}" config view --raw --minify --context "$kube_context" --output=json \
   >"$cluster_config" || die "could not read the selected kube context."
 evidence=$(
-  python3 - "$state_dir/install.complete" "$receipt" "$cluster_config" \
-    "$OCE_SOURCE_PIN" "$kube_context" "$system_namespace" "$release" <<'PY'
+  python3 -c '
 from pathlib import Path
 import hashlib, json, re, sys
 marker_path, receipt_path, config_path, source, context, namespace, release = sys.argv[1:]
@@ -237,8 +236,9 @@ actual = hashlib.sha256(
 ).hexdigest()
 if actual != intent["clusterSha256"]:
     fail("selected kube context does not match the OCC receipt.")
-print(f"{marker['cluster_arn']}\t{intent['attempt']}")
-PY
+print("{}\t{}".format(marker["cluster_arn"], intent["attempt"]))
+' "$state_dir/install.complete" "$receipt" "$cluster_config" \
+    "$OCE_SOURCE_PIN" "$kube_context" "$system_namespace" "$release"
 ) || die "install evidence validation failed."
 IFS=$'\t' read -r marker_cluster_arn receipt_attempt evidence_extra <<<"$evidence"
 [[ -z "${evidence_extra:-}" && -n "$marker_cluster_arn" &&
