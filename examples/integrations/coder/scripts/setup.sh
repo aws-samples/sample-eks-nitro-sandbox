@@ -159,8 +159,8 @@ for f in postgres-superuser-password postgres-coder-password postgres-keycloak-p
 done
 gen_secret_file "$LOCAL_DIR/keycloak-admin-password" 24
 ( umask 077
-  { printf 'postgres://coder:'; cat "$LOCAL_DIR/postgres-coder-password"
-    printf '@postgres.%s.svc.cluster.local:5432/coder?sslmode=disable' "$NAMESPACE"; } >"$LOCAL_DIR/coder-db-url" \
+  { printf 'postgres://coder:' && cat "$LOCAL_DIR/postgres-coder-password" \
+      && printf '@postgres.%s.svc.cluster.local:5432/coder?sslmode=disable' "$NAMESPACE"; } >"$LOCAL_DIR/coder-db-url" \
     && chmod 600 "$LOCAL_DIR/coder-db-url"
 ) || die "could not write $(rel "$LOCAL_DIR/coder-db-url")"
 secret_from_files postgres-passwords --from-file=postgres="$LOCAL_DIR/postgres-superuser-password" \
@@ -209,12 +209,14 @@ lb="$(aws_r elbv2 describe-load-balancers --output json \
   || die "could not list load balancers"
 [[ -n "$lb" ]] || die "no load balancer in $AWS_REGION has the Ingress's hostname $ALB_DNS"
 ALB_ARN="$(jq -r .LoadBalancerArn <<<"$lb")"
-[[ "$(jq -r .Scheme <<<"$lb")" == internal ]] || alb_not_private "load balancer $ALB_ARN is not internal"
+# Identity first: only a load balancer Auto Mode made for this Ingress is acted on, so a
+# failed check below never deletes the Ingress because of someone else's load balancer.
 aws_r elbv2 describe-tags --resource-arns "$ALB_ARN" --output json | jq -e --arg c "$CLUSTER_NAME" \
   --arg s "$NAMESPACE/$INGRESS_NAME" '.TagDescriptions[0].Tags as $t
   | any($t[]; .Key == "eks:eks-cluster-name" and .Value == $c)
     and any($t[]; .Key == "ingress.eks.amazonaws.com/stack" and .Value == $s)' >/dev/null \
   || die "load balancer $ALB_ARN is not the one Auto Mode made for ingress $NAMESPACE/$INGRESS_NAME"
+[[ "$(jq -r .Scheme <<<"$lb")" == internal ]] || alb_not_private "load balancer $ALB_ARN is not internal"
 state_set ALB_ARN "$ALB_ARN"
 aws_r elbv2 wait load-balancer-available --load-balancer-arns "$ALB_ARN" || die "load balancer $ALB_ARN did not become active"
 # Internal, in the private subnets chosen above, no public IP address; otherwise it is removed.
@@ -328,6 +330,10 @@ render workspace-rbac.yaml | require_rendered workspace-rbac.yaml | kc_cluster a
   || die "could not apply deploy/workspace-rbac.yaml"
 cluster_arn="$(aws_r eks describe-cluster --name "$CLUSTER_NAME" --query cluster.arn --output text)" \
   || die "could not read the ARN of cluster $CLUSTER_NAME"
+# The trust policy compares this to the tag Pod Identity sends, so anything else (None, an
+# empty reply, another cluster) would leave every workspace without credentials.
+[[ "$cluster_arn" =~ ^arn:aws[a-z-]*:eks:${AWS_REGION}:[0-9]{12}:cluster/${CLUSTER_NAME}$ ]] \
+  || die "the ARN read for cluster $CLUSTER_NAME is '$cluster_arn', not an EKS cluster ARN in $AWS_REGION"
 # Only EKS Pod Identity, and only for this cluster's workspace ServiceAccount: Pod Identity
 # sets these session tags on every request, and the trust policy requires their values.
 jq -n --arg arn "$cluster_arn" --arg ns "$WORKSPACE_NAMESPACE" --arg sa "$WORKSPACE_SA" \
@@ -464,11 +470,15 @@ for (( i = 1; i <= DEVELOPER_COUNT; i++ )); do users+=("dev$i"); done
 for u in "${users[@]}"; do
   pw="$LOCAL_DIR/keycloak-user-$u-password"
   rm -f "$pw"; gen_secret_file "$pw" 16
-  { printf '{"username":"%s","email":"%s@example.com","emailVerified":true,"enabled":true,' "$u" "$u"
-    printf '"firstName":"%s","lastName":"User","credentials":[{"type":"password","temporary":false,"value":"' "$u"
-    cat "$pw"; printf '"}]}\n'; } | kc exec -i deploy/keycloak -c keycloak -- sh -c "$kcadm" \
+  # Read once into a shell variable and check it, so a failed read stops here, before
+  # Keycloak is called. printf is a shell builtin: the value is never a process argument.
+  # (cat, not $(<file): under set -e a failed $(<file) exits before the message below.)
+  pwv="$(cat "$pw")" && [[ "$pwv" =~ ^[0-9a-f]{32}$ ]] || die "could not read the generated password for $u"
+  printf '{"username":"%s","email":"%s@example.com","emailVerified":true,"enabled":true,"firstName":"%s","lastName":"User","credentials":[{"type":"password","temporary":false,"value":"%s"}]}\n' \
+    "$u" "$u" "$u" "$pwv" | kc exec -i deploy/keycloak -c keycloak -- sh -c "$kcadm" \
     || die "could not create Keycloak user $u"
-  { printf '%s %s@example.com ' "$u" "$u"; cat "$pw"; printf '\n'; } >>"$USERS_FILE"
+  printf '%s %s@example.com %s\n' "$u" "$u" "$pwv" >>"$USERS_FILE" || die "could not write $(rel "$USERS_FILE")"
+  unset pwv
   rm -f "$pw"
   echo "created Keycloak user $u ($u@example.com)"
 done

@@ -47,6 +47,8 @@ done
 # Every PersistentVolume claimed from the two namespaces, recorded now: once a claim is
 # deleted there is nothing left to follow to its volume.
 pvs_json="$(kc_cluster get pv -o json)" || { pvs_json='{"items":[]}'; fail "could not list PersistentVolumes, so the EBS volumes cannot be confirmed deleted"; }
+jq -e '.items | type == "array"' <<<"$pvs_json" >/dev/null 2>&1 \
+  || { pvs_json='{"items":[]}'; fail "could not read the PersistentVolume list, so the EBS volumes cannot be confirmed deleted"; }
 pvs_in() { jq -r --arg n "$1" '.items[] | select(.spec.claimRef.namespace == $n) | .metadata.name' <<<"$pvs_json"; }
 
 step "2/12 Workspaces and their EBS home volumes"

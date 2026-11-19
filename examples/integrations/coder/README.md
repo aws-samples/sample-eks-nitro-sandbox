@@ -503,7 +503,7 @@ rules:
 ```
 
 ```bash
-kubectl -n "$WORKSPACE_NAMESPACE" get deploy,pod,pvc -l com.coder.user.username=dev1 -o wide
+kubectl -n "$WORKSPACE_NAMESPACE" get deploy,pod,pvc -l com.coder.user.username=dev1,com.coder.workspace.name=claude -o wide
 kubectl auth can-i --list -n "$WORKSPACE_NAMESPACE" --as "system:serviceaccount:$NAMESPACE:coder"
 kubectl auth can-i create pods -n "$NAMESPACE" --as "system:serviceaccount:$NAMESPACE:coder"
 ```
@@ -527,7 +527,7 @@ kernel generates once per boot
 the kernel a pod is running on.
 
 ```bash
-WS_POD=$(kubectl -n "$WORKSPACE_NAMESPACE" get pod -l com.coder.user.username=dev1 -o jsonpath='{.items[0].metadata.name}')
+WS_POD=$(kubectl -n "$WORKSPACE_NAMESPACE" get pod -l com.coder.user.username=dev1,com.coder.workspace.name=claude -o jsonpath='{.items[0].metadata.name}')
 NODE=$(kubectl -n "$WORKSPACE_NAMESPACE" get pod "$WS_POD" -o jsonpath='{.spec.nodeName}')
 kubectl -n "$NAMESPACE" run ordinary --image=public.ecr.aws/docker/library/busybox:1.37 --restart=Never \
   --overrides="{\"apiVersion\":\"v1\",\"spec\":{\"nodeName\":\"$NODE\"}}" --command -- sleep 600
@@ -676,17 +676,17 @@ Write a file in the home directory, stop the workspace, look at what is left, st
 and read the file:
 
 ```bash
-vol() { kubectl get pv "$(kubectl -n "$WORKSPACE_NAMESPACE" get pvc -l com.coder.user.username=dev1 \
+vol() { kubectl get pv "$(kubectl -n "$WORKSPACE_NAMESPACE" get pvc -l com.coder.user.username=dev1,com.coder.workspace.name=claude \
   -o jsonpath='{.items[0].spec.volumeName}')" -o jsonpath='volumeHandle={.spec.csi.volumeHandle}{"\n"}'; }
 coder ssh claude -- 'echo "written before the stop" > ~/notes.txt; ls -l ~/notes.txt'
-kubectl -n "$WORKSPACE_NAMESPACE" get pod -l com.coder.user.username=dev1 -o jsonpath='pod={.items[0].metadata.uid}{"\n"}'
+kubectl -n "$WORKSPACE_NAMESPACE" get pod -l com.coder.user.username=dev1,com.coder.workspace.name=claude -o jsonpath='pod={.items[0].metadata.uid}{"\n"}'
 vol
 coder stop claude --yes
-kubectl -n "$WORKSPACE_NAMESPACE" wait --for=delete pod -l com.coder.user.username=dev1 --timeout=3m
-kubectl -n "$WORKSPACE_NAMESPACE" get deploy,pod,pvc -l com.coder.user.username=dev1
+kubectl -n "$WORKSPACE_NAMESPACE" wait --for=delete pod -l com.coder.user.username=dev1,com.coder.workspace.name=claude --timeout=3m
+kubectl -n "$WORKSPACE_NAMESPACE" get deploy,pod,pvc -l com.coder.user.username=dev1,com.coder.workspace.name=claude
 coder start claude --yes
-kubectl -n "$WORKSPACE_NAMESPACE" wait --for=condition=Ready pod -l com.coder.user.username=dev1 --timeout=5m
-kubectl -n "$WORKSPACE_NAMESPACE" get pod -l com.coder.user.username=dev1 -o jsonpath='pod={.items[0].metadata.uid}{"\n"}'
+kubectl -n "$WORKSPACE_NAMESPACE" wait --for=condition=Ready pod -l com.coder.user.username=dev1,com.coder.workspace.name=claude --timeout=5m
+kubectl -n "$WORKSPACE_NAMESPACE" get pod -l com.coder.user.username=dev1,com.coder.workspace.name=claude -o jsonpath='pod={.items[0].metadata.uid}{"\n"}'
 vol
 coder ssh claude -- 'cat ~/notes.txt; cut -d" " -f1 /proc/uptime'
 ```
@@ -719,7 +719,7 @@ Then wait for `dev2`'s pod, and compare the two workspace pods. `coder create` r
 the build has created the Deployment, before its pod has a node:
 
 ```bash
-kubectl -n "$WORKSPACE_NAMESPACE" wait --for=condition=Ready pod -l com.coder.user.username=dev2 --timeout=5m
+kubectl -n "$WORKSPACE_NAMESPACE" wait --for=condition=Ready pod -l com.coder.user.username=dev2,com.coder.workspace.name=claude --timeout=5m
 kubectl -n "$WORKSPACE_NAMESPACE" get pod -l app.kubernetes.io/part-of=coder \
   -o custom-columns='POD:.metadata.name,USER:.metadata.labels.com\.coder\.user\.username,RUNTIMECLASS:.spec.runtimeClassName,NODE:.spec.nodeName,STARTED:.status.startTime'
 for p in $(kubectl -n "$WORKSPACE_NAMESPACE" get pod -l app.kubernetes.io/part-of=coder -o name); do

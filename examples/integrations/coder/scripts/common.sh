@@ -332,13 +332,17 @@ wait_pvs_gone() {
 # gen_secret_file <path> <bytes> : random hex from openssl, mode 600, no trailing newline
 # (an env var read from a Secret would otherwise carry the newline into the password).
 # An existing non-empty file is kept, so a run that stopped part way and is run again uses
-# the values its Secrets already hold; it is reused only if it is a plain file (not a link)
-# holding exactly the hex this function writes, and it is set to mode 600.
+# the values its Secrets already hold; it is reused only if it is a plain file (not a link,
+# and no other name for the same file) holding exactly the hex this function writes, and it
+# is set to mode 600. A new value goes to a new file that then replaces the name, so nothing
+# is ever written through an existing file.
 gen_secret_file() {
-  local v
+  local v tmp
   if [[ -e "$1" || -L "$1" ]]; then
     [[ -f "$1" && ! -L "$1" ]] || die "$(rel "$1") exists and is not a plain file; remove it and run setup again"
-    v="$(<"$1")"
+    [[ -n "$(find "$1" -maxdepth 0 -links 1)" ]] \
+      || die "$(rel "$1") has another name (a hard link); remove it and run setup again"
+    v="$(cat "$1")" || die "could not read $(rel "$1")"
     if [[ -n "$v" ]]; then
       [[ "$v" =~ ^[0-9a-f]+$ && ${#v} -eq $(( $2 * 2 )) ]] \
         || die "$(rel "$1") does not hold a value setup generated; remove it and run setup again"
@@ -346,16 +350,20 @@ gen_secret_file() {
       return 0
     fi
   fi
-  ( umask 077; openssl rand -hex "$2" | tr -d '\n' >"$1" ) || die "could not write $(rel "$1")"
-  chmod 600 "$1" || die "could not set mode 600 on $(rel "$1")"
+  tmp="$(mktemp "$1.XXXXXX")" || die "could not write $(rel "$1")"
+  { ( umask 077; openssl rand -hex "$2" | tr -d '\n' >"$tmp" ) && chmod 600 "$tmp" && mv -f "$tmp" "$1"; } \
+    || { rm -f "$tmp"; die "could not write $(rel "$1")"; }
 }
 
 # reset_private_file <path> : an empty file only you can read, before anything secret goes in.
-# Never written through a symbolic link, and its mode is set even if it already existed.
+# A new file replaces the name, so an existing file, or another name for it, is never
+# truncated or changed; a symbolic link or a directory is refused.
 reset_private_file() {
+  local tmp
   [[ ! -L "$1" ]] || die "$(rel "$1") is a symbolic link; remove it and run setup again"
   [[ ! -e "$1" || -f "$1" ]] || die "$(rel "$1") exists and is not a plain file; remove it and run setup again"
-  { ( umask 077; : >"$1" ) && chmod 600 "$1"; } || die "could not write $(rel "$1")"
+  tmp="$(mktemp "$1.XXXXXX")" || die "could not write $(rel "$1")"
+  { chmod 600 "$tmp" && mv -f "$tmp" "$1"; } || { rm -f "$tmp"; die "could not write $(rel "$1")"; }
 }
 
 # role_holds_only_bedrock : stops unless the existing role has no managed policy attached and
