@@ -129,7 +129,7 @@ check_alb_private() {
   [[ -z "$pub" ]] || alb_not_private "network interfaces $pub have public IP addresses"
 }
 alb_not_private() {
-  trap - EXIT   # the Ingress is deleted here, so setup's guard below need not do it again
+  trap - EXIT INT TERM HUP   # the Ingress is deleted here, so setup's guard need not do it again
   echo "error: the ALB is not private: $1" >&2
   echo "deleting ingress/$INGRESS_NAME so EKS Auto Mode removes the load balancer" >&2
   kc delete ingress "$INGRESS_NAME" --ignore-not-found >&2 || echo "error: could not delete ingress/$INGRESS_NAME; delete it now" >&2

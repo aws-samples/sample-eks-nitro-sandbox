@@ -207,6 +207,8 @@ alb_guard() {
   kc delete ingress "$INGRESS_NAME" --ignore-not-found >&2 || echo "error: could not delete ingress/$INGRESS_NAME; delete it now" >&2
 }
 trap alb_guard EXIT
+# Ctrl-C, TERM and HUP end bash without running an EXIT trap, so turn each into an exit.
+trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP
 render ingress.yaml | without_coder_route | require_rendered ingress.yaml \
   | kc apply -l app.kubernetes.io/component=ingress -f - || die "could not apply ingress/$INGRESS_NAME"
 echo "waiting for EKS Auto Mode to create the ALB (up to 10 minutes)"
@@ -234,7 +236,7 @@ aws_r elbv2 wait load-balancer-available --load-balancer-arns "$ALB_ARN" \
   || alb_not_private "load balancer $ALB_ARN did not become active, so its subnets and addresses cannot be checked"
 # Internal, in the private subnets chosen above, no public IP address; otherwise it is removed.
 check_alb_private
-trap - EXIT   # shown private: a later stop leaves the ALB, closed, for ./scripts/cleanup.sh
+trap - EXIT INT TERM HUP   # shown private: a later stop leaves the ALB, closed, for ./scripts/cleanup.sh
 # Called directly, not in $( ), so its die stops this script.
 wait_target_groups 1 >/dev/null
 echo "security groups on the ALB:"

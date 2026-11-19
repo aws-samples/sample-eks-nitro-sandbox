@@ -49,14 +49,15 @@ done
 pvs_json="$(kc_cluster get pv -o json)" || { pvs_json='{"items":[]}'; fail "could not list PersistentVolumes, so the EBS volumes cannot be confirmed deleted"; }
 jq -e '.items | type == "array"' <<<"$pvs_json" >/dev/null 2>&1 \
   || { pvs_json='{"items":[]}'; fail "could not read the PersistentVolume list, so the EBS volumes cannot be confirmed deleted"; }
-# Every entry must be a volume with a name, and a claim if it has one must name a namespace:
-# an entry that is not cannot be followed, so it is a failure rather than a volume skipped.
+# Every entry must be a volume with a name and a spec, and a claim, if it has one, must name a
+# namespace: an entry that is not cannot be followed, so it is a failure, never a volume skipped.
 jq -e '.items | all(type == "object"
     and (.metadata.name | type == "string" and length > 0)
-    and ((.spec.claimRef // null) == null
-         or ((.spec.claimRef | type) == "object" and (.spec.claimRef.namespace | type) == "string")))' \
+    and (.spec | type == "object")
+    and (.spec | (has("claimRef") | not) or .claimRef == null
+         or (.claimRef | type == "object" and (.namespace | type == "string" and length > 0))))' \
   <<<"$pvs_json" >/dev/null 2>&1 \
-  || { pvs_json='{"items":[]}'; fail "the PersistentVolume list has an entry with no name or no claim namespace, so the EBS volumes cannot be confirmed deleted"; }
+  || { pvs_json='{"items":[]}'; fail "the PersistentVolume list has an entry with no name, no spec or no claim namespace, so the EBS volumes cannot be confirmed deleted"; }
 pvs_in() { jq -r --arg n "$1" '.items[] | select(.spec.claimRef.namespace == $n) | .metadata.name' <<<"$pvs_json"; }
 # Both lists once, checked: an entry jq cannot read is a failure, never an empty list.
 ws_pvs="$(pvs_in "$WORKSPACE_NAMESPACE")" \
