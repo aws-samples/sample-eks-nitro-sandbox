@@ -129,7 +129,9 @@ check_alb_private() {
   [[ -z "$pub" ]] || alb_not_private "network interfaces $pub have public IP addresses"
 }
 alb_not_private() {
-  trap - EXIT INT TERM HUP   # the Ingress is deleted here, so setup's guard need not do it again
+  # This helper deletes the Ingress itself, so the guard is cleared, and a signal is ignored
+  # until the delete has run: a Ctrl-C to the process group would otherwise end kubectl too.
+  trap - EXIT; trap '' INT TERM HUP
   echo "error: the ALB is not private: $1" >&2
   echo "deleting ingress/$INGRESS_NAME so EKS Auto Mode removes the load balancer" >&2
   kc delete ingress "$INGRESS_NAME" --ignore-not-found >&2 || echo "error: could not delete ingress/$INGRESS_NAME; delete it now" >&2

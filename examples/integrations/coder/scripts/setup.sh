@@ -203,6 +203,7 @@ fi
 alb_guard() {
   local rc=$?
   [[ $rc -eq 0 ]] && return 0
+  trap '' INT TERM HUP   # a second Ctrl-C must not stop the delete below
   echo "deleting ingress/$INGRESS_NAME, because setup stopped before its ALB was shown to be private" >&2
   kc delete ingress "$INGRESS_NAME" --ignore-not-found >&2 || echo "error: could not delete ingress/$INGRESS_NAME; delete it now" >&2
 }
