@@ -669,7 +669,7 @@ The editor's pod has a network, so it ships an egress policy, and the policy is 
 makes "no public endpoint" more than a statement about Service types: it denies every
 connection to the pod from the pod network. Here is
 [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) in full, without its header
-comment. `setup.sh` fills `__NAMESPACE__` in at apply time from `NAMESPACE`:
+comment. `setup.sh` fills `__NAMESPACE__` in at apply time from `NAMESPACE`, and `<COREDNS_CIDR>` with the cluster's DNS address:
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -689,7 +689,7 @@ spec:
   # cluster. kubectl port-forward still works.
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -712,9 +712,11 @@ spec:
 | `podSelector`, `app: ide` | Selects the editor's pod, which carries that label from the `Sandbox`'s pod template. |
 | `policyTypes`, `Ingress` and `Egress` | Makes the pod default-deny in both directions: nothing is allowed except the rules below. |
 | no `ingress` rules | No pod on the pod network may connect to the editor, not even one in the same namespace. It does not, and cannot, deny the pod's own node: see "Where it is enforced". |
-| `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the editor look up names, on any destination address so the rule needs no cluster-specific DNS address filled in. Without it nothing resolves, so the allowed names below would be unreachable too. |
+| `egress`, to `<COREDNS_CIDR>` on UDP and TCP 53 | Lets the editor look up names. Without it nothing resolves, so the allowed names below would be unreachable too. DNS on UDP and TCP 53 to the cluster's DNS address only, as the paragraph above explains. |
 | `egress`, to `domainNames: open-vsx.org` and `openvsx.eclipsecontent.org` on TCP 443 | The extension registry. The gallery answers a search on the first name and redirects the download of the extension to the second, so an install needs both. |
 | `egress`, to `domainNames: github.com` on TCP 443 | `git clone`, fetch and push over HTTPS from the editor's terminal. |
+
+DNS on port 53 goes to the cluster's DNS address only. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. The Amazon EKS User Guide gives the rule in [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). IPv4 uses the `.10` address of the service CIDR. IPv6 uses its network address with `a` appended. [`scripts/coredns-cidr-from-service.sh`](scripts/coredns-cidr-from-service.sh) reads the `kubernetes` Service, which holds the first address of that CIDR. It turns `10.100.0.1` into `10.100.0.10/32` and `fd12:3456:789a::1` into `fd12:3456:789a::a/128`. It stops on an empty address or one that does not end in `.1` or `::1`. Port 53 to any address would let code in the sandbox reach any DNS server on the internet.
 
 An EKS Auto Mode `ApplicationNetworkPolicy` is a `NetworkPolicy` that also accepts
 hostnames (`domainNames`) in an egress rule. The policy has no Pod Identity rule because

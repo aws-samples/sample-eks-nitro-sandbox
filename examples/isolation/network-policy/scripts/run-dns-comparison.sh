@@ -96,9 +96,17 @@ if [[ "$b_std_allowed" != reached || "$b_std_blocked" != reached \
 fi
 
 say "Apply the ApplicationNetworkPolicy (allows $ALLOWED_HOST by name)"
-# DNS (port 53) is allowed to any address in the policy file already (#104), so the only
-# placeholder left to render is <AWS_REGION>.
-sed "s|<AWS_REGION>|$AWS_REGION|" "$DEPLOY/app-egress-policy.yaml" | kubectl apply -f -
+# The DNS rule allows the cluster's DNS address only. Work it out from the kubernetes
+# Service (see coredns-cidr-from-service.sh); it stops here if that is not usable.
+# shellcheck source=coredns-cidr-from-service.sh
+. "$HERE/scripts/coredns-cidr-from-service.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kubectl)" || {
+  printf 'STOP: could not work out the cluster DNS address (see the line above).\n'
+  exit 2
+}
+printf 'DNS egress is allowed to %s only\n' "$COREDNS_CIDR"
+sed -e "s|<AWS_REGION>|$AWS_REGION|" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" \
+  "$DEPLOY/app-egress-policy.yaml" | kubectl apply -f -
 printf 'Waiting for the netpol-client-dns-egress PolicyEndpoint ...\n'
 pe_seen=no
 for _ in $(seq 1 60); do

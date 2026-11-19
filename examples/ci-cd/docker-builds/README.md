@@ -546,9 +546,9 @@ builds, give each one its own claim.
 
 [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) is the whole policy for every build
 pod in the blueprint, with the file's longer comments trimmed here. `setup.sh` renders
-`<NAMESPACE>`, and leaves `<ECR_PUSH_RULES>` empty unless the optional push has been set up for
-this namespace. DNS (port 53) is allowed to any IP address, which avoids the need to look up
-and substitute the cluster's CoreDNS address:
+`<NAMESPACE>` and `<COREDNS_CIDR>` (the cluster's DNS address), and leaves `<ECR_PUSH_RULES>`
+empty unless the optional push has been set up for this namespace. DNS on port 53 goes to the cluster's DNS address only. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. The Amazon EKS User Guide gives the rule in [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). IPv4 uses the `.10` address of the service CIDR. IPv6 uses its network address with `a` appended. [`scripts/coredns-cidr-from-service.sh`](scripts/coredns-cidr-from-service.sh) reads the `kubernetes` Service, which holds the first address of that CIDR. It turns `10.100.0.1` into `10.100.0.10/32` and `fd12:3456:789a::1` into `fd12:3456:789a::a/128`. It stops on an empty address or one that does not end in `.1` or `::1`. Port 53 to any address would let code in the sandbox reach any DNS server on the internet.
+
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -567,9 +567,9 @@ spec:
     - Egress
   ingress: []        # deny all ingress; exec, logs and cp do not use the pod network
   egress:
-    # DNS on port 53 to any IP, so the pods can resolve names.
+    # DNS on port 53 to the cluster's DNS address only, so the pods can resolve names.
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -588,7 +588,7 @@ spec:
 | `podSelector` | Selects every pod in the blueprint, interactive pod and both Jobs, by the label each one carries. |
 | `policyTypes` | Both directions, so anything not allowed below is denied. |
 | `ingress: []` | No pod may open a connection to a build pod. `kubectl exec`, `logs` and `cp` keep working: they use the sandbox's control channel, not the pod network. |
-| DNS rule | Any IP address (`0.0.0.0/0`), on UDP and TCP 53, as the paragraph above says. |
+| DNS rule | DNS on UDP and TCP 53 to the cluster's DNS address only, as the paragraph above explains. |
 | Registry rule | `public.ecr.aws` for the API and the manifests, and `*.cloudfront.net` for the layer downloads it redirects to. |
 | `<ECR_PUSH_RULES>` | Nothing by default. [`scripts/ecr-setup.sh`](scripts/ecr-setup.sh) fills it with the Pod Identity credential address and this account's two Amazon ECR endpoints when the optional push is set up. |
 
@@ -702,7 +702,7 @@ kubectl get applicationnetworkpolicy docker-builds-egress -n "$NAMESPACE" \
 ```
 
 ```text
-[{"ipBlock":{"cidr":"0.0.0.0/0"}}] on [{"port":53,"protocol":"UDP"},{"port":53,"protocol":"TCP"}]
+[{"ipBlock":{"cidr":"10.100.0.10/32"}}] on [{"port":53,"protocol":"UDP"},{"port":53,"protocol":"TCP"}]
 [{"domainNames":["public.ecr.aws","*.cloudfront.net"]}] on [{"port":443,"protocol":"TCP"}]
 [{"ipBlock":{"cidr":"169.254.170.23/32"}}] on [{"port":80,"protocol":"TCP"}]
 [{"domainNames":["api.ecr.us-west-2.amazonaws.com","<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com"]}] on [{"port":443,"protocol":"TCP"}]
