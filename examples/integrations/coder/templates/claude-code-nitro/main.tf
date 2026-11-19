@@ -290,6 +290,24 @@ resource "kubernetes_deployment_v1" "workspace" {
           "com.coder.workspace.name"  = data.coder_workspace.me.name
           "com.coder.user.username"   = data.coder_workspace_owner.me.name
         }
+        # Every per-sandbox limit off: a workspace is a developer's machine, and it downloads
+        # editors, packages and images. The defaults cap each sandbox at 100 Mbit/s and 1500
+        # packets a second each way, 100 DNS queries a second, 400 Mbit/s and 1500 IOPS on its
+        # scratch disk, and 2 Mbit/s of logs. conntrack-limit cannot be turned off, so it is
+        # raised to its maximum. The sandbox reads these once, when the pod is created.
+        annotations = {
+          "sandbox.amazonaws.com/ingress-bandwidth"          = "disabled"
+          "sandbox.amazonaws.com/egress-bandwidth"           = "disabled"
+          "sandbox.amazonaws.com/ingress-packets-per-second" = "disabled"
+          "sandbox.amazonaws.com/egress-packets-per-second"  = "disabled"
+          "sandbox.amazonaws.com/dns-packets-per-second"     = "disabled"
+          "sandbox.amazonaws.com/overlay-disk-bandwidth"     = "disabled"
+          "sandbox.amazonaws.com/overlay-disk-iops"          = "disabled"
+          "sandbox.amazonaws.com/rootfs-disk-bandwidth"      = "disabled"
+          "sandbox.amazonaws.com/rootfs-disk-iops"           = "disabled"
+          "sandbox.amazonaws.com/log-bandwidth"              = "disabled"
+          "sandbox.amazonaws.com/conntrack-limit"            = "65536"
+        }
       }
 
       spec {
@@ -339,7 +357,7 @@ resource "kubernetes_deployment_v1" "workspace" {
           # template sets: no CPU request and no limits.
           resources {
             requests = {
-              memory = "1Gi"
+              memory = "2Gi"
             }
           }
 

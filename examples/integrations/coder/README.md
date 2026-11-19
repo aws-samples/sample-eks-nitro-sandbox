@@ -983,8 +983,8 @@ same node:
   the ordinary pod reads the EC2 instance type.
 
 Together they show the workspace's containers run in a lightweight VM of their own, with a
-kernel no other pod shares. `MemTotal` follows the workspace's 1Gi memory request (see
-[Why workspaces request 1Gi of memory](#why-workspaces-request-1gi-of-memory)).
+kernel no other pod shares. `MemTotal` follows the workspace's 2Gi memory request (see
+[Why workspaces request 2Gi of memory](#why-workspaces-request-2gi-of-memory)).
 
 **Step 6: Claude Code answers through Bedrock, with no key.** The template turns on Claude
 Code's Bedrock mode and sets the model and the Region; it holds no API key. Claude Code finds
@@ -1399,7 +1399,7 @@ workspace's Pod Identity credentials:
 
 ![Coder's web terminal for dev1's workspace. uname -r prints 6.18.62, the uptime is 246 seconds and a boot_id is printed. Then claude -p asks for a one-line shell command that prints the kernel version, and Claude answers with uname -r and a one-sentence explanation.](images/screenshots/terminal-claude-code.png)
 
-## Why workspaces request 1Gi of memory
+## Why workspaces request 2Gi of memory
 
 A sandbox is sized from its pod's requests when it boots, and its memory follows
 `resources.requests.memory` (Amazon EKS User Guide,
@@ -1407,8 +1407,9 @@ A sandbox is sized from its pod's requests when it boots, and its memory follows
 "Usable memory"). With no requests at all, the sandbox gets a small default size: the
 [hello sandbox](../../getting-started/hello-sandbox/README.md) pods got one vCPU and about
 130 MiB of memory, which suits a pod that prints a line and sleeps. A workspace runs the Coder
-agent, code-server and Claude Code at once, so the template asks for memory and sets nothing
-else:
+agent, code-server and Claude Code at once. With 1Gi, a workspace in use in code-server and
+Claude Code together ran out of memory and its container was restarted; with 2Gi it did not.
+So the template asks for 2Gi of memory and sets nothing else:
 
 <!-- excerpt: templates/claude-code-nitro/main.tf -->
 ```hcl
@@ -1416,7 +1417,7 @@ else:
           # template sets: no CPU request and no limits.
           resources {
             requests = {
-              memory = "1Gi"
+              memory = "2Gi"
             }
           }
 ```
@@ -1428,6 +1429,41 @@ The sandbox's CPU and memory are set when it boots and cannot be resized in plac
 request takes effect at the workspace's next start, when Coder creates a new pod. Each
 sandbox reserves its full memory request on the node, so nodes fill by reservation rather
 than by use ([warm pool](../../getting-started/warm-pool/README.md), "Sizing").
+
+## Why workspaces turn the sandbox limits off
+
+A Nitro sandbox throttles each pod by default: 100 Mbit/s and 1500 packets a second each way,
+100 DNS queries a second, 400 Mbit/s and 1500 I/O operations a second on its scratch disk,
+2 Mbit/s of container logs, and 4096 tracked connections. The
+[sandbox limits](../../isolation/sandbox-limits/README.md#every-per-sandbox-limit-and-its-default)
+blueprint lists each one with its annotation. A workspace is a developer's machine: it
+downloads editors, packages and images, and on this blueprint the 236 MB code-server download
+took about 50 seconds with the defaults and under 2 seconds with them off. So the template sets
+every limit to `"disabled"` on the workspace pod, and raises `conntrack-limit`, which cannot be
+turned off, to its maximum:
+
+<!-- excerpt: templates/claude-code-nitro/main.tf -->
+```hcl
+        annotations = {
+          "sandbox.amazonaws.com/ingress-bandwidth"          = "disabled"
+          "sandbox.amazonaws.com/egress-bandwidth"           = "disabled"
+          "sandbox.amazonaws.com/ingress-packets-per-second" = "disabled"
+          "sandbox.amazonaws.com/egress-packets-per-second"  = "disabled"
+          "sandbox.amazonaws.com/dns-packets-per-second"     = "disabled"
+          "sandbox.amazonaws.com/overlay-disk-bandwidth"     = "disabled"
+          "sandbox.amazonaws.com/overlay-disk-iops"          = "disabled"
+          "sandbox.amazonaws.com/rootfs-disk-bandwidth"      = "disabled"
+          "sandbox.amazonaws.com/rootfs-disk-iops"           = "disabled"
+          "sandbox.amazonaws.com/log-bandwidth"              = "disabled"
+          "sandbox.amazonaws.com/conntrack-limit"            = "65536"
+        }
+```
+
+The throttles are what keep one sandbox from using up its node's network, scratch disk or log
+pipeline while other sandboxes share the node. With them off, workspaces on the same node share
+those as ordinary pods do. To keep a limit, set it to a value instead of `"disabled"`; the
+sandbox reads the annotations once, when the pod is created, so a change takes effect at the
+workspace's next start.
 
 ## Community Edition and Coder Premium
 
@@ -1475,8 +1511,10 @@ The blueprint runs one of everything. To grow it:
   for a number of users.
 - **Workspace builds.** Each provisioner runs one build at a time. The built-in provisioners
   in `coderd` default to three (`CODER_PROVISIONER_DAEMONS`, in the
-  [server reference](https://coder.com/docs/reference/cli/server#--provisioner-daemons));
-  raise it if builds queue. Coder recommends
+  [server reference](https://coder.com/docs/reference/cli/server#--provisioner-daemons)); the
+  blueprint sets ten, and gives `coderd` 2Gi of memory with a 4Gi limit, so a room of
+  developers who create workspaces at once wait less. Raise it if builds still queue. Coder
+  recommends
   [external provisioners](https://coder.com/docs/install/operate/provisioners), a Premium
   feature, to scale builds apart from the control plane.
 - **The database.** Coder's
