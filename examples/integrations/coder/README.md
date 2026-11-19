@@ -469,8 +469,8 @@ ingressclass.networking.k8s.io/coder-alb created
 ingress.networking.k8s.io/coder created
 waiting for EKS Auto Mode to create the ALB (up to 10 minutes)
 security groups on the ALB:
-  <SECURITY_GROUP_ID_1>: no inbound rule
   <SECURITY_GROUP_ID_4>: no inbound rule
+  <SECURITY_GROUP_ID_1>: no inbound rule
 ALB <ALB_DNS_NAME_1> is internal and active; nothing can reach it yet
 
 == 3/13 The CloudFront VPC origin and distribution ==
@@ -486,8 +486,8 @@ deployment "keycloak" successfully rolled out
 
 == 5/13 Open the ALB to CloudFront's VPC origins only ==
 security groups on the ALB:
-  <SECURITY_GROUP_ID_1>: inbound TCP 80 from <SECURITY_GROUP_ID_2> (CloudFront-VPCOrigins-Service-SG) only
   <SECURITY_GROUP_ID_4>: no inbound rule
+  <SECURITY_GROUP_ID_1>: inbound TCP 80 from <SECURITY_GROUP_ID_2> (CloudFront-VPCOrigins-Service-SG) only
 https://dXXXX.cloudfront.net/auth/realms/coder/.well-known/openid-configuration answers 200
 
 == 6/13 The workspace namespace: ServiceAccount, provisioner Role, IAM role, Pod Identity ==
@@ -544,7 +544,7 @@ Username:       admin
 Full name:      Coder admin
 Email:          admin@example.com
 Status:         active
-Created At:     Nov 19 06:09:08
+Created At:     Nov 19 20:47:44
 
 Roles:          Owner
 
@@ -713,22 +713,22 @@ Provisioner tags: <none>
 === ✔ Queued [0ms]
 ==> ⧗ Running
 ==> ⧗ Running
-=== ✔ Running [5ms]
+=== ✔ Running [12ms]
 ==> ⧗ Setting up
-=== ✔ Setting up [64ms]
+=== ✔ Setting up [73ms]
 ==> ⧗ Initializing Terraform Directory
 If you'd like to know more about provider signing, you can read about it here:
 https://developer.hashicorp.com/terraform/cli/plugins/signing
 
-=== ✔ Initializing Terraform Directory [2787ms]
+=== ✔ Initializing Terraform Directory [2864ms]
 ==> ⧗ Parsing template parameters
-=== ✔ Parsing template parameters [14ms]
+=== ✔ Parsing template parameters [33ms]
 ==> ⧗ Detecting persistent resources
-=== ✔ Detecting persistent resources [1344ms]
+=== ✔ Detecting persistent resources [1736ms]
 ==> ⧗ Detecting ephemeral resources
-=== ✔ Detecting ephemeral resources [1240ms]
+=== ✔ Detecting ephemeral resources [1638ms]
 ==> ⧗ Cleaning Up
-=== ✔ Cleaning Up [8ms]
+=== ✔ Cleaning Up [20ms]
 ┌──────────────────────────────────────────────────┐
 │ Template Preview                                 │
 ├──────────────────────────────────────────────────┤
@@ -746,10 +746,10 @@ https://developer.hashicorp.com/terraform/cli/plugins/signing
 │ kubernetes_persistent_volume_claim_v1.home       │
 └──────────────────────────────────────────────────┘
 
-The claude-code-nitro template has been created at Nov 19 06:18:25! Developers
+The claude-code-nitro template has been created at Nov 19 20:54:03! Developers
 can provision a workspace with this template using:
 
-Updated version at Nov 19 06:18:25!
+Updated version at Nov 19 20:54:03!
 admin	oidc	owner
 ```
 
@@ -782,15 +782,15 @@ Planning workspace...
 === ✔ Queued [0ms]
 ==> ⧗ Running
 ==> ⧗ Running
-=== ✔ Running [6ms]
+=== ✔ Running [15ms]
 ==> ⧗ Setting up
-=== ✔ Setting up [64ms]
+=== ✔ Setting up [75ms]
 ==> ⧗ Initializing Terraform Directory
-=== ✔ Initializing Terraform Directory [1111ms]
+=== ✔ Initializing Terraform Directory [2918ms]
 ==> ⧗ Detecting persistent resources
-=== ✔ Detecting persistent resources [1312ms]
+=== ✔ Detecting persistent resources [1718ms]
 ==> ⧗ Cleaning Up
-=== ✔ Cleaning Up [9ms]
+=== ✔ Cleaning Up [20ms]
 ┌──────────────────────────────────────────────────────────────────┐
 │ Workspace Preview                                                │
 ├──────────────────────────────────────────────────────────────────┤
@@ -810,22 +810,22 @@ Planning workspace...
 === ✔ Queued [0ms]
 ==> ⧗ Running
 ==> ⧗ Running
-=== ✔ Running [94ms]
+=== ✔ Running [140ms]
 ==> ⧗ Setting up
-=== ✔ Setting up [62ms]
+=== ✔ Setting up [78ms]
 ==> ⧗ Initializing Terraform Directory
 
-=== ✔ Initializing Terraform Directory [326ms]
+=== ✔ Initializing Terraform Directory [394ms]
 ==> ⧗ Planning Infrastructure
-=== ✔ Planning Infrastructure [747ms]
+=== ✔ Planning Infrastructure [1014ms]
 ==> ⧗ Starting workspace
-=== ✔ Starting workspace [1069ms]
+=== ✔ Starting workspace [1435ms]
 ==> ⧗ Cleaning Up
-=== ✔ Cleaning Up [9ms]
+=== ✔ Cleaning Up [26ms]
 
-The claude workspace has been created at Nov 19 06:18:35!
+The claude workspace has been created at Nov 19 20:54:17!
 WORKSPACE      TEMPLATE           STATUS   HEALTHY  LAST BUILT  CURRENT VERSION  OUTDATED  STARTS AT  STOPS AFTER
-  dev1/claude  claude-code-nitro  Started  false    <1m         <TEMPLATE_VERSION_1>  false
+  dev1/claude  claude-code-nitro  Started  false    <1m         <TEMPLATE_VERSION_1>    false
 ```
 
 The workspace is a Deployment that Coder's provisioner creates in `coder-workspaces`. Here is
@@ -870,13 +870,13 @@ kubectl auth can-i create pods -n "$NAMESPACE" --as "system:serviceaccount:$NAME
 ```text
 pod/coder-dev1-claude-<POD_SUFFIX_1> condition met
 NAME                                READY   UP-TO-DATE   AVAILABLE   AGE   CONTAINERS   IMAGES                                     SELECTOR
-deployment.apps/coder-dev1-claude   1/1     1            1           62s   dev          codercom/enterprise-base:ubuntu-20261112   com.coder.workspace.id=<UUID_5>
+deployment.apps/coder-dev1-claude   1/1     1            1           58s   dev          codercom/enterprise-base:ubuntu-20261112   com.coder.workspace.id=<UUID_5>
 
-NAME                                     READY   STATUS    RESTARTS   AGE   IP                NODE                  NOMINATED NODE   READINESS GATES
-pod/coder-dev1-claude-<POD_SUFFIX_1>   1/1     Running   0          62s   <PRIVATE_IP_4>   <NODE_1>   <none>           <none>
+NAME                                     READY   STATUS    RESTARTS   AGE   IP               NODE                  NOMINATED NODE   READINESS GATES
+pod/coder-dev1-claude-<POD_SUFFIX_1>   1/1     Running   0          58s   <PRIVATE_IP_4>   <NODE_1>   <none>           <none>
 
 NAME                                           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE   VOLUMEMODE
-persistentvolumeclaim/coder-dev1-claude-home   Bound    <PV_NAME_1>   10Gi       RWOP           coder-gp3      <unset>                 62s   Filesystem
+persistentvolumeclaim/coder-dev1-claude-home   Bound    <PV_NAME_1>   10Gi       RWOP           coder-gp3      <unset>                 58s   Filesystem
 Warning: the list may be incomplete: webhook authorizer does not support user rule resolution
 Resources                                       Non-Resource URLs                      Resource Names   Verbs
 selfsubjectreviews.authentication.k8s.io        []                                     []               [create]
@@ -946,24 +946,24 @@ kubectl -n "$NAMESPACE" delete pod ordinary
 pod/ordinary created
 pod/ordinary condition met
 --- workspace pod coder-dev1-claude-<POD_SUFFIX_1> ---
-runtimeClassName=isolated-sandbox node=<NODE_1> started=2026-11-19T06:19:03Z
+runtimeClassName=isolated-sandbox node=<NODE_1> started=2026-11-19T20:54:39Z
 6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
-33.50
+34.47
 <UUID_6>
 dm-0 vda vdb vdc vdd
 m8a.enclave
-MemTotal:        1177608 kB
+MemTotal:        2205684 kB
 Filesystem      Size  Used Avail Use% Mounted on
-/dev/vdd        9.8G   30M  9.8G   1% /home/coder
+/dev/vdd        9.8G  938M  8.9G  10% /home/coder
 --- ordinary pod ---
-runtimeClassName= node=<NODE_1> started=2026-11-19T06:19:40Z
+runtimeClassName= node=<NODE_1> started=2026-11-19T20:55:18Z
 6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
-57.92
+61.46
 <UUID_7>
 dm-0 loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7 nvme0n1 nvme1n1 nvme2n1 zram0
 m8a.large
 MemTotal:        7950872 kB
-2026-11-19T06:19:45Z
+2026-11-19T20:55:28Z
 pod "ordinary" deleted from coder namespace
 ```
 
@@ -1074,9 +1074,9 @@ aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --region "
             ],
             "Condition": {
                 "StringEquals": {
+                    "aws:RequestTag/kubernetes-namespace": "coder-workspaces",
                     "aws:RequestTag/eks-cluster-arn": "arn:aws:eks:us-west-2:<ACCOUNT_ID>:cluster/sandbox-demo",
-                    "aws:RequestTag/kubernetes-service-account": "coder-workspace",
-                    "aws:RequestTag/kubernetes-namespace": "coder-workspaces"
+                    "aws:RequestTag/kubernetes-service-account": "coder-workspace"
                 }
             }
         }
@@ -1114,9 +1114,6 @@ coder ssh --wait=yes claude -- '~/.local/bin/claude -p "In one sentence, say hel
 ```
 
 ```text
-==> ⧗ Running workspace agent startup scripts (non-blocking)
-Notice: The startup scripts are still running and your workspace may be incomplete.
-For more information and troubleshooting, see https://coder.com/docs/@v2.38.10/admin/templates/troubleshooting#your-workspace-may-be-incomplete and https://coder.com/docs/admin/templates/troubleshooting
 ANTHROPIC_MODEL
 AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
 AWS_CONTAINER_CREDENTIALS_FULL_URI
@@ -1124,23 +1121,7 @@ AWS_DEFAULT_REGION
 AWS_REGION
 AWS_STS_REGIONAL_ENDPOINTS
 CLAUDE_CODE_USE_BEDROCK
-==> ⧗ Running workspace agent startup scripts
-==> ℹ︎ To connect immediately, reconnect with --wait=no or CODER_SSH_WAIT=no, see --help for more information.
-#=#=#
-##O#-#
-##O=#  #
-#=#=-#  #
--#O#- #   #
--=#=#   #   #
--=O#-#   #   #
--=O=#  #   #   #
--=O=-#  #    #   #
--=O=- #   #   #    #
--=O=-   #   #   #     #
--=O=-    #   #    #     #
--=O=-      #   #     #    #
-=== ✔ Running workspace agent startup scripts [143836ms]
-Hello from /home/coder, your workspace, and I'm ready to help with whatever you need.
+Hello from /home/coder, your workspace, which isn't a git repository, and I'm ready to help.
 ```
 
 The names show Bedrock mode, the model, the Region and the Pod Identity credential endpoint
@@ -1195,48 +1176,49 @@ coder ssh claude -- 'cat ~/notes.txt; cut -d" " -f1 /proc/uptime'
 ```
 
 ```text
--rw-r--r-- 1 coder coder 24 Nov 19 06:22 /home/coder/notes.txt
+-rw-r--r-- 1 coder coder 24 Nov 19 20:56 /home/coder/notes.txt
 pod=<UUID_8>
 volumeHandle=<VOLUME_ID_1>
 === ✔ Queued [0ms]
 ==> ⧗ Running
 ==> ⧗ Running
-=== ✔ Running [90ms]
+=== ✔ Running [137ms]
 ==> ⧗ Setting up
-=== ✔ Setting up [62ms]
+=== ✔ Setting up [77ms]
 ==> ⧗ Initializing Terraform Directory
 If you'd like to know more about provider signing, you can read about it here:
 https://developer.hashicorp.com/terraform/cli/plugins/signing
 
-=== ✔ Initializing Terraform Directory [1612ms]
+=== ✔ Initializing Terraform Directory [2295ms]
 ==> ⧗ Planning Infrastructure
-=== ✔ Planning Infrastructure [764ms]
+=== ✔ Planning Infrastructure [1043ms]
 ==> ⧗ Stopping workspace
-=== ✔ Stopping workspace [995ms]
+=== ✔ Stopping workspace [1322ms]
 ==> ⧗ Cleaning Up
-=== ✔ Cleaning Up [9ms]
+=== ✔ Cleaning Up [24ms]
 
-The claude workspace has been stopped at Nov 19 06:22:10!
-pod/coder-dev1-claude-<POD_SUFFIX_1> condition met
+The claude workspace has been stopped at Nov 19 20:56:15!
 NAME                                           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-persistentvolumeclaim/coder-dev1-claude-home   Bound    <PV_NAME_1>   10Gi       RWOP           coder-gp3      <unset>                 3m42s
+persistentvolumeclaim/coder-dev1-claude-home   Bound    <PV_NAME_1>   10Gi       RWOP           coder-gp3      <unset>                 2m1s
 === ✔ Queued [0ms]
 ==> ⧗ Running
 ==> ⧗ Running
-=== ✔ Running [47ms]
+=== ✔ Running [98ms]
 ==> ⧗ Setting up
-=== ✔ Setting up [64ms]
+=== ✔ Setting up [75ms]
 ==> ⧗ Initializing Terraform Directory
+If you'd like to know more about provider signing, you can read about it here:
+https://developer.hashicorp.com/terraform/cli/plugins/signing
 
-=== ✔ Initializing Terraform Directory [325ms]
+=== ✔ Initializing Terraform Directory [1904ms]
 ==> ⧗ Planning Infrastructure
-=== ✔ Planning Infrastructure [790ms]
+=== ✔ Planning Infrastructure [1047ms]
 ==> ⧗ Starting workspace
-=== ✔ Starting workspace [1061ms]
+=== ✔ Starting workspace [1382ms]
 ==> ⧗ Cleaning Up
-=== ✔ Cleaning Up [9ms]
+=== ✔ Cleaning Up [26ms]
 
-The claude workspace has been started at Nov 19 06:22:19!
+The claude workspace has been started at Nov 19 20:56:22!
 pod/coder-dev1-claude-<POD_SUFFIX_2> condition met
 pod=<UUID_9>
 volumeHandle=<VOLUME_ID_1>
@@ -1244,7 +1226,7 @@ volumeHandle=<VOLUME_ID_1>
 Notice: The startup scripts are still running and your workspace may be incomplete.
 For more information and troubleshooting, see https://coder.com/docs/@v2.38.10/admin/templates/troubleshooting#your-workspace-may-be-incomplete and https://coder.com/docs/admin/templates/troubleshooting
 written before the stop
-8.69
+4.96
 ```
 
 While the workspace is stopped there is no Deployment and no pod, and the claim is still
@@ -1276,15 +1258,15 @@ Planning workspace...
 === ✔ Queued [0ms]
 ==> ⧗ Running
 ==> ⧗ Running
-=== ✔ Running [6ms]
+=== ✔ Running [16ms]
 ==> ⧗ Setting up
-=== ✔ Setting up [81ms]
+=== ✔ Setting up [80ms]
 ==> ⧗ Initializing Terraform Directory
-=== ✔ Initializing Terraform Directory [1109ms]
+=== ✔ Initializing Terraform Directory [2910ms]
 ==> ⧗ Detecting persistent resources
-=== ✔ Detecting persistent resources [1275ms]
+=== ✔ Detecting persistent resources [1693ms]
 ==> ⧗ Cleaning Up
-=== ✔ Cleaning Up [9ms]
+=== ✔ Cleaning Up [21ms]
 ┌──────────────────────────────────────────────────────────────────┐
 │ Workspace Preview                                                │
 ├──────────────────────────────────────────────────────────────────┤
@@ -1304,20 +1286,20 @@ Planning workspace...
 === ✔ Queued [0ms]
 ==> ⧗ Running
 ==> ⧗ Running
-=== ✔ Running [56ms]
+=== ✔ Running [95ms]
 ==> ⧗ Setting up
-=== ✔ Setting up [67ms]
+=== ✔ Setting up [92ms]
 ==> ⧗ Initializing Terraform Directory
 
-=== ✔ Initializing Terraform Directory [323ms]
+=== ✔ Initializing Terraform Directory [395ms]
 ==> ⧗ Planning Infrastructure
-=== ✔ Planning Infrastructure [791ms]
+=== ✔ Planning Infrastructure [1026ms]
 ==> ⧗ Starting workspace
-=== ✔ Starting workspace [1103ms]
+=== ✔ Starting workspace [1403ms]
 ==> ⧗ Cleaning Up
-=== ✔ Cleaning Up [9ms]
+=== ✔ Cleaning Up [24ms]
 
-The claude workspace has been created at Nov 19 06:22:42!
+The claude workspace has been created at Nov 19 20:56:50!
 ```
 
 Then wait for `dev2`'s pod, and compare the two workspace pods. `coder create` returns once
@@ -1338,19 +1320,19 @@ coder users list -o json | jq -r '.[] | [.username, .login_type, ([.roles[].name
 ```text
 pod/coder-dev2-claude-<POD_SUFFIX_3> condition met
 POD                                  USER   RUNTIMECLASS       NODE                  STARTED
-coder-dev1-claude-<POD_SUFFIX_2>   dev1   isolated-sandbox   <NODE_1>   2026-11-19T06:22:18Z
-coder-dev2-claude-<POD_SUFFIX_3>   dev2   isolated-sandbox   <NODE_1>   2026-11-19T06:22:44Z
+coder-dev1-claude-<POD_SUFFIX_2>   dev1   isolated-sandbox   <NODE_1>   2026-11-19T20:56:21Z
+coder-dev2-claude-<POD_SUFFIX_3>     dev2   isolated-sandbox   <NODE_1>   2026-11-19T20:56:52Z
 --- pod/coder-dev1-claude-<POD_SUFFIX_2> ---
 <UUID_10>
-35.28
+32.91
 dm-0 vda vdb vdc vdd
 --- pod/coder-dev2-claude-<POD_SUFFIX_3> ---
 <UUID_11>
-5.20
+5.48
 dm-0 vda vdb vdc vdd
 NAME                     STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
-coder-dev1-claude-home   Bound    <PV_NAME_1>   10Gi       RWOP           coder-gp3      <unset>                 4m25s
-coder-dev2-claude-home   Bound    <PV_NAME_2>   10Gi       RWOP           coder-gp3      <unset>                 18s
+coder-dev1-claude-home   Bound    <PV_NAME_1>   10Gi       RWOP           coder-gp3      <unset>                 2m50s
+coder-dev2-claude-home   Bound    <PV_NAME_2>   10Gi       RWOP           coder-gp3      <unset>                 17s
 admin	oidc	owner
 dev1	oidc
 dev2	oidc
@@ -1380,7 +1362,7 @@ first sign-in through Keycloak, as members:
 
 | Templates | Users |
 |---|---|
-| ![Coder's Templates page as admin. One template, claude-code-nitro, with Used by 0 developers, Build time Unknown and last updated 6 minutes ago, and a Create Workspace button. The top bar shows Workspaces, Templates, Agents and Admin settings.](images/screenshots/admin-templates.png) | ![Coder's Admin Settings, Users page. Three users: admin (admin@example.com) with the role Owner, and dev1 (dev1@example.com) and dev2 (dev2@example.com) with the role Member. Each has No groups and the status Active.](images/screenshots/admin-users.png) |
+| ![Coder's Templates page as admin. One template, claude-code-nitro, with Used by 0 developers, Build time Unknown and last updated 11 minutes ago, and a Create Workspace button. The top bar shows Workspaces, Templates, Agents and Admin settings.](images/screenshots/admin-templates.png) | ![Coder's Admin Settings, Users page. Three users: admin (admin@example.com) with the role Owner, and dev1 (dev1@example.com) and dev2 (dev2@example.com) with the role Member. Each has No groups and the status Active.](images/screenshots/admin-users.png) |
 
 ![Coder's Workspaces page as admin, showing 2 of 2 workspaces: claude, owned by dev1, and claude, owned by dev2, both from the template claude-code-nitro and both Running, each with buttons for VS Code and the terminal.](images/screenshots/admin-workspaces.png)
 
@@ -1389,15 +1371,15 @@ page with its apps and the template's metadata, the guest kernel among them:
 
 | A developer's workspaces | The workspace page |
 |---|---|
-| ![Coder's Workspaces page as dev2, filtered to owner me: one workspace, claude, owned by dev2, from the template claude-code-nitro, Running. The top bar has no Admin settings.](images/screenshots/developer-workspaces.png) | ![dev1's workspace claude, Running, with Stop and Restart buttons. The agent main shows three apps, VS Code Desktop, code-server and Terminal, and three metadata values: CPU usage 0.022 cores, Guest kernel 6.18.62, and Home disk 0.568/9.75 GiB (6%).](images/screenshots/workspace.png) |
+| ![Coder's Workspaces page as dev2, filtered to owner me: one workspace, claude, owned by dev2, from the template claude-code-nitro, Running. The top bar has no Admin settings.](images/screenshots/developer-workspaces.png) | ![dev1's workspace claude, Running, with Stop and Restart buttons. The agent main shows three apps, VS Code Desktop, code-server and Terminal, and three metadata values: CPU usage 0.016 cores, Guest kernel 6.18.62, and Home disk 0.568/9.75 GiB (6%).](images/screenshots/workspace.png) |
 
 From that page, `dev1` opens code-server and asks Claude Code something in its terminal, and
 does the same in Coder's own web terminal. Both answers come from Amazon Bedrock with the
 workspace's Pod Identity credentials:
 
-![VS Code in the browser (code-server) for dev1. The Explorer shows the home folder with notes.txt from Step 7. In the terminal, claude -p asks what this workspace is running on, and Claude answers that it is running on Linux, kernel 6.18.62, in /home/coder, and that the assistant is Claude Sonnet 5.5 (us.anthropic.claude-sonnet-5-5) running through Claude Code.](images/screenshots/vscode-claude-code.png)
+![VS Code in the browser (code-server) for dev1. The Explorer shows the home folder with notes.txt from Step 7. In the terminal, claude -p asks what this workspace is running on, and Claude answers that it is a Linux machine, kernel 6.18.62, running a bash shell and not in a git repository, and that the assistant is Claude Sonnet 5.5 (us.anthropic.claude-sonnet-5-5) running through Claude Code and the Claude Agent SDK.](images/screenshots/vscode-claude-code.png)
 
-![Coder's web terminal for dev1's workspace. uname -r prints 6.18.62, the uptime is 246 seconds and a boot_id is printed. Then claude -p asks for a one-line shell command that prints the kernel version, and Claude answers with uname -r and a one-sentence explanation.](images/screenshots/terminal-claude-code.png)
+![Coder's web terminal for dev1's workspace. uname -r prints 6.18.62, the uptime is 623 seconds and a boot_id is printed. Then claude -p asks for a one-line shell command that prints the kernel version, and Claude answers with uname -r and a one-sentence explanation.](images/screenshots/terminal-claude-code.png)
 
 ## Why workspaces request 2Gi of memory
 
@@ -1622,8 +1604,8 @@ deployment.apps "coder-dev1-claude" deleted from coder-workspaces namespace
 deployment.apps "coder-dev2-claude" deleted from coder-workspaces namespace
 persistentvolumeclaim "coder-dev1-claude-home" deleted from coder-workspaces namespace
 persistentvolumeclaim "coder-dev2-claude-home" deleted from coder-workspaces namespace
-  pv/<PV_NAME_1>: gone
   pv/<PV_NAME_2>: gone
+  pv/<PV_NAME_1>: gone
 
 == 3/12 Coder (Helm release coder) ==
 release "coder" uninstalled
