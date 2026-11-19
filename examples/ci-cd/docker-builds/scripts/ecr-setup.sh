@@ -274,7 +274,13 @@ write_state
 
 echo "Step 4/4: add the push rules to the egress policy"
 push_rules="$(sed -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" deploy/egress-push-rules.yaml)"
-sed -e "s|<NAMESPACE>|$NAMESPACE|g" deploy/egress-policy.yaml \
+# The policy is applied again with the push rules, so its DNS rule needs the cluster's DNS
+# address again (see coredns-cidr-from-service.sh).
+# shellcheck source=coredns-cidr-from-service.sh
+. "$SAMPLE_DIR/scripts/coredns-cidr-from-service.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kc)" \
+  || die "could not work out the DNS address of the cluster (see the line above)"
+sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" deploy/egress-policy.yaml \
   | awk -v rules="$push_rules" '{ if ($0 == "<ECR_PUSH_RULES>") print rules; else print }' \
   | kc apply -f -
 

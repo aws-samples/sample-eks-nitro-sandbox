@@ -90,7 +90,9 @@ volumes sample ships a gp3, encrypted, non-default class in deploy/storage-class
 fi
 
 echo "Step 2/5: the namespace and the build ServiceAccount"
-render() { sed -e "s|<NAMESPACE>|$NAMESPACE|g" "$@"; }
+# <COREDNS_CIDR> is set in step 3 and only deploy/egress-policy.yaml has it, so the other
+# files pass through unchanged.
+render() { sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<COREDNS_CIDR>|${COREDNS_CIDR:-}|g" "$@"; }
 # Split the two documents in deploy/namespace.yaml: the namespace is CREATED only when
 # absent (applying over an existing namespace would count as adopting it, and could put this
 # sample's label on a namespace another demo owns), the ServiceAccount is applied either way.
@@ -110,6 +112,13 @@ fi
 sa_doc | kc apply -f -
 
 echo "Step 3/5: the egress policy"
+# The cluster's DNS address for the policy's DNS rule (see coredns-cidr-from-service.sh).
+# It stops here if the Service address is not what it expects.
+# shellcheck source=coredns-cidr-from-service.sh
+. "$SAMPLE_DIR/scripts/coredns-cidr-from-service.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kc)" \
+  || die "could not work out the DNS address of the cluster (see the line above)"
+echo "  DNS egress is allowed to $COREDNS_CIDR only"
 # The push rules are added only once scripts/ecr-setup.sh has created the role and the
 # association, which it records in the state file. Without them the build pods have no route
 # to the Pod Identity credential address or to Amazon ECR.
