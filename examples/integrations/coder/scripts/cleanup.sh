@@ -15,8 +15,9 @@
 # app.kubernetes.io/part-of=coder. A lookup that fails is "could not determine", never
 # "gone". Anything skipped or unconfirmed is listed, and the script exits non-zero.
 #
-# Two groups stay, because the blueprint does not own them: EKS Auto Mode's shared backend
-# group k8s-traffic-<cluster>-* and CloudFront's CloudFront-VPCOrigins-Service-SG. The files
+# Security groups the blueprint does not own stay, and are listed: CloudFront's
+# CloudFront-VPCOrigins-Service-SG, and EKS Auto Mode's shared backend group
+# k8s-traffic-<cluster>-* when Auto Mode has left it. The files
 # in tmp/coder (passwords, users.txt) stay too; delete them yourself.
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
