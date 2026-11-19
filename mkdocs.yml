@@ -120,6 +120,7 @@ nav:
       - OpenShell on Amazon EKS: openshell/kubernetes/README.md
       - Temporal workflows: integrations/temporal/README.md
       - Istio sidecars: integrations/istio/README.md
+      - Coder workspaces: integrations/coder/README.md
   - CI/CD:
       - Docker builds: ci-cd/docker-builds/README.md
       - GitHub Actions runners: ci-cd/github-actions/README.md
