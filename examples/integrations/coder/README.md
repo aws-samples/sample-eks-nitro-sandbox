@@ -539,16 +539,16 @@ Login is authenticated through the configured OIDC provider.
 
 Create a workspace  coder create!
 Successfully deleted bootstrap.
-ID:             <UUID_1>  
-Username:       admin  
-Full name:      Coder admin  
-Email:          admin@example.com  
-Status:         active  
-Created At:     Nov 19 06:09:08  
+ID:             <UUID_1>
+Username:       admin
+Full name:      Coder admin
+Email:          admin@example.com
+Status:         active
+Created At:     Nov 19 06:09:08
 
-Roles:          Owner  
+Roles:          Owner
 
-Organizations:  coder  
+Organizations:  coder
 Token has been deleted.
 GET /api/v2/users/first: {"message":"The initial user has already been created!"}
 
@@ -824,8 +824,8 @@ Planning workspace...
 === ✔ Cleaning Up [9ms]
 
 The claude workspace has been created at Nov 19 06:18:35!
-WORKSPACE      TEMPLATE           STATUS   HEALTHY  LAST BUILT  CURRENT VERSION  OUTDATED  STARTS AT  STOPS AFTER  
-  dev1/claude  claude-code-nitro  Started  false    <1m         ashamed_ramos92  false  
+WORKSPACE      TEMPLATE           STATUS   HEALTHY  LAST BUILT  CURRENT VERSION  OUTDATED  STARTS AT  STOPS AFTER
+  dev1/claude  claude-code-nitro  Started  false    <1m         <TEMPLATE_VERSION_1>  false
 ```
 
 The workspace is a Deployment that Coder's provisioner creates in `coder-workspaces`. Here is
@@ -1126,19 +1126,19 @@ AWS_STS_REGIONAL_ENDPOINTS
 CLAUDE_CODE_USE_BEDROCK
 ==> ⧗ Running workspace agent startup scripts
 ==> ℹ︎ To connect immediately, reconnect with --wait=no or CODER_SSH_WAIT=no, see --help for more information.
-#=#=#  
-##O#-#  
-##O=#  #  
-#=#=-#  #  
--#O#- #   #  
--=#=#   #   #  
--=O#-#   #   #  
--=O=#  #   #   #  
--=O=-#  #    #   #  
--=O=- #   #   #    #  
--=O=-   #   #   #     #  
--=O=-    #   #    #     #  
--=O=-      #   #     #    #  
+#=#=#
+##O#-#
+##O=#  #
+#=#=-#  #
+-#O#- #   #
+-=#=#   #   #
+-=O#-#   #   #
+-=O=#  #   #   #
+-=O=-#  #    #   #
+-=O=- #   #   #    #
+-=O=-   #   #   #     #
+-=O=-    #   #    #     #
+-=O=-      #   #     #    #
 === ✔ Running workspace agent startup scripts [143836ms]
 Hello from /home/coder, your workspace, and I'm ready to help with whatever you need.
 ```
@@ -1380,7 +1380,7 @@ first sign-in through Keycloak, as members:
 
 | Templates | Users |
 |---|---|
-| ![Coder's Templates page as admin. One template, claude-code-nitro, used by 1 developer, build time 3s, last updated 6 minutes ago, with a Create Workspace button. The top bar shows Workspaces, Templates, Agents and Admin settings.](images/screenshots/admin-templates.png) | ![Coder's Admin Settings, Users page. Three users: admin (admin@example.com) with the role Owner, and dev1 (dev1@example.com) and dev2 (dev2@example.com) with the role Member. Each has No groups and the status Active.](images/screenshots/admin-users.png) |
+| ![Coder's Templates page as admin. One template, claude-code-nitro, with Used by 0 developers, Build time Unknown and last updated 6 minutes ago, and a Create Workspace button. The top bar shows Workspaces, Templates, Agents and Admin settings.](images/screenshots/admin-templates.png) | ![Coder's Admin Settings, Users page. Three users: admin (admin@example.com) with the role Owner, and dev1 (dev1@example.com) and dev2 (dev2@example.com) with the role Member. Each has No groups and the status Active.](images/screenshots/admin-users.png) |
 
 ![Coder's Workspaces page as admin, showing 2 of 2 workspaces: claude, owned by dev1, and claude, owned by dev2, both from the template claude-code-nitro and both Running, each with buttons for VS Code and the terminal.](images/screenshots/admin-workspaces.png)
 
@@ -1389,7 +1389,7 @@ page with its apps and the template's metadata, the guest kernel among them:
 
 | A developer's workspaces | The workspace page |
 |---|---|
-| ![Coder's Workspaces page as dev2, filtered to owner me: one workspace, claude, owned by dev2, from the template claude-code-nitro, Running. The top bar has no Admin settings.](images/screenshots/developer-workspaces.png) | ![dev1's workspace claude, Running, with Stop and Restart buttons. The agent main shows three apps, VS Code Desktop, code-server and Terminal, and three metadata values: CPU usage 0.008 cores, Guest kernel 6.18.62, and Home disk 0.568/9.75 GiB (6%).](images/screenshots/workspace.png) |
+| ![Coder's Workspaces page as dev2, filtered to owner me: one workspace, claude, owned by dev2, from the template claude-code-nitro, Running. The top bar has no Admin settings.](images/screenshots/developer-workspaces.png) | ![dev1's workspace claude, Running, with Stop and Restart buttons. The agent main shows three apps, VS Code Desktop, code-server and Terminal, and three metadata values: CPU usage 0.022 cores, Guest kernel 6.18.62, and Home disk 0.568/9.75 GiB (6%).](images/screenshots/workspace.png) |
 
 From that page, `dev1` opens code-server and asks Claude Code something in its terminal, and
 does the same in Coder's own web terminal. Both answers come from Amazon Bedrock with the
@@ -1397,7 +1397,7 @@ workspace's Pod Identity credentials:
 
 ![VS Code in the browser (code-server) for dev1. The Explorer shows the home folder with notes.txt from Step 7. In the terminal, claude -p asks what this workspace is running on, and Claude answers that it is running on Linux, kernel 6.18.62, in /home/coder, and that the assistant is Claude Sonnet 5.5 (us.anthropic.claude-sonnet-5-5) running through Claude Code.](images/screenshots/vscode-claude-code.png)
 
-![Coder's web terminal for dev1's workspace. uname -r prints 6.18.62, the uptime is 412 seconds and a boot_id is printed. Then claude -p asks for a one-line shell command that prints the kernel version, and Claude answers with uname -r and a one-sentence explanation.](images/screenshots/terminal-claude-code.png)
+![Coder's web terminal for dev1's workspace. uname -r prints 6.18.62, the uptime is 246 seconds and a boot_id is printed. Then claude -p asks for a one-line shell command that prints the kernel version, and Claude answers with uname -r and a one-sentence explanation.](images/screenshots/terminal-claude-code.png)
 
 ## Why workspaces request 1Gi of memory
 
@@ -1533,11 +1533,11 @@ The blueprint runs one of everything. To grow it:
   are ordinary pods that hold the deployment's state, so each reserves what it needs on its
   node and cannot grow past a memory cap. They are starting points; Coder's validated
   architectures size `coderd` for more users.
-- **Clean up leaves two security groups it does not own.** Auto Mode creates a shared backend
-  security group for the cluster's load balancers, `k8s-traffic-<cluster>-<hash>`, with the
-  first one, and CloudFront creates `CloudFront-VPCOrigins-Service-SG` with the first VPC
-  origin in the VPC. Neither belongs to this blueprint, so the clean up reports them and
-  leaves them.
+- **Clean up leaves security groups it does not own.** CloudFront creates
+  `CloudFront-VPCOrigins-Service-SG` with the first VPC origin in the VPC, and it stays. EKS
+  Auto Mode can also leave a shared backend security group for the cluster's load balancers,
+  `k8s-traffic-<cluster>-<hash>`; the run on this page did not. Neither belongs to this
+  blueprint, so the clean up lists whichever of them it finds and leaves them.
 - **You can drop the `auto-delete=no` tag.** Every AWS resource the scripts create carries
   `ManagedBy=coder`, which is how the clean up finds them, and `auto-delete=no`, for accounts
   whose housekeeping deletes untagged resources. If yours has no such rule, remove it from the
@@ -1633,8 +1633,8 @@ that.
 
 What stays, and why:
 
-- `k8s-traffic-<cluster>-<hash>` and `CloudFront-VPCOrigins-Service-SG`, which belong to the
-  cluster and to CloudFront.
+- `CloudFront-VPCOrigins-Service-SG`, which belongs to CloudFront, and
+  `k8s-traffic-<cluster>-<hash>` if Auto Mode left it, which belongs to the cluster.
 - The `kubernetes.io/role/internal-elb` tag on your private subnets, which you added and which
   other load balancers may use.
 - `tmp/coder/`, with the passwords, the CLI sessions and the generated files. Delete it
