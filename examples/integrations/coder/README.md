@@ -543,8 +543,11 @@ same node:
 
 - **Its own kernel.** `uname -rv` in the workspace shows the guest's kernel build. The
   ordinary pod shows the node's. The version string can match; the build does not.
-- **Its own boot.** The workspace's uptime matches the pod's age, because its sandbox booted
-  with the pod. The ordinary pod reports the node's uptime, and the two `boot_id` values differ.
+- **Its own boot.** The workspace's uptime matches the pod's age (its `started` time against
+  the `date` line), because its sandbox booted with the pod. The ordinary pod reports the
+  node's uptime. When Auto Mode launched the node for this workspace, the two uptimes are
+  close, because the node booted seconds before the sandbox; the two `boot_id` values still
+  differ.
 - **Virtio disks.** The workspace sees `vd*` devices, and `df` shows the home directory is
   one of them. The ordinary pod sees the instance's `nvme` devices.
 - **The sandbox's own product name.** The workspace reads the sandbox's product name, where
@@ -651,8 +654,10 @@ coder ssh claude -- 'echo "written before the stop" > ~/notes.txt; ls -l ~/notes
 kubectl -n "$WORKSPACE_NAMESPACE" get pod -l com.coder.user.username=dev1 -o jsonpath='pod={.items[0].metadata.uid}{"\n"}'
 vol
 coder stop claude --yes
+kubectl -n "$WORKSPACE_NAMESPACE" wait --for=delete pod -l com.coder.user.username=dev1 --timeout=3m
 kubectl -n "$WORKSPACE_NAMESPACE" get deploy,pod,pvc -l com.coder.user.username=dev1
 coder start claude --yes
+kubectl -n "$WORKSPACE_NAMESPACE" wait --for=condition=Ready pod -l com.coder.user.username=dev1 --timeout=5m
 kubectl -n "$WORKSPACE_NAMESPACE" get pod -l com.coder.user.username=dev1 -o jsonpath='pod={.items[0].metadata.uid}{"\n"}'
 vol
 coder ssh claude -- 'cat ~/notes.txt; cut -d" " -f1 /proc/uptime'
@@ -663,8 +668,11 @@ TODO: output from the fresh run
 ```
 
 While the workspace is stopped there is no Deployment and no pod, and the claim is still
-`Bound`. After the start, the pod UID is new and its uptime is its own, so it is a new pod in
-a new sandbox; the volume handle is the same EBS volume, and `notes.txt` is still there.
+`Bound`; the first wait is for the old pod to finish terminating, which it does a few seconds
+after `coder stop` returns. After the start, the pod UID is new and its uptime is its own, so
+it is a new pod in a new sandbox; the volume handle is the same EBS volume, and `notes.txt` is
+still there. Right after a start, `coder ssh` can print a notice that the startup scripts are
+still running: code-server and Claude Code are still installing, and the command runs anyway.
 
 **Step 8: A second developer's workspace runs in its own sandbox.** In a third shell, be
 `dev2` and create a workspace with the same name from the same template:
@@ -679,9 +687,11 @@ coder create claude --template claude-code-nitro --use-parameter-defaults --yes
 TODO: output from the fresh run
 ```
 
-Then compare the two workspace pods:
+Then wait for `dev2`'s pod, and compare the two workspace pods. `coder create` returns once
+the build has created the Deployment, before its pod has a node:
 
 ```bash
+kubectl -n "$WORKSPACE_NAMESPACE" wait --for=condition=Ready pod -l com.coder.user.username=dev2 --timeout=5m
 kubectl -n "$WORKSPACE_NAMESPACE" get pod -l app.kubernetes.io/part-of=coder \
   -o custom-columns='POD:.metadata.name,USER:.metadata.labels.com\.coder\.user\.username,RUNTIMECLASS:.spec.runtimeClassName,NODE:.spec.nodeName,STARTED:.status.startTime'
 for p in $(kubectl -n "$WORKSPACE_NAMESPACE" get pod -l app.kubernetes.io/part-of=coder -o name); do
