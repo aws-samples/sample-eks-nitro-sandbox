@@ -9,6 +9,9 @@
 # context, so a run never depends on the machine's current context. Every AWS call goes
 # through aws_r, which pins the Region and uses your own credential chain.
 set -euo pipefail
+# The scripts read generated passwords into shell variables; tracing (bash -x) would print
+# them, so it is off for everything after this line, however the script was started.
+set +x
 
 SAMPLE=coder
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -340,7 +343,7 @@ gen_secret_file() {
   local v tmp
   if [[ -e "$1" || -L "$1" ]]; then
     [[ -f "$1" && ! -L "$1" ]] || die "$(rel "$1") exists and is not a plain file; remove it and run setup again"
-    [[ -n "$(find "$1" -maxdepth 0 -links 1)" ]] \
+    [[ "$(find "$1" -links 1 -print)" == "$1" ]] \
       || die "$(rel "$1") has another name (a hard link); remove it and run setup again"
     v="$(cat "$1")" || die "could not read $(rel "$1")"
     if [[ -n "$v" ]]; then

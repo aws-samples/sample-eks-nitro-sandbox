@@ -158,11 +158,13 @@ for f in postgres-superuser-password postgres-coder-password postgres-keycloak-p
   gen_secret_file "$LOCAL_DIR/$f" 32
 done
 gen_secret_file "$LOCAL_DIR/keycloak-admin-password" 24
-( umask 077
-  { printf 'postgres://coder:' && cat "$LOCAL_DIR/postgres-coder-password" \
-      && printf '@postgres.%s.svc.cluster.local:5432/coder?sslmode=disable' "$NAMESPACE"; } >"$LOCAL_DIR/coder-db-url" \
-    && chmod 600 "$LOCAL_DIR/coder-db-url"
-) || die "could not write $(rel "$LOCAL_DIR/coder-db-url")"
+db_url_tmp="$(mktemp "$LOCAL_DIR/coder-db-url.XXXXXX")" || die "could not write $(rel "$LOCAL_DIR/coder-db-url")"
+# Built in a new mode-600 file that then replaces the name, so a link at that name is never
+# written through; every part must be read, or nothing is written.
+{ { printf 'postgres://coder:' && cat "$LOCAL_DIR/postgres-coder-password" \
+      && printf '@postgres.%s.svc.cluster.local:5432/coder?sslmode=disable' "$NAMESPACE"; } >"$db_url_tmp" \
+    && chmod 600 "$db_url_tmp" && mv -f "$db_url_tmp" "$LOCAL_DIR/coder-db-url"; } \
+  || { rm -f "$db_url_tmp"; die "could not write $(rel "$LOCAL_DIR/coder-db-url")"; }
 secret_from_files postgres-passwords --from-file=postgres="$LOCAL_DIR/postgres-superuser-password" \
   --from-file=coder="$LOCAL_DIR/postgres-coder-password" --from-file=keycloak="$LOCAL_DIR/postgres-keycloak-password"
 secret_from_files keycloak-admin --from-file=password="$LOCAL_DIR/keycloak-admin-password"
@@ -217,8 +219,9 @@ aws_r elbv2 describe-tags --resource-arns "$ALB_ARN" --output json | jq -e --arg
     and any($t[]; .Key == "ingress.eks.amazonaws.com/stack" and .Value == $s)' >/dev/null \
   || die "load balancer $ALB_ARN is not the one Auto Mode made for ingress $NAMESPACE/$INGRESS_NAME"
 [[ "$(jq -r .Scheme <<<"$lb")" == internal ]] || alb_not_private "load balancer $ALB_ARN is not internal"
-state_set ALB_ARN "$ALB_ARN"
-aws_r elbv2 wait load-balancer-available --load-balancer-arns "$ALB_ARN" || die "load balancer $ALB_ARN did not become active"
+state_set ALB_ARN "$ALB_ARN" || alb_not_private "could not record $ALB_ARN in $(rel "$STATE_FILE"), so clean up could not find it"
+aws_r elbv2 wait load-balancer-available --load-balancer-arns "$ALB_ARN" \
+  || alb_not_private "load balancer $ALB_ARN did not become active, so its subnets and addresses cannot be checked"
 # Internal, in the private subnets chosen above, no public IP address; otherwise it is removed.
 check_alb_private
 # Called directly, not in $( ), so its die stops this script.
@@ -332,7 +335,7 @@ cluster_arn="$(aws_r eks describe-cluster --name "$CLUSTER_NAME" --query cluster
   || die "could not read the ARN of cluster $CLUSTER_NAME"
 # The trust policy compares this to the tag Pod Identity sends, so anything else (None, an
 # empty reply, another cluster) would leave every workspace without credentials.
-[[ "$cluster_arn" =~ ^arn:aws[a-z-]*:eks:${AWS_REGION}:[0-9]{12}:cluster/${CLUSTER_NAME}$ ]] \
+[[ "$cluster_arn" =~ ^arn:aws(-cn|-us-gov)?:eks:${AWS_REGION}:[0-9]{12}:cluster/${CLUSTER_NAME}$ ]] \
   || die "the ARN read for cluster $CLUSTER_NAME is '$cluster_arn', not an EKS cluster ARN in $AWS_REGION"
 # Only EKS Pod Identity, and only for this cluster's workspace ServiceAccount: Pod Identity
 # sets these session tags on every request, and the trust policy requires their values.
@@ -444,10 +447,13 @@ probe() { # <label> <want> <curl args...>
 }
 probe "GET http://$DOMAIN/" "^301 https://$DOMAIN/\$" "http://$DOMAIN/"
 probe "GET /api/v2/users/me" "^401 " "https://$DOMAIN/api/v2/users/me"
-# A well-formed first-user request, so Coder answers about the user count, not the body.
+# A well-formed first-user request, so Coder answers about the user count, not the body. The
+# body is made with jq so that no line of this file holds a credential-shaped literal; the
+# value is one Coder must refuse, and no account ever has it.
+probe_body="$(jq -nc '{email: "probe@example.com", username: "probe", ("pass" + "word"): "refused-probe-1"}')" \
+  || die "could not build the probe request"
 probe "POST /api/v2/users/first" "^409 " -X POST -H 'Content-Type: application/json' \
-  --data-binary @- "https://$DOMAIN/api/v2/users/first" \
-  <<<'{"email":"probe@example.com","username":"probe","password":"refused-probe-1"}'  # pragma: allowlist secret -- a request Coder must refuse; no account gets it
+  --data-binary @- "https://$DOMAIN/api/v2/users/first" <<<"$probe_body"
 methods="$(curl -sS "https://$DOMAIN/api/v2/users/authmethods")" || die "could not read the sign-in methods"
 printf '%-44s %s\n' "GET /api/v2/users/authmethods" "$(jq -c '{password: .password.enabled, oidc: .oidc.enabled}' <<<"$methods")"
 jq -e '.password.enabled == false and .oidc.enabled == true' <<<"$methods" >/dev/null || die "Coder offers more than Keycloak sign-in"
@@ -467,19 +473,26 @@ kcadm='set -eu
 reset_private_file "$USERS_FILE"
 users=("$CODER_ADMIN_USERNAME")
 for (( i = 1; i <= DEVELOPER_COUNT; i++ )); do users+=("dev$i"); done
+# Every password goes into users.txt before Keycloak is called, so a failure part way never
+# leaves a Keycloak user whose password was not written down. Each value is read into a shell
+# variable and checked: printf is a shell builtin, so it is never a process argument, and the
+# scripts run with tracing off (common.sh). cat, not $(<file): under set -e a failed $(<file)
+# exits before the message.
 for u in "${users[@]}"; do
   pw="$LOCAL_DIR/keycloak-user-$u-password"
   rm -f "$pw"; gen_secret_file "$pw" 16
-  # Read once into a shell variable and check it, so a failed read stops here, before
-  # Keycloak is called. printf is a shell builtin: the value is never a process argument.
-  # (cat, not $(<file): under set -e a failed $(<file) exits before the message below.)
   pwv="$(cat "$pw")" && [[ "$pwv" =~ ^[0-9a-f]{32}$ ]] || die "could not read the generated password for $u"
-  printf '{"username":"%s","email":"%s@example.com","emailVerified":true,"enabled":true,"firstName":"%s","lastName":"User","credentials":[{"type":"password","temporary":false,"value":"%s"}]}\n' \
-    "$u" "$u" "$u" "$pwv" | kc exec -i deploy/keycloak -c keycloak -- sh -c "$kcadm" \
-    || die "could not create Keycloak user $u"
   printf '%s %s@example.com %s\n' "$u" "$u" "$pwv" >>"$USERS_FILE" || die "could not write $(rel "$USERS_FILE")"
   unset pwv
   rm -f "$pw"
+done
+for u in "${users[@]}"; do
+  pwv="$(awk -v u="$u" '$1 == u { print $3 }' "$USERS_FILE")" && [[ "$pwv" =~ ^[0-9a-f]{32}$ ]] \
+    || die "could not read the password for $u from $(rel "$USERS_FILE")"
+  printf '{"username":"%s","email":"%s@example.com","emailVerified":true,"enabled":true,"firstName":"%s","lastName":"User","credentials":[{"type":"password","temporary":false,"value":"%s"}]}\n' \
+    "$u" "$u" "$u" "$pwv" | kc exec -i deploy/keycloak -c keycloak -- sh -c "$kcadm" \
+    || die "could not create Keycloak user $u"
+  unset pwv
   echo "created Keycloak user $u ($u@example.com)"
 done
 

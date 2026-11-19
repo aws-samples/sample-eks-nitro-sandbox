@@ -53,7 +53,7 @@ Edition needs no license.
 A platform team that hands every developer a cloud workspace runs every developer's code,
 and every agent's tool call, on shared infrastructure. [Coder](https://coder.com/docs) is a
 self-hosted platform for exactly that: an admin publishes a Terraform template, and Coder
-creates, stops, starts and deletes one workspace per developer from it. This blueprint runs
+creates, stops, starts and deletes developers' workspaces from it. This blueprint runs
 Coder Community Edition on Amazon EKS and has its template make each workspace a pod with
 `runtimeClassName: isolated-sandbox`, so a developer's terminal, their browser IDE and
 Claude Code all run in a Nitro sandbox of their own.
@@ -92,7 +92,7 @@ Figure 1 shows the blueprint at a glance:
 
 *Figure 1: Coder on Amazon EKS at a glance. Admins and developers reach Coder through Amazon CloudFront, and Coder gives each developer a workspace in its own Nitro sandbox that calls Claude on Amazon Bedrock.*
 
-![A figure read from left to right. A box labelled Browser holds two people icons, Admins and Developers. An arrow labelled HTTPS leads to Amazon CloudFront, which is described as one HTTPS address and sits inside the AWS Cloud frame. An arrow labelled private path leads from CloudFront to a box labelled Coder platform, which holds Coder, described as creating workspaces, and Keycloak, described as sign-in. The Coder platform box sits inside an Amazon EKS cluster frame. From the Coder platform box, an arrow labelled one per developer splits into two arrows. Each arrow leads to its own Nitro sandbox frame. Each sandbox holds one Workspace running Claude Code and code-server. An arrow labelled calls Claude leads from each Nitro sandbox to Amazon Bedrock, which sits at the right of the AWS Cloud frame outside the EKS cluster.](images/coder-high-level.png)
+![A figure read from left to right. A box labelled Browser holds two people icons, Admins and Developers. An arrow labelled HTTPS leads to Amazon CloudFront, which is described as one HTTPS address and sits inside the AWS Cloud frame. An arrow labelled private path leads from CloudFront to a box labelled Coder platform, which holds Coder, described as creating workspaces, and Keycloak, described as sign-in. The Coder platform box sits inside an Amazon EKS cluster frame. From the Coder platform box, an arrow labelled developer workspaces splits into two arrows, one for each of two example workspaces. Each arrow leads to its own Nitro sandbox frame. Each sandbox holds one Workspace running Claude Code and code-server. An arrow labelled calls Claude leads from each Nitro sandbox to Amazon Bedrock, which sits at the right of the AWS Cloud frame outside the EKS cluster.](images/coder-high-level.png)
 
 Figure 2 shows every part setup creates and how they connect. The rest of the page goes
 through them one by one.

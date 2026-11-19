@@ -50,16 +50,21 @@ pvs_json="$(kc_cluster get pv -o json)" || { pvs_json='{"items":[]}'; fail "coul
 jq -e '.items | type == "array"' <<<"$pvs_json" >/dev/null 2>&1 \
   || { pvs_json='{"items":[]}'; fail "could not read the PersistentVolume list, so the EBS volumes cannot be confirmed deleted"; }
 pvs_in() { jq -r --arg n "$1" '.items[] | select(.spec.claimRef.namespace == $n) | .metadata.name' <<<"$pvs_json"; }
+# Both lists once, checked: an entry jq cannot read is a failure, never an empty list.
+ws_pvs="$(pvs_in "$WORKSPACE_NAMESPACE")" \
+  || { ws_pvs=""; fail "could not read the PersistentVolumes of $WORKSPACE_NAMESPACE, so its EBS volumes cannot be confirmed deleted"; }
+ns_pvs="$(pvs_in "$NAMESPACE")" \
+  || { ns_pvs=""; fail "could not read the PersistentVolumes of $NAMESPACE, so its EBS volume cannot be confirmed deleted"; }
 
 step "2/12 Workspaces and their EBS home volumes"
 if [[ $ws_ok -eq 1 ]]; then
   # Coder's template labels each workspace's Deployment and claim with its workspace ID.
   kcw delete deployment,pvc -l com.coder.workspace.id --wait=true --timeout=5m \
     || fail "could not delete the workspace Deployments and claims in $WORKSPACE_NAMESPACE"
-  wait_pvs_gone "$(pvs_in "$WORKSPACE_NAMESPACE")" || fail "a workspace EBS volume is not confirmed deleted"
+  wait_pvs_gone "$ws_pvs" || fail "a workspace EBS volume is not confirmed deleted"
 elif [[ $ws_gone -eq 1 ]]; then
   # The namespace went in an earlier run; a volume still recorded against it was not deleted.
-  wait_pvs_gone "$(pvs_in "$WORKSPACE_NAMESPACE")" || fail "a workspace EBS volume is not confirmed deleted"
+  wait_pvs_gone "$ws_pvs" || fail "a workspace EBS volume is not confirmed deleted"
 fi
 
 step "3/12 Coder (Helm release $RELEASE)"
@@ -237,9 +242,9 @@ step "11/12 PostgreSQL's volume, and the blueprint's StorageClass"
 if [[ $ns_ok -eq 1 ]]; then
   kc delete deployment postgres --ignore-not-found --wait=true --timeout=3m >/dev/null || fail "could not delete deployment/postgres"
   kc delete pvc postgres-data --ignore-not-found --wait=true --timeout=3m >/dev/null || fail "could not delete pvc/postgres-data"
-  wait_pvs_gone "$(pvs_in "$NAMESPACE")" || fail "PostgreSQL's EBS volume is not confirmed deleted"
+  wait_pvs_gone "$ns_pvs" || fail "PostgreSQL's EBS volume is not confirmed deleted"
 elif [[ $ns_gone -eq 1 ]]; then
-  wait_pvs_gone "$(pvs_in "$NAMESPACE")" || fail "PostgreSQL's EBS volume is not confirmed deleted"
+  wait_pvs_gone "$ns_pvs" || fail "PostgreSQL's EBS volume is not confirmed deleted"
 fi
 # Only the class setup created (it carries the label), and only once no claim can need it.
 resource_exists kc_cluster "storageclass/$SAMPLE_STORAGE_CLASS"
