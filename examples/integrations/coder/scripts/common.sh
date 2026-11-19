@@ -98,7 +98,7 @@ aws_r() { aws --region "$AWS_REGION" "$@"; }
 # Ingress is deleted at once, so EKS Auto Mode removes the load balancer, and setup stops:
 # nothing public is left in your account.
 check_alb_private() {
-  local lb got want rts s pub
+  local lb got want rts s pub enis
   lb="$(aws_r elbv2 describe-load-balancers --load-balancer-arns "$ALB_ARN" --output json)" \
     || alb_not_private "could not read load balancer $ALB_ARN"
   [[ "$(jq -r '.LoadBalancers[0].Scheme' <<<"$lb")" == internal ]] || alb_not_private "it is not internal"
@@ -113,10 +113,14 @@ check_alb_private() {
       | $rt != null and (any($rt.Routes[]?; (.GatewayId // "") | startswith("igw-")) | not)' \
       <<<"$rts" >/dev/null || alb_not_private "subnet $s has a route to an internet gateway"
   done
-  pub="$(aws_r ec2 describe-network-interfaces --filters "Name=description,Values=ELB ${ALB_ARN#*:loadbalancer/}" \
-    --query 'NetworkInterfaces[?Association.PublicIp != null].NetworkInterfaceId' --output text)" \
-    || alb_not_private "could not read the ALB's network interfaces"
-  [[ -z "$pub" || "$pub" == None ]] || alb_not_private "network interfaces $pub have public IP addresses"
+  enis="$(aws_r ec2 describe-network-interfaces --filters "Name=description,Values=ELB ${ALB_ARN#*:loadbalancer/}" \
+    --output json)" || alb_not_private "could not read the ALB's network interfaces"
+  # No match is not proof of no public address: it is a lookup that found nothing to check.
+  [[ "$(jq '.NetworkInterfaces | length' <<<"$enis")" -gt 0 ]] \
+    || alb_not_private "no network interface matched it, so its addresses cannot be confirmed private"
+  pub="$(jq -r '[.NetworkInterfaces[] | select(.Association.PublicIp != null) | .NetworkInterfaceId] | join(" ")' \
+    <<<"$enis")" || alb_not_private "could not read the ALB's network interfaces"
+  [[ -z "$pub" ]] || alb_not_private "network interfaces $pub have public IP addresses"
 }
 alb_not_private() {
   echo "error: the ALB is not private: $1" >&2
@@ -328,10 +332,47 @@ wait_pvs_gone() {
 # gen_secret_file <path> <bytes> : random hex from openssl, mode 600, no trailing newline
 # (an env var read from a Secret would otherwise carry the newline into the password).
 # An existing non-empty file is kept, so a run that stopped part way and is run again uses
-# the values its Secrets already hold.
+# the values its Secrets already hold; it is reused only if it is a plain file (not a link)
+# holding exactly the hex this function writes, and it is set to mode 600.
 gen_secret_file() {
-  [[ -s "$1" ]] && return 0
+  local v
+  if [[ -e "$1" || -L "$1" ]]; then
+    [[ -f "$1" && ! -L "$1" ]] || die "$(rel "$1") exists and is not a plain file; remove it and run setup again"
+    v="$(<"$1")"
+    if [[ -n "$v" ]]; then
+      [[ "$v" =~ ^[0-9a-f]+$ && ${#v} -eq $(( $2 * 2 )) ]] \
+        || die "$(rel "$1") does not hold a value setup generated; remove it and run setup again"
+      chmod 600 "$1" || die "could not set mode 600 on $(rel "$1")"
+      return 0
+    fi
+  fi
   ( umask 077; openssl rand -hex "$2" | tr -d '\n' >"$1" ) || die "could not write $(rel "$1")"
+  chmod 600 "$1" || die "could not set mode 600 on $(rel "$1")"
+}
+
+# reset_private_file <path> : an empty file only you can read, before anything secret goes in.
+# Never written through a symbolic link, and its mode is set even if it already existed.
+reset_private_file() {
+  [[ ! -L "$1" ]] || die "$(rel "$1") is a symbolic link; remove it and run setup again"
+  [[ ! -e "$1" || -f "$1" ]] || die "$(rel "$1") exists and is not a plain file; remove it and run setup again"
+  { ( umask 077; : >"$1" ) && chmod 600 "$1"; } || die "could not write $(rel "$1")"
+}
+
+# role_holds_only_bedrock : stops unless the existing role has no managed policy attached and
+# no inline policy other than bedrock-invoke. Every workspace gets whatever the role may do,
+# so a marked role is reused only when that is nothing more than what setup grants.
+role_holds_only_bedrock() {
+  local out extra
+  out="$(aws_r iam list-attached-role-policies --role-name "$ROLE_NAME" --output json)" \
+    || die "could not list the managed policies attached to $ROLE_NAME"
+  extra="$(jq -r '[.AttachedPolicies[].PolicyArn] | join(" ")' <<<"$out")" \
+    || die "could not read the managed policies attached to $ROLE_NAME"
+  [[ -z "$extra" ]] || die "IAM role $ROLE_NAME has managed policies attached ($extra); the blueprint's role holds only bedrock-invoke. Detach them, or delete the role, then run ./scripts/setup.sh again"
+  out="$(aws_r iam list-role-policies --role-name "$ROLE_NAME" --output json)" \
+    || die "could not list the inline policies of $ROLE_NAME"
+  extra="$(jq -r '[.PolicyNames[] | select(. != "bedrock-invoke")] | join(" ")' <<<"$out")" \
+    || die "could not read the inline policies of $ROLE_NAME"
+  [[ -z "$extra" ]] || die "IAM role $ROLE_NAME has inline policies other than bedrock-invoke ($extra); delete them, or delete the role, then run ./scripts/setup.sh again"
 }
 
 # secret_from_files <name> <--from-file=...>... : create a Secret once, labelled.

@@ -34,14 +34,14 @@ fail() { echo "  INCOMPLETE: $*" >&2; failures=$((failures + 1)); }
 step "1/12 Checks"
 check_cluster   # stops on a kube context that is not this cluster
 state_load
-ns_ok=0 ws_ok=0
+ns_ok=0 ws_ok=0 ns_gone=0 ws_gone=0
 for ns in "$NAMESPACE" "$WORKSPACE_NAMESPACE"; do
   ns_is_ours "$ns"
   case $? in
     0) [[ "$ns" == "$NAMESPACE" ]] && ns_ok=1 || ws_ok=1; echo "namespace $ns is the blueprint's" ;;
     1) fail "namespace $ns is not labelled $LABEL_KEY=$SAMPLE; leaving it and everything in it" ;;
     2) fail "could not determine whether namespace $ns exists or is the blueprint's" ;;
-    3) echo "namespace $ns does not exist" ;;
+    3) [[ "$ns" == "$NAMESPACE" ]] && ns_gone=1 || ws_gone=1; echo "namespace $ns does not exist" ;;
   esac
 done
 # Every PersistentVolume claimed from the two namespaces, recorded now: once a claim is
@@ -54,6 +54,9 @@ if [[ $ws_ok -eq 1 ]]; then
   # Coder's template labels each workspace's Deployment and claim with its workspace ID.
   kcw delete deployment,pvc -l com.coder.workspace.id --wait=true --timeout=5m \
     || fail "could not delete the workspace Deployments and claims in $WORKSPACE_NAMESPACE"
+  wait_pvs_gone "$(pvs_in "$WORKSPACE_NAMESPACE")" || fail "a workspace EBS volume is not confirmed deleted"
+elif [[ $ws_gone -eq 1 ]]; then
+  # The namespace went in an earlier run; a volume still recorded against it was not deleted.
   wait_pvs_gone "$(pvs_in "$WORKSPACE_NAMESPACE")" || fail "a workspace EBS volume is not confirmed deleted"
 fi
 
@@ -82,10 +85,15 @@ else
 fi
 role_is_ours
 case $? in
-  0) for p in $(aws_r iam list-role-policies --role-name "$ROLE_NAME" --query PolicyNames --output text); do
-       aws_r iam delete-role-policy --role-name "$ROLE_NAME" --policy-name "$p" || fail "could not delete policy $p of $ROLE_NAME"
-     done
-     if aws_r iam delete-role --role-name "$ROLE_NAME"; then echo "deleted IAM role $ROLE_NAME"; else fail "could not delete IAM role $ROLE_NAME"; fi ;;
+  0) if ! pols="$(aws_r iam list-role-policies --role-name "$ROLE_NAME" --output json)" \
+       || ! pols="$(jq -r '.PolicyNames[]' <<<"$pols")"; then
+       fail "could not list the inline policies of $ROLE_NAME; not deleting it"
+     else
+       for p in $pols; do
+         aws_r iam delete-role-policy --role-name "$ROLE_NAME" --policy-name "$p" || fail "could not delete policy $p of $ROLE_NAME"
+       done
+       if aws_r iam delete-role --role-name "$ROLE_NAME"; then echo "deleted IAM role $ROLE_NAME"; else fail "could not delete IAM role $ROLE_NAME"; fi
+     fi ;;
   1) fail "IAM role $ROLE_NAME is not tagged $TAG_KEY=$TAG_VAL; leaving it" ;;
   2) fail "could not determine whether IAM role $ROLE_NAME exists or is the blueprint's" ;;
   3) echo "IAM role $ROLE_NAME does not exist" ;;
@@ -227,6 +235,8 @@ step "11/12 PostgreSQL's volume, and the blueprint's StorageClass"
 if [[ $ns_ok -eq 1 ]]; then
   kc delete deployment postgres --ignore-not-found --wait=true --timeout=3m >/dev/null || fail "could not delete deployment/postgres"
   kc delete pvc postgres-data --ignore-not-found --wait=true --timeout=3m >/dev/null || fail "could not delete pvc/postgres-data"
+  wait_pvs_gone "$(pvs_in "$NAMESPACE")" || fail "PostgreSQL's EBS volume is not confirmed deleted"
+elif [[ $ns_gone -eq 1 ]]; then
   wait_pvs_gone "$(pvs_in "$NAMESPACE")" || fail "PostgreSQL's EBS volume is not confirmed deleted"
 fi
 # Only the class setup created (it carries the label), and only once no claim can need it.

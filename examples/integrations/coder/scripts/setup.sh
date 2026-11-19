@@ -28,6 +28,8 @@ require_commands aws kubectl helm jq openssl curl sed
 show_context
 mkdir -p "$LOCAL_DIR" || die "could not create $(rel "$LOCAL_DIR")"
 chmod 700 "$LOCAL_DIR" || die "could not set mode 700 on $(rel "$LOCAL_DIR")"
+# Every file setup writes (passwords, policies, values, state) is readable by you alone.
+umask 077
 
 step "1/13 Checks, namespaces, secrets, PostgreSQL and the Keycloak Service"
 # Every check comes first, so a failed one leaves nothing behind.
@@ -54,7 +56,7 @@ subs="$(aws_r ec2 describe-subnets --subnet-ids $(jq -r '.[]' <<<"$subnets") --o
 private="$(jq -c --argjson rts "$rts" '[.Subnets[] as $s
   | ([$rts.RouteTables[] | select(any(.Associations[]?; .SubnetId == $s.SubnetId))][0]
      // [$rts.RouteTables[] | select(any(.Associations[]?; .Main == true))][0]) as $rt
-  | select(any($rt.Routes[]?; (.GatewayId // "") | startswith("igw-")) | not)
+  | select($rt != null and (any($rt.Routes[]?; (.GatewayId // "") | startswith("igw-")) | not))
   | {id: $s.SubnetId, az: $s.AvailabilityZone,
      tagged: any($s.Tags[]?; .Key == "kubernetes.io/role/internal-elb" and (.Value == "1" or .Value == ""))}]' <<<"$subs")" \
   || die "could not classify the cluster's subnets"
@@ -158,7 +160,8 @@ done
 gen_secret_file "$LOCAL_DIR/keycloak-admin-password" 24
 ( umask 077
   { printf 'postgres://coder:'; cat "$LOCAL_DIR/postgres-coder-password"
-    printf '@postgres.%s.svc.cluster.local:5432/coder?sslmode=disable' "$NAMESPACE"; } >"$LOCAL_DIR/coder-db-url"
+    printf '@postgres.%s.svc.cluster.local:5432/coder?sslmode=disable' "$NAMESPACE"; } >"$LOCAL_DIR/coder-db-url" \
+    && chmod 600 "$LOCAL_DIR/coder-db-url"
 ) || die "could not write $(rel "$LOCAL_DIR/coder-db-url")"
 secret_from_files postgres-passwords --from-file=postgres="$LOCAL_DIR/postgres-superuser-password" \
   --from-file=coder="$LOCAL_DIR/postgres-coder-password" --from-file=keycloak="$LOCAL_DIR/postgres-keycloak-password"
@@ -206,7 +209,7 @@ lb="$(aws_r elbv2 describe-load-balancers --output json \
   || die "could not list load balancers"
 [[ -n "$lb" ]] || die "no load balancer in $AWS_REGION has the Ingress's hostname $ALB_DNS"
 ALB_ARN="$(jq -r .LoadBalancerArn <<<"$lb")"
-[[ "$(jq -r .Scheme <<<"$lb")" == internal ]] || die "load balancer $ALB_ARN is not internal; stopping"
+[[ "$(jq -r .Scheme <<<"$lb")" == internal ]] || alb_not_private "load balancer $ALB_ARN is not internal"
 aws_r elbv2 describe-tags --resource-arns "$ALB_ARN" --output json | jq -e --arg c "$CLUSTER_NAME" \
   --arg s "$NAMESPACE/$INGRESS_NAME" '.TagDescriptions[0].Tags as $t
   | any($t[]; .Key == "eks:eks-cluster-name" and .Value == $c)
@@ -323,9 +326,16 @@ wait_url "https://$DOMAIN$KC_DISCOVERY_PATH" 200 10
 step "6/13 The workspace namespace: ServiceAccount, provisioner Role, IAM role, Pod Identity"
 render workspace-rbac.yaml | require_rendered workspace-rbac.yaml | kc_cluster apply -f - \
   || die "could not apply deploy/workspace-rbac.yaml"
-jq -n '{Version:"2012-10-17",Statement:[{Sid:"EksPodIdentity",Effect:"Allow",
-  Principal:{Service:"pods.eks.amazonaws.com"},Action:["sts:AssumeRole","sts:TagSession"]}]}' \
-  >"$LOCAL_DIR/workspace-trust-policy.json"
+cluster_arn="$(aws_r eks describe-cluster --name "$CLUSTER_NAME" --query cluster.arn --output text)" \
+  || die "could not read the ARN of cluster $CLUSTER_NAME"
+# Only EKS Pod Identity, and only for this cluster's workspace ServiceAccount: Pod Identity
+# sets these session tags on every request, and the trust policy requires their values.
+jq -n --arg arn "$cluster_arn" --arg ns "$WORKSPACE_NAMESPACE" --arg sa "$WORKSPACE_SA" \
+  '{Version:"2012-10-17",Statement:[{Sid:"EksPodIdentity",Effect:"Allow",
+  Principal:{Service:"pods.eks.amazonaws.com"},Action:["sts:AssumeRole","sts:TagSession"],
+  Condition:{StringEquals:{"aws:RequestTag/eks-cluster-arn":$arn,
+    "aws:RequestTag/kubernetes-namespace":$ns,"aws:RequestTag/kubernetes-service-account":$sa}}}]}' \
+  >"$LOCAL_DIR/workspace-trust-policy.json" || die "could not write the trust policy"
 # The only grant: invoke the configured inference profile and the foundation models it routes to.
 jq '{Version:"2012-10-17",Statement:[{Sid:"InvokeConfiguredModel",Effect:"Allow",
   Action:["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
@@ -337,6 +347,9 @@ if [[ $rc -eq 3 ]]; then
     --tags "Key=$TAG_KEY,Value=$TAG_VAL" Key=auto-delete,Value=no >/dev/null || die "could not create IAM role $ROLE_NAME"
   echo "created IAM role $ROLE_NAME"
 elif [[ $rc -eq 0 ]]; then
+  # A role carrying the mark is reused only if it holds nothing but bedrock-invoke, since
+  # every workspace gets whatever the role may do.
+  role_holds_only_bedrock
   aws_r iam update-assume-role-policy --role-name "$ROLE_NAME" \
     --policy-document "file://$LOCAL_DIR/workspace-trust-policy.json" || die "could not update the trust policy of $ROLE_NAME"
   echo "reusing the blueprint's IAM role $ROLE_NAME"
@@ -414,7 +427,7 @@ render ingress.yaml | require_rendered ingress.yaml | kc apply -l app.kubernetes
 wait_target_groups 2 >/dev/null
 wait_url "https://$DOMAIN/healthz" 200 10
 
-step "11/13 Anonymous requests through https://$DOMAIN, before any Keycloak user exists"
+step "11/13 Anonymous requests through https://$DOMAIN, before any user exists in the coder realm"
 # Each line prints what curl received, and the run stops if it is not a refusal.
 probe() { # <label> <want> <curl args...>
   local label=$1 want=$2 got
@@ -445,7 +458,7 @@ kcadm='set -eu
   /opt/keycloak/bin/kcadm.sh config credentials --config "$cfg" --server http://127.0.0.1:8080/auth \
     --realm master --user "$KC_BOOTSTRAP_ADMIN_USERNAME"
   /opt/keycloak/bin/kcadm.sh create users --config "$cfg" -r coder -f -'
-( umask 077; : >"$USERS_FILE" ) || die "could not write $(rel "$USERS_FILE")"
+reset_private_file "$USERS_FILE"
 users=("$CODER_ADMIN_USERNAME")
 for (( i = 1; i <= DEVELOPER_COUNT; i++ )); do users+=("dev$i"); done
 for u in "${users[@]}"; do

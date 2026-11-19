@@ -184,8 +184,9 @@ aws ec2 describe-security-groups --region "$AWS_REGION" \
 TODO: output from the fresh run
 ```
 
-The ALB routes two paths and nothing else. PostgreSQL has no route, and neither has
-Keycloak's management port, 9000, where its health checks live:
+The ALB has two backend rules: `/auth` and everything under it goes to Keycloak, and every
+other path goes to Coder. PostgreSQL has no route, and neither has Keycloak's management port,
+9000, where its health checks live:
 
 <!-- excerpt: deploy/ingress.yaml -->
 ```yaml
@@ -273,6 +274,7 @@ This folder was built against these releases:
 | code-server module ([registry.coder.com/coder/code-server](https://registry.coder.com/modules/coder/code-server)) | 1.6.0 |
 | code-server, installed by the module ([coder/code-server](https://github.com/coder/code-server/releases/tag/v4.145.2)) | 4.145.2 |
 | Claude Code module ([registry.coder.com/coder/claude-code](https://registry.coder.com/modules/coder/claude-code)) | 5.5.2 |
+| Claude Code, installed by that module (the template's `claude_code_version`) | 2.1.328 |
 | Workspace image ([codercom/enterprise-base](https://hub.docker.com/r/codercom/enterprise-base/tags?name=ubuntu-20261112)) | `ubuntu-20261112` |
 | Keycloak ([keycloak/keycloak](https://github.com/keycloak/keycloak/releases/tag/26.8.2)) | 26.8.2, as `quay.io/keycloak/keycloak:26.8.2` |
 | PostgreSQL ([official image](https://hub.docker.com/_/postgres)) | 18.7, as `postgres:18.7` |
@@ -312,7 +314,7 @@ the endpoint `aws eks describe-cluster` reports for `CLUSTER_NAME`, and stops if
 | `CLUSTER_NAME`, `AWS_REGION` | `sandbox-demo`, `us-west-2` | The EKS cluster and its Region |
 | `BEDROCK_MODEL_ID` | `us.anthropic.claude-sonnet-5-5` | The inference profile Claude Code uses, and the only one the Pod Identity role may invoke |
 | `DEVELOPER_COUNT` | `2` | How many developer users (`dev1` to `devN`) setup creates, besides `admin` |
-| `LOCAL_DIR` | `tmp/coder` under the repository root | Where setup writes passwords, generated files and its state, all mode 600; the repository's `tmp/` is git-ignored |
+| `LOCAL_DIR` | `tmp/coder` under the repository root | Where setup writes passwords, generated files and its state: the folder is mode 700 and every file setup writes in it is mode 600; the repository's `tmp/` is git-ignored |
 
 Setup installs Coder with these values. Here is the part of
 [`deploy/coder-values.yaml`](deploy/coder-values.yaml) that points Coder at Keycloak:
@@ -361,10 +363,11 @@ echo "https://$DOMAIN"
 TODO: output from the fresh run
 ```
 
-**Step 2: Check the endpoint before any Keycloak user exists.** Setup's step 11 is this check.
-It sends anonymous requests through the distribution after Coder is routed and before step 12
-creates a single Keycloak user, and it stops if any of them is not refused. Here is that part
-of the setup output:
+**Step 2: Check the endpoint before any user exists in the `coder` realm.** Setup's step 11
+is this check. It sends anonymous requests through the distribution after Coder is routed and
+before step 12 creates the realm's first user, and it stops if any of them is not refused. At
+that point the only Keycloak account is Keycloak's own admin in the `master` realm, whose
+password is random. Here is that part of the setup output:
 
 ```text
 TODO: output from the fresh run
@@ -567,9 +570,14 @@ inference profile `BEDROCK_MODEL_ID` names and the foundation models
 
 <!-- excerpt: scripts/setup.sh -->
 ```bash
-jq -n '{Version:"2012-10-17",Statement:[{Sid:"EksPodIdentity",Effect:"Allow",
-  Principal:{Service:"pods.eks.amazonaws.com"},Action:["sts:AssumeRole","sts:TagSession"]}]}' \
-  >"$LOCAL_DIR/workspace-trust-policy.json"
+# Only EKS Pod Identity, and only for this cluster's workspace ServiceAccount: Pod Identity
+# sets these session tags on every request, and the trust policy requires their values.
+jq -n --arg arn "$cluster_arn" --arg ns "$WORKSPACE_NAMESPACE" --arg sa "$WORKSPACE_SA" \
+  '{Version:"2012-10-17",Statement:[{Sid:"EksPodIdentity",Effect:"Allow",
+  Principal:{Service:"pods.eks.amazonaws.com"},Action:["sts:AssumeRole","sts:TagSession"],
+  Condition:{StringEquals:{"aws:RequestTag/eks-cluster-arn":$arn,
+    "aws:RequestTag/kubernetes-namespace":$ns,"aws:RequestTag/kubernetes-service-account":$sa}}}]}' \
+  >"$LOCAL_DIR/workspace-trust-policy.json" || die "could not write the trust policy"
 # The only grant: invoke the configured inference profile and the foundation models it routes to.
 jq '{Version:"2012-10-17",Statement:[{Sid:"InvokeConfiguredModel",Effect:"Allow",
   Action:["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],
@@ -577,11 +585,19 @@ jq '{Version:"2012-10-17",Statement:[{Sid:"InvokeConfiguredModel",Effect:"Allow"
   >"$LOCAL_DIR/workspace-bedrock-policy.json" || die "could not write the role policy"
 ```
 
+The session tags are the ones the Amazon EKS User Guide lists for EKS Pod Identity
+([*Grant Pods access to AWS resources based on tags*](https://docs.aws.amazon.com/eks/latest/userguide/pod-id-abac.html)),
+and conditioning the trust policy on them is the pattern its page
+[*Create IAM role with trust policy required by EKS Pod Identity*](https://docs.aws.amazon.com/eks/latest/userguide/pod-id-role.html)
+shows. When the role already exists and carries `ManagedBy=coder`, setup reuses it only if it
+has no attached policy and no inline policy other than `bedrock-invoke`, and stops otherwise.
+
 The role and its policies, read from IAM, and the association that ties it to the
 workspaces' ServiceAccount:
 
 ```bash
 ROLE=coder-workspace-bedrock-$CLUSTER_NAME
+aws iam list-role-policies --role-name "$ROLE"
 aws iam get-role-policy --role-name "$ROLE" --policy-name bedrock-invoke --query PolicyDocument
 aws iam list-attached-role-policies --role-name "$ROLE"
 aws iam get-role --role-name "$ROLE" --query Role.AssumeRolePolicyDocument
@@ -593,11 +609,12 @@ aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --region "
 TODO: output from the fresh run
 ```
 
-The role may call `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the
-configured inference profile and the foundation models it routes to, and nothing else: it has
-no attached policies, and only EKS Pod Identity may assume it. That is a limit this blueprint
-enforces: code in a workspace, including anything Claude Code runs, can use the role for
-those two actions on those models only.
+The role has one inline policy, `bedrock-invoke`, and no attached policies. It may call
+`bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the configured inference
+profile and the foundation models it routes to, and nothing else. Only EKS Pod Identity may
+assume it, and only for the ServiceAccount `coder-workspace` in `coder-workspaces` on this
+cluster. That is a limit this blueprint enforces: code in a workspace, including anything
+Claude Code runs, can use the role for those two actions on those models only.
 
 Now, as `dev1`, look at the workspace's environment by name only, and ask Claude Code
 something. The `claude` binary is in `~/.local/bin`, which the template puts on the PATH of

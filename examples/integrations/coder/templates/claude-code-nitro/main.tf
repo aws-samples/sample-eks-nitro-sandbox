@@ -73,8 +73,8 @@ variable "workspace_image" {
 
 variable "claude_code_version" {
   type        = string
-  default     = "latest"
-  description = "Claude Code version to install, for example 2.1.305. Use latest to track the newest release."
+  default     = "2.1.328"
+  description = "Claude Code version to install, for example 2.1.328. Use latest to track the newest release."
 }
 
 variable "coder_internal_url" {
