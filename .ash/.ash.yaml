@@ -1217,6 +1217,25 @@ global_settings:
       path: 'examples/managed-agents/openai-managed-agents/tests/test_client.py'
       reason: 'Subprocess import is required to run this interpreter on a driver the test writes itself; the import executes no command, and nothing under tests/ ships in the image (Dockerfile:38-39 copies pyproject.toml and src/ only)'
       expiration: '2027-12-31'
+    # test_setup_agent.py, added for #224. Same two rules, same per-file scoping, but
+    # a different justification from test_client.py's above, and the difference is
+    # worth stating: these calls DO invoke /bin/sh -c, because step 2 of the page is a
+    # shell command (`set -a; . ./.env; set +a; .venv/bin/python scripts/setup_agent.py`)
+    # and running exactly that is the whole point of the suite. What makes them safe is
+    # not the absence of a shell but that every argv element is a literal owned by the
+    # test file: the command strings are constants there, the cwd is a copy of the
+    # sample under pytest's own tmp_path, and the environment is built by the test. No
+    # value from a reader, a network response or the repository reaches the argument
+    # list. The .env the shell then reads does vary -- that is the input under test --
+    # but it is a file the test wrote, not part of the command.
+    - rule_id: B404
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_setup_agent.py'
+      reason: 'Subprocess import is required to run step 2 the way the page runs it, in a child process; the import executes no command, and nothing under tests/ ships in the image (Dockerfile:38-39 copies pyproject.toml and src/ only)'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/managed-agents/openai-managed-agents/tests/test_setup_agent.py'
+      reason: 'Every argv element is a literal this test file owns: /bin/sh -c with a constant command string (the page''s own step 2, or a fixed `set -a; . ./.env` load), a cwd under pytest tmp_path, and an environment the test builds. The shell is deliberate -- step 2 is a shell command -- and no reader, network or repository value reaches the argument list'
+      expiration: '2027-12-31'
     - rule_id: B603
       path: 'examples/managed-agents/openai-managed-agents/tests/test_client.py'
       reason: 'Fixed argument list and no shell: [sys.executable, <driver the test wrote into its own pytest tmp_path>], with the environment built by the test. No value from a reader, a network response or the repository reaches the argument list'
