@@ -627,11 +627,13 @@ Claude Code runs, can use the role for those two actions on those models only.
 
 Now, as `dev1`, look at the workspace's environment by name only, and ask Claude Code
 something. The `claude` binary is in `~/.local/bin`, which the template puts on the PATH of
-interactive shells; a command run with `coder ssh` names it in full.
+interactive shells; a command run with `coder ssh` names it in full. The template's startup
+scripts install code-server and Claude Code after the workspace starts, and `coder ssh` does
+not wait for them by default, so `--wait=yes` makes it wait until they have finished.
 
 ```bash
 coder ssh claude -- 'env | cut -d= -f1 | grep -E "^(AWS_|CLAUDE_CODE_|ANTHROPIC_)" | sort'
-coder ssh claude -- '~/.local/bin/claude -p "In one sentence, say hello from this workspace."'
+coder ssh --wait=yes claude -- '~/.local/bin/claude -p "In one sentence, say hello from this workspace."'
 ```
 
 ```text
@@ -736,6 +738,44 @@ Each developer has a pod with `runtimeClassName: isolated-sandbox`, and each pod
 own `boot_id` and its own uptime: two kernels, booted separately, even where the two pods
 share a node. Each has its own home claim. The user list now shows `dev1` and `dev2` as
 Keycloak (`oidc`) users with no role beyond member, and `admin` as the only owner.
+
+## What admins and developers see
+
+The screenshots below are from the same run as the output blocks, taken in a browser at the
+distribution's `https://` address. Where a page showed the distribution's name, it is
+replaced with `dXXXX.cloudfront.net` before the screenshot.
+
+Everyone starts at Coder's sign-in page, whose only option is Keycloak, and signs in on
+Keycloak's page for the realm `coder`:
+
+| Coder | Keycloak |
+|---|---|
+| ![Coder's sign-in page: the Coder logo, the word Coder, and a single button, Sign in with Keycloak. There is no user name or password field. Below it, the copyright line and the version v2.38.10.](images/screenshots/coder-sign-in.png) | ![Keycloak's sign-in page, titled CODER, with the heading Sign in to your account, a Username or email field holding admin, an empty Password field and a Sign In button.](images/screenshots/keycloak-sign-in.png) |
+
+As the admin, `admin` publishes the template and sees every user and every workspace. Setup
+made `admin` the owner before the endpoint opened. Coder created `dev1` and `dev2` at their
+first sign-in through Keycloak, as members:
+
+| Templates | Users |
+|---|---|
+| ![Coder's Templates page as admin. One template, claude-code-nitro, used by 1 developer, build time 3s, last updated 6 minutes ago, with a Create Workspace button. The top bar shows Workspaces, Templates, Agents and Admin settings.](images/screenshots/admin-templates.png) | ![Coder's Admin Settings, Users page. Three users: admin (admin@example.com) with the role Owner, and dev1 (dev1@example.com) and dev2 (dev2@example.com) with the role Member. Each has No groups and the status Active.](images/screenshots/admin-users.png) |
+
+![Coder's Workspaces page as admin, showing 2 of 2 workspaces: claude, owned by dev1, and claude, owned by dev2, both from the template claude-code-nitro and both Running, each with buttons for VS Code and the terminal.](images/screenshots/admin-workspaces.png)
+
+A developer sees only their own workspaces. Here is `dev2`'s list, and `dev1`'s workspace
+page with its apps and the template's metadata, the guest kernel among them:
+
+| A developer's workspaces | The workspace page |
+|---|---|
+| ![Coder's Workspaces page as dev2, filtered to owner me: one workspace, claude, owned by dev2, from the template claude-code-nitro, Running. The top bar has no Admin settings.](images/screenshots/developer-workspaces.png) | ![dev1's workspace claude, Running, with Stop and Restart buttons. The agent main shows three apps, VS Code Desktop, code-server and Terminal, and three metadata values: CPU usage 0.008 cores, Guest kernel 6.18.62, and Home disk 0.568/9.75 GiB (6%).](images/screenshots/workspace.png) |
+
+From that page, `dev1` opens code-server and asks Claude Code something in its terminal, and
+does the same in Coder's own web terminal. Both answers come from Amazon Bedrock with the
+workspace's Pod Identity credentials:
+
+![VS Code in the browser (code-server) for dev1. The Explorer shows the home folder with notes.txt from Step 7. In the terminal, claude -p asks what this workspace is running on, and Claude answers that it is running on Linux, kernel 6.18.62, in /home/coder, and that the assistant is Claude Sonnet 5.5 (us.anthropic.claude-sonnet-5-5) running through Claude Code.](images/screenshots/vscode-claude-code.png)
+
+![Coder's web terminal for dev1's workspace. uname -r prints 6.18.62, the uptime is 412 seconds and a boot_id is printed. Then claude -p asks for a one-line shell command that prints the kernel version, and Claude answers with uname -r and a one-sentence explanation.](images/screenshots/terminal-claude-code.png)
 
 ## Why workspaces request 1Gi of memory
 
