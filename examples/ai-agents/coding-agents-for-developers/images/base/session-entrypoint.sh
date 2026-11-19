@@ -235,6 +235,12 @@ fi
 BACK_CMD="${CLI_RESUME_CMD:-$CLI_CMD}"
 RUN_CMD="$RUN_CMD; printf '\\n%s\\n  %s\\n\\n' 'The agent exited. This is a shell in the session folder. To go back to the conversation, run:' '$BACK_CMD'; exec bash -l"
 
+# A second tmux session, "shell", runs a plain bash login shell in the same project folder
+# with the same environment, as the browser's second tab. The developer runs there what the
+# agent builds, without leaving the agent's conversation. `exit` in it starts a fresh shell
+# rather than ending the tab, after a one second pause so a shell that cannot start does not spin. It runs as the same dev user as the agent, so it gains nothing
+# the agent did not already have.
+#
 # Start tmux DETACHED so this exec returns while the CLI keeps running in the pod. The
 # app attaches a browser terminal to the tmux session through session-bridge; closing the
 # browser only detaches, so the CLI runs on.
@@ -266,4 +272,12 @@ setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all \
             "export LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm-256color; $RUN_CMD"; \
           tmux set-option -t agent window-size latest; \
           tmux set-option -t agent aggressive-resize on; \
+        fi; \
+        if tmux has-session -t shell 2>/dev/null; then \
+          echo "session-entrypoint: tmux shell session already running, leaving it" >&2; \
+        else \
+          tmux new-session -d -s shell -x 200 -y 50 \
+            "export LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=xterm-256color; while :; do bash -l; sleep 1; done"; \
+          tmux set-option -t shell window-size latest; \
+          tmux set-option -t shell aggressive-resize on; \
         fi'

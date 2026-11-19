@@ -1,0 +1,226 @@
+# common.sh: sourced by every al2023-ami script. Loads config.env, sets defaults, and provides
+# logging, run-scope, ownership-tag and kubectl helpers. Sourced, never executed; never sets
+# `set -e` (callers choose their own error discipline).
+#
+# This blueprint is simpler than ubuntu-ami: it builds the AL2023 AMI with the upstream
+# amazon-eks-ami packer flow (no kernel build, no private runtime archive, no S3 staging bucket),
+# so this lib keeps only the run-scoping, tagging, launch-spec and kube-context helpers.
+
+SAMPLE_DIR="${SAMPLE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+REPO_ROOT="${REPO_ROOT:-$(cd "$SAMPLE_DIR/../../.." && pwd)}"
+
+log()  { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
+die()  { printf 'FATAL: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# All local state lives under the repository's gitignored tmp/ (AGENTS.md), never in the sample
+# folder. tmp/al2023-ami/run holds logs/ and out/.
+: "${RUN_BASE_DIR:=$REPO_ROOT/tmp/al2023-ami/run}"
+: "${LOG_DIR:=$RUN_BASE_DIR/logs}"
+: "${OUT_DIR:=$RUN_BASE_DIR/out}"
+
+# config.env is local and gitignored; config.env.example documents every variable.
+[ -f "$SAMPLE_DIR/config.env" ] && . "$SAMPLE_DIR/config.env"
+
+: "${AWS_REGION:=us-west-2}"
+[[ "$AWS_REGION" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] || die "AWS_REGION '$AWS_REGION' is not a Region name like us-west-2"
+: "${CLUSTER_NAME:=sandbox-demo}"          # the home page's default; the shell's own value wins
+: "${KUBERNETES_VERSION:=1.36}"
+: "${RESOURCE_PREFIX:=al2023-ami}"
+: "${NAMESPACE:=al2023-ami-sample}"
+: "${JOIN_MODE:=both}"                      # nodegroup | karpenter | both
+case "$JOIN_MODE" in nodegroup|karpenter|both) ;; *) die "JOIN_MODE must be nodegroup, karpenter or both, got '$JOIN_MODE'" ;; esac
+# Architecture: amd64 (x86_64) by default, or arm64 (Graviton). NODE_ARCH must match the AMI's
+# architecture, which follows the instance the Packer build ran on, and the node instance type.
+: "${NODE_ARCH:=amd64}"
+case "$NODE_ARCH" in amd64|arm64) ;; *) die "NODE_ARCH must be amd64 or arm64, got '$NODE_ARCH'" ;; esac
+# Enclave-capable instance types. The defaults are m8i for amd64 and m8g for arm64.
+# The defaults follow NODE_ARCH; an instance type of the other architecture is refused.
+case "$NODE_ARCH" in amd64) : "${NODE_INSTANCE_TYPE:=m8i.xlarge}" ;; arm64) : "${NODE_INSTANCE_TYPE:=m8g.xlarge}" ;; esac
+arch_matches_type() { # arch_matches_type <instance type>: Graviton families have a 'g' after the generation (m8g, c7gn)
+  local graviton=0; [[ "$1" =~ ^[a-z]+[0-9]+g[a-z]*\.[a-z0-9]+$ ]] && graviton=1
+  { [ "$NODE_ARCH" = arm64 ] && [ "$graviton" = 1 ]; } || { [ "$NODE_ARCH" = amd64 ] && [ "$graviton" = 0 ]; }
+}
+arch_matches_type "$NODE_INSTANCE_TYPE" || die "NODE_INSTANCE_TYPE '$NODE_INSTANCE_TYPE' is not a $NODE_ARCH instance type; set NODE_ARCH to match, or pick a matching type"
+: "${NODE_COUNT:=1}"
+: "${TAGS_OWNER_KEY:=ManagedBy}"
+: "${TAGS_OWNER_VALUE:=$RESOURCE_PREFIX}"
+: "${TAGS_RUN_KEY:=RunId}"
+# The node label the baked pod-isolation NodeConfig drop-in registers, which the sandbox
+# RuntimeClasses select on. Read-only here: the AMI sets it, this blueprint only checks it.
+: "${NODE_LABEL:=eks.amazonaws.com/nitro-sandbox=true}"
+# The blueprint's own node taint, tolerated by its pods, so ordinary pods stay off these nodes.
+: "${TAINT_KEY:=sandbox.blueprint/al2023-ami}"
+: "${TAINT_VALUE:=true}"
+
+mkdir -p "$LOG_DIR" "$OUT_DIR"
+
+: "${RUN_STATE_FILE:=$OUT_DIR/run-state.env}"
+valid_run_id() { [[ "${1:-}" =~ ^[a-z0-9]{1,20}$ ]]; }
+new_run_id() {
+  local r
+  r=$(od -An -N2 -tx1 /dev/urandom | tr -d ' \n') && [[ "$r" =~ ^[0-9a-f]{4}$ ]] || die "could not read /dev/urandom for a run id"
+  printf '%s%s\n' "$(date -u +%Y%m%dt%H%M%Sz)" "$r"
+}
+load_run_id() {
+  local v
+  if [ -n "${RUN_ID:-}" ]; then valid_run_id "$RUN_ID" || die "RUN_ID '$RUN_ID' is not 1-20 lowercase letters/digits"; return 0; fi
+  [ -f "$RUN_STATE_FILE" ] || return 1
+  v=$(sed -n 's/^RUN_ID=//p' "$RUN_STATE_FILE" | tail -n 1)
+  valid_run_id "$v" || die "run state $RUN_STATE_FILE has no valid RUN_ID line"
+  RUN_ID=$v
+}
+require_name() {
+  local kind="$1" name="$2" max="$3" rx="$4"
+  [ "${#name}" -le "$max" ] || die "$kind name '$name' is ${#name} chars; limit $max. Shorten RESOURCE_PREFIX ($RESOURCE_PREFIX)."
+  [[ "$name" =~ $rx ]] || die "$kind name '$name' has characters the API refuses (allowed: $rx). Change RESOURCE_PREFIX."
+}
+derive_run_names() {
+  valid_run_id "${RUN_ID:-}" || die "derive_run_names: no valid RUN_ID"
+  [[ "$RESOURCE_PREFIX" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "RESOURCE_PREFIX '$RESOURCE_PREFIX' must be lowercase letters, digits and hyphens"
+  NODE_ROLE_NAME="${RESOURCE_PREFIX}-${RUN_ID}-node"
+  LT_NAME="${RESOURCE_PREFIX}-${RUN_ID}-lt"
+  NODEGROUP_NAME="${RESOURCE_PREFIX}-${RUN_ID}-ng"
+  AMI_NAME="${RESOURCE_PREFIX}-${RUN_ID}"
+  RUN_STATE_DIR="$OUT_DIR/runs/$RUN_ID"
+  EVIDENCE_DIR="${EVIDENCE_DIR:-$RUN_STATE_DIR/evidence}"
+  require_name "IAM role" "$NODE_ROLE_NAME" 64 '^[A-Za-z0-9+=,.@_-]+$'
+  require_name "EC2 launch template" "$LT_NAME" 128 '^[A-Za-z0-9()./_-]{3,}$'
+  require_name "EKS node group" "$NODEGROUP_NAME" 63 '^[A-Za-z0-9][A-Za-z0-9_-]*$'
+  require_name "AMI" "$AMI_NAME" 128 '^[A-Za-z0-9()./_ -]{3,}$'
+}
+require_run_id() {
+  load_run_id || die "no RUN_ID: no environment variable and no run state at $RUN_STATE_FILE. Pass RUN_ID=<id> or run ./setup.sh first."
+  derive_run_names
+}
+# require_identity [KEY ...]: the run's recorded values (first record wins) must equal what this
+# command was given, so a script run directly cannot act on another cluster, Region or prefix than
+# the run was made for. A key the run has not recorded yet fails, unless it is listed in
+# $IDENTITY_MAY_BE_NEW (the command that first records it).
+require_identity() {
+  local k have want acct
+  # The account first: a helper run directly must not act in another account than the run's.
+  have=""
+  [ -f "$RUN_STATE_DIR/run-state.env" ] && have=$(sed -n "s/^ACCOUNT_ID=//p" "$RUN_STATE_DIR/run-state.env" | head -n 1)
+  if [ -n "$have" ]; then
+    acct=$(aws sts get-caller-identity --region "$AWS_REGION" --query Account --output text) \
+      || die "could not read the current AWS account (sts get-caller-identity failed); refusing to continue"
+    [ "$acct" = "$have" ] || die "the credentials are for another AWS account than run $RUN_ID was created in; refusing to continue"
+  else
+    case " ${IDENTITY_MAY_BE_NEW:-} " in *" ACCOUNT_ID "*) ;; *) die "run $RUN_ID has no recorded ACCOUNT_ID; run ./setup.sh (or ib-prereqs.sh up) for this run first" ;; esac
+  fi
+  for k in "$@"; do
+    have=""
+    [ -f "$RUN_STATE_DIR/run-state.env" ] && have=$(sed -n "s/^$k=//p" "$RUN_STATE_DIR/run-state.env" | head -n 1)
+    want=${!k:-}
+    if [ -z "$have" ]; then
+      case " ${IDENTITY_MAY_BE_NEW:-} " in *" $k "*) continue ;; esac
+      die "run $RUN_ID has no recorded $k; run ./setup.sh (or ib-prereqs.sh up) for this run first"
+    fi
+    [ "$have" = "$want" ] || die "$k is '$want' but run $RUN_ID recorded '$have'; use the recorded value, or start a new run"
+  done
+}
+
+# bind_k8s_version: KUBERNETES_VERSION is part of the run's identity, first record wins. The AMI
+# (Packer) and the parent image (Image Builder) are built for one version, and nothing on the AMI
+# says which, so a later command given another version must stop. A run that already holds an AMI
+# or parent image but never recorded the version fails closed, and needs a new run.
+bind_k8s_version() {
+  local f="$RUN_STATE_DIR/run-state.env" have=""
+  require_supported_k8s
+  [ -f "$f" ] && have=$(sed -n 's/^KUBERNETES_VERSION=//p' "$f" | head -n 1)
+  if [ -z "$have" ]; then
+    if [ -f "$f" ] && grep -qE '^(AMI_ID|IB_PARENT_AMI)=' "$f"; then
+      die "run $RUN_ID already has an image but never recorded its Kubernetes version; start a new run"
+    fi
+    mkdir -p "$RUN_STATE_DIR"; printf 'KUBERNETES_VERSION=%s\n' "$KUBERNETES_VERSION" >> "$f"
+  elif [ "$have" != "$KUBERNETES_VERSION" ]; then
+    die "KUBERNETES_VERSION is '$KUBERNETES_VERSION' but run $RUN_ID recorded '$have'; use the recorded value, or start a new run"
+  fi
+}
+
+# The pod isolation runtime is published for these Kubernetes versions only.
+require_supported_k8s() {
+  case "$KUBERNETES_VERSION" in 1.36|1.37) ;; *) die "KUBERNETES_VERSION '$KUBERNETES_VERSION': the pod isolation runtime is published for 1.36 and 1.37 only" ;; esac
+}
+
+# resolve_run_ami: set and export AMI_ID to the AMI this run recorded, never one from the
+# environment, and only after the AMI itself checks out: it is in this account and Region, it
+# carries this run's tags, and its architecture is NODE_ARCH's. An AMI_ID in the environment must
+# equal the recorded one, so a stale variable cannot send a node group or Karpenter to another AMI.
+resolve_run_ami() {
+  local rec out
+  rec=$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" 2>/dev/null | tail -n 1)
+  [ -n "$rec" ] || die "run $RUN_ID recorded no AMI; run ./setup.sh (full) or --ami-only first"
+  [[ "$rec" =~ ^ami-[0-9a-f]+$ ]] || die "run $RUN_ID recorded '$rec' as its AMI, which is not an AMI id"
+  if [ -n "${AMI_ID:-}" ] && [ "$AMI_ID" != "$rec" ]; then
+    die "AMI_ID is '$AMI_ID' but run $RUN_ID built '$rec'; unset AMI_ID, or use the run that built it"
+  fi
+  out=$(aws ec2 describe-images --region "$AWS_REGION" --owners self --image-ids "$rec" \
+        --query 'Images[0].{Tags:Tags,Arch:Architecture}' --output json) \
+    || die "could not read AMI $rec in $AWS_REGION (not found, or the lookup failed); refusing to use it"
+  printf '%s' "$out" | python3 -c '
+import json, sys
+d = json.load(sys.stdin) or {}
+t = {x.get("Key"): x.get("Value") for x in d.get("Tags") or []}
+want = {"amd64": "x86_64", "arm64": "arm64"}[sys.argv[5]]
+if t.get(sys.argv[1]) != sys.argv[2] or t.get(sys.argv[3]) != sys.argv[4]:
+    sys.exit("AMI is not tagged for this run")
+if d.get("Arch") != want:
+    sys.exit("AMI architecture is %s, but NODE_ARCH=%s needs %s" % (d.get("Arch"), sys.argv[5], want))
+' "$TAGS_OWNER_KEY" "$TAGS_OWNER_VALUE" "$TAGS_RUN_KEY" "$RUN_ID" "$NODE_ARCH" \
+    || die "AMI $rec cannot be used for run $RUN_ID (see the line above)"
+  AMI_ID=$rec; export AMI_ID
+}
+
+# Tag helpers (ManagedBy + RunId on everything the blueprint creates).
+run_tags_cli() { printf '{Key=%s,Value=%s},{Key=%s,Value=%s}' "$TAGS_OWNER_KEY" "$TAGS_OWNER_VALUE" "$TAGS_RUN_KEY" "$RUN_ID"; }
+tags_match() {
+  python3 -c '
+import json, sys
+t = json.load(sys.stdin)
+if isinstance(t, list): t = {x.get("Key"): x.get("Value") for x in t}
+sys.exit(0 if isinstance(t, dict) and t.get(sys.argv[1]) == sys.argv[2] and t.get(sys.argv[3]) == sys.argv[4] else 1)
+' "$TAGS_OWNER_KEY" "$TAGS_OWNER_VALUE" "$TAGS_RUN_KEY" "$RUN_ID"
+}
+json_get() {
+  python3 -c '
+import json, sys
+d = json.load(sys.stdin); r = eval(sys.argv[1], {"d": d})
+if r is None: pass
+elif isinstance(r, (list, tuple)):
+    for x in r: print("\t".join(map(str, x)) if isinstance(x, (list, tuple)) else x)
+else: print(r)
+' "$1"
+}
+# launch_spec render-lt|check-lt: launch_spec.py with this run's tags (EnclaveOptions on,
+# IMDSv2 hop-limit-1, ManagedBy+RunId on instance and volume).
+launch_spec() {
+  local cmd="$1"; shift
+  python3 "$SAMPLE_DIR/scripts/lib/launch_spec.py" "$cmd" "$@" \
+    --owner-key "$TAGS_OWNER_KEY" --owner-value "$TAGS_OWNER_VALUE" --run-key "$TAGS_RUN_KEY" --run-id "$RUN_ID"
+}
+
+# --- The cluster kubectl talks to ----------------------------------------------------------------
+kc() {
+  [ -n "${KUBE_CONTEXT:-}" ] || { printf 'FATAL: KUBE_CONTEXT is not set; set it to the kubectl context of cluster %s\n' "$CLUSTER_NAME" >&2; return 2; }
+  kubectl --context "$KUBE_CONTEXT" "$@"
+}
+require_kube_context() {
+  local err server endpoint s e msg
+  [ -n "${KUBE_CONTEXT:-}" ] || die "KUBE_CONTEXT is not set. Set it to the kubectl context of cluster $CLUSTER_NAME; this blueprint never falls back to the current context and never runs 'kubectl config use-context'."
+  err=$(mktemp)
+  if ! server=$(kubectl --context "$KUBE_CONTEXT" config view --minify -o 'jsonpath={.clusters[0].cluster.server}' 2>"$err"); then
+    msg=$(head -n 2 "$err"); rm -f "$err"; die "could not read kube context '$KUBE_CONTEXT': $msg"
+  fi
+  [ -n "$server" ] || { rm -f "$err"; die "kube context '$KUBE_CONTEXT' names no cluster server"; }
+  if ! endpoint=$(aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --output json 2>"$err" | json_get 'd["cluster"]["endpoint"]') || [ -z "$endpoint" ]; then
+    msg=$(head -n 2 "$err"); rm -f "$err"; die "could not read the API endpoint of cluster $CLUSTER_NAME: $msg"
+  fi
+  rm -f "$err"
+  s=$(printf '%s' "$server" | tr 'A-Z' 'a-z' | sed -e 's#/*$##' -e 's#^\(https://[^/]*\):443$#\1#')
+  e=$(printf '%s' "$endpoint" | tr 'A-Z' 'a-z' | sed -e 's#/*$##' -e 's#^\(https://[^/]*\):443$#\1#')
+  [ "$s" = "$e" ] || die "kube context '$KUBE_CONTEXT' points at $server, but cluster $CLUSTER_NAME's API endpoint is $endpoint; refusing to act on a different cluster than the AWS calls use"
+  log "kube context $KUBE_CONTEXT is cluster $CLUSTER_NAME ($endpoint)"
+}
