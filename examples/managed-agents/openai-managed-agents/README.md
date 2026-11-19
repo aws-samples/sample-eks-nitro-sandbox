@@ -271,7 +271,7 @@ When it creates an agent with `AGENT_MODEL` unset or blank, as `.env.example` sh
 `setup_agent.py` prints a `[note]` that it is falling back to a placeholder id and continues;
 set a real id to avoid that. Keeping an existing agent uses no model, so it prints no note. Put `AGENT_ID` in `.env` and load
 the file again with `set -a; . ./.env; set +a`. That command parses `.env` as shell code, so an
-expansion or a command inside a value can run rather than be assigned — which is why
+expansion or a command inside a value can run rather than be assigned, which is why
 `setup_agent.py` checks each value it is about to print back to you. An agent id, whether you
 supplied it or the API returned it, must be one the script is willing to emit; `AGENT_MODEL`,
 which is echoed on the line reporting a new agent, must be a short token with no whitespace.
