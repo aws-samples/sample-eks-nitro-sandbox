@@ -234,7 +234,8 @@ kubectl apply -f ../../getting-started/coding-agent/enable-network-policy.yaml
 **Step 2: Create the agent.** On your machine, with your application key in `.env`:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install openai==3.31.0
+python3 -m venv .venv && .venv/bin/pip install openai==3.31.0 \
+  httpx2==2.16.0 httpcore2==2.16.0 h11==0.16.0
 cp .env.example .env     # fill in OPENAI_API_KEY and OPENAI_EXECUTOR_API_KEY
 set -a; . ./.env; set +a
 .venv/bin/python scripts/setup_agent.py
@@ -277,8 +278,10 @@ supplied it or the API returned it, must be one the script is willing to emit; `
 which is echoed on the line reporting a new agent, must be a short token with no whitespace.
 Each check refuses without repeating the value. Quoting is what makes this worth doing: a value
 in `.env` can sit there inertly and still be unsafe once the script prints it back unquoted.
-The script also shows no detail from an unexpected failure inside a dependency, whose message
-could carry text from `.env` or from the endpoint.
+If something inside a dependency fails unexpectedly while the script is running, it reports
+the exception's class name and nothing else, because the message could carry text from `.env`
+or from whatever `OPENAI_BASE_URL` points at. A failure while the script's own imports run is
+not covered by that, and shows the ordinary Python traceback.
 The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per
 session by `submit.py`, not here, because a self-hosted environment is the live connection to

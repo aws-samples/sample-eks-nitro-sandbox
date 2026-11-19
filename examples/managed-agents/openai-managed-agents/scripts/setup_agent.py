@@ -24,7 +24,7 @@ id, or a different agent's id, stops too, saying which.
 
 Creating an agent is reported the same way: a create that raises an SDK APIError
 stops, naming the error by its exception class and, when it has one, its HTTP
-status, and nothing the server sent.
+status, and no response body, request id or free-form exception text.
 
 Every value this step interpolates into what it prints is checked before it is
 printed, including the exception class name in the message below. The line it prints is pasted into .env and loaded with
@@ -42,17 +42,26 @@ line to this step's own output.
   read, before the lookup, since the 404 and could-not-confirm messages repeat it
   too.
 - AGENT_MODEL is echoed on one line, the one reporting a new agent, and must be a
-  short token with no whitespace (see DISPLAYABLE_MODEL). A refusal that mentioned
-  the model would be a second place it was echoed, so none of them does.
+  short token with no whitespace (see DISPLAYABLE_MODEL), which is this step's own
+  display policy and not a claim about what the API accepts. A refusal that
+  mentioned the model would be a second place it was echoed, so none of them does.
 
 A refusal never repeats the offending value, since that would put the same string
 on your terminal.
 
 One thing that reaches your terminal is not an interpolated value and is handled
 its own way: a failure inside a dependency, whose traceback could carry text from
-.env or from whatever OPENAI_BASE_URL points at, so main() is wrapped below and
-shows only an exception class name. The SDK's own logging is a separate matter,
-held down by scripts/_client.py; see its comment and tests/test_client.py.
+.env or from whatever OPENAI_BASE_URL points at, so the call to main() is wrapped
+below and shows only an exception class name.
+
+That covers exceptions raised while main() runs, and not the imports above it,
+which happen before the wrapper exists -- a dependency that cannot be imported at
+all still prints the ordinary traceback. Nothing in .env or from the endpoint is
+read at that point, so what such a traceback carries is the dependency's own error
+text, but it is outside what this handles and the page says so too.
+
+The SDK's own logging is a separate matter, held down by scripts/_client.py; see
+its comment and tests/test_client.py.
 
 Choosing the model
 ------------------
@@ -91,16 +100,34 @@ INSTRUCTIONS = (
 )
 
 
+# One helper for both places an exception reaches the output, because they had
+# drifted: the handler around main() constrained the class name and this one did
+# not. A class name is normally from installed code, but a dynamically built
+# subclass can be named anything, including with a newline in it, so it is held to
+# an identifier either way.
+_SAFE_EXCEPTION_KIND = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+
+
+def exception_kind(exc: BaseException) -> str:
+    """The exception's class name, or "error" if it is not a plain identifier."""
+    name = type(exc).__name__
+    return name if _SAFE_EXCEPTION_KIND.match(name) else "error"
+
+
 def _describe(exc: APIError) -> str:
     """Name an API error by its SDK exception class and, when it has one, its HTTP status.
 
-    No free-form text the server sent is printed: str(exc) carries the response
-    body and the request id comes from a response header, a proxy behind
-    OPENAI_BASE_URL controls both, and either could carry a key.
+    Neither part is free-form text the server sent. str(exc) carries the response
+    body and the request id comes from a response header; a proxy behind
+    OPENAI_BASE_URL controls both, and either could carry a key, so neither is
+    printed. The two values that are printed are constrained rather than trusted:
+    the class name through exception_kind above, and the status only when it is
+    genuinely an int. A custom APIError subclass can carry a str status and a class
+    name with a newline in it, which would otherwise forge a line of output.
     """
     status = getattr(exc, "status_code", None)
-    name = type(exc).__name__
-    return name if status is None else f"{name}, HTTP {status}"
+    name = exception_kind(exc)
+    return name if type(status) is not int else f"{name}, HTTP {status}"
 
 
 NOT_FOUND_MESSAGE = """\
@@ -132,8 +159,11 @@ SAFE_AGENT_ID = re.compile(r"\A[A-Za-z0-9._-]{1,128}\Z")
 
 # '.' and '..' match that grammar and are shell-safe, but they are URI dot-segments:
 # the pinned SDK raises ValueError while building the request path, before any
-# request is sent. ValueError is not an APIError, so it would escape the handlers
-# below and reach the reader as a traceback.
+# request is sent. ValueError is not an APIError, so it bypasses the handling
+# below that names an API error; the handler around main() catches it and gives the
+# generic refusal, which tells a reader nothing about the id they supplied. (Before
+# that handler existed it reached them as a traceback, which is how round 10 found
+# it.)
 _DOT_SEGMENTS = frozenset({".", ".."})
 
 
@@ -299,11 +329,4 @@ if __name__ == "__main__":
         # which comes from installed code rather than from either of those.
         # SystemExit and KeyboardInterrupt are not Exception, so a refusal above
         # and a reader's Ctrl-C both still behave as they did.
-        # The class name comes from installed code, not from .env or the endpoint,
-        # and no SDK route was found by which either controls it. Constrained to an
-        # identifier anyway, rather than trusted: a dynamically built class can be
-        # named anything, and this is the one value left in a refusal message.
-        kind = type(exc).__name__
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", kind):
-            kind = "error"
-        sys.exit(UNEXPECTED_FAILURE_MESSAGE.format(kind=kind))
+        sys.exit(UNEXPECTED_FAILURE_MESSAGE.format(kind=exception_kind(exc)))

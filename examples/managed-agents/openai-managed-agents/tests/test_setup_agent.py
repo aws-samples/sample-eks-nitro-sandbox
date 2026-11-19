@@ -15,13 +15,22 @@ temporary folder and does step 2 there, literally:
   sets and any OPENAI_*, AGENT_*, PYTHON* or PYTEST_* variable (and COLUMNS and
   LINES, which a shell does not export).
 
-Every case runs twice: with stdout and stderr piped, so each stream can be
-compared on its own, and on one pseudo-terminal of 24 rows by 80 columns, in its
-default configuration, as the controlling terminal of a new session with the
-program in the foreground, carrying stdin, stdout and stderr, as when a reader
-runs it in a terminal.
+The cases that do step 2 that way -- the ones marked @MODES -- each run twice:
+with stdout and stderr piped, so each stream can be compared on its own, and on
+one pseudo-terminal of 24 rows by 80 columns, in its default configuration, as the
+controlling terminal of a new session with the program in the foreground, carrying
+stdin, stdout and stderr, as when a reader runs it in a terminal. Those are the
+cases the exact comparison below describes.
 
-It then compares, exactly, against text this file owns:
+Not every case in this file is one of those, and the difference is worth stating
+rather than leaving a reader to find it. The premise cases assert a fact the
+guards rest on -- what a shell does with a .env, what the SDK does with a
+dot-segment path -- and some of them run no script at all. The guard-removal cases
+run a mutated copy, piped only, and assert on selected text rather than the whole
+of it. The channel cases construct exceptions directly. Each says in its own
+docstring what it establishes.
+
+For the @MODES cases, it then compares, exactly, against text this file owns:
 
 - everything the program shows (piped: the entire stdout and the entire
   stderr; terminal: every byte the terminal received) and its exit status, so
@@ -46,10 +55,10 @@ which is why the id's own grammar is now checked in the script rather than
 assumed from the shapes listed here.
 
 What this does not cover beyond that: the real scripts/_client.py, which is
-replaced (so almost nothing here tests the real one; the exception is the
-subprocess case below for the SDK logging route, which imports it); an interactive shell's own behaviour, since the commands run
-under `sh -c`; and anything the program writes somewhere other than its stdout
-and stderr, such as a file.
+replaced in every case here, so nothing in this file tests it -- tests/test_client.py
+does; an interactive shell's own behaviour, since the commands run under `sh -c`;
+and anything the program writes somewhere other than its stdout and stderr, such
+as a file.
 
 Both ways, per AGENTS.md, for every combination of AGENT_ID and AGENT_MODEL
 being unset, blank and set: an agent the lookup returns is kept and nothing is
@@ -96,8 +105,9 @@ a rejection is not asserting that the value was dangerous. "." and ".." are
 refused for a different reason from the rest, which is pinned by its own test
 against the real SDK rather than the fake: they are shell-safe, but the SDK
 raises ValueError on them while building the request path, and ValueError is not
-an APIError, so they would surface as a traceback. And an over-length id is
-refused while being perfectly shell-safe.
+an APIError, so they bypass the API-error handling and fall to the generic
+refusal from the handler around main(), which says nothing about the id. And an
+over-length id is refused while being perfectly shell-safe.
 
 The same reasoning covers AGENT_MODEL, by a route round 10 found rather than one
 anticipated here. The model used to be interpolated into every refusal message as
@@ -664,17 +674,41 @@ def test_the_expected_channels_cover_every_error_scenario():
     assert sorted(EXPECTED_CHANNELS) == outcomes.ERROR_SCENARIOS
 
 
+def _observe_channels(scenario: str) -> frozenset[str]:
+    """Look at the exception this file's own literals, and nothing else.
+
+    Round 13 replaced _fake_outcomes.observed_channels() with a call to
+    declared_channels() and stopped planting most create errors, and all 351 tests
+    passed: the strong side of the comparison was delegated to the same module that
+    owns the fixture and the declaration, so the whole thing could become
+    self-referential without a single case noticing. The observation is done here
+    now, on PLANTED_BODY_VALUE and PLANTED_HEADER_VALUE, which this file owns.
+    """
+    error = outcomes.create(scenario)
+    assert isinstance(error, BaseException), f"{scenario} did not produce an exception"
+    channels = set()
+    if PLANTED_BODY_VALUE in str(error):
+        channels.add("body")
+    if getattr(error, "request_id", None) == PLANTED_HEADER_VALUE:
+        channels.add("request_id")
+    response = getattr(error, "response", None)
+    if response is not None and PLANTED_BODY_VALUE in getattr(response, "text", ""):
+        channels.add("response_text")
+    return frozenset(channels)
+
+
 @pytest.mark.parametrize("scenario", sorted(EXPECTED_CHANNELS))
 def test_each_error_class_exposes_exactly_what_this_file_expects(scenario):
-    assert outcomes.observed_channels(scenario) == EXPECTED_CHANNELS[scenario]
+    assert _observe_channels(scenario) == EXPECTED_CHANNELS[scenario]
 
 
 @pytest.mark.parametrize("scenario", outcomes.ERROR_SCENARIOS)
 def test_the_fakes_own_table_agrees_with_what_it_produces(scenario):
-    # Weaker than the test above and kept for a different purpose: this one finds
-    # a table edited without the fixture, which is the ordinary mistake, and says
-    # so against the module rather than against this file's expectations.
-    assert outcomes.observed_channels(scenario) == outcomes.declared_channels(scenario)
+    # Kept for a different purpose from the test above, and deliberately observed
+    # from here as well: this one finds a table edited without the fixture, which
+    # is the ordinary mistake. It compares the module's declaration against an
+    # observation this file makes, so neither side of it is the module's own.
+    assert _observe_channels(scenario) == outcomes.declared_channels(scenario)
 
 
 def test_every_create_scenario_is_tested():
@@ -781,7 +815,8 @@ def test_an_env_agent_id_that_is_not_a_plain_token_is_refused(tmp_path, quoted_i
 
     Not every value here would run, and the case does not claim they would: "."
     and ".." are shell-safe, and are refused because the SDK raises ValueError on
-    a dot-segment path, which is not an APIError and would surface as a traceback.
+    a dot-segment path, which is not an APIError, so it falls to the generic
+    refusal instead of being named.
     What they share is that this step will not emit them.
     """
     status, shown, calls = run_step_2(tmp_path, "kept", quoted_in_env, SET_MODEL, tty=tty)
@@ -1031,10 +1066,21 @@ def test_without_the_id_grammar_check_the_hostile_id_is_printed(tmp_path):
     in the script happening to. Without that, the rejecting cases above could be
     passing for any reason at all.
     """
+    # Baseline first, against the unmodified script. Without this the case passes
+    # even if the guard it names was never doing anything -- round 13 made each
+    # condition a no-op while keeping its refusal constant, and all three of these
+    # still passed, because they only looked at the mutant's behaviour.
+    baseline_status, baseline_shown, _ = run_step_2(
+        tmp_path / "baseline", "kept", UNSET, SET_MODEL, tty=False,
+        create_scenario="create-id-command-substitution",
+    )
+    assert baseline_status == 1
+    assert "AGENT_ID=" not in baseline_shown[0]
+
     without = _script_without_the_guard("UNSAFE_CREATED_ID_MESSAGE")
 
     status, shown, _ = run_step_2(
-        tmp_path, "kept", UNSET, SET_MODEL, tty=False,
+        tmp_path / "mutant", "kept", UNSET, SET_MODEL, tty=False,
         source=without, create_scenario="create-id-command-substitution",
     )
     stdout, _ = shown
@@ -1050,14 +1096,22 @@ def test_without_the_env_id_check_the_unquoted_line_is_printed_back(tmp_path):
     line built from a value that was quoted, and therefore inert, in their .env.
     Pasting that line is what makes it live.
     """
+    # Baseline first, against the unmodified script; see the note in the case above.
+    baseline_status, baseline_shown, _ = run_step_2(
+        tmp_path / "baseline", "echoes-what-was-asked", "'agent_ok;touch pwned'",
+        SET_MODEL, tty=False,
+    )
+    assert baseline_status == 1
+    assert "AGENT_ID=" not in baseline_shown[0]
+
     without = _script_without_the_guard("UNSAFE_ENV_AGENT_ID_MESSAGE")
 
     # "echoes-what-was-asked", not "kept": with a fixed agent_kept coming back the
     # run would stop at "a different agent id" and never reach the print, so the
     # case would pass without showing anything about the check it is named for.
     status, shown, _ = run_step_2(
-        tmp_path, "echoes-what-was-asked", "'agent_ok;touch pwned'", SET_MODEL,
-        tty=False, source=without,
+        tmp_path / "mutant", "echoes-what-was-asked", "'agent_ok;touch pwned'",
+        SET_MODEL, tty=False, source=without,
     )
     stdout, _ = shown
 
@@ -1074,10 +1128,17 @@ def test_without_the_model_check_the_output_can_be_forged(tmp_path):
     of its own choosing on its own line in this step's output, right where the
     page tells the reader to look for the line to paste.
     """
+    # Baseline first, against the unmodified script; see the note two cases above.
+    baseline_status, baseline_shown, _ = run_step_2(
+        tmp_path / "baseline", "kept", UNSET, FORGING_MODEL, tty=False
+    )
+    assert baseline_status == 1
+    assert "AGENT_ID=forged" not in baseline_shown[0] + baseline_shown[1]
+
     without = _script_without_the_guard("UNSAFE_MODEL_MESSAGE")
 
     status, shown, _ = run_step_2(
-        tmp_path, "kept", UNSET, FORGING_MODEL, tty=False, source=without
+        tmp_path / "mutant", "kept", UNSET, FORGING_MODEL, tty=False, source=without
     )
     stdout, _ = shown
 

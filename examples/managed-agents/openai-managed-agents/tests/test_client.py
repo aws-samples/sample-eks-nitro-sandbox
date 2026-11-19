@@ -236,26 +236,19 @@ EXPECTED_PROTECTED_LOGGERS = (
     "httpcore2.socks",
 )
 
-# The versions the nine names were audited against. The sample pins only openai, so
-# the transport and parser float; if one of them moves, the audit has to be redone
-# rather than assumed, and this says so by failing.
+# The versions the nine names were audited against, compared exactly.
 #
-# Compared on major.minor, not exactly. The first version of this asserted equality
-# on the full version and failed in a maintainer's fresh venv, which resolved
-# httpx2 and httpcore2 2.16.2 rather than the 2.16.0 audited here -- a contributor
-# with no defect in their tree got a red suite. Logger names are API surface, so a
-# minor or major move is the one worth re-auditing for; the exact patch versions
-# stay recorded below so a reader knows what was actually looked at.
+# This went round twice and the second answer is the right one. It first asserted
+# exact equality, and a maintainer's fresh venv resolved httpx2 and httpcore2
+# 2.16.2 against the 2.16.0 here, so he got a red suite with nothing wrong in his
+# tree. The first fix was to compare major.minor instead -- which the next review
+# round rejected, correctly: a patch release can add or rename an internal logger,
+# so accepting one unaudited defeats the point of the case. The real fault was that
+# the sample pinned openai and let the transport float. pyproject.toml and the
+# README install command now pin all four, so a fresh install resolves exactly what
+# the audit covers and the comparison can stay exact.
 AUDITED_STACK = {"openai": "3.31.0", "httpx2": "2.16.0", "httpcore2": "2.16.0", "h11": "0.16.0"}
 
-
-def _major_minor(version: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in version.split(".")[:2])
-
-# {configure} is logging.basicConfig(level=...) placed either before `import _client`
-# or after it (but before make_client()). The "after" ordering is the one that catches an
-# import-time silence call: a framework that configures a stricter level only after the SDK
-# and the shared client are imported. See test_a_stricter_level_already_in_force_is_kept.
 LEVEL_PROBE = '''\
 import importlib.metadata as metadata
 import json
@@ -316,18 +309,18 @@ def test_the_module_protects_exactly_the_audited_logger_names(tmp_path):
 def test_the_installed_stack_is_the_one_the_audit_covers(tmp_path):
     """If the transport or the parser moves, the logger audit is out of date.
 
-    The sample pins openai and not its transport, so this is the thing that says
-    "redo the audit" rather than letting a new version's logging go unexamined. On
-    major.minor, so a patch bump a fresh install happens to resolve does not fail a
-    contributor's suite; see the note on AUDITED_STACK.
+    Exactly, not on major.minor: a patch release can add or rename an internal
+    logger, so accepting an unaudited one would defeat the case. All four are
+    pinned in pyproject.toml and in the README's install command, so a fresh
+    install resolves these and this does not fail a contributor who did nothing.
     """
     installed = _probe(tmp_path, "logging.DEBUG")["versions"]
-    assert set(installed) == set(AUDITED_STACK), installed
-    for package, audited in AUDITED_STACK.items():
-        assert _major_minor(installed[package]) == _major_minor(audited), (
-            f"{package} is {installed[package]}, audited against {audited}: "
-            "re-audit the logger names in scripts/_client.py before moving this"
-        )
+    assert installed == AUDITED_STACK, (
+        f"installed {installed}, audited {AUDITED_STACK}. Re-read which loggers the "
+        "installed versions emit response data on, then update PROTECTED_LOGGERS in "
+        "scripts/_client.py, AUDITED_STACK here, and the pins in pyproject.toml and "
+        "the README install command together."
+    )
 
 
 def test_each_protected_logger_is_set_to_warning_from_a_lower_level(tmp_path):

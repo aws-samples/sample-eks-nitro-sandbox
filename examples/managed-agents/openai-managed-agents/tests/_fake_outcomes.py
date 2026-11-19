@@ -84,8 +84,9 @@ def _status_error(cls, status: int):
 # pinned SDK is written. Not "does it have a response": round 9's fix asserted the
 # premise for every class at once, and the SDK answered that two of them expose
 # less than that would imply.
-#   BODY       the response body reaches str(exc), which a traceback prints
-#   REQUEST_ID the x-request-id header reaches exc.request_id
+#   BODY          the response body reaches str(exc), which a traceback prints
+#   REQUEST_ID    the x-request-id header reaches exc.request_id
+#   RESPONSE_TEXT the response body reaches exc.response.text
 # A class exposing neither has nothing to leak through either channel, which is a
 # fact about the SDK and is pinned by its own test rather than left implied.
 BODY = "body"
@@ -197,7 +198,9 @@ _CREATES = {
     "create-id-too-long": lambda: SimpleNamespace(id="a" * 129),
     # Shell-safe, and inside the grammar, but URI dot-segments: the pinned SDK
     # raises ValueError while building the request path, which is not an APIError
-    # and would escape the handlers as a traceback. Round 10 found these.
+    # and so bypasses the API-error handling, leaving the generic refusal from the
+    # handler around main(). Round 10 found these when that handler did not exist
+    # yet and they did reach the reader as a traceback.
     "create-id-dot": lambda: SimpleNamespace(id="."),
     "create-id-dot-dot": lambda: SimpleNamespace(id=".."),
 }
