@@ -92,6 +92,10 @@ spec:
       labels:
         app.kubernetes.io/name: postgres
         app.kubernetes.io/part-of: coder
+      annotations:
+        # EKS Auto Mode does not evict this pod to consolidate nodes: Coder and Keycloak
+        # both stop without their database.
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       # PostgreSQL calls no Kubernetes API.
       automountServiceAccountToken: false

@@ -25,6 +25,11 @@ coder:
   # One replica for the blueprint.
   replicaCount: 1
 
+  # EKS Auto Mode evicts pods to consolidate underused nodes. Evicting coderd drops every
+  # open terminal, code-server session and running build, so it is kept where it is.
+  podAnnotations:
+    karpenter.sh/do-not-disrupt: "true"
+
   service:
     type: ClusterIP
 
@@ -41,8 +46,6 @@ coder:
     requests:
       cpu: 500m
       memory: 2Gi
-    limits:
-      memory: 4Gi
 
   env:
     # The one URL the browser and the workspace agents both use. Setting it

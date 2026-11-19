@@ -1456,8 +1456,17 @@ turned off, to its maximum:
           "sandbox.amazonaws.com/rootfs-disk-iops"           = "disabled"
           "sandbox.amazonaws.com/log-bandwidth"              = "disabled"
           "sandbox.amazonaws.com/conntrack-limit"            = "65536"
+          # Not a sandbox limit: EKS Auto Mode does not evict a running workspace to
+          # consolidate nodes, which would restart the developer's session.
+          "karpenter.sh/do-not-disrupt" = "true"
         }
 ```
+
+The last annotation is not a sandbox limit. EKS Auto Mode consolidates underused nodes by
+evicting their pods, and an evicted workspace restarts, which drops the developer's terminal
+and code-server session. `karpenter.sh/do-not-disrupt` keeps Auto Mode from doing that to a
+running workspace; `coderd`, Keycloak and PostgreSQL carry it too, because evicting any of them
+interrupts everyone. A stopped workspace has no pod, so it holds no node.
 
 The throttles are what keep one sandbox from using up its node's network, scratch disk or log
 pipeline while other sandboxes share the node. With them off, workspaces on the same node share
@@ -1512,7 +1521,7 @@ The blueprint runs one of everything. To grow it:
 - **Workspace builds.** Each provisioner runs one build at a time. The built-in provisioners
   in `coderd` default to three (`CODER_PROVISIONER_DAEMONS`, in the
   [server reference](https://coder.com/docs/reference/cli/server#--provisioner-daemons)); the
-  blueprint sets ten, and gives `coderd` 2Gi of memory with a 4Gi limit, so a room of
+  blueprint sets ten, and gives `coderd` a 2Gi memory request, so a room of
   developers who create workspaces at once wait less. Raise it if builds still queue. Coder
   recommends
   [external provisioners](https://coder.com/docs/install/operate/provisioners), a Premium

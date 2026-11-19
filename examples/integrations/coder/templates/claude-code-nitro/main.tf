@@ -307,6 +307,9 @@ resource "kubernetes_deployment_v1" "workspace" {
           "sandbox.amazonaws.com/rootfs-disk-iops"           = "disabled"
           "sandbox.amazonaws.com/log-bandwidth"              = "disabled"
           "sandbox.amazonaws.com/conntrack-limit"            = "65536"
+          # Not a sandbox limit: EKS Auto Mode does not evict a running workspace to
+          # consolidate nodes, which would restart the developer's session.
+          "karpenter.sh/do-not-disrupt" = "true"
         }
       }
 

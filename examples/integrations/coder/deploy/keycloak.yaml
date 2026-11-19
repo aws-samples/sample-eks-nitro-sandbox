@@ -48,6 +48,9 @@ spec:
       labels:
         app.kubernetes.io/name: keycloak
         app.kubernetes.io/part-of: coder
+      annotations:
+        # EKS Auto Mode does not evict this pod to consolidate nodes: sign-in would stop.
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       # Keycloak calls no Kubernetes API.
       automountServiceAccountToken: false
