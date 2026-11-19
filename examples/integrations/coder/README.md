@@ -88,9 +88,18 @@ Ingress. The workspaces connect to what the template has them use: Amazon Bedroc
 `coderd` Service inside the cluster, and the sites the Coder registry modules download
 code-server and Claude Code from.
 
-*Figure 1: Coder on Amazon EKS behind Amazon CloudFront. A developer reaches Coder and Keycloak only through CloudFront and an internal load balancer, and every workspace Coder creates runs in its own Nitro sandbox.*
+Figure 1 shows the blueprint at a glance:
 
-![An architecture figure read from left to right. A browser on the internet sends HTTPS requests to Amazon CloudFront, which answers on a cloudfront.net address inside the AWS Cloud frame. CloudFront connects over HTTP on port 80 to a VPC origin, and the VPC origin connects to an internal Application Load Balancer that admits only CloudFront. The VPC origin and the load balancer sit in a dashed frame labelled VPC with private subnets, which also holds the Amazon EKS cluster. The load balancer sends the path / to Coder and the path /auth to Keycloak. Coder, Keycloak and PostgreSQL are ordinary pods in the namespace coder. PostgreSQL has no connection from the load balancer. Coder has an arrow labelled creates workspaces to the namespace coder-workspaces, which holds two workspaces. Each workspace is a Nitro sandbox pod with runtimeClassName isolated-sandbox, runs Claude Code and code-server, and has its own Amazon EBS home volume attached below it. Each workspace pod has an arrow labelled EKS Pod Identity to Amazon Bedrock, which sits outside the VPC on the right of the AWS Cloud frame.](images/coder-overview.png)
+*Figure 1: Coder on Amazon EKS at a glance. Admins and developers reach Coder through Amazon CloudFront, and Coder gives each developer a workspace in its own Nitro sandbox that calls Claude on Amazon Bedrock.*
+
+![A figure read from left to right. A box labelled Browser holds two people icons, Admins and Developers. An arrow labelled HTTPS leads to Amazon CloudFront, which is described as one HTTPS address and sits inside the AWS Cloud frame. An arrow labelled private path leads from CloudFront to a box labelled Coder platform, which holds Coder, described as creating workspaces, and Keycloak, described as sign-in. The Coder platform box sits inside an Amazon EKS cluster frame. From the Coder platform box, an arrow labelled one per developer splits into two arrows. Each arrow leads to its own Nitro sandbox frame. Each sandbox holds one Workspace running Claude Code and code-server. An arrow labelled calls Claude leads from each Nitro sandbox to Amazon Bedrock, which sits at the right of the AWS Cloud frame outside the EKS cluster.](images/coder-high-level.png)
+
+Figure 2 shows every part setup creates and how they connect. The rest of the page goes
+through them one by one.
+
+*Figure 2: The detailed architecture. A developer reaches Coder and Keycloak only through CloudFront, a VPC origin and an internal load balancer whose security group admits only CloudFront, and every workspace Coder creates runs in its own Nitro sandbox with its own EBS home volume and a Pod Identity role that may only invoke the configured model.*
+
+![An architecture figure read from left to right. A browser on the internet sends HTTPS requests to Amazon CloudFront inside the AWS Cloud frame. CloudFront uses the default cloudfront.net certificate and redirects plain HTTP to HTTPS. CloudFront connects over HTTP on port 80 to a VPC origin, and the VPC origin connects on TCP 80 to an internal Application Load Balancer. The VPC origin and the load balancer sit in a dashed frame labelled VPC with private subnets. A red security group icon, coder-alb-origin, is attached to the load balancer. It admits only TCP 80 from CloudFront-VPCOrigins-Service-SG. The VPC frame also holds the Amazon EKS cluster. The load balancer has two rules. Path /auth goes to Keycloak, and all other paths go to Coder. Coder, Keycloak and PostgreSQL are ordinary pods in the namespace coder. Keycloak holds the realm coder and provides OIDC sign-in for Coder. PostgreSQL holds the databases for Coder and Keycloak and has no connection from the load balancer. An arrow labelled creates workspaces leads from Coder to the namespace coder-workspaces. That namespace is labelled with a Role for Coder's provisioner that allows Deployments and PersistentVolumeClaims only. It holds two workspaces. Each workspace is a Nitro sandbox pod with runtimeClassName isolated-sandbox and ServiceAccount coder-workspace. It runs Claude Code and code-server. It has its own Amazon EBS home volume, ReadWriteOncePod, mounted at /home/coder. An arrow labelled agent, in-cluster Service leads from each pod back to Coder, so agent traffic stays inside the cluster. An arrow labelled EKS Pod Identity leads from each pod to an IAM role, which may invoke only the configured profile. The IAM role has an arrow labelled InvokeModel to Amazon Bedrock. The IAM role and Amazon Bedrock sit outside the VPC, at the right of the AWS Cloud frame.](images/coder-architecture.png)
 
 ## The HTTPS endpoint, and who can reach what
 
@@ -657,7 +666,7 @@ resource "kubernetes_deployment_v1" "workspace" {
   count = data.coder_workspace.me.start_count
 ```
 
-*Figure 2: What stop and start do to a workspace. Stop removes the pod and its sandbox and keeps the EBS claim. Start creates a new pod in a new sandbox that attaches the same claim.*
+*Figure 3: What stop and start do to a workspace. Stop removes the pod and its sandbox and keeps the EBS claim. Start creates a new pod in a new sandbox that attaches the same claim.*
 
 ![Three boxes read from left to right, joined by two arrows. The first box, Running, holds a Nitro sandbox pod with runtimeClassName isolated-sandbox that runs the workspace with Claude Code and code-server, and an Amazon EBS home volume attached to the pod. An arrow labelled Stop leads to the second box, Stopped, which holds a dashed outline marked No pod, the pod and its sandbox are removed, and the same Amazon EBS home volume, kept, with nothing attached to it. An arrow labelled Start leads to the third box, Started again, which holds a new Nitro sandbox pod running the workspace in a new sandbox, with the same Amazon EBS home volume attached.](images/coder-workspace-lifecycle.png)
 
@@ -760,8 +769,14 @@ than by use ([warm pool](../../getting-started/warm-pool/README.md), "Sizing").
 
 ## Community Edition and Coder Premium
 
-This blueprint runs Community Edition, which is free and needs no license. Each row was read
-on Coder's own pages:
+This blueprint runs Community Edition, which is free and needs no license. Figure 4 puts the
+two editions side by side, and the table below gives each row with its source.
+
+*Figure 4: Community Edition and Coder Premium side by side. The rows under "In both editions" are the same in both columns; the second box in each column shows what is specific to that edition.*
+
+![Two boxes side by side. The left box is titled Community Edition (this blueprint), with the sub line free, no license. It holds two dashed groups. The first, In both editions, lists OIDC sign-in with any provider, Turn password sign-in off, Assign roles by hand (Owner, User Admin, Template Admin, Auditor), and Unlimited users and workspaces. The second, In Community Edition, lists One coderd replica and The built-in provisioners in coderd run the builds. The right box is titled Coder Premium, with the sub line priced per user. Its first group, In both editions, lists the same four rows. Its second group, Only in Coder Premium, lists Sync roles, groups and organizations from the identity provider, Groups, More than one coderd replica (high availability), Audit logs, Template permissions (who may use or edit each template), Workspace quotas, External provisioners, and AI Gateway and Agent Firewall.](images/coder-editions.png)
+
+Each row was read on Coder's own pages:
 
 | Capability | Community Edition | Coder Premium | Source |
 |---|---|---|---|
