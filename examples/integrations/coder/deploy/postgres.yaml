@@ -163,7 +163,7 @@ spec:
           persistentVolumeClaim:
             claimName: postgres-data
         - name: passwords
-          # A projected volume of the one Secret: the same files, mode 0440, as a secret volume.
+          # Projected from the one Secret, with the same files and mode 0440 a secret volume gives.
           projected:
             defaultMode: 0440
             sources:
