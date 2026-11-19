@@ -11,6 +11,7 @@
   "duplicateEmailsAllowed": false,
   "editUsernameAllowed": false,
   "bruteForceProtected": true,
+  "passwordPolicy": "length(16)",
   "clients": [
     {
       "clientId": "coder",

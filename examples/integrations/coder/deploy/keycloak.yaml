@@ -11,7 +11,7 @@
 # filled in by setup.sh and stored in the ConfigMap keycloak-realm) on its first
 # start with --import-realm. The realm holds the OIDC client Coder uses and no
 # users. If the realm already exists, Keycloak skips the import. The realm file
-# holds no secret: its client secret is the placeholder ${CODER_OIDC_CLIENT_SECRET},  # pragma: allowlist secret -- names a placeholder
+# holds no credential value. Where the client's credential goes it has the placeholder ${CODER_OIDC_CLIENT_SECRET},
 # which Keycloak resolves from this container's environment during the import.
 #
 # Secrets, all created by scripts/setup.sh from mode-600 files, none in this file:

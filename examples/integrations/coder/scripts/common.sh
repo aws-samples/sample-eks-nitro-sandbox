@@ -37,6 +37,9 @@ AWS_REGION="${AWS_REGION:-us-west-2}"
 BEDROCK_MODEL_ID="${BEDROCK_MODEL_ID:-us.anthropic.claude-sonnet-5-5}"
 DEVELOPER_COUNT="${DEVELOPER_COUNT:-2}"
 LOCAL_DIR="${LOCAL_DIR:-$REPO_ROOT/tmp/$SAMPLE}"
+# Absolute, so that no path the scripts make under it can be read as an option by chmod,
+# mktemp, ls or find (a relative LOCAL_DIR starting with "-" would be).
+[[ "$LOCAL_DIR" == /* ]] || LOCAL_DIR="$PWD/$LOCAL_DIR"
 
 die() { echo "error: $*" >&2; exit 1; }
 step() { printf '\n== %s ==\n' "$*"; }
@@ -126,6 +129,7 @@ check_alb_private() {
   [[ -z "$pub" ]] || alb_not_private "network interfaces $pub have public IP addresses"
 }
 alb_not_private() {
+  trap - EXIT   # the Ingress is deleted here, so setup's guard below need not do it again
   echo "error: the ALB is not private: $1" >&2
   echo "deleting ingress/$INGRESS_NAME so EKS Auto Mode removes the load balancer" >&2
   kc delete ingress "$INGRESS_NAME" --ignore-not-found >&2 || echo "error: could not delete ingress/$INGRESS_NAME; delete it now" >&2
@@ -343,7 +347,9 @@ gen_secret_file() {
   local v tmp
   if [[ -e "$1" || -L "$1" ]]; then
     [[ -f "$1" && ! -L "$1" ]] || die "$(rel "$1") exists and is not a plain file; remove it and run setup again"
-    [[ "$(find "$1" -links 1 -print)" == "$1" ]] \
+    # ls -ld prints the link count in its second field on GNU and BSD alike, and `--` keeps a
+    # name that starts with "-" from being read as an option.
+    [[ "$(ls -ld -- "$1" | awk 'NR == 1 { print $2 }')" == 1 ]] \
       || die "$(rel "$1") has another name (a hard link); remove it and run setup again"
     v="$(cat "$1")" || die "could not read $(rel "$1")"
     if [[ -n "$v" ]]; then

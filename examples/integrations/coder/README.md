@@ -229,7 +229,7 @@ Who can reach what:
 | Who | What they reach | What it takes |
 |---|---|---|
 | Anyone on the internet | Coder's sign-in page, whose only option is **Sign in with Keycloak**; Keycloak's sign-in pages for the realm `coder`; the sign-in page of Keycloak's admin console; and the endpoints sign-in itself needs before anyone is signed in, such as Coder's `/api/v2/users/authmethods` and Keycloak's discovery document | Nothing: these are public |
-| A Keycloak user in the realm `coder` (`admin`, `dev1`, `dev2`) | The Coder dashboard, their own workspaces, the web terminal and code-server. `admin` is a Coder owner and also publishes templates and manages users | A Keycloak sign-in with the random password setup generated |
+| A Keycloak user in the realm `coder` (`admin`, `dev1`, `dev2`, or anyone a Keycloak administrator adds with a verified email) | The Coder dashboard, their own workspaces, the web terminal and code-server. `admin` is a Coder owner and also publishes templates and manages users; everyone else gets the member role at their first sign-in | A Keycloak sign-in with their password: for setup's users, the random one setup generated |
 | Keycloak's own admin, in the realm `master` | The Keycloak admin console at `https://<DOMAIN>/auth/admin/` | Keycloak's admin password, random, in `tmp/coder/keycloak-admin-password` with mode 600 |
 | No one from outside the cluster | PostgreSQL, Keycloak's management port, the `coder` and `keycloak` Services, and the ALB itself | Not routed, or admitted only from CloudFront's VPC origin group |
 

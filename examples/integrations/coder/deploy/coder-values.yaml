@@ -76,11 +76,13 @@ coder:
       value: "preferred_username"
     - name: CODER_OIDC_SIGN_IN_TEXT
       value: "Sign in with Keycloak"
-    # A Keycloak user who signs in for the first time gets a Coder account with
-    # the member role. Only setup can create Keycloak users: the realm has
-    # self-registration off. The admin is not created this way: setup creates
-    # it in Coder beforehand as an OIDC user with the owner role, and the first
-    # sign-in with its email links to that account.
+    # Any enabled user of the realm coder with a verified email can sign in, and
+    # the first sign-in gives them a Coder account with the member role. Users
+    # come from setup or from a Keycloak administrator: the realm has
+    # self-registration off, and Coder's check that the email is verified is on
+    # (setup marks its users verified). The admin is not created this way: setup
+    # creates it in Coder beforehand as an OIDC user with the owner role, and the
+    # first sign-in with its email links to that account.
     - name: CODER_OIDC_ALLOW_SIGNUPS
       value: "true"
 

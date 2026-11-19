@@ -198,6 +198,15 @@ if ! resource_exists kc_cluster "ingressclass/$INGRESS_CLASS"; then
 else
   echo "reusing the blueprint's IngressClass $INGRESS_CLASS"
 fi
+# From here until check_alb_private passes, any stop deletes this Ingress, so Auto Mode
+# removes its load balancer: setup never leaves behind an ALB it has not shown to be private.
+alb_guard() {
+  local rc=$?
+  [[ $rc -eq 0 ]] && return 0
+  echo "deleting ingress/$INGRESS_NAME, because setup stopped before its ALB was shown to be private" >&2
+  kc delete ingress "$INGRESS_NAME" --ignore-not-found >&2 || echo "error: could not delete ingress/$INGRESS_NAME; delete it now" >&2
+}
+trap alb_guard EXIT
 render ingress.yaml | without_coder_route | require_rendered ingress.yaml \
   | kc apply -l app.kubernetes.io/component=ingress -f - || die "could not apply ingress/$INGRESS_NAME"
 echo "waiting for EKS Auto Mode to create the ALB (up to 10 minutes)"
@@ -211,8 +220,9 @@ lb="$(aws_r elbv2 describe-load-balancers --output json \
   || die "could not list load balancers"
 [[ -n "$lb" ]] || die "no load balancer in $AWS_REGION has the Ingress's hostname $ALB_DNS"
 ALB_ARN="$(jq -r .LoadBalancerArn <<<"$lb")"
-# Identity first: only a load balancer Auto Mode made for this Ingress is acted on, so a
-# failed check below never deletes the Ingress because of someone else's load balancer.
+# Identity first: the checks below act on the load balancer only once it is shown to be the
+# one Auto Mode made for this Ingress. Any stop until check_alb_private passes deletes this
+# Ingress (alb_guard above), never someone else's load balancer.
 aws_r elbv2 describe-tags --resource-arns "$ALB_ARN" --output json | jq -e --arg c "$CLUSTER_NAME" \
   --arg s "$NAMESPACE/$INGRESS_NAME" '.TagDescriptions[0].Tags as $t
   | any($t[]; .Key == "eks:eks-cluster-name" and .Value == $c)
@@ -224,6 +234,7 @@ aws_r elbv2 wait load-balancer-available --load-balancer-arns "$ALB_ARN" \
   || alb_not_private "load balancer $ALB_ARN did not become active, so its subnets and addresses cannot be checked"
 # Internal, in the private subnets chosen above, no public IP address; otherwise it is removed.
 check_alb_private
+trap - EXIT   # shown private: a later stop leaves the ALB, closed, for ./scripts/cleanup.sh
 # Called directly, not in $( ), so its die stops this script.
 wait_target_groups 1 >/dev/null
 echo "security groups on the ALB:"
@@ -412,7 +423,8 @@ in_coder '
   /opt/coder users show "$1"
   /opt/coder tokens remove setup-cleanup --delete
 ' coder-bootstrap "$CODER_ADMIN_USERNAME" "$CODER_ADMIN_EMAIL" <"$LOCAL_DIR/coder-bootstrap-password" \
-  || die "could not create the Coder owner"
+  || { rm -f "$LOCAL_DIR/coder-bootstrap-password"
+       die "could not create the Coder owner. Coder is installed but not routed, so nothing outside the cluster reaches it; a bootstrap user or a setup token may remain inside it. Run ./scripts/cleanup.sh, which uninstalls Coder and deletes its database, before running setup again"; }
 rm -f "$LOCAL_DIR/coder-bootstrap-password"
 first="$(in_coder 'wget -q -O - http://127.0.0.1:8080/api/v2/users/first' </dev/null)" \
   || die "could not read /api/v2/users/first"
