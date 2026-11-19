@@ -26,11 +26,15 @@ const tlsOptions = (entry) => ({
 });
 const authHeader = (entry) => ({ authorization: `Bearer ${entry.bridgeToken}` });
 
-// Open the session's terminal. Resolves once the bridge has accepted it, with write
+// Open one of the session's terminals. Resolves once the bridge has accepted it, with write
 // (keystrokes), resize and close; onData gets the terminal's output, onClose its end.
-export function attachTerminal(entry, { onData, onClose, cols = 200, rows = 50 }) {
+export const PANES = new Set(["agent", "shell"]);
+
+// pane is "agent" (the CLI) or "shell" (a plain bash beside it, the window's second tab).
+export function attachTerminal(entry, { onData, onClose, cols = 200, rows = 50, pane = "agent" }) {
+  if (!PANES.has(pane)) return Promise.reject(new Error(`unknown pane ${pane}`));
   return new Promise((resolve, reject) => {
-    const url = `wss://${entry.podIP}:${BRIDGE_PORT}/v1/terminal?cols=${cols}&rows=${rows}`;
+    const url = `wss://${entry.podIP}:${BRIDGE_PORT}/v1/terminal?cols=${cols}&rows=${rows}&pane=${pane}`;
     const ws = new WebSocket(url, {
       ...tlsOptions(entry),
       headers: authHeader(entry),
