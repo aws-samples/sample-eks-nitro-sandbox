@@ -1558,9 +1558,10 @@ The blueprint runs one of everything. To grow it:
 - **Keep only Coder workspaces in the workspace namespace.** Kubernetes RBAC selects by
   resource type, so the provisioner's Role reaches every Deployment and claim in
   `coder-workspaces`, not only the ones Coder made.
-- **The control-plane pods set requests and memory limits.** `coderd`, Keycloak and PostgreSQL
-  are ordinary pods that hold the deployment's state, so each reserves what it needs on its
-  node and cannot grow past a memory cap. They are starting points; Coder's validated
+- **The control-plane pods set resource requests.** `coderd`, Keycloak and PostgreSQL are
+  ordinary pods that hold the deployment's state, so each reserves what it needs on its node.
+  `coderd` requests 2Gi of memory and sets no memory limit; Keycloak and PostgreSQL also set a
+  memory limit, so neither can grow past it. They are starting points; Coder's validated
   architectures size `coderd` for more users.
 - **Clean up leaves security groups it does not own.** CloudFront creates
   `CloudFront-VPCOrigins-Service-SG` with the first VPC origin in the VPC, and it stays. EKS
