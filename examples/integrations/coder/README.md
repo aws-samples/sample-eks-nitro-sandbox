@@ -165,6 +165,9 @@ aws ec2 describe-network-interfaces --region "$AWS_REGION" \
   --query 'NetworkInterfaces[].{PrivateIp:PrivateIpAddress,PublicIp:Association.PublicIp}'
 ```
 
+<details>
+<summary>Output: the ALB's scheme, its subnets and their routes</summary>
+
 ```text
 {
     "Scheme": "internal",
@@ -216,6 +219,8 @@ aws ec2 describe-network-interfaces --region "$AWS_REGION" \
 ]
 ```
 
+</details>
+
 The scheme is `internal`, each subnet's default route goes to a NAT gateway rather than an
 internet gateway, and no network interface has a public IP address.
 
@@ -242,6 +247,9 @@ aws ec2 describe-security-groups --region "$AWS_REGION" \
   --filters Name=group-name,Values=CloudFront-VPCOrigins-Service-SG \
   --query 'SecurityGroups[].{GroupId:GroupId,GroupName:GroupName,VpcId:VpcId}'
 ```
+
+<details>
+<summary>Output: the ALB's security group and its rules</summary>
 
 ```text
 [
@@ -279,6 +287,8 @@ aws ec2 describe-security-groups --region "$AWS_REGION" \
     }
 ]
 ```
+
+</details>
 
 The ALB has two backend rules: `/auth` and everything under it goes to Keycloak, and every
 other path goes to Coder. PostgreSQL has no route, and neither has Keycloak's management port,
@@ -440,6 +450,9 @@ cp .env.example .env    # optional: set KUBE_CONTEXT, and anything else you want
 ./scripts/setup.sh
 ```
 
+<details>
+<summary>Setup's output</summary>
+
 ```text
 cluster sandbox-demo in us-west-2, kube context <KUBE_CONTEXT> (current)
 namespaces: coder (Coder, Keycloak, PostgreSQL) and coder-workspaces (workspaces)
@@ -594,6 +607,8 @@ Publish the template as the Coder admin (sign in through Keycloak as admin in th
 Tear it down:   ./scripts/cleanup.sh
 ```
 
+</details>
+
 Setup prints thirteen step headers in the order of the previous section, then the Coder and
 Keycloak addresses, where it wrote the passwords, and the next commands. The rest of this
 page uses the distribution's name, which setup keeps in its state file, and the names from
@@ -702,6 +717,9 @@ coder templates push claude-code-nitro --directory templates/claude-code-nitro \
 coder users list -o json | jq -r '.[] | [.username, .login_type, ([.roles[].name] | join(","))] | @tsv'
 ```
 
+<details>
+<summary>Output: the template variables, the template push and the user list</summary>
+
 ```text
 namespace: coder-workspaces
 service_account: coder-workspace
@@ -753,6 +771,8 @@ Updated version at Nov 19 20:54:03!
 admin	oidc	owner
 ```
 
+</details>
+
 The push runs `terraform` inside `coderd` and publishes the template. `admin` is a Keycloak
 (`oidc`) user with the `owner` role, and is the only user so far.
 
@@ -768,6 +788,9 @@ coder login "https://$DOMAIN"
 coder create claude --template claude-code-nitro --use-parameter-defaults --yes
 coder list
 ```
+
+<details>
+<summary>Output: dev1 signs in and Coder builds the workspace</summary>
 
 ```text
 Attempting to authenticate with argument URL: 'https://dXXXX.cloudfront.net'
@@ -828,6 +851,8 @@ WORKSPACE      TEMPLATE           STATUS   HEALTHY  LAST BUILT  CURRENT VERSION 
   dev1/claude  claude-code-nitro  Started  false    <1m         <TEMPLATE_VERSION_1>    false
 ```
 
+</details>
+
 The workspace is a Deployment that Coder's provisioner creates in `coder-workspaces`. Here is
 the part of the template's pod spec that makes it a sandbox and gives it its AWS identity:
 
@@ -866,6 +891,9 @@ kubectl -n "$WORKSPACE_NAMESPACE" get deploy,pod,pvc -l com.coder.user.username=
 kubectl auth can-i --list -n "$WORKSPACE_NAMESPACE" --as "system:serviceaccount:$NAMESPACE:coder"
 kubectl auth can-i create pods -n "$NAMESPACE" --as "system:serviceaccount:$NAMESPACE:coder"
 ```
+
+<details>
+<summary>Output: dev1's Deployment, pod and claim, and the provisioner's permissions</summary>
 
 ```text
 pod/coder-dev1-claude-<POD_SUFFIX_1> condition met
@@ -907,6 +935,8 @@ clustertrustbundles.certificates.k8s.io         []                              
                                                 [/version]                             []               [get]
 no
 ```
+
+</details>
 
 One Deployment, one pod and one `Bound` claim belong to `dev1`. Coder's ServiceAccount may
 manage Deployments and claims in the workspace namespace and may not create a pod in its own.
@@ -1031,6 +1061,9 @@ aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --region "
   --namespace "$WORKSPACE_NAMESPACE" --service-account coder-workspace
 ```
 
+<details>
+<summary>Output: the workspace role's policies, trust policy and Pod Identity association</summary>
+
 ```text
 {
     "PolicyNames": [
@@ -1094,6 +1127,8 @@ aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" --region "
     ]
 }
 ```
+
+</details>
 
 The role has one inline policy, `bedrock-invoke`, and no attached policies. It may call
 `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream` on the configured inference
@@ -1175,6 +1210,9 @@ vol
 coder ssh claude -- 'cat ~/notes.txt; cut -d" " -f1 /proc/uptime'
 ```
 
+<details>
+<summary>Output: the home volume before and after the stop and start</summary>
+
 ```text
 -rw-r--r-- 1 coder coder 24 Nov 19 20:56 /home/coder/notes.txt
 pod=<UUID_8>
@@ -1229,6 +1267,8 @@ written before the stop
 4.96
 ```
 
+</details>
+
 While the workspace is stopped there is no Deployment and no pod, and the claim is still
 `Bound`; the first wait is for the old pod to finish terminating, which it does a few seconds
 after `coder stop` returns. After the start, the pod UID is new and its uptime is its own, so
@@ -1244,6 +1284,9 @@ export CODER_CONFIG_DIR="$PWD/../../../tmp/coder/cli-dev2"
 coder login "https://$DOMAIN"
 coder create claude --template claude-code-nitro --use-parameter-defaults --yes
 ```
+
+<details>
+<summary>Output: dev2 signs in and Coder builds the workspace</summary>
 
 ```text
 Attempting to authenticate with argument URL: 'https://dXXXX.cloudfront.net'
@@ -1301,6 +1344,8 @@ Planning workspace...
 
 The claude workspace has been created at Nov 19 20:56:50!
 ```
+
+</details>
 
 Then wait for `dev2`'s pod, and compare the two workspace pods. `coder create` returns once
 the build has created the Deployment, before its pod has a node:
@@ -1585,6 +1630,9 @@ Run the clean up from this folder. It reads the same `.env` and the state setup 
 ./scripts/cleanup.sh
 ```
 
+<details>
+<summary>Clean up's output</summary>
+
 ```text
 cluster sandbox-demo in us-west-2, kube context <KUBE_CONTEXT> (current)
 namespaces: coder (Coder, Keycloak, PostgreSQL) and coder-workspaces (workspaces)
@@ -1643,6 +1691,8 @@ Left in place, owned by EKS Auto Mode and CloudFront rather than the blueprint:
   <SECURITY_GROUP_ID_2>	CloudFront-VPCOrigins-Service-SG
 clean up complete. The generated passwords and users.txt are still in tmp/coder; delete them when you are done.
 ```
+
+</details>
 
 It deletes every workspace's Deployment and home claim, the Coder release, Keycloak,
 PostgreSQL and its claim, and with the claims their EBS volumes, the Ingress and with it the
