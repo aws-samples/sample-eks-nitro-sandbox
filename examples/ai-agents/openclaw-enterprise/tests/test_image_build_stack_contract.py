@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import textwrap
+import time
 
 import yaml
 
@@ -88,13 +90,17 @@ def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
                 stack_name="openclaw-enterprise-images-$run_id"
                 stack_id="arn:aws:cloudformation:us-west-2:123456789012:stack/$stack_name/00000000-0000-0000-0000-000000000000"
                 managed_by="${FAKE_MANAGED_BY:-openclaw-enterprise-sample}"
-                outputs='[{"OutputKey":"ValidationRunId","OutputValue":"'$run_id'"}]'
                 if [[ "${FAKE_NO_OUTPUTS:-0}" == 1 ]]; then
-                  outputs='[]'
+                  outputs_json='[]'
+                else
+                  printf -v outputs_json \
+                    '[{"OutputKey":"ValidationRunId","OutputValue":"%s"}]' \
+                    "$run_id"
                 fi
-                cat <<JSON
-            {"Stacks":[{"StackName":"$stack_name","StackId":"$stack_id","Tags":[{"Key":"ManagedBy","Value":"$managed_by"},{"Key":"OpenClawValidationRun","Value":"$run_id"}],"Parameters":[{"ParameterKey":"ValidationRunId","ParameterValue":"$run_id"}],"Outputs":$outputs}]}
-            JSON
+                printf \
+                  '{"Stacks":[{"StackName":"%s","StackId":"%s","Tags":[{"Key":"ManagedBy","Value":"%s"},{"Key":"OpenClawValidationRun","Value":"%s"}],"Parameters":[{"ParameterKey":"ValidationRunId","ParameterValue":"%s"}],"Outputs":%s}]}\\n' \
+                  "$stack_name" "$stack_id" "$managed_by" "$run_id" "$run_id" \
+                  "$outputs_json"
                 exit 0
               fi
               printf 'Stack with id openclaw-enterprise-images-aaaaaaaaaaaaaaaaaaaaaaaa does not exist\\n' >&2
@@ -188,6 +194,30 @@ def _write_receipt(receipt: pathlib.Path, status: str, stack_id: str | None) -> 
     receipt.chmod(0o600)
 
 
+def _wait_for_receipt_status(
+    receipt: pathlib.Path, expected_status: str
+) -> None:
+    for _ in range(100):
+        try:
+            if json.loads(receipt.read_text(encoding="utf-8"))["status"] == expected_status:
+                return
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        time.sleep(0.01)
+    raise AssertionError(f"receipt did not reach {expected_status}")
+
+
+def _wait_for_log_text(log_file: pathlib.Path, expected_text: str) -> None:
+    for _ in range(100):
+        try:
+            if expected_text in log_file.read_text(encoding="utf-8"):
+                return
+        except FileNotFoundError:
+            pass
+        time.sleep(0.01)
+    raise AssertionError(f"log did not contain {expected_text}")
+
+
 def test_template_scopes_named_resources_to_a_validation_run() -> None:
     template = _template()
     parameters = template["Parameters"]
@@ -206,6 +236,10 @@ def test_template_scopes_named_resources_to_a_validation_run() -> None:
         )
     assert template["Outputs"]["ValidationRunId"]["Value"] == "ValidationRunId"
     assert parameters["BuilderImageDigest"]["AllowedValues"] == [BUILDER_DIGEST]
+    assert (
+        "MaxSessionDuration"
+        not in resources["ImageBuildInvocationRole"]["Properties"]
+    )
 
 
 def test_readme_uses_receipted_stack_lifecycle_only() -> None:
@@ -290,30 +324,180 @@ def test_concurrent_create_cannot_overwrite_the_receipt(
     receipt = private_dir / "image-build-stack.json"
     bin_dir, aws_log = _fake_tools(tmp_path)
     environment = _environment(tmp_path, bin_dir, aws_log)
-    environment["FAKE_FIRST_DESCRIBE_PER_PARENT"] = "1"
     environment["FAKE_DEPLOY_DELAY"] = "0.2"
 
-    processes = [
-        subprocess.Popen(
-            _create_command(receipt),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-        )
-        for _ in range(2)
-    ]
+    first = subprocess.Popen(
+        _create_command(receipt),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    _wait_for_receipt_status(receipt, "create-planned")
+    second = subprocess.Popen(
+        _create_command(receipt),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    processes = [first, second]
     results = [process.communicate() + (process.returncode,) for process in processes]
 
     assert sorted(result[2] for result in results) == [0, 1]
     failed = next(result for result in results if result[2] != 0)
-    assert "refusing to replace an existing receipt" in failed[1]
+    assert "another operation is using this receipt" in failed[1]
     assert (
         aws_log.read_text(encoding="utf-8").count("cloudformation deploy") == 1
     )
     payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert payload["status"] == "created"
     assert receipt.stat().st_mode & 0o777 == 0o600
+    assert not pathlib.Path(f"{receipt}.lock").exists()
+
+
+def test_delete_cannot_race_an_in_progress_create(
+    tmp_path: pathlib.Path,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    environment["FAKE_DEPLOY_DELAY"] = "0.3"
+
+    create = subprocess.Popen(
+        _create_command(receipt),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    _wait_for_receipt_status(receipt, "create-planned")
+
+    deleted = subprocess.run(
+        ["bash", str(SCRIPT), "delete", "--receipt", str(receipt)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+    _, stderr = create.communicate()
+
+    assert create.returncode == 0, stderr
+    assert deleted.returncode != 0
+    assert "another operation is using this receipt" in deleted.stderr
+    assert "cloudformation delete-stack" not in aws_log.read_text(encoding="utf-8")
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "created"
+    assert not pathlib.Path(f"{receipt}.lock").exists()
+
+
+def test_create_refuses_an_unverified_stale_operation_lock(
+    tmp_path: pathlib.Path,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    operation_lock.mkdir()
+    (operation_lock / "pid").write_text("2147483647\n", encoding="utf-8")
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+
+    created = subprocess.run(
+        _create_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert created.returncode != 0
+    assert "a stale lock must be reviewed" in created.stderr
+    assert not receipt.exists()
+    assert operation_lock.exists()
+
+
+def test_create_refuses_an_empty_stale_operation_lock(
+    tmp_path: pathlib.Path,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    operation_lock.mkdir()
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+
+    created = subprocess.run(
+        _create_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert created.returncode != 0
+    assert "a stale lock must be reviewed" in created.stderr
+    assert not receipt.exists()
+    assert operation_lock.exists()
+
+
+def test_early_failure_does_not_delete_an_inherited_error_file(
+    tmp_path: pathlib.Path,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    inherited_error_file = tmp_path / "owned-by-caller"
+    inherited_error_file.write_text("keep\n", encoding="utf-8")
+    environment["error_file"] = str(inherited_error_file)
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "create", "--receipt", str(receipt)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "create requires every documented argument" in result.stderr
+    assert inherited_error_file.read_text(encoding="utf-8") == "keep\n"
+    assert not pathlib.Path(f"{receipt}.lock").exists()
+
+
+def test_signal_during_create_retains_lock_for_manual_reconciliation(
+    tmp_path: pathlib.Path,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    environment["FAKE_DEPLOY_DELAY"] = "0.5"
+
+    create = subprocess.Popen(
+        _create_command(receipt),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    _wait_for_receipt_status(receipt, "create-planned")
+    _wait_for_log_text(aws_log, "cloudformation deploy")
+    create.send_signal(signal.SIGTERM)
+    _, stderr = create.communicate(timeout=5)
+
+    assert create.returncode == 143, stderr
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == (
+        "create-planned"
+    )
+    assert operation_lock.is_dir()
+    assert (operation_lock / "pid").read_text(encoding="utf-8").strip().isdigit()
 
 
 def test_delete_refuses_a_stack_with_wrong_ownership_tag(
@@ -345,6 +529,7 @@ def test_delete_refuses_a_stack_with_wrong_ownership_tag(
     assert result.returncode != 0
     assert "refusing to delete" in result.stderr
     assert not pathlib.Path(f"{environment['FAKE_AWS_STATE']}.deleted").exists()
+    assert not pathlib.Path(f"{receipt}.lock").exists()
 
 
 def test_delete_recovers_create_planned_receipt_when_stack_exists(
@@ -451,6 +636,11 @@ def test_create_records_unconfirmed_when_post_deploy_verification_fails(
     assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == (
         "create-unconfirmed"
     )
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    assert operation_lock.is_dir()
+    (operation_lock / "pid").unlink()
+    operation_lock.rmdir()
+
     environment["FAKE_DESCRIBE_AFTER_DEPLOY_FAIL"] = "0"
     deleted = subprocess.run(
         ["bash", str(SCRIPT), "delete", "--receipt", str(receipt)],
@@ -487,6 +677,11 @@ def test_delete_records_unconfirmed_and_can_resume_after_delete_failure(
     assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == (
         "delete-unconfirmed"
     )
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    assert operation_lock.is_dir()
+    (operation_lock / "pid").unlink()
+    operation_lock.rmdir()
+
     environment["FAKE_DELETE_FAIL"] = "0"
     resumed = subprocess.run(
         ["bash", str(SCRIPT), "delete", "--receipt", str(receipt)],
@@ -523,6 +718,11 @@ def test_delete_records_absent_stack_as_deleted_after_wait_failure(
     assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == (
         "delete-unconfirmed"
     )
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    assert operation_lock.is_dir()
+    (operation_lock / "pid").unlink()
+    operation_lock.rmdir()
+
     environment["FAKE_WAIT_FAIL"] = "0"
     resumed = subprocess.run(
         ["bash", str(SCRIPT), "delete", "--receipt", str(receipt)],

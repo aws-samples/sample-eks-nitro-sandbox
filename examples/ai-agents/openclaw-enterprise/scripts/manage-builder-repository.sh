@@ -4,6 +4,10 @@ IFS=$'\n\t'
 umask 077
 
 readonly MANAGED_BY="openclaw-enterprise-sample"
+error_file=""
+operation_lock=""
+lock_owned=false
+lock_release_safe=true
 
 usage() {
   cat >&2 <<'EOF'
@@ -18,6 +22,7 @@ EOF
 }
 
 die() {
+  cleanup
   printf 'builder-repository: %s\n' "$*" >&2
   exit 1
 }
@@ -56,6 +61,28 @@ private_receipt() {
     die "receipt must have mode 0600."
 }
 
+cleanup() {
+  [[ -z "$error_file" ]] || rm -f -- "$error_file"
+  error_file=""
+  if [[ "$lock_owned" == true && "$lock_release_safe" == true &&
+    -n "$operation_lock" ]]; then
+    rm -f -- "$operation_lock/pid"
+    rmdir -- "$operation_lock" 2>/dev/null || true
+    lock_owned=false
+  fi
+}
+
+acquire_operation_lock() {
+  local owner_file
+  if ! mkdir -- "$operation_lock" 2>/dev/null; then
+    die "another operation is using this receipt, or a stale lock must be reviewed: $operation_lock"
+  fi
+  lock_owned=true
+  owner_file="$operation_lock/pid"
+  printf '%s\n' "$$" >"$owner_file" ||
+    die "could not record operation lock ownership."
+}
+
 valid_region() {
   [[ "$1" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
 }
@@ -84,7 +111,7 @@ repository_does_not_exist() {
   grep -Fq "RepositoryNotFoundException" "$1"
 }
 
-for command in aws jq openssl stat mktemp ln; do
+for command in aws jq openssl stat mktemp ln mkdir rmdir; do
   command -v "$command" >/dev/null || die "$command is required."
 done
 
@@ -123,6 +150,12 @@ done
   die "--receipt must be an absolute path."
 receipt_parent=$(dirname -- "$receipt")
 private_parent "$receipt_parent"
+operation_lock="${receipt}.lock"
+acquire_operation_lock
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ "$action" == create ]]; then
   [[ ! -e "$receipt" && ! -L "$receipt" ]] ||
@@ -141,7 +174,6 @@ if [[ "$action" == create ]]; then
   repository_name="openclaw-enterprise/codebuild-builder-$run_id"
 
   error_file=$(mktemp)
-  trap 'rm -f -- "${error_file:-}"' EXIT
   if aws ecr describe-repositories \
     --region "$region" \
     --repository-names "$repository_name" >/dev/null 2>"$error_file"; then
@@ -169,6 +201,7 @@ if [[ "$action" == create ]]; then
   )
   create_receipt "$receipt" "$planned_receipt"
 
+  lock_release_safe=false
   if ! aws ecr create-repository \
     --region "$region" \
     --repository-name "$repository_name" \
@@ -238,6 +271,8 @@ if [[ "$action" == create ]]; then
       "$receipt"
   )
   write_receipt "$receipt" "$completed_receipt"
+  lock_release_safe=true
+  cleanup
   printf 'Created run-owned builder repository. Receipt: %s\n' "$receipt"
 elif [[ "$action" == delete ]]; then
   [[ -z "$region" ]] || die "delete accepts only --receipt."
@@ -297,12 +332,12 @@ elif [[ "$action" == delete ]]; then
     die "caller AWS account does not match the receipt."
 
   if [[ "$receipt_status" == deleted ]]; then
+    cleanup
     printf 'Builder repository is already recorded as deleted. Receipt: %s\n' "$receipt"
     exit 0
   fi
 
   error_file=$(mktemp)
-  trap 'rm -f -- "${error_file:-}"' EXIT
   if ! repository_json=$(
     aws ecr describe-repositories \
       --region "$region" \
@@ -311,6 +346,7 @@ elif [[ "$action" == delete ]]; then
     if repository_does_not_exist "$error_file"; then
       deleted_receipt=$(jq '.status = "deleted"' "$receipt")
       write_receipt "$receipt" "$deleted_receipt"
+      cleanup
       printf 'Builder repository is absent and recorded as deleted. Receipt: %s\n' "$receipt"
       exit 0
     fi
@@ -360,6 +396,7 @@ elif [[ "$action" == delete ]]; then
       "$receipt"
   )
   write_receipt "$receipt" "$delete_planned_receipt"
+  lock_release_safe=false
   if ! aws ecr delete-repository \
     --region "$region" \
     --repository-name "$repository_name" \
@@ -370,6 +407,8 @@ elif [[ "$action" == delete ]]; then
   fi
   deleted_receipt=$(jq '.status = "deleted"' "$receipt")
   write_receipt "$receipt" "$deleted_receipt"
+  lock_release_safe=true
+  cleanup
   printf 'Deleted run-owned builder repository. Receipt: %s\n' "$receipt"
 else
   usage

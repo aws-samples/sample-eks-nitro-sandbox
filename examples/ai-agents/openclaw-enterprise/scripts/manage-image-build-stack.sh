@@ -6,6 +6,10 @@ umask 077
 readonly MANAGED_BY="openclaw-enterprise-sample"
 readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff"
 readonly BUILDER_IMAGE_DIGEST="sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
+error_file=""
+operation_lock=""
+lock_owned=false
+lock_release_safe=true
 
 usage() {
   cat >&2 <<'EOF'
@@ -23,6 +27,7 @@ EOF
 }
 
 die() {
+  cleanup
   printf 'image-build-stack: %s\n' "$*" >&2
   exit 1
 }
@@ -61,6 +66,28 @@ private_receipt() {
     die "receipt must have mode 0600."
 }
 
+cleanup() {
+  [[ -z "$error_file" ]] || rm -f -- "$error_file"
+  error_file=""
+  if [[ "$lock_owned" == true && "$lock_release_safe" == true &&
+    -n "$operation_lock" ]]; then
+    rm -f -- "$operation_lock/pid"
+    rmdir -- "$operation_lock" 2>/dev/null || true
+    lock_owned=false
+  fi
+}
+
+acquire_operation_lock() {
+  local owner_file
+  if ! mkdir -- "$operation_lock" 2>/dev/null; then
+    die "another operation is using this receipt, or a stale lock must be reviewed: $operation_lock"
+  fi
+  lock_owned=true
+  owner_file="$operation_lock/pid"
+  printf '%s\n' "$$" >"$owner_file" ||
+    die "could not record operation lock ownership."
+}
+
 valid_region() {
   [[ "$1" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]]
 }
@@ -97,7 +124,7 @@ stack_does_not_exist() {
   grep -Fq "does not exist" "$1"
 }
 
-for command in aws jq openssl stat mktemp ln; do
+for command in aws jq openssl stat mktemp ln mkdir rmdir; do
   command -v "$command" >/dev/null || die "$command is required."
 done
 
@@ -142,6 +169,12 @@ done
   die "--receipt must be an absolute path."
 receipt_parent=$(dirname -- "$receipt")
 private_parent "$receipt_parent"
+operation_lock="${receipt}.lock"
+acquire_operation_lock
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ "$action" == create ]]; then
   [[ ! -e "$receipt" && ! -L "$receipt" ]] ||
@@ -178,7 +211,6 @@ if [[ "$action" == create ]]; then
   stack_name="openclaw-enterprise-images-$run_id"
   repository_prefix="openclaw-enterprise/$run_id"
   error_file=$(mktemp)
-  trap 'rm -f -- "${error_file:-}"' EXIT
   if aws cloudformation describe-stacks \
     --region "$region" \
     --stack-name "$stack_name" >/dev/null 2>"$error_file"; then
@@ -214,6 +246,7 @@ if [[ "$action" == create ]]; then
 
   script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
   template_file="$script_dir/../build/template.yaml"
+  lock_release_safe=false
   if ! aws cloudformation deploy \
     --region "$region" \
     --stack-name "$stack_name" \
@@ -288,6 +321,8 @@ if [[ "$action" == create ]]; then
       "$receipt"
   )
   write_receipt "$receipt" "$completed_receipt"
+  lock_release_safe=true
+  cleanup
   printf 'Created run-owned image build stack. Receipt: %s\n' "$receipt"
 elif [[ "$action" == delete ]]; then
   [[ -z "$region$sample_revision$builder_repository$builder_digest$trusted_invoker_arn" ]] ||
@@ -372,6 +407,7 @@ elif [[ "$action" == delete ]]; then
     die "caller AWS account does not match the receipt."
 
   if [[ "$receipt_status" == deleted ]]; then
+    cleanup
     printf 'Image build stack is already recorded as deleted. Receipt: %s\n' "$receipt"
     exit 0
   fi
@@ -379,7 +415,6 @@ elif [[ "$action" == delete ]]; then
   stack_reference=$stack_name
   [[ "$stack_id" == null ]] || stack_reference=$stack_id
   error_file=$(mktemp)
-  trap 'rm -f -- "${error_file:-}"' EXIT
   if ! stack_json=$(
     aws cloudformation describe-stacks \
       --region "$region" \
@@ -388,6 +423,7 @@ elif [[ "$action" == delete ]]; then
     if stack_does_not_exist "$error_file"; then
       deleted_receipt=$(jq '.status = "deleted"' "$receipt")
       write_receipt "$receipt" "$deleted_receipt"
+      cleanup
       printf 'Image build stack is absent and is now recorded as deleted. Receipt: %s\n' "$receipt"
       exit 0
     fi
@@ -436,6 +472,7 @@ elif [[ "$action" == delete ]]; then
       "$receipt"
   )
   write_receipt "$receipt" "$delete_planned_receipt"
+  lock_release_safe=false
   if ! aws cloudformation delete-stack \
     --region "$region" \
     --stack-name "$actual_stack_id"; then
@@ -452,6 +489,8 @@ elif [[ "$action" == delete ]]; then
   fi
   deleted_receipt=$(jq '.status = "deleted"' "$receipt")
   write_receipt "$receipt" "$deleted_receipt"
+  lock_release_safe=true
+  cleanup
   printf 'Deleted run-owned image build stack. Receipt: %s\n' "$receipt"
 else
   usage

@@ -46,8 +46,9 @@ Editable diagrams:
 - Amazon Inspector enhanced scanning for Amazon ECR already enabled in the
   build account and Region, with a registry rule that covers
   `openclaw-enterprise/*`.
-- AWS CLI v2, Bash, Docker, Git, Go, Helm, `jq`, `kubectl`, Node.js 22 or
-  later, OpenSSL, Python 3, and
+- AWS CLI v2 with a named profile whose source credentials remain valid or
+  refresh automatically throughout the image build, Bash, Docker, Git, Go,
+  Helm, `jq`, `kubectl`, Node.js 22 or later, OpenSSL, Python 3, and
   [Mike Farah `yq`](https://github.com/mikefarah/yq) `v4.54.3`.
 - Kubernetes permission to create cluster-scoped admission resources and a
   StorageClass and create `pods/portforward` requests.
@@ -147,6 +148,7 @@ Use one explicit kube context and kubeconfig throughout:
 
 ```bash
 export SAMPLE_DIR="$PWD"
+export AWS_PROFILE='<aws-cli-profile>'
 export KUBECONFIG='<absolute-kubeconfig-path>'
 export KUBE_CONTEXT='<eks-kube-context>'
 export AWS_ACCOUNT_ID='<12-digit-account-id>'
@@ -320,12 +322,22 @@ export IMAGE_BUILD_STACK_ID="$(
 ```
 
 Use new builder-repository and image-build-stack receipt files for each build.
-Both `create` actions refuse to replace an existing receipt. If stack creation
-or deletion cannot confirm the CloudFormation outcome, rerun the
-`manage-image-build-stack.sh delete` command in Cleanup with the same receipt.
-It safely reconciles `create-planned`, `create-unconfirmed`, and
-`delete-unconfirmed` receipts, verifies ownership before deleting a present
-stack, and records an absent or deleted stack as `deleted`.
+Both `create` actions refuse to replace an existing receipt. If either manager
+cannot confirm creation or deletion, rerun its `delete` command in Cleanup with
+the same receipt. Each `delete` command safely reconciles `create-planned`,
+`create-unconfirmed`, `delete-planned`, and `delete-unconfirmed` receipts,
+verifies ownership before deleting a present resource, and records an absent or
+deleted resource as `deleted`.
+
+The lifecycle managers serialize operations on a receipt with a
+`<receipt>.lock` directory. They remove the lock after normal completion or a
+failure before a cloud mutation starts. They retain it after a signal or error
+interrupts a mutation or its verification. If a retained lock remains, verify
+that its recorded PID is inactive when the PID file exists, then inspect the
+exact resource named in the receipt. A process terminated while acquiring the
+lock can leave an empty lock directory before a receipt exists. In either case,
+reconcile the resource before removing only the lock directory, then rerun the
+corresponding `delete` command with the same receipt.
 
 The script creates a uniquely named, run-owned stack and records its exact ARN
 in a private receipt. The stack creates four encrypted, immutable ECR
@@ -337,7 +349,13 @@ references. ECR basic scanning alone does not meet this gate.
 
 Assume the generated invocation role in a subshell and start the fixed
 workflow. The temporary credentials disappear when the subshell exits; only
-the four non-secret image references are returned to the operator shell:
+the four non-secret image references are returned to the operator shell. The
+command re-assumes the generated role from `AWS_PROFILE` every 45 minutes,
+replacing its one-hour session while the Step Functions workflow continues
+independently. This supports role-chained callers without long-lived
+credentials. The command stops waiting after 185 minutes, covering the
+workflow's 60-minute queue and 120-minute build limits with five minutes of
+overhead:
 
 ```bash
 invocation_role_arn="$(
@@ -355,22 +373,48 @@ state_machine_arn="$(
     --output text
 )"
 (
+set -euo pipefail
 set +x
-credentials="$(
-  aws sts assume-role \
-    --role-arn "$invocation_role_arn" \
-    --role-session-name openclaw-enterprise-image-build
-)"
+source_aws_profile="$AWS_PROFILE"
+assume_build_invocation_role() {
+  credentials="$(
+    (
+      unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+      aws --profile "$source_aws_profile" sts assume-role \
+        --role-arn "$invocation_role_arn" \
+        --role-session-name openclaw-enterprise-image-build \
+        --duration-seconds 3600 \
+        --output json
+    )
+  )"
+  credential_values="$(
+    printf '%s' "$credentials" |
+      jq -er '
+        [
+          .Credentials.AccessKeyId,
+          .Credentials.SecretAccessKey,
+          .Credentials.SessionToken
+        ]
+        | if all(.[];
+            type == "string" and length > 0 and (contains("\t") | not)
+          )
+          then @tsv
+          else error("STS returned incomplete credentials")
+          end
+      '
+  )"
+  IFS=$'\t' read -r access_key secret_key session_token \
+    <<<"$credential_values"
+  [[ -n "$access_key" && -n "$secret_key" && -n "$session_token" ]]
+  export AWS_ACCESS_KEY_ID="$access_key"
+  export AWS_SECRET_ACCESS_KEY="$secret_key"
+  export AWS_SESSION_TOKEN="$session_token"
+  unset credentials credential_values access_key secret_key session_token
+  credentials_refreshed_at="$(date +%s)"
+}
 trap 'unset credentials AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN' EXIT
-export AWS_ACCESS_KEY_ID="$(
-  printf '%s' "$credentials" | jq -er '.Credentials.AccessKeyId'
-)"
-export AWS_SECRET_ACCESS_KEY="$(
-  printf '%s' "$credentials" | jq -er '.Credentials.SecretAccessKey'
-)"
-export AWS_SESSION_TOKEN="$(
-  printf '%s' "$credentials" | jq -er '.Credentials.SessionToken'
-)"
+assume_build_invocation_role
+execution_deadline=$(($(date +%s) + 11100))
 execution_arn="$(
   aws stepfunctions start-execution \
     --state-machine-arn "$state_machine_arn" \
@@ -379,8 +423,19 @@ execution_arn="$(
     --output text
 )"
 while :; do
+  current_epoch="$(date +%s)"
+  if ((current_epoch >= execution_deadline)); then
+    printf 'Timed out waiting for Step Functions execution: %s\n' \
+      "$execution_arn" >&2
+    exit 1
+  fi
+  if ((current_epoch - credentials_refreshed_at >= 2700)); then
+    assume_build_invocation_role
+  fi
   execution_json="$(
-    aws stepfunctions describe-execution --execution-arn "$execution_arn"
+    aws stepfunctions describe-execution \
+      --execution-arn "$execution_arn" \
+      --output json
   )"
   status="$(printf '%s' "$execution_json" | jq -r '.status')"
   case "$status" in
@@ -395,10 +450,20 @@ while :; do
       printf '%s' "$execution_json" | jq '{status, error, cause}' >&2
       exit 1
       ;;
+    RUNNING) ;;
+    *)
+      printf 'Unexpected Step Functions status %s for %s\n' \
+        "$status" "$execution_arn" >&2
+      exit 1
+      ;;
   esac
   sleep 20
 done
-build_json="$(aws codebuild batch-get-builds --ids "$build_id")"
+build_json="$(
+  aws codebuild batch-get-builds \
+    --ids "$build_id" \
+    --output json
+)"
 test "$(printf '%s' "$build_json" | jq -r '.builds[0].buildStatus')" = \
   'SUCCEEDED'
 

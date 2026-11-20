@@ -511,6 +511,7 @@ def test_only_fixed_workflow_role_can_start_the_privileged_build() -> None:
     assert other_codebuild_allows == []
 
     invocation_role = template["Resources"]["ImageBuildInvocationRole"]
+    assert "MaxSessionDuration" not in invocation_role["Properties"]
     invocation_statements = invocation_role["Properties"]["Policies"][0][
         "PolicyDocument"
     ]["Statement"]
@@ -657,7 +658,24 @@ def test_readme_scopes_build_credentials_to_a_subshell() -> None:
         "**Step 3:", 1
     )[0]
 
-    assert '(\nset +x\ncredentials="$(\n  aws sts assume-role' in build_step
+    assert (
+        '(\nset -euo pipefail\nset +x\nsource_aws_profile="$AWS_PROFILE"'
+        in build_step
+    )
+    assert "assume_build_invocation_role() {" in build_step
+    assert 'aws --profile "$source_aws_profile" sts assume-role' in build_step
+    assert "--duration-seconds 3600" in build_step
+    assert "--output json" in build_step
+    assert 'else error("STS returned incomplete credentials")' in build_step
+    assert 'IFS=$\'\\t\' read -r access_key secret_key session_token' in build_step
+    assert 'export AWS_ACCESS_KEY_ID="$access_key"' in build_step
+    assert 'export AWS_SECRET_ACCESS_KEY="$secret_key"' in build_step
+    assert 'export AWS_SESSION_TOKEN="$session_token"' in build_step
+    assert "set -euo pipefail" in build_step
+    assert "execution_deadline=$(($(date +%s) + 11100))" in build_step
+    assert "current_epoch - credentials_refreshed_at >= 2700" in build_step
+    assert "current_epoch >= execution_deadline" in build_step
+    assert "Unexpected Step Functions status" in build_step
     assert (
         "trap 'unset credentials AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY "
         "AWS_SESSION_TOKEN' EXIT" in build_step
@@ -668,6 +686,86 @@ def test_readme_scopes_build_credentials_to_a_subshell() -> None:
         "export ADAPTER_IMAGE=\"$(\n  jq -er '.ADAPTER_IMAGE' "
         '"$PRIVATE_STATE_DIR/image-build-outputs.json"' in build_step
     )
+
+
+def test_readme_role_refresh_rejects_incomplete_sts_credentials(
+    tmp_path: pathlib.Path,
+) -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    build_step = readme.split("**Step 2: Build and scan the images**", 1)[1].split(
+        "**Step 3:", 1
+    )[0]
+    function_start = build_step.index("assume_build_invocation_role() {")
+    function_lines = build_step[function_start:].splitlines()
+    function_end = function_lines.index("}")
+    function_source = "\n".join(function_lines[: function_end + 1])
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_aws = bin_dir / "aws"
+    fake_aws.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+[[ " $* " == *" --output json "* ]]
+printf '%s' "$FAKE_STS_RESPONSE"
+""",
+        encoding="utf-8",
+    )
+    fake_aws.chmod(0o755)
+    shell = f"""\
+set -euo pipefail
+source_aws_profile=test-profile
+invocation_role_arn=arn:aws:iam::123456789012:role/test
+{function_source}
+assume_build_invocation_role
+printf '%s\\n' "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY:$AWS_SESSION_TOKEN"
+"""
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+    }
+
+    valid = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+        env={
+            **environment,
+            "FAKE_STS_RESPONSE": json.dumps(
+                {
+                    "Credentials": {
+                        "AccessKeyId": "access",
+                        "SecretAccessKey": "secret",
+                        "SessionToken": "token",
+                    }
+                }
+            ),
+        },
+    )
+    assert valid.returncode == 0, valid.stderr
+    assert valid.stdout == "access:secret:token\n"
+
+    incomplete = subprocess.run(
+        ["bash", "-c", shell],
+        check=False,
+        text=True,
+        capture_output=True,
+        env={
+            **environment,
+            "FAKE_STS_RESPONSE": json.dumps(
+                {
+                    "Credentials": {
+                        "AccessKeyId": "access",
+                        "SessionToken": "token",
+                    }
+                }
+            ),
+        },
+    )
+    assert incomplete.returncode != 0
+    assert "STS returned incomplete credentials" in incomplete.stderr
+    assert incomplete.stdout == ""
 
 
 def test_build_script_builds_each_image_from_the_expected_source() -> None:

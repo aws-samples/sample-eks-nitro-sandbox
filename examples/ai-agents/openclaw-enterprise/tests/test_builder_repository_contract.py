@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import signal
 import subprocess
 import textwrap
+import time
 
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = SAMPLE / "scripts" / "manage-builder-repository.sh"
@@ -151,6 +153,30 @@ def _private_receipt(tmp_path: pathlib.Path) -> pathlib.Path:
     return private_dir / "builder-repository.json"
 
 
+def _wait_for_receipt_status(
+    receipt: pathlib.Path, expected_status: str
+) -> None:
+    for _ in range(100):
+        try:
+            if json.loads(receipt.read_text(encoding="utf-8"))["status"] == expected_status:
+                return
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        time.sleep(0.01)
+    raise AssertionError(f"receipt did not reach {expected_status}")
+
+
+def _wait_for_log_text(log_file: pathlib.Path, expected_text: str) -> None:
+    for _ in range(100):
+        try:
+            if expected_text in log_file.read_text(encoding="utf-8"):
+                return
+        except FileNotFoundError:
+            pass
+        time.sleep(0.01)
+    raise AssertionError(f"log did not contain {expected_text}")
+
+
 def test_script_is_executable_and_documented() -> None:
     assert os.access(SCRIPT, os.X_OK)
     readme = README.read_text(encoding="utf-8")
@@ -207,26 +233,166 @@ def test_concurrent_create_cannot_overwrite_the_receipt(
     receipt = _private_receipt(tmp_path)
     bin_dir, aws_log = _fake_tools(tmp_path)
     environment = _environment(tmp_path, bin_dir, aws_log)
-    environment["FAKE_FIRST_DESCRIBE_PER_PARENT"] = "1"
     environment["FAKE_CREATE_DELAY"] = "0.2"
 
-    processes = [
-        subprocess.Popen(
-            _create_command(receipt),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=environment,
-        )
-        for _ in range(2)
-    ]
+    first = subprocess.Popen(
+        _create_command(receipt),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    _wait_for_receipt_status(receipt, "create-planned")
+    second = subprocess.Popen(
+        _create_command(receipt),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    processes = [first, second]
     results = [process.communicate() + (process.returncode,) for process in processes]
 
     assert sorted(result[2] for result in results) == [0, 1]
     failed = next(result for result in results if result[2] != 0)
-    assert "refusing to replace an existing receipt" in failed[1]
+    assert "another operation is using this receipt" in failed[1]
     assert aws_log.read_text(encoding="utf-8").count("ecr create-repository") == 1
     assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "created"
+    assert not pathlib.Path(f"{receipt}.lock").exists()
+
+
+def test_delete_cannot_race_an_in_progress_create(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = _private_receipt(tmp_path)
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    environment["FAKE_CREATE_DELAY"] = "0.3"
+
+    create = subprocess.Popen(
+        _create_command(receipt),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    _wait_for_receipt_status(receipt, "create-planned")
+
+    deleted = subprocess.run(
+        _delete_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+    _, stderr = create.communicate()
+
+    assert create.returncode == 0, stderr
+    assert deleted.returncode != 0
+    assert "another operation is using this receipt" in deleted.stderr
+    assert "ecr delete-repository" not in aws_log.read_text(encoding="utf-8")
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "created"
+    assert not pathlib.Path(f"{receipt}.lock").exists()
+
+
+def test_create_refuses_an_unverified_stale_operation_lock(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = _private_receipt(tmp_path)
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    operation_lock.mkdir()
+    (operation_lock / "pid").write_text("2147483647\n", encoding="utf-8")
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+
+    created = subprocess.run(
+        _create_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert created.returncode != 0
+    assert "a stale lock must be reviewed" in created.stderr
+    assert not receipt.exists()
+    assert operation_lock.exists()
+
+
+def test_create_refuses_an_empty_stale_operation_lock(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = _private_receipt(tmp_path)
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    operation_lock.mkdir()
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+
+    created = subprocess.run(
+        _create_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert created.returncode != 0
+    assert "a stale lock must be reviewed" in created.stderr
+    assert not receipt.exists()
+    assert operation_lock.exists()
+
+
+def test_early_failure_does_not_delete_an_inherited_error_file(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = _private_receipt(tmp_path)
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    inherited_error_file = tmp_path / "owned-by-caller"
+    inherited_error_file.write_text("keep\n", encoding="utf-8")
+    environment["error_file"] = str(inherited_error_file)
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "create", "--receipt", str(receipt)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "create requires --region" in result.stderr
+    assert inherited_error_file.read_text(encoding="utf-8") == "keep\n"
+    assert not pathlib.Path(f"{receipt}.lock").exists()
+
+
+def test_signal_during_create_retains_lock_for_manual_reconciliation(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = _private_receipt(tmp_path)
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    environment["FAKE_CREATE_DELAY"] = "0.5"
+
+    create = subprocess.Popen(
+        _create_command(receipt),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    )
+    _wait_for_receipt_status(receipt, "create-planned")
+    _wait_for_log_text(aws_log, "ecr create-repository")
+    create.send_signal(signal.SIGTERM)
+    _, stderr = create.communicate(timeout=5)
+
+    assert create.returncode == 143, stderr
+    assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == (
+        "create-planned"
+    )
+    assert operation_lock.is_dir()
+    assert (operation_lock / "pid").read_text(encoding="utf-8").strip().isdigit()
 
 
 def test_delete_refuses_repository_with_wrong_ownership_tag(
@@ -250,6 +416,7 @@ def test_delete_refuses_repository_with_wrong_ownership_tag(
     assert result.returncode != 0
     assert "refusing to delete" in result.stderr
     assert "ecr delete-repository" not in aws_log.read_text(encoding="utf-8")
+    assert not pathlib.Path(f"{receipt}.lock").exists()
 
 
 def test_delete_reconciles_planned_receipt_when_repository_is_absent(
@@ -319,7 +486,11 @@ def test_delete_records_uncertain_result_and_can_resume(
     assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == (
         "delete-unconfirmed"
     )
+    operation_lock = pathlib.Path(f"{receipt}.lock")
+    assert operation_lock.is_dir()
 
+    (operation_lock / "pid").unlink()
+    operation_lock.rmdir()
     environment["FAKE_DELETE_FAIL"] = "0"
     resumed = subprocess.run(
         _delete_command(receipt),
