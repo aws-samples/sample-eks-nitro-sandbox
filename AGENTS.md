@@ -16,7 +16,7 @@ Questions and review pings go to the internal Slack channel `#eks-nitro-sandbox-
 | `docs/ROADMAP.md` | The planned samples, the section names and the layout conventions. |
 | `mkdocs.yml` | The site configuration, including the left menu (`nav`). |
 | `.agents/skills/` | The agent skills, one copy each. The other skills folders are links to it. |
-| `scripts/` | Checks that run with no cluster and no AWS account, and `second-review.sh`, which runs a second review on a reviewer backend you name. |
+| `scripts/` | Checks that run with no cluster and no AWS account, `second-review.sh`, which runs a second review on a reviewer backend you name, and `lib/require-bash.sh`, which a sample script that needs bash 4 sources first. |
 
 ## Preview and build the site
 
@@ -668,6 +668,16 @@ people's demos use at the same time.
   version managers) to run a sample. Install what it needs under `tmp/`, or say what is
   missing. Why: the machine is shared, and a reader needs the same tools, so the page's
   prerequisites list them with their versions.
+- **A script that needs bash 4 says so before it runs anything.** A script that uses an
+  associative array (`declare -A`), `mapfile` or `readarray`, or `${var^^}` and `${var,,}`
+  sources `scripts/lib/require-bash.sh` as its first command, as the scripts that already do
+  show. Pass a multi-line block to `awk` through the environment (`BLOCK="$x" awk
+  '{ ... ENVIRON["BLOCK"] ... }'`), not with `-v`. Keep quotes, backticks and parentheses out
+  of a comment inside `$( ... )`. Why: macOS ships bash 3.2 and BSD awk. Without the check a
+  script ran part way and stopped, and one clean up stopped after it had deleted the Jobs and
+  before it removed the volumes. BSD awk rejects a newline in a `-v` value, and bash 3.2 reads
+  a quote in a comment inside `$( ... )` as syntax: it parsed `ecr-setup.sh` differently,
+  skipped three of its four steps and wrote a state file that said the push was ready.
 
 ## Verification rules
 

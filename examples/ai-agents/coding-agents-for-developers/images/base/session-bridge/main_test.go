@@ -7,6 +7,10 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"net/url"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -110,6 +114,103 @@ func TestReadFrame(t *testing.T) {
 			t.Errorf("%s: unexpected error %v", c.name, err)
 		case c.wantErr != nil && !errors.Is(err, c.wantErr):
 			t.Errorf("%s: error %v, want %v", c.name, err, c.wantErr)
+		}
+	}
+}
+
+func TestPaneTarget(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   []string
+		want string
+		ok   bool
+	}{
+		{"omitted", nil, "agent", true},
+		{"agent", []string{"agent"}, "agent", true},
+		{"shell", []string{"shell"}, "shell", true},
+		{"empty value", []string{""}, "", false},
+		{"repeated", []string{"shell", "agent"}, "", false},
+		{"repeated same", []string{"shell", "shell"}, "", false},
+		{"case", []string{"Shell"}, "", false},
+		{"injection", []string{"agent;id"}, "", false},
+		{"path", []string{"../x"}, "", false},
+		{"newline", []string{"shell\n"}, "", false},
+		{"space", []string{" shell"}, "", false},
+	} {
+		got, ok := paneTarget(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("%s: paneTarget(%q) = %q, %v; want %q, %v", c.name, c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestPaneQuery runs the query through the same parse the handler uses, so the values that
+// reach paneTarget are the ones a request really produces.
+func TestPaneQuery(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		want string
+		ok   bool
+	}{
+		{"cols=80", "agent", true},
+		{"pane=shell", "shell", true},
+		{"pane=%73hell", "shell", true},
+		{"pane=", "", false},
+		{"pane=shell&pane=agent", "", false},
+		{"pane=agent&pane=shell", "", false},
+		{"pane=shell;ignored=x", "", false},
+		{"pane=shell%0a", "", false},
+		{"pane=%20shell", "", false},
+	} {
+		q, err := url.ParseQuery(c.raw)
+		got, ok := paneTarget(q["pane"])
+		if err != nil {
+			got, ok = "", false // the handler refuses a query that does not parse
+		}
+		if got != c.want || ok != c.ok {
+			t.Errorf("%q: got %q, %v; want %q, %v", c.raw, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestActivityScript runs the real script with a stub tmux that knows which sessions exist
+// and what activity each reports, so it covers every combination of the two sessions.
+func TestActivityScript(t *testing.T) {
+	dir := t.TempDir()
+	stub := `#!/bin/sh
+# usage: tmux has-session -t S | display-message -p -t S FMT | list-windows -t S -F FMT
+case "$1" in
+has-session) case " $STUB_SESSIONS " in *" $3 "*) exit 0;; esac; exit 1;;
+display-message) eval "echo \$STUB_SESSION_$4";;
+list-windows) eval "echo \$STUB_WINDOW_$3";;
+esac
+`
+	if err := os.WriteFile(dir+"/tmux", []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, sessions, want string
+		extra                []string // appended to the environment; the last duplicate wins
+	}{
+		{"both", "agent shell", "1700000999", nil},
+		{"agent only", "agent", "1700000200", nil},
+		{"shell only keeps the session", "shell", "1700000999", nil},
+		{"neither", "", "none", nil},
+		// Key input moves session_activity, not window_activity: with the stub's session
+		// time the newest value, dropping the display-message call changes the answer.
+		{"session_activity is the newest", "agent", "1700000900", []string{"STUB_SESSION_agent=1700000900"}},
+	} {
+		cmd := exec.Command("/bin/sh", "-c", activityScript)
+		cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin", "STUB_SESSIONS=" + c.sessions,
+			"STUB_SESSION_agent=1700000100", "STUB_WINDOW_agent=1700000200",
+			"STUB_SESSION_shell=1700000500", "STUB_WINDOW_shell=1700000999"}
+		cmd.Env = append(cmd.Env, c.extra...)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got := strings.TrimSpace(string(out)); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }

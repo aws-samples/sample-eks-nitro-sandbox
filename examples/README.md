@@ -53,6 +53,12 @@ lightweight VM with its own kernel; the node's kubelet still sees an ordinary po
   [`kubectl`](https://kubernetes.io/docs/tasks/tools/).
 - [Git](https://git-scm.com/downloads), to clone this repository: each blueprint applies
   manifests and builds images from files in its folder.
+- A shell for the scripts: bash 4 or later. Linux and
+  [AWS CloudShell](https://docs.aws.amazon.com/cloudshell/latest/userguide/welcome.html) have
+  it. macOS ships bash 3.2, so install a newer one with `brew install bash`, or run from
+  CloudShell. A script that needs bash 4 stops with a message when the shell is older. The
+  `setup/ubuntu-ami` build scripts and `scripts/second-review.sh` also use GNU tool options
+  (`realpath -m`, `find -printf`), so run them on Linux.
 - For the coding agent blueprint: [Docker](https://docs.docker.com/get-docker/), Git
   with `user.name` and `user.email` set, a GitHub account with the
   [GitHub CLI](https://cli.github.com/) (`gh`) signed in, and access to an Anthropic Claude

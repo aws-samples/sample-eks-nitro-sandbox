@@ -1,0 +1,51 @@
+{
+  "realm": "coder",
+  "displayName": "Coder",
+  "enabled": true,
+  "sslRequired": "all",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "clients": [
+    {
+      "clientId": "coder",
+      "name": "Coder",
+      "description": "Coder control plane (coderd). Confidential client, authorization code flow only.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${CODER_OIDC_CLIENT_SECRET}",
+      "rootUrl": "https://<DOMAIN>",
+      "baseUrl": "/",
+      "redirectUris": [
+        "https://<DOMAIN>/api/v2/users/oidc/callback"
+      ],
+      "webOrigins": [
+        "https://<DOMAIN>"
+      ],
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "consentRequired": false,
+      "fullScopeAllowed": false,
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": []
+    }
+  ]
+}
