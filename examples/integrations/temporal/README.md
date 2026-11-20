@@ -81,6 +81,8 @@ Everything else here has whatever reach any pod on your cluster has. The Worker 
 Kubernetes API and the Temporal frontend, and nothing in this blueprint stops it reaching
 anything else; the Temporal server and its PostgreSQL are likewise unrestricted on the
 wire, and are kept off the public internet only by being ClusterIP Services with no Ingress.
+No Service selects the Worker and its container declares no port; it connects out to the
+Temporal frontend and the Kubernetes API.
 This blueprint ships no network policy. To restrict where a pod can connect, see the
 [network policy](../../isolation/network-policy/README.md) blueprint.
 
@@ -209,9 +211,21 @@ kubectl create namespace temporal
 openssl rand -base64 24 | tr -d '\n' \
   | kubectl -n temporal create secret generic temporal-postgresql --from-file=password=/dev/stdin
 kubectl get storageclass temporal-postgresql-gp3 || kubectl create -f deploy/temporal/storage-class.yaml
-kubectl -n temporal apply -f deploy/temporal/postgresql.yaml
+kubectl -n temporal create -f deploy/temporal/postgresql.yaml
 kubectl -n temporal rollout status statefulset/temporal-postgresql
 ```
+
+The manifest is created, not applied: in the namespace you have just made, its Service,
+ConfigMap and StatefulSet must all be new, and `kubectl create` stops on one that already
+exists instead of changing it.
+
+Kubernetes hands PostgreSQL that password as a file, not as an environment variable in the
+pod spec: the manifest mounts the Secret read-only at `/run/secrets/postgresql` and points
+`POSTGRES_PASSWORD_FILE` at the file in it. It runs as the image's own non-root `postgres`
+user, UID and GID 70, with a read-only root filesystem, every capability dropped, privilege
+escalation off, the `RuntimeDefault` seccomp profile and no ServiceAccount token. Its only
+writable mounts are the data volume and `/var/run/postgresql`, the directory for its socket.
+Readiness and liveness both run `pg_isready`.
 
 PostgreSQL has to be running before `helm install`, because the chart's schema job is a
 `pre-install` hook. Then install the chart with this blueprint's values:
@@ -322,8 +336,8 @@ Run ID and start time, one near the top still shown as RUNNING and one as
 FAILED.](images/temporal-ui-workflows-list.png)
 
 *The Workflows list for the `nitro-sandbox` namespace, reached through the port-forward
-above. This capture is from a separate run of this blueprint on the same cluster, after the
-walkthrough below, so it could show a mix of statuses rather than only the one completed
+above. This capture is from an earlier real run of this blueprint, not from the walkthrough
+below, so it could show a mix of statuses rather than only the one completed
 run the rest of this page follows; the RUNNING and FAILED entries are other runs of the
 same workflow, started the same way.*
 
@@ -671,8 +685,8 @@ nothing: there is no default route. `kubectl exec` still works, which is what th
 drives the step over, because it rides the sandbox's own internal control channel rather
 than a network device.
 
-Neither the sandbox nor the Worker holds a credential, which is checkable by variable name
-without printing a value:
+Neither the sandbox nor the Worker holds a credential in an environment variable, which is
+checkable by variable name without printing a value:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n temporal-sandboxes exec lifecycle -- sh -c 'env | cut -d= -f1 | sort'
@@ -759,8 +773,9 @@ account for:
 
 The self-hosted Temporal server this blueprint uses has no authentication of its own, which is
 why there is no Temporal credential to hold, and why step 2 keeps it on ClusterIP and
-reaches it only with a port-forward. The PostgreSQL password is in a Secret that only the
-Temporal server's own pods read; nothing in this blueprint's namespace has it.
+reaches it only with a port-forward. The PostgreSQL password is in a Secret in the Temporal
+server's namespace, which PostgreSQL mounts as a read-only file and the Temporal server
+reads through the chart's `existingSecret`; nothing in this blueprint's namespace has it.
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" -n temporal-sandboxes get pod lifecycle \
@@ -777,7 +792,8 @@ kube-api-access-rbljc
 ```
 
 The sandbox pod has one volume, its workspace. The Worker has one too, and it is the
-projected ServiceAccount token: `kube-api-access-ndpvn`. That one line in the pod template
+projected ServiceAccount token: the `kube-api-access-` line in the block above, whose
+suffix Kubernetes picks for each pod. That one line in the pod template
 is the difference, and this is the reading that shows it took effect rather than only that
 it was asked for.
 
@@ -1282,6 +1298,10 @@ account, no external endpoint and no key. Moving it to Cloud is left as an exerc
   `karpenter.sh/do-not-disrupt: "true"` so the node is not consolidated with the volume
   still attached, which could stall the detach. The controller re-creates the pod on
   resume, so this does not prevent the suspend and resume cycle.
+- **The Worker has no liveness or readiness probe.** It is one process polling the task
+  queue, and no Service sends it traffic, so readiness would gate no Service traffic. When
+  the process exits, Kubernetes restarts the container. A Worker that hangs without exiting
+  is not detected: that would need a heartbeat the harness does not expose.
 - **The Temporal server's history is what you are keeping.** Its PostgreSQL holds every
   run, which is the record this blueprint is about, so the clean up keeps the server by
   default and the commands to remove it are in the clean up's own output.

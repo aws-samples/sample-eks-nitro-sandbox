@@ -267,7 +267,7 @@ temporal_install_command() {
   kubectl create namespace $TEMPORAL_K8S_NAMESPACE
   openssl rand -base64 24 | tr -d '\n' \\
     | kubectl -n $TEMPORAL_K8S_NAMESPACE create secret generic temporal-postgresql --from-file=password=/dev/stdin
-  kubectl -n $TEMPORAL_K8S_NAMESPACE apply -f deploy/temporal/postgresql.yaml
+  kubectl -n $TEMPORAL_K8S_NAMESPACE create -f deploy/temporal/postgresql.yaml
   kubectl -n $TEMPORAL_K8S_NAMESPACE rollout status statefulset/temporal-postgresql
   helm repo add temporal https://go.temporal.io/helm-charts && helm repo update temporal
   helm install $TEMPORAL_RELEASE temporal/temporal --version $TEMPORAL_CHART_VERSION \\
