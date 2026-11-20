@@ -1,45 +1,107 @@
 #!/usr/bin/env bash
-# run.sh -- run one procurement case in the sandboxed analyst pod and copy its
+# run.sh -- run the procurement case in the sandboxed analyst pod, once, and copy its
 # recommendation and evidence out.
 #
 # Usage:
 #   ./scripts/run.sh
 #
-# Each run gets a fresh run id and its own directories inside the pod, so one run cannot
-# read or resume another's. It leaves both pods running; ./scripts/clean.sh removes them.
+# One setup gets one model turn: a second run.sh against the same run record refuses before
+# it reaches the pod, and so does the controller inside the pod. When it succeeds it leaves
+# both pods running for the page's last step; ./scripts/clean.sh removes them, and so does
+# the run's own deadline. When it fails, it runs ./scripts/clean.sh --delete-aws
+# --delete-node itself, keeping what the run printed in tmp/bubblewrap-run-failure/.
 set -euo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$SAMPLE_DIR/../../.." && pwd)"
-TMP_DIR="$REPO_ROOT/tmp/bubblewrap"
-STATE_FILE="$TMP_DIR/state.env"
+SAMPLE="bubblewrap"
 
 for arg in "$@"; do
   case "$arg" in
-    --help|-h) sed -n '2,11p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
-[[ -f "$STATE_FILE" ]] || { echo "ERROR: no run record at $STATE_FILE; run ./scripts/setup.sh first" >&2; exit 1; }
-set -a; . "$STATE_FILE"; set +a
-
-kc() {
-  if [[ -n "${KUBE_CONTEXT:-}" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"
-  else kubectl "$@"; fi
-}
 die() { echo "ERROR: $*" >&2; exit 1; }
+# shellcheck source=run-lib.sh
+. "$SAMPLE_DIR/scripts/run-lib.sh"
+kc() { kubectl --context "$KUBE_CONTEXT" "$@"; }
 
-# The pod has to be the one setup created, with the image setup pushed: a pod left from an
-# earlier image would run yesterday's code and the page would show the wrong thing.
+# A run that fails once it has started removes what setup created, so nothing it started
+# keeps running or billing. What it printed is kept first, outside the run directory. A
+# refusal before that point (no record, a second run, another script holding the lock)
+# leaves the first run exactly as it was.
+clean_on_failure=false
+on_run_exit() {
+  local status=$?
+  trap - EXIT
+  if [[ "$status" != 0 && "$clean_on_failure" == true ]]; then
+    echo "the run stopped (exit $status); removing what setup created so nothing it started keeps billing" >&2
+    rm -rf "$REPO_ROOT/tmp/bubblewrap-run-failure"
+    mkdir -p "$REPO_ROOT/tmp/bubblewrap-run-failure"
+    cp -R "$TMP_DIR/controller.log" "$TMP_DIR/runs" "$REPO_ROOT/tmp/bubblewrap-run-failure/" 2>/dev/null || true
+    "$SAMPLE_DIR/scripts/clean.sh" --delete-aws --delete-node ||
+      echo "the clean up after the failed run is incomplete (see above); run ./scripts/clean.sh --delete-aws --delete-node again" >&2
+  fi
+  lock_release
+  exit "$status"
+}
+trap on_run_exit EXIT
+
+lock_take 0 ||
+  die "another setup, run or clean up of this sample holds $LOCK_DIR; ran nothing"
+state_load NAMESPACE KUBE_CONTEXT AWS_REGION ACCOUNT_ID CLUSTER_NAME CLUSTER_ENDPOINT BUCKET \
+    BEDROCK_MODEL_ID ANALYST_IMAGE COST_SNAPSHOT COST_SNAPSHOT_SHA256 RUN_STARTED_AT CLEANUP_AT_EPOCH \
+    DEADLINE_PID SUPPLIER_API_IMAGE_BYTES ANALYST_IMAGE_BYTES ||
+  die "no readable run record at $STATE_FILE, or it lacks what setup records; run ./scripts/setup.sh first"
+[[ ! -e "$TMP_DIR/model-turn" ]] ||
+  die "this run's model turn has already run once, and one setup pays for one. Clean up with ./scripts/clean.sh --delete-aws --delete-node and set up again for another."
+clean_on_failure=true
+
+# The deadline process setup started must still be there: it is the clean up that runs at
+# the deadline, and the model turn is the one paid step of the run.
+ps -o args= -p "${DEADLINE_PID:-0}" 2>/dev/null | grep -q "deadline\\.sh .*${CLEANUP_AT_EPOCH:-none}" ||
+  die "the clean-up deadline process setup started (pid ${DEADLINE_PID:-none}) is no longer running; nothing was run"
+
+# The kube context must still point at the cluster endpoint setup recorded.
+server="$(kubectl config view --minify --context "$KUBE_CONTEXT" -o 'jsonpath={.clusters[0].cluster.server}' 2>/dev/null)"
+server="${server%/}"
+[[ "${server%:443}" == "$CLUSTER_ENDPOINT" ]] ||
+  die "the kube context $KUBE_CONTEXT no longer points at $CLUSTER_ENDPOINT, the endpoint setup recorded; nothing was run"
+
+# The pod has to be the one setup created, with the image setup pushed, by digest.
 live_image="$(kc get pod analyst -n "$NAMESPACE" -o jsonpath='{.spec.containers[0].image}' 2>/dev/null)" ||
-  die "could not read the analyst pod in $NAMESPACE; run ./scripts/setup.sh"
+  die "could not read the analyst pod in $NAMESPACE"
 [[ "$live_image" == "$ANALYST_IMAGE" ]] ||
-  die "the running analyst pod uses $live_image, not the $ANALYST_IMAGE setup pushed; run ./scripts/setup.sh again"
+  die "the running analyst pod uses $live_image, not the $ANALYST_IMAGE setup pushed"
 [[ "$(kc get pod analyst -n "$NAMESPACE" -o jsonpath='{.spec.runtimeClassName}')" == "isolated-sandbox" ]] ||
   die "the analyst pod is not using the isolated-sandbox runtime class"
 
-mkdir -p "$TMP_DIR"
+# The same cost bound setup checked, again before the model turn: the reads setup collected,
+# rebuilt, with the image sizes setup measured, and only inside the run window that starts
+# when setup did. Silent when it passes.
+[[ -n "${COST_SNAPSHOT:-}" && -d "$COST_SNAPSHOT" ]] ||
+  die "the run record names no cost snapshot, or its folder is gone"
+SECTION_DIR="$SAMPLE_DIR/.."
+terms="$(python3 "$SAMPLE_DIR/scripts/cost_gate.py" --snapshot "$COST_SNAPSHOT" \
+  --manifest "$SAMPLE_DIR/deploy/analyst-pod.yaml" \
+  --envelope "$SAMPLE_DIR/src/run_envelope.json" --region "$AWS_REGION" \
+  --account "${ACCOUNT_ID:-}" --cluster-name "${CLUSTER_NAME:-}" --kube-context "$KUBE_CONTEXT" \
+  --extra-s3 "${COST_EXTRA_S3_REQUESTS:-}" \
+  --model-id "${BEDROCK_MODEL_ID:-}" --image "supplier-api=${SUPPLIER_API_IMAGE_BYTES:-}" \
+  --image "analyst=${ANALYST_IMAGE_BYTES:-}" --started-at "${RUN_STARTED_AT:-}" \
+  --seed-object "$SECTION_DIR/analyst/fixtures/case.json" \
+  --seed-object "$SECTION_DIR/analyst/fixtures/proposals/northstar.json" \
+  --seed-object "$SECTION_DIR/analyst/fixtures/proposals/harbor.json" \
+  --seed-object "$SECTION_DIR/analyst/fixtures/proposals/cedar.json")" ||
+  die "the cost check refused this run, for the reason above; nothing was run"
+[[ "$(jq -r '.snapshot_sha256' <<<"$terms")" == "${COST_SNAPSHOT_SHA256:-}" ]] ||
+  die "the cost snapshot $COST_SNAPSHOT changed after setup checked it; nothing was run"
+
+# Once only: mkdir is the claim, in one syscall, before the controller starts.
+mkdir "$TMP_DIR/model-turn" || die "this run's model turn has already started once; nothing was run"
+state_put MODEL_TURN_AT "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '\n==> running one procurement case in the sandbox\n'
 set +e
 kc exec analyst -n "$NAMESPACE" -- python3 /opt/bubblewrap/controller.py 2>&1 |
@@ -47,7 +109,7 @@ kc exec analyst -n "$NAMESPACE" -- python3 /opt/bubblewrap/controller.py 2>&1 |
 status="${PIPESTATUS[0]}"
 set -e
 [[ "$status" == 0 ]] ||
-  die "the run failed; the last check it printed above is the one that did not hold. The full output is in $TMP_DIR/controller.log"
+  die "the run failed; the last check it printed above is the one that did not hold. The full output is kept in $REPO_ROOT/tmp/bubblewrap-run-failure/controller.log"
 
 run_id="$(grep -oE '^ANALYST_COMPLETE=[0-9a-f]{32}$' "$TMP_DIR/controller.log" | tail -1 | cut -d= -f2)"
 [[ -n "$run_id" ]] || die "the run printed no completion marker, so it did not finish"
@@ -63,10 +125,7 @@ done
 # so the requests that arrived upstream can be compared with what the controller says it
 # sent. In this sample no tool process has a network, so the point of the comparison is
 # that the only requests the server saw are the trusted controller's own.
-api_pod="$(kc get pods -n "$NAMESPACE" -l app=supplier-api \
-  -o jsonpath='{.items[0].metadata.name}')"
-[[ -n "$api_pod" ]] || die "no supplier API pod is running in $NAMESPACE"
-kc exec "$api_pod" -n "$NAMESPACE" -- cat /var/lib/supplier/requests.jsonl \
+kc exec supplier-api -n "$NAMESPACE" -- cat /var/lib/supplier/requests.jsonl \
   > "$out/supplier-api-requests.jsonl" ||
   die "could not read the supplier API request log"
 

@@ -41,26 +41,34 @@ kc() {
 }
 
 # A lookup that cannot run is "could not determine", which is a failure, never "absent".
-# Absence is proved by the service's own not-found exception and nothing else; any other
-# error has to stop the script before it can create a duplicate of something already
-# there.
-#   lookup <not-found-exception> <aws args...>
+# Absence is proved by the service's own not-found error and nothing else: exit 254 (the
+# AWS CLI's "the service returned an error"), nothing on standard output, and one line on
+# standard error that is exactly "An error occurred (<code>) when calling the <Operation>
+# operation", with the operation named by the call itself. Any other error, including an
+# AccessDenied whose message happens to mention the code, has to stop the script before it
+# can create a duplicate of something already there.
+#   lookup <not-found-exception> <service> <cli operation> [args...]
 #     prints stdout and returns 0 when the resource is there
-#     returns 1 only when the named exception came back
+#     returns 1 only when exactly that error came back
 #     returns 2 when it could not be determined, having printed the AWS error
 #
 # It returns 2 rather than exiting, because callers run it inside a command substitution:
 # an exit there would leave the subshell only, and the caller would read the non-zero
 # status as "absent" and go on to create the resource.
 lookup() {
-  local notfound="$1"; shift
-  local out err rc=0
+  local code="$1" op out err rc=0
+  shift
+  op="$(awk -F- '{ for (i = 1; i <= NF; i++) printf "%s%s", toupper(substr($i, 1, 1)), substr($i, 2) }' <<<"$2")"
   out="$(mktemp "${TMPDIR:-/tmp}/analyst-out.XXXXXX")" || return 2
-  err="$(mktemp "${TMPDIR:-/tmp}/analyst-err.XXXXXX")" || return 2
+  err="$(mktemp "${TMPDIR:-/tmp}/analyst-err.XXXXXX")" || { rm -f "$out"; return 2; }
   aws "$@" >"$out" 2>"$err" || rc=$?
   if [[ "$rc" == 0 ]]; then cat "$out"; rm -f "$out" "$err"; return 0; fi
-  if grep -Fq "$notfound" "$err"; then rm -f "$out" "$err"; return 1; fi
-  echo "ERROR: 'aws $*' failed (exit $rc) and not with $notfound, so it is unknown whether the resource exists:" >&2
+  if [[ "$rc" == 254 && ! -s "$out" && "$(grep -c . "$err")" == 1 ]] &&
+     grep -Eq "^An error occurred \\($code\\) when calling the $op operation(: .*)?\$" "$err"; then
+    rm -f "$out" "$err"
+    return 1
+  fi
+  echo "ERROR: 'aws $*' failed (exit $rc) and not with exactly $code from $op, so it is unknown whether the resource exists:" >&2
   sed 's/^/  /' "$err" >&2
   rm -f "$out" "$err"
   return 2
@@ -74,6 +82,32 @@ stop_if_undetermined() { # <lookup-rc> <description>
 require_managed_by() { # <description> <actual-tag-value>
   [[ "$2" == "$SAMPLE" ]] ||
     die "$1 already exists and is not this sample's (ManagedBy='$2', expected '$SAMPLE'); created and changed nothing. Delete it, or set a new name in .env."
+}
+
+# What a run has just created is read back before the next step builds on it, and a value
+# that is not the one expected stops the run there. Silent when everything matches.
+expect() { # <what> <actual> <expected> <the step it stops before>
+  [[ "$2" == "$3" ]] || die "$1 read back as '$2', not '$3'; stopped before $4."
+}
+
+# A read-back of something just created. IAM and EKS can take a moment to show a new
+# object, so only the service's own not-found answer is retried, a few times; any other
+# failure, or running out of retries, returns non-zero for the caller to stop on.
+readback() { # <not-found-exception> <aws args...>   prints stdout
+  local _ rc
+  for _ in 1 2 3 4 5; do
+    rc=0; lookup "$@" || rc=$?
+    [[ "$rc" == 1 ]] || return "$rc"
+    sleep 2
+  done
+  return 1
+}
+
+# One read-back call and one value from it, compared as compact JSON or a raw string.
+expect_aws() { # <what> <the step it stops before> <jq filter> <expected> <aws args...>
+  local what="$1" next="$2" filter="$3" want="$4" out; shift 4
+  out="$(aws "$@" --output json)" || die "could not read back $what; stopped before $next."
+  expect "$what" "$(jq -cr "$filter" <<<"$out")" "$want" "$next"
 }
 
 # Renders a shared manifest with this run's names. Never edits a file in place, and never
@@ -163,7 +197,10 @@ analyst_namespace() {
     die "could not determine whether namespace $NAMESPACE exists (the kubectl lookup failed; check the context and your permissions); created nothing in the cluster"
   fi
   if [[ -z "$exists" ]]; then
-    kc apply -f "$TMP_DIR/namespace.yaml"
+    # create, not apply: a namespace someone made since the lookup above makes create
+    # fail, where apply would put this sample's mark on it.
+    kc create -f "$TMP_DIR/namespace.yaml" ||
+      die "could not create namespace $NAMESPACE; created nothing in it"
     state_put NAMESPACE_CREATED true
   elif [[ "$label" != "$SAMPLE" ]]; then
     die "namespace $NAMESPACE already exists and is not this sample's (managed-by='$label'); created nothing in it. Delete it, or set a new NAMESPACE in .env."
@@ -171,6 +208,17 @@ analyst_namespace() {
     echo "  reusing namespace $NAMESPACE (it carries this sample's managed-by label)"
     state_put NAMESPACE_CREATED false
   fi
+  # Read it back before anything goes in it: its name, both labels, and the uid the run
+  # record keeps as its identity.
+  local ns_json next="creating anything in namespace $NAMESPACE"
+  ns_json="$(kc get namespace "$NAMESPACE" -o json)" ||
+    die "could not read back namespace $NAMESPACE; stopped before $next."
+  expect "namespace $NAMESPACE's name and labels" "$(jq -c '.metadata | [.name,
+      .labels["app.kubernetes.io/managed-by"], .labels["app.kubernetes.io/part-of"]]' <<<"$ns_json")" \
+    "$(jq -cn --arg n "$NAMESPACE" --arg m "$SAMPLE" '[$n, $m, "subagent-security"]')" "$next"
+  NAMESPACE_UID="$(jq -r '.metadata.uid // ""' <<<"$ns_json")"
+  [[ -n "$NAMESPACE_UID" ]] || die "namespace $NAMESPACE read back with no uid; stopped before $next."
+  state_put NAMESPACE_UID "$NAMESPACE_UID"
   kc apply -f "$TMP_DIR/service-account.yaml"
 }
 
@@ -242,17 +290,40 @@ analyst_supplier_secrets() {
   echo "  created a 30-day sample certificate authority and the supplier-tls Secret"
 }
 
+# The supplier API image's build inputs, beside its Dockerfile. A digest of them is its tag.
+ANALYST_SUPPLIER_API_INPUTS=(analyst/supplier-api/supplier_api.py analyst/src/business.py
+  analyst/fixtures/case.json analyst/fixtures/availability.json)
+
+# Sets ANALYST_IMAGE to the reference analyst_image would push, and calls nothing: the tag
+# is a digest of the build inputs, so a changed file always means a new tag and a pod can
+# never run yesterday's code under today's name.
+#   analyst_image_ref <ecr-repository> <dockerfile, relative to SECTION_DIR> <input paths...>
+analyst_image_ref() {
+  local repo="$1" dockerfile="$2" tag; shift 2
+  tag="$( (cd "$SECTION_DIR" && cat "$dockerfile" "$@" | sha256sum) | cut -c1-20)"
+  ANALYST_IMAGE="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$repo:$tag"
+}
+
+# Builds ANALYST_IMAGE locally from <dockerfile>; writes nothing anywhere else.
+analyst_image_build() {
+  ( cd "$SECTION_DIR" &&
+    docker build --platform linux/amd64 -f "$1" -t "$ANALYST_IMAGE" . )
+}
+
 # Builds and pushes one image, reusing the pushed tag when the inputs have not changed.
 #   analyst_image <ecr-repository> <dockerfile, relative to SECTION_DIR> <input paths...>
-# Prints nothing; sets ANALYST_IMAGE.
+# When ANALYST_EXPECTED_IMAGE_ID is set, an image it builds must have that id, or nothing
+# is pushed: a caller that measured the image beforehand pushes exactly what it measured.
+# Prints nothing; sets ANALYST_IMAGE, IMAGE_REPOSITORY_CREATED (true or false),
+# IMAGE_LOCAL_ID, the local image id when this call built it and empty when it reused the
+# pushed tag, for the caller to record so a clean up can remove exactly that local image,
+# and IMAGE_DIGEST, the pushed image's sha256 digest.
 analyst_image() {
   local repo="$1" dockerfile="$2"; shift 2
   local tag registry existing rc
-  # The tag is a digest of the build inputs, so a changed file always means a new tag and
-  # a pod can never run yesterday's code under today's name.
-  tag="$( (cd "$SECTION_DIR" && cat "$dockerfile" "$@" | sha256sum) | cut -c1-20)"
-  registry="$ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
-  ANALYST_IMAGE="$registry/$repo:$tag"
+  IMAGE_REPOSITORY_CREATED=false IMAGE_LOCAL_ID=""
+  analyst_image_ref "$repo" "$dockerfile" "$@"
+  tag="${ANALYST_IMAGE##*:}" registry="${ANALYST_IMAGE%%/*}"
 
   # "|| rc=$?" and not "; rc=$?": a failing assignment is not a tested context, so under
   # set -e the shell would exit before rc could be read, and a not-found lookup would
@@ -268,41 +339,116 @@ analyst_image() {
       die "could not read the tags on the ECR repository $repo, so it is unknown whether it is this sample's"
     require_managed_by "the ECR repository $repo" \
       "$(jq -r '.tags[]? | select(.Key=="ManagedBy") | .Value' <<<"$tags")"
+    # A reused repository gets the same checks as a new one: scan on push, and no policy.
+    expect "the ECR repository $repo" "$(jq -c '[(.repositories | length),
+        .repositories[0].imageScanningConfiguration.scanOnPush]' <<<"$existing")" '[1,true]' \
+      "pushing to $repo"
+    rc=0
+    lookup RepositoryPolicyNotFoundException ecr get-repository-policy \
+      --repository-name "$repo" >/dev/null || rc=$?
+    [[ "$rc" == 1 ]] ||
+      die "the ECR repository $repo has a repository policy, or it could not be read; stopped before pushing to $repo."
   else
+    # Tags are mutable unless the caller sets ANALYST_TAG_MUTABILITY=IMMUTABLE (bubblewrap
+    # does, so a tag it pushed and measured can never point at another image); AES256 is
+    # ECR's own default, written out so the caller can read it back.
     aws ecr create-repository --repository-name "$repo" \
       --image-scanning-configuration scanOnPush=true \
+      --image-tag-mutability "${ANALYST_TAG_MUTABILITY:-MUTABLE}" \
+      --encryption-configuration encryptionType=AES256 \
       --tags "Key=ManagedBy,Value=$SAMPLE" >/dev/null
+    IMAGE_REPOSITORY_CREATED=true
     echo "  created the ECR repository $repo"
+
+    # Read it back before anything is pushed to it: this account and Region, scan on
+    # push, this sample's tag, and no repository policy that could share it.
+    local got arn next="pushing to $repo"
+    arn="arn:aws:ecr:$AWS_REGION:$ACCOUNT_ID:repository/$repo"
+    got="$(readback RepositoryNotFoundException ecr describe-repositories \
+      --repository-names "$repo" --output json)" ||
+      die "could not read back the ECR repository $repo; stopped before $next."
+    expect "the ECR repository $repo" "$(jq -c '[(.repositories | length),
+        .repositories[0].repositoryName, .repositories[0].repositoryArn,
+        .repositories[0].imageScanningConfiguration.scanOnPush]' <<<"$got")" \
+      "$(jq -cn --arg n "$repo" --arg a "$arn" '[1, $n, $a, true]')" "$next"
+    expect_aws "the ManagedBy tag on $repo" "$next" \
+      '[.tags[]? | select(.Key=="ManagedBy") | .Value] | join(",")' "$SAMPLE" \
+      ecr list-tags-for-resource --resource-arn "$arn"
+    rc=0
+    lookup RepositoryPolicyNotFoundException ecr get-repository-policy \
+      --repository-name "$repo" >/dev/null || rc=$?
+    [[ "$rc" == 1 ]] ||
+      die "the ECR repository $repo has a repository policy, or it could not be read; stopped before $next."
   fi
 
-  if aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=$tag" \
-      >/dev/null 2>&1; then
+  # Only the exact ImageNotFoundException means "not pushed yet"; any other failure stops.
+  local image
+  rc=0
+  image="$(lookup ImageNotFoundException ecr describe-images --repository-name "$repo" \
+    --image-ids "imageTag=$tag" --output json)" || rc=$?
+  stop_if_undetermined "$rc" "the image $repo:$tag"
+  if [[ "$rc" == 0 ]]; then
     echo "  reusing $repo:$tag (the build inputs have not changed)"
-    return
+  else
+    # The registry credential lives in a Docker config of its own, which is removed on
+    # every path out of here, a failed sign-in, build or push included.
+    local docker_config why=""
+    docker_config="$(mktemp -d "${TMPDIR:-/tmp}/analyst-docker.XXXXXX")" ||
+      die "could not make a private Docker config"
+    # The registry password goes in on standard input, never on a command line.
+    if ! aws ecr get-login-password --region "$AWS_REGION" |
+        docker --config "$docker_config" login --username AWS --password-stdin "$registry" \
+          >/dev/null; then
+      why="could not sign in to $registry"
+    elif ! analyst_image_build "$dockerfile"; then
+      why="the image build failed"
+    elif ! IMAGE_LOCAL_ID="$(docker image inspect --format '{{.Id}}' "$ANALYST_IMAGE")"; then
+      why="could not read the id of the image just built, $ANALYST_IMAGE"
+    elif [[ -n "${ANALYST_EXPECTED_IMAGE_ID:-}" && "$IMAGE_LOCAL_ID" != "$ANALYST_EXPECTED_IMAGE_ID" ]]; then
+      why="the image built for $ANALYST_IMAGE is $IMAGE_LOCAL_ID, not the $ANALYST_EXPECTED_IMAGE_ID measured before the run; pushed nothing"
+    elif ! docker --config "$docker_config" push "$ANALYST_IMAGE" >/dev/null; then
+      why="could not push $ANALYST_IMAGE"
+    fi
+    rm -rf "$docker_config"
+    [[ -z "$why" ]] || die "$why"
+    echo "  built and pushed $repo:$tag"
+    image="$(aws ecr describe-images --repository-name "$repo" --image-ids "imageTag=$tag" \
+      --output json)" || die "could not read back the image $repo:$tag just pushed"
   fi
-  local docker_config
-  docker_config="$(mktemp -d "${TMPDIR:-/tmp}/analyst-docker.XXXXXX")"
-  # The registry password goes in on standard input, never on a command line.
-  aws ecr get-login-password --region "$AWS_REGION" |
-    docker --config "$docker_config" login --username AWS --password-stdin "$registry" \
-      >/dev/null ||
-    die "could not sign in to $registry"
-  ( cd "$SECTION_DIR" &&
-    docker build --platform linux/amd64 -f "$dockerfile" -t "$ANALYST_IMAGE" . ) ||
-    die "the image build failed"
-  docker --config "$docker_config" push "$ANALYST_IMAGE" >/dev/null ||
-    die "could not push $ANALYST_IMAGE"
-  rm -rf "$docker_config"
-  echo "  built and pushed $repo:$tag"
+  # Its digest, so a caller can name exactly this image rather than a tag that can move.
+  IMAGE_DIGEST="$(jq -r 'if (.imageDetails | length) == 1 then .imageDetails[0].imageDigest
+    else "" end' <<<"$image")"
+  # Its size in the registry, for a caller that bounds what it stores (bubblewrap's setup.sh).
+  # shellcheck disable=SC2034
+  IMAGE_SIZE_BYTES="$(jq -r '.imageDetails[0].imageSizeInBytes // ""' <<<"$image")"
+  [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "the image $repo:$tag read back with no single sha256 digest"
 }
 
 analyst_supplier_api() {
   say "4/7 the synthetic supplier API"
+  analyst_supplier_image
+  analyst_supplier_deploy
+}
+
+# The supplier API image alone: builds and pushes it, and records it in the run record.
+# Sets SUPPLIER_API_IMAGE.
+analyst_supplier_image() {
   analyst_image "$SUPPLIER_API_REPOSITORY" analyst/supplier-api/Dockerfile \
-    analyst/supplier-api/supplier_api.py analyst/src/business.py \
-    analyst/fixtures/case.json analyst/fixtures/availability.json
+    "${ANALYST_SUPPLIER_API_INPUTS[@]}"
+  # shortcut: recorded after analyst_image returns, so a run that stops between the build
+  # and this line leaves that local image unrecorded; upgrade if that case turns up.
+  SUPPLIER_API_IMAGE="$ANALYST_IMAGE" SUPPLIER_API_DIGEST="$IMAGE_DIGEST"
+  state_put SUPPLIER_API_IMAGE "$SUPPLIER_API_IMAGE"
+  state_put SUPPLIER_API_DIGEST "$SUPPLIER_API_DIGEST"
+  state_put SUPPLIER_API_REPOSITORY_CREATED "$IMAGE_REPOSITORY_CREATED"
+  state_put SUPPLIER_API_LOCAL_IMAGE_ID "$IMAGE_LOCAL_ID"
+}
+
+# Starts the supplier API from the image analyst_supplier_image pushed.
+analyst_supplier_deploy() {
   analyst_render "$SECTION_DIR/analyst/deploy/supplier-api.yaml" "$TMP_DIR/supplier-api.yaml" \
-    "s|<SUPPLIER_API_IMAGE>|$ANALYST_IMAGE|g"
+    "s|<SUPPLIER_API_IMAGE>|$SUPPLIER_API_IMAGE|g"
   kc apply -n "$NAMESPACE" -f "$TMP_DIR/supplier-api.yaml"
   kc rollout status deployment/supplier-api -n "$NAMESPACE" --timeout=5m ||
     die "the supplier API did not become ready"
@@ -328,6 +474,7 @@ analyst_bucket() {
   if [[ "$rc" == 0 ]]; then
     require_managed_by "the bucket $BUCKET" \
       "$(jq -r '.TagSet[]? | select(.Key=="ManagedBy") | .Value' "$TMP_DIR/bucket-tags.json")"
+    state_put BUCKET_CREATED false
     echo "  reusing the bucket $BUCKET"
   else
     # get-bucket-tagging answers NoSuchTagSet for a bucket that exists with no tags, and
@@ -355,6 +502,27 @@ analyst_bucket() {
   aws s3api put-bucket-encryption --bucket "$BUCKET" \
     --server-side-encryption-configuration \
     '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+
+  # Read the bucket back while it is still empty: this sample's tag, all four Block Public
+  # Access settings, SSE-S3, no bucket policy, and an ACL that grants only the owner.
+  local next="uploading to $BUCKET"
+  expect_aws "the ManagedBy tag on $BUCKET" "$next" \
+    '[.TagSet[]? | select(.Key=="ManagedBy") | .Value] | join(",")' "$SAMPLE" \
+    s3api get-bucket-tagging --bucket "$BUCKET"
+  expect_aws "Block Public Access on $BUCKET" "$next" '.PublicAccessBlockConfiguration
+    | [.BlockPublicAcls, .IgnorePublicAcls, .BlockPublicPolicy, .RestrictPublicBuckets]' \
+    '[true,true,true,true]' s3api get-public-access-block --bucket "$BUCKET"
+  expect_aws "the default encryption on $BUCKET" "$next" \
+    '[.ServerSideEncryptionConfiguration.Rules[].ApplyServerSideEncryptionByDefault.SSEAlgorithm]' \
+    '["AES256"]' s3api get-bucket-encryption --bucket "$BUCKET"
+  # shellcheck disable=SC2016  # $owner is a jq variable, not a shell one
+  expect_aws "the ACL grants on $BUCKET" "$next" \
+    '.Owner.ID as $owner | [.Grants[] | [.Grantee.Type, .Grantee.ID == $owner, .Permission]]' \
+    '[["CanonicalUser",true,"FULL_CONTROL"]]' s3api get-bucket-acl --bucket "$BUCKET"
+  rc=0
+  lookup NoSuchBucketPolicy s3api get-bucket-policy --bucket "$BUCKET" >/dev/null || rc=$?
+  [[ "$rc" == 1 ]] ||
+    die "the bucket $BUCKET has a bucket policy, or it could not be read; stopped before $next."
 
   local f
   aws s3api put-object --bucket "$BUCKET" --key "proposals/$ANALYST_CASE/case.json" \
@@ -415,40 +583,89 @@ analyst_role() {
     aws iam update-assume-role-policy --role-name "$ROLE_NAME" \
       --policy-document "file://$TMP_DIR/role-trust-policy.json"
     ROLE_ARN="$(jq -r '.Role.Arn' <<<"$existing")"
+    state_put ROLE_CREATED false
+    state_put ROLE_ARN "$ROLE_ARN"
     echo "  reusing the IAM role $ROLE_NAME (it carries only this sample's analyst policy)"
+    aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name analyst \
+      --policy-document "file://$TMP_DIR/permissions-policy.json"
   else
-    ROLE_ARN="$(aws iam create-role --role-name "$ROLE_NAME" \
+    local created role next="granting the IAM role $ROLE_NAME its policy"
+    created="$(aws iam create-role --role-name "$ROLE_NAME" \
       --assume-role-policy-document "file://$TMP_DIR/role-trust-policy.json" \
-      --tags "Key=ManagedBy,Value=$SAMPLE" --query Role.Arn --output text)" ||
+      --tags "Key=ManagedBy,Value=$SAMPLE" --output json)" ||
       die "could not create the IAM role $ROLE_NAME"
+    ROLE_ARN="$(jq -r '.Role.Arn // ""' <<<"$created")"
+    ROLE_ID="$(jq -r '.Role.RoleId // ""' <<<"$created")"
     state_put ROLE_CREATED true
+    state_put ROLE_ARN "$ROLE_ARN"
+    state_put ROLE_ID "$ROLE_ID"
     echo "  created the IAM role $ROLE_NAME"
+    [[ -n "$ROLE_ID" ]] || die "creating the IAM role $ROLE_NAME returned no RoleId; stopped before $next."
+
+    # Read the new role back before granting it anything: the ARN, id and path it was
+    # created with, this sample's tag, no permissions boundary, the trust policy rendered
+    # above, and no policy of either kind yet.
+    role="$(readback NoSuchEntity iam get-role --role-name "$ROLE_NAME" --output json)" ||
+      die "could not read back the IAM role $ROLE_NAME; stopped before $next."
+    expect "the IAM role $ROLE_NAME" "$(jq -c '.Role | [.Arn, .RoleId, .Path,
+        ([.Tags[]? | select(.Key=="ManagedBy") | .Value] | join(",")),
+        (.PermissionsBoundary.PermissionsBoundaryArn // "")]' <<<"$role")" \
+      "$(jq -cn --arg arn "arn:aws:iam::$ACCOUNT_ID:role/$ROLE_NAME" --arg id "$ROLE_ID" \
+        --arg sample "$SAMPLE" '[$arn, $id, "/", $sample, ""]')" "$next"
+    expect "the trust policy on $ROLE_NAME" "$(jq -cS '.Role.AssumeRolePolicyDocument' <<<"$role")" \
+      "$(jq -cS . "$TMP_DIR/role-trust-policy.json")" "$next"
+    expect_aws "the managed policies attached to $ROLE_NAME" "$next" '.AttachedPolicies' '[]' \
+      iam list-attached-role-policies --role-name "$ROLE_NAME"
+    expect_aws "the inline policies on $ROLE_NAME" "$next" '.PolicyNames' '[]' \
+      iam list-role-policies --role-name "$ROLE_NAME"
+
+    aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name analyst \
+      --policy-document "file://$TMP_DIR/permissions-policy.json"
+    # And the policy back, exactly as rendered, before the association can use the role.
+    next="creating the Pod Identity association"
+    role="$(readback NoSuchEntity iam get-role-policy --role-name "$ROLE_NAME" \
+      --policy-name analyst --output json)" ||
+      die "could not read back the analyst policy on $ROLE_NAME; stopped before $next."
+    expect "the analyst policy on $ROLE_NAME" "$(jq -cS '.PolicyDocument' <<<"$role")" \
+      "$(jq -cS . "$TMP_DIR/permissions-policy.json")" "$next"
+    expect_aws "the inline policies on $ROLE_NAME" "$next" '.PolicyNames' '["analyst"]' \
+      iam list-role-policies --role-name "$ROLE_NAME"
   fi
-  aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name analyst \
-    --policy-document "file://$TMP_DIR/permissions-policy.json"
-  state_put ROLE_ARN "$ROLE_ARN"
 
   # An association is identified by cluster, namespace and service account, not by a name.
-  local assoc assoc_role
+  # Its id goes in the run record either way, because the clean up deletes only that one.
+  local assoc detail id reused=false
   assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
     --namespace "$NAMESPACE" --service-account "$ANALYST_SA" --output json)" ||
     die "could not list the Pod Identity associations for $NAMESPACE/$ANALYST_SA on $CLUSTER_NAME"
-  if [[ "$(jq '.associations | length' <<<"$assoc")" != 0 ]]; then
-    local id
-    id="$(jq -r '.associations[0].associationId' <<<"$assoc")"
-    assoc_role="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-      --association-id "$id" --query association.roleArn --output text)" ||
-      die "could not read the existing Pod Identity association $id"
-    [[ "$assoc_role" == "$ROLE_ARN" ]] ||
-      die "the Pod Identity association for $NAMESPACE/$ANALYST_SA points at $assoc_role, not $ROLE_ARN; changed nothing. Remove it, or set a new NAMESPACE in .env."
-    echo "  reusing the Pod Identity association $id"
-  else
-    local id
-    id="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-      --namespace "$NAMESPACE" --service-account "$ANALYST_SA" --role-arn "$ROLE_ARN" \
-      --tags "ManagedBy=$SAMPLE" --query association.associationId --output text)" ||
-      die "could not create the Pod Identity association"
+  case "$(jq '.associations | length' <<<"$assoc")" in
+    0)
+      id="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
+        --namespace "$NAMESPACE" --service-account "$ANALYST_SA" --role-arn "$ROLE_ARN" \
+        --tags "ManagedBy=$SAMPLE" --query association.associationId --output text)" ||
+        die "could not create the Pod Identity association"
+      state_put POD_IDENTITY_ASSOCIATION "$id"
+      state_put POD_IDENTITY_ASSOCIATION_CREATED true
+      echo "  created the Pod Identity association $id" ;;
+    1)
+      id="$(jq -r '.associations[0].associationId' <<<"$assoc")"
+      reused=true ;;
+    *) die "found more than one Pod Identity association for $NAMESPACE/$ANALYST_SA on $CLUSTER_NAME, or could not count them; changed nothing." ;;
+  esac
+  # Read it back before any pod can use it: the id, cluster, namespace, service account,
+  # role and this sample's tag. For a reused one this is also the check that it is ours,
+  # so only then does its id go in the run record.
+  detail="$(readback ResourceNotFoundException eks describe-pod-identity-association \
+    --cluster-name "$CLUSTER_NAME" --association-id "$id" --output json)" ||
+    die "could not read back the Pod Identity association $id; stopped before starting a pod that uses it."
+  expect "the Pod Identity association $id" "$(jq -c '.association | [.associationId, .clusterName,
+      .namespace, .serviceAccount, .roleArn, (.tags.ManagedBy // "")]' <<<"$detail")" \
+    "$(jq -cn --arg i "$id" --arg c "$CLUSTER_NAME" --arg n "$NAMESPACE" --arg s "$ANALYST_SA" \
+      --arg r "$ROLE_ARN" --arg m "$SAMPLE" '[$i, $c, $n, $s, $r, $m]')" \
+    "starting a pod that uses it. Remove it, or set a new NAMESPACE in .env"
+  if [[ "$reused" == true ]]; then
     state_put POD_IDENTITY_ASSOCIATION "$id"
-    echo "  created the Pod Identity association $id"
+    state_put POD_IDENTITY_ASSOCIATION_CREATED false
+    echo "  reusing the Pod Identity association $id"
   fi
 }

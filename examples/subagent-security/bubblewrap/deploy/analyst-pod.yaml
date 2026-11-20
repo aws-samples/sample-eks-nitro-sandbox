@@ -11,8 +11,9 @@
 # the sandbox, so the controller reaches Amazon S3 and Amazon Bedrock and the tool
 # processes find no Kubernetes token on disk.
 #
-# <NAMESPACE>, <MANAGED_BY>, <ANALYST_IMAGE>, <AWS_REGION>, <BUCKET>, <ROLE_NAME> and
-# <BEDROCK_MODEL_ID> are replaced at apply time by scripts/setup.sh.
+# <NAMESPACE>, <MANAGED_BY>, <ANALYST_IMAGE>, <AWS_REGION>, <BUCKET>, <ROLE_NAME>,
+# <BEDROCK_MODEL_ID>, <ACTIVE_DEADLINE_SECONDS> and <CLEANUP_AT_EPOCH> are replaced at apply
+# time by setup.sh.
 #
 # Two settings here are what bubblewrap needs from the guest, and neither of them reaches
 # the node. They are explained on the page under "What the guest has to allow":
@@ -29,6 +30,10 @@
 # the other sandboxed pods here use. What the tool processes get instead is bubblewrap's
 # own doing and the run reads it from /proc: UID/GID 1000, an empty capability bounding
 # set, no_new_privs, and a seccomp filter this application compiled.
+#
+# Privilege does not need a writable image, so both containers keep a read-only root
+# filesystem. The init container writes only the guest's procfs, and the controller's run
+# directories and temporary files go to the emptyDir volumes at /var/lib/analyst and /tmp.
 #
 # It sets CPU and memory requests, which most samples here do not. A pod with no requests
 # gets a small default VM of about 130 MiB, and this one has to hold a Python interpreter,
@@ -51,9 +56,19 @@ metadata:
     kubectl.kubernetes.io/default-container: analyst
 spec:
   runtimeClassName: isolated-sandbox
+  # The node is an xlarge or nothing. EKS Auto Mode chooses the instance for this pod,
+  # and this caps its size, so the most a run can cost is known before it starts. If no
+  # xlarge node can be launched the pod stays Pending, and setup stops: it never falls back
+  # to a larger one.
+  nodeSelector:
+    eks.amazonaws.com/instance-size: xlarge
   serviceAccountName: analyst
   automountServiceAccountToken: false
   restartPolicy: Never
+  # The pod stops itself when the run's clean up is due, by two clocks: setup sets the
+  # seconds left until then, and both containers below refuse to start after that time and
+  # the working one exits at it, however late the pod was placed.
+  activeDeadlineSeconds: <ACTIVE_DEADLINE_SECONDS>
   # The controller and every tool process run as an ordinary user. fsGroup is what lets
   # the controller read the supplier key at mode 0440, and that is deliberate: the key
   # file is readable by the very user the tool processes also run as, so a tool refused it
@@ -71,12 +86,14 @@ spec:
         - sh
         - -ec
         - |
+          test "$(date +%s)" -lt <CLEANUP_AT_EPOCH>
           echo 128 > /proc/sys/user/max_user_namespaces
           test "$(cat /proc/sys/user/max_user_namespaces)" = 128
       # This writes a sysctl in the Nitro guest's own kernel, which belongs to this pod
       # alone. It is not a node setting and no other pod on the node is affected.
       securityContext:
         privileged: true
+        readOnlyRootFilesystem: true
         runAsUser: 0
         runAsGroup: 0
         runAsNonRoot: false
@@ -86,9 +103,10 @@ spec:
   containers:
     - name: analyst
       image: <ANALYST_IMAGE>
-      command: ["sleep", "infinity"]
+      command: ["sh", "-c", "exec sleep $(( <CLEANUP_AT_EPOCH> - $(date +%s) ))"]
       securityContext:
         privileged: true
+        readOnlyRootFilesystem: true
       env:
         - { name: AWS_REGION, value: "<AWS_REGION>" }
         - { name: AWS_DEFAULT_REGION, value: "<AWS_REGION>" }

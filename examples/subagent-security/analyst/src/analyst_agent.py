@@ -8,10 +8,13 @@ answer whose supplier choice the controller then checks against those facts.
 The call uses Amazon Bedrock through Strands Agents with the pod's EKS Pod Identity
 credentials. No model API key is placed in the sandbox, and nothing here reads one.
 """
+import json
 import os
 
+from botocore.config import Config as BotocoreConfig
 from strands import Agent, tool
-from strands.models import BedrockModel
+from strands.agent import ModelRetryStrategy
+from strands.models import BedrockModel, Model
 from pydantic import BaseModel, Field
 
 SYSTEM_PROMPT = (
@@ -34,6 +37,117 @@ class ProcurementReport(BaseModel):
         description="Concise comparison citing every original S3 proposal source key")
 
 
+class EnvelopeExceeded(RuntimeError):
+    """The turn tried to go past the call or request size its envelope allows."""
+
+
+# Every key an envelope must carry, each a positive integer. One envelope bounds one turn:
+#   turns                 model calls Strands may start (its own per-invocation limit)
+#   output_tokens         cumulative output tokens Strands allows before it stops
+#   total_tokens          cumulative input plus output tokens Strands allows before it stops
+#   max_tokens            output tokens one model response may produce (Bedrock's own cap)
+#   model_attempts        tries per model call, counting Strands' throttling retries
+#   sdk_attempts          HTTP sends per Bedrock request inside the AWS SDK, counting the first
+#                         (1 turns its retries off)
+#   max_request_bytes     the largest request, as JSON, this turn will send to the model
+#   evidence_tool_calls   the exact number of evidence tool calls an accepted answer makes
+ENVELOPE_KEYS = ("turns", "output_tokens", "total_tokens", "max_tokens", "model_attempts",
+                 "sdk_attempts", "max_request_bytes", "evidence_tool_calls")
+
+
+def check_envelope(envelope: dict) -> dict:
+    """Return the envelope if it has exactly the keys above, each a positive int."""
+    if set(envelope) != set(ENVELOPE_KEYS):
+        raise ValueError(f"a model envelope needs exactly {sorted(ENVELOPE_KEYS)}, "
+                         f"not {sorted(envelope)}")
+    for key in ENVELOPE_KEYS:
+        value = envelope[key]
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"model envelope {key} must be a positive integer, not {value!r}")
+    return envelope
+
+
+def bedrock_client_config(envelope: dict) -> BotocoreConfig:
+    """The Bedrock client settings for an envelope: at most sdk_attempts HTTP sends per request.
+
+    total_max_attempts counts the first send; botocore's max_attempts counts retries only, so
+    max_attempts=1 would allow two sends.
+    """
+    return BotocoreConfig(retries={"total_max_attempts": envelope["sdk_attempts"], "mode": "standard"})
+
+
+class _CountedModel(Model):
+    """Wraps the Bedrock model and counts every model call, Strands' retries included.
+
+    Strands' limits are checked between turns, and its throttling retries happen inside one
+    turn, so neither bounds the number of calls on its own. This does: the call after the last
+    one the envelope allows is refused before it is sent, and so is any request larger than
+    the envelope allows. Each call is at most sdk_attempts HTTP sends (bedrock_client_config).
+    """
+
+    def __init__(self, inner, turn):
+        self.inner = inner
+        self.turn = turn
+
+    def update_config(self, **model_config):
+        self.inner.update_config(**model_config)
+
+    def get_config(self):
+        return self.inner.get_config()
+
+    def structured_output(self, *args, **kwargs):
+        return self.inner.structured_output(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
+        envelope = self.turn.envelope
+        allowed = envelope["turns"] * envelope["model_attempts"]
+        if self.turn.model_calls >= allowed:
+            raise EnvelopeExceeded(f"the turn already made the {allowed} model requests "
+                                   "its envelope allows")
+        size = len(json.dumps([system_prompt, tool_specs, messages], default=str).encode())
+        if size > envelope["max_request_bytes"]:
+            raise EnvelopeExceeded(f"the next model request is {size} bytes, over the "
+                                   f"{envelope['max_request_bytes']} its envelope allows")
+        self.turn.model_calls += 1
+        self.turn.request_bytes = max(self.turn.request_bytes, size)
+        async for event in self.inner.stream(messages, tool_specs, system_prompt, **kwargs):
+            if isinstance(event, dict) and "usage" in (event.get("metadata") or {}):
+                self.turn.usage_reports += 1
+            yield event
+
+
+class _BedrockSends:
+    """Counts every HTTP request the Bedrock client itself sends, its own retries included.
+
+    Registered on the client's before-send event, so it sees exactly what goes on the wire:
+    the send after the last one the envelope allows, or a body larger than it allows, raises
+    here and is never sent. A body this cannot measure is refused too.
+    """
+
+    def __init__(self, turn):
+        self.turn = turn
+
+    def __call__(self, request, **_):
+        envelope = self.turn.envelope
+        allowed = envelope["turns"] * envelope["model_attempts"] * envelope["sdk_attempts"]
+        if self.turn.sends >= allowed:
+            raise EnvelopeExceeded(f"the turn already sent the {allowed} Bedrock requests its "
+                                   "envelope allows")
+        body = request.body
+        if isinstance(body, str):
+            body = body.encode()
+        if not isinstance(body, (bytes, bytearray)):
+            raise EnvelopeExceeded("a Bedrock request body this turn cannot measure")
+        if len(body) > envelope["max_request_bytes"]:
+            raise EnvelopeExceeded(f"the next Bedrock request is {len(body)} bytes on the wire, over "
+                                   f"the {envelope['max_request_bytes']} its envelope allows")
+        self.turn.sends += 1
+        self.turn.sent_bytes = max(self.turn.sent_bytes, len(body))
+
+
 class ModelTurn:
     """One Bedrock turn over a verified comparison.
 
@@ -41,18 +155,31 @@ class ModelTurn:
       report       the structured answer as a dict, or None if the model returned none
       usage        Bedrock's accumulated token usage for the turn
       tool_calls   how many times the model actually called the evidence tool
+
+    With an envelope (see ENVELOPE_KEYS), the turn is bounded and checked: Strands gets the
+    turn and token limits, retries are capped, every request is counted and sized, and an
+    answer is accepted only if the loop stopped normally inside every bound. Otherwise
+    report is None and refusal says why. Without one, the turn runs as it always has.
     """
 
     def __init__(self, case: dict, comparison: dict, model_id=None, region=None,
-                 max_tokens=2000):
+                 max_tokens=2000, envelope=None):
         self.case = case
         self.comparison = comparison
         self.model_id = model_id or os.environ["BEDROCK_MODEL_ID"]
         self.region = region or os.environ["AWS_REGION"]
-        self.max_tokens = max_tokens
+        self.envelope = None if envelope is None else check_envelope(dict(envelope))
+        self.max_tokens = self.envelope["max_tokens"] if self.envelope else max_tokens
         self.report = None
         self.usage = {}
         self.tool_calls = 0
+        self.model_calls = 0
+        self.request_bytes = 0
+        self.sends = 0
+        self.sent_bytes = 0
+        self.usage_reports = 0
+        self.stop_reason = None
+        self.refusal = None
 
     def _evidence_tool(self):
         turn = self
@@ -67,6 +194,8 @@ class ModelTurn:
         return procurement_evidence
 
     def run(self) -> dict:
+        if self.envelope is not None:
+            return self._run_in_envelope()
         agent = Agent(
             model=BedrockModel(model_id=self.model_id, region_name=self.region,
                                max_tokens=self.max_tokens),
@@ -79,4 +208,66 @@ class ModelTurn:
         self.usage = dict(answer.metrics.accumulated_usage)
         if isinstance(answer.structured_output, ProcurementReport):
             self.report = answer.structured_output.model_dump()
+        return self.report
+
+    def _run_in_envelope(self) -> dict:
+        envelope = self.envelope
+        bedrock = BedrockModel(
+            model_id=self.model_id, region_name=self.region, max_tokens=envelope["max_tokens"],
+            boto_client_config=bedrock_client_config(envelope))
+        bedrock.client.meta.events.register("before-send.bedrock-runtime", _BedrockSends(self))
+        model = _CountedModel(bedrock, self)
+        # Strands retries only throttling, which Bedrock does not bill; it is still counted
+        # above. max_attempts=1 is how Strands spells "no retries".
+        agent = Agent(
+            model=model, tools=[self._evidence_tool()], callback_handler=None,
+            system_prompt=SYSTEM_PROMPT,
+            retry_strategy=ModelRetryStrategy(max_attempts=envelope["model_attempts"]),
+        )
+        try:
+            answer = agent(f"Prepare a recommendation for {self.case['description']}.",
+                           structured_output_model=ProcurementReport,
+                           limits={"turns": envelope["turns"],
+                                   "output_tokens": envelope["output_tokens"],
+                                   "total_tokens": envelope["total_tokens"]})
+        except Exception as error:  # Strands may wrap it; refuse only for our own reason
+            cause = error
+            while cause is not None and not isinstance(cause, EnvelopeExceeded):
+                cause = cause.__cause__ or cause.__context__
+            if cause is None:
+                raise
+            self.refusal = str(cause)
+            return None
+        self.usage = dict(answer.metrics.accumulated_usage)
+        self.stop_reason = answer.stop_reason
+        # A structured answer ends the loop on the structured output tool ("tool_use") or,
+        # after Strands forced that tool, on JSON text ("end_turn"). Anything else, such as
+        # a limit or max_tokens, is a turn that did not finish.
+        problems = []
+        if self.stop_reason not in ("tool_use", "end_turn"):
+            problems.append(f"the loop stopped with {self.stop_reason}")
+        if not isinstance(answer.structured_output, ProcurementReport):
+            problems.append("there is no structured answer")
+        if self.tool_calls != envelope["evidence_tool_calls"]:
+            problems.append(f"the evidence tool ran {self.tool_calls} times, not "
+                            f"{envelope['evidence_tool_calls']}")
+        # Bedrock bills what it reports, so usage that is missing, partial or not a count is a
+        # turn whose cost this cannot check: every model call must have reported usage, and
+        # the totals must be whole numbers inside the envelope.
+        if self.usage_reports != self.model_calls:
+            problems.append(f"{self.model_calls - self.usage_reports} of {self.model_calls} model "
+                            "calls reported no token usage")
+        for key, cap in (("inputTokens", envelope["total_tokens"]),
+                         ("outputTokens", envelope["output_tokens"]),
+                         ("totalTokens", envelope["total_tokens"])):
+            value = self.usage.get(key)
+            if type(value) is not int or not 0 < value <= cap:
+                problems.append(f"usage {key} is {value!r}, not a count from 1 to {cap}")
+        if self.usage.get("totalTokens") != sum(
+                v for k, v in self.usage.items() if k in ("inputTokens", "outputTokens") and type(v) is int):
+            problems.append("usage totalTokens is not inputTokens plus outputTokens")
+        if problems:
+            self.refusal = "; ".join(problems)
+            return None
+        self.report = answer.structured_output.model_dump()
         return self.report
