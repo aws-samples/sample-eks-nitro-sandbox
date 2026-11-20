@@ -6,45 +6,18 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import textwrap
 from typing import Any
 
 import pytest
-import yaml
 
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
-TEMPLATE = SAMPLE / "deploy" / "tenant-model-gateway.yaml.tpl"
 SCRIPT = SAMPLE / "scripts" / "configure-tenant-model-gateway.sh"
-NETWORK_PROFILE_LABEL = "openclaw.dev/network-profile"
-NITRO_RESTRICTED_PROFILE = "nitro-central-gateway-v1"
 OWNER = "openclaw-enterprise-blueprint"
 CONTEXT = "shared-cluster"
 TENANT = "tenant-a"
-TENANT_RESOURCES = (
-    "configmap/agentgateway-ca",
-    "networkpolicy.networking.k8s.io/default-deny-egress",
-    "networkpolicy.networking.k8s.io/allow-dns",
-    "networkpolicy.networking.k8s.io/allow-agentgateway",
-)
-
-
-def _network_policies() -> list[dict]:
-    rendered = (
-        TEMPLATE.read_text(encoding="utf-8")
-        .replace("OCE_TENANT_NAMESPACE", "tenant-a")
-        .replace("OCE_AGENTGATEWAY_SERVICE_CIDR", "10.100.0.42/32")
-    )
-    return [
-        document for document in yaml.safe_load_all(rendered) if document is not None
-    ]
-
-
-def _named(name: str) -> dict:
-    matches = [
-        policy for policy in _network_policies() if policy["metadata"]["name"] == name
-    ]
-    assert len(matches) == 1
-    return matches[0]
+TENANT_RESOURCES = ("configmap/agentgateway-ca",)
 
 
 def _write_executable(path: pathlib.Path, source: str) -> None:
@@ -53,17 +26,13 @@ def _write_executable(path: pathlib.Path, source: str) -> None:
 
 
 def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
-    _write_executable(
-        bin_dir / "kubectl",
-        """
+    source = """
         #!/usr/bin/env python3
         import base64
         import json
         import os
         import pathlib
         import sys
-
-        import yaml
 
         args = sys.argv[1:]
         state_path = pathlib.Path(os.environ["FAKE_KUBE_STATE"])
@@ -89,8 +58,6 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
                 f"{state['tenant']}|"
                 f"{state.get('namespace_owner', 'openclaw-enterprise')}"
             )
-        elif command[:3] == ["get", "service", "agentgateway"]:
-            print(state.get("service_ip", "10.100.0.42"))
         elif command[:2] == ["wait", "--namespace"]:
             pass
         elif command[:3] == ["get", "secret", "agentgateway-ca"]:
@@ -100,13 +67,6 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
             owner = state.get("resources", {}).get(resource)
             if owner is not None:
                 print(f"{resource.rsplit('/', 1)[1]}|{owner}")
-        elif command[:2] == ["label", "--local"]:
-            documents = [item for item in yaml.safe_load_all(stdin) if item]
-            for document in documents:
-                document.setdefault("metadata", {}).setdefault("labels", {})[
-                    "app.kubernetes.io/managed-by"
-                ] = "openclaw-enterprise-blueprint"
-            print(yaml.safe_dump_all(documents), end="")
         elif command[:2] == ["label", f"namespace/{state['tenant']}"]:
             pass
         elif command[:3] == ["create", "configmap", "agentgateway-ca"]:
@@ -130,20 +90,13 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
                 "labels"
             ]["app.kubernetes.io/managed-by"]
             state_path.write_text(json.dumps(state))
-        elif command == ["apply", "--filename", "-"]:
-            for document in yaml.safe_load_all(stdin):
-                resource = (
-                    "networkpolicy.networking.k8s.io/"
-                    f"{document['metadata']['name']}"
-                )
-                state.setdefault("resources", {})[resource] = document["metadata"][
-                    "labels"
-                ]["app.kubernetes.io/managed-by"]
-            state_path.write_text(json.dumps(state))
         else:
             print(f"unsupported kubectl call: {args}", file=sys.stderr)
             raise SystemExit(41)
-        """,
+        """
+    _write_executable(
+        bin_dir / "kubectl",
+        source.replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1),
     )
 
 
@@ -197,69 +150,7 @@ def _mutating_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def test_default_deny_applies_to_every_tenant_pod() -> None:
-    policy = _named("default-deny-egress")
-
-    assert policy["spec"] == {
-        "podSelector": {},
-        "policyTypes": ["Egress"],
-    }
-
-
-def test_dns_egress_is_explicitly_allowed() -> None:
-    policy = _named("allow-dns")
-
-    assert policy["spec"]["podSelector"] == {
-        "matchLabels": {
-            NETWORK_PROFILE_LABEL: NITRO_RESTRICTED_PROFILE,
-        }
-    }
-    assert policy["spec"]["egress"] == [
-        {
-            "to": [
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"}
-                    },
-                    "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
-                }
-            ],
-            "ports": [
-                {"protocol": "UDP", "port": 53},
-                {"protocol": "TCP", "port": 53},
-            ],
-        }
-    ]
-
-
-def test_network_policy_limits_egress_to_private_agentgateway() -> None:
-    policy = _named("allow-agentgateway")
-
-    assert policy["kind"] == "NetworkPolicy"
-    assert policy["metadata"] == {
-        "name": "allow-agentgateway",
-        "namespace": "tenant-a",
-    }
-    assert policy["spec"]["podSelector"]["matchLabels"] == {
-        NETWORK_PROFILE_LABEL: NITRO_RESTRICTED_PROFILE,
-    }
-    assert policy["spec"]["podSelector"]["matchExpressions"] == [
-        {
-            "key": "openclaw.dev/workload-role",
-            "operator": "In",
-            "values": ["agent", "gateway"],
-        }
-    ]
-    assert policy["spec"]["policyTypes"] == ["Egress"]
-    assert policy["spec"]["egress"] == [
-        {
-            "to": [{"ipBlock": {"cidr": "10.100.0.42/32"}}],
-            "ports": [{"protocol": "TCP", "port": 443}],
-        }
-    ]
-
-
-def test_configure_script_copies_only_public_ca_and_applies_policy() -> None:
+def test_configure_script_copies_only_public_ca_and_sets_pod_security() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
 
     assert "set -euo pipefail" in script
@@ -273,11 +164,12 @@ def test_configure_script_copies_only_public_ca_and_applies_policy() -> None:
     assert "tls\\.key" not in script
     assert "--dry-run=client" in script
     assert ".immutable = true" in script
-    assert "agentgateway_cidr" in script
-    assert "OCE_AGENTGATEWAY_SERVICE_CIDR" in script
+    assert "NetworkPolicy" not in script
+    assert "agentgateway_cidr" not in script
+    assert "OCE_AGENTGATEWAY_SERVICE_CIDR" not in script
 
 
-def test_configure_marks_every_created_or_applied_tenant_resource(
+def test_configure_marks_the_created_tenant_resource(
     tmp_path: pathlib.Path,
 ) -> None:
     result, calls = _run_configure(tmp_path)
@@ -292,21 +184,9 @@ def test_configure_marks_every_created_or_applied_tenant_resource(
     assert config_map["metadata"]["labels"] == {
         "app.kubernetes.io/managed-by": OWNER
     }
-
-    applied = next(
-        call
-        for call in calls
-        if call["args"][2:] == ["apply", "--filename", "-"]
-    )
-    policies = [item for item in yaml.safe_load_all(applied["stdin"]) if item]
-    assert {item["metadata"]["name"] for item in policies} == {
-        "default-deny-egress",
-        "allow-dns",
-        "allow-agentgateway",
-    }
-    assert all(
-        item["metadata"]["labels"]["app.kubernetes.io/managed-by"] == OWNER
-        for item in policies
+    assert config_map["immutable"] is True
+    assert not any(
+        call["args"][2:] == ["apply", "--filename", "-"] for call in calls
     )
 
 

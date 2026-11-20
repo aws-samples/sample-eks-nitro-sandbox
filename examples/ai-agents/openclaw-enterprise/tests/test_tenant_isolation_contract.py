@@ -15,8 +15,7 @@ SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 ADAPTER_PATH = SAMPLE / "adapter" / "adapter.py"
 AGENT_FIXTURE = SAMPLE / "tests" / "fixtures" / "oce-agent-pod.yaml"
 AGENTGATEWAY_MANIFEST = SAMPLE / "deploy" / "agentgateway.yaml"
-TENANT_POLICY_TEMPLATE = SAMPLE / "deploy" / "tenant-model-gateway.yaml.tpl"
-DESIGN_NOTE = SAMPLE / "TENANT-ISOLATION.md"
+DESIGN_NOTE = SAMPLE / "README.md"
 
 RUNTIME_IMAGE = f"example.invalid/oce-runtime@sha256:{'a' * 64}"
 OWNERSHIP_IMAGE = f"example.invalid/ownership-helper@sha256:{'b' * 64}"
@@ -238,51 +237,23 @@ def test_each_gateway_uses_its_derived_pvc_and_cannot_mount_another(
         adapter.build_patch(foreign_claim)
 
 
-def test_tenant_namespace_is_default_deny_with_only_dns_and_gateway_egress() -> None:
-    rendered = (
-        TENANT_POLICY_TEMPLATE.read_text(encoding="utf-8")
-        .replace("OCE_TENANT_NAMESPACE", "tenant-a")
-        .replace("OCE_AGENTGATEWAY_SERVICE_CIDR", "10.100.0.42/32")
+def test_sample_does_not_ship_or_enable_network_policy() -> None:
+    manifests = [
+        document
+        for path in (SAMPLE / "deploy").glob("*.yaml")
+        for document in yaml.safe_load_all(path.read_text(encoding="utf-8"))
+        if document
+    ]
+    sample = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    scripts = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (SAMPLE / "scripts").glob("*.sh")
     )
-    policies = [
-        document for document in yaml.safe_load_all(rendered) if document is not None
-    ]
 
-    assert {policy["metadata"]["name"] for policy in policies} == {
-        "default-deny-egress",
-        "allow-dns",
-        "allow-agentgateway",
-    }
-    assert {policy["metadata"]["namespace"] for policy in policies} == {"tenant-a"}
-
-    default_deny = _one(policies, "NetworkPolicy", "default-deny-egress")
-    assert default_deny["spec"] == {
-        "podSelector": {},
-        "policyTypes": ["Egress"],
-    }
-
-    allowed = _one(policies, "NetworkPolicy", "allow-agentgateway")
-    assert allowed["spec"]["podSelector"]["matchExpressions"] == [
-        {
-            "key": "openclaw.dev/workload-role",
-            "operator": "In",
-            "values": ["agent", "gateway"],
-        }
-    ]
-    assert allowed["spec"]["egress"] == [
-        {
-            "to": [{"ipBlock": {"cidr": "10.100.0.42/32"}}],
-            "ports": [{"protocol": "TCP", "port": 443}],
-        }
-    ]
-
-    dns = _one(policies, "NetworkPolicy", "allow-dns")
-    assert dns["spec"]["podSelector"] == {
-        "matchLabels": {
-            "openclaw.dev/network-profile": "nitro-central-gateway-v1",
-        }
-    }
-    assert {port["port"] for port in dns["spec"]["egress"][0]["ports"]} == {53}
+    assert not any(document.get("kind") == "NetworkPolicy" for document in manifests)
+    assert "enable-network-policy-controller" not in scripts
+    assert "../../isolation/network-policy/README.md" in sample
+    assert "It makes no network-isolation claim." in sample
 
 
 def test_central_gateway_has_separate_tenant_slots_and_one_bedrock_identity() -> None:

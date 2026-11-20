@@ -92,17 +92,61 @@ FAKE_COMMAND = textwrap.dedent(
                         "seccompProfile": {{"type": "RuntimeDefault"}},
                         "capabilities": {{"drop": ["ALL"]}},
                     }},
-                    "env": [{{"name": "OPENAI_API_KEY", "valueFrom": {{
-                        "secretKeyRef": {{"name": "gateway-key", "key": "key"}}
-                    }}}}],
-                    "volumeMounts": [{{
-                        "name": "persistent-home",
-                        "mountPath": "/home/node/.openclaw",
-                    }}],
+                    "env": [
+                        {{"name": "OPENAI_API_KEY", "valueFrom": {{
+                            "secretKeyRef": {{"name": "gateway-key", "key": "key"}}
+                        }}}},
+                        {{"name": "OPENCLAW_GATEWAY_PASSWORD", "valueFrom": {{
+                            "secretKeyRef": {{"name": "gateway-password", "key": "gateway-password"}}
+                        }}}},
+                    ],
+                    "volumeMounts": [
+                        {{
+                            "name": "runtime-state",
+                            "mountPath": "/home/node",
+                        }},
+                        {{
+                            "name": "openclaw-gateway-state",
+                            "mountPath": "/home/node/.openclaw",
+                        }},
+                        {{
+                            "name": "openclaw-configuration",
+                            "mountPath": "/etc/openclaw",
+                            "readOnly": True,
+                        }},
+                        {{
+                            "name": "agentgateway-ca",
+                            "mountPath": "/etc/agentgateway-ca",
+                            "readOnly": True,
+                        }},
+                        {{
+                            "name": "openclaw-service-principal",
+                            "mountPath": "/var/run/secrets/openclaw/service-principal",
+                            "readOnly": True,
+                        }},
+                    ],
+                }}],
+                "initContainers": [{{
+                    "name": "prepare-private-state",
+                    "image": image,
+                    "volumeMounts": [
+                        {{
+                            "name": "runtime-state",
+                            "mountPath": "/runtime-state",
+                        }},
+                        {{
+                            "name": "openclaw-gateway-state",
+                            "mountPath": "/gateway-state",
+                        }},
+                    ],
                 }}],
                 "volumes": [
                     {{
-                        "name": "oce-token",
+                        "name": "runtime-state",
+                        "emptyDir": {{}},
+                    }},
+                    {{
+                        "name": "openclaw-service-principal",
                         "projected": {{"sources": [{{
                             "serviceAccountToken": {{
                                 "audience": "openclaw-enterprise",
@@ -112,8 +156,22 @@ FAKE_COMMAND = textwrap.dedent(
                         }}]}},
                     }},
                     {{
-                        "name": "persistent-home",
+                        "name": "openclaw-gateway-state",
                         "persistentVolumeClaim": {{"claimName": pvc_name}},
+                    }},
+                    {{
+                        "name": "openclaw-configuration",
+                        "configMap": {{
+                            "name": "gateway-aaaaaaaaaaaa-rev-012345abcdef",
+                            "items": [{{"key": "openclaw.json", "path": "openclaw.json"}}],
+                        }},
+                    }},
+                    {{
+                        "name": "agentgateway-ca",
+                        "configMap": {{
+                            "name": "agentgateway-ca",
+                            "items": [{{"key": "ca.crt", "path": "ca.crt"}}],
+                        }},
                     }},
                 ],
             }},
@@ -146,6 +204,83 @@ FAKE_COMMAND = textwrap.dedent(
         "agt_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "rs-b",
         "rev_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "pvc-b",
     )
+
+    if scenario == "sidecar_aws_environment":
+        pod_a["spec"]["containers"].append({{
+            "name": "credential-sidecar",
+            "image": image,
+            "env": [{{"name": "AWS_ACCESS_KEY_ID", "value": "not-a-real-key"}}],
+        }})
+    elif scenario == "init_aws_environment":
+        pod_a["spec"]["initContainers"].append({{
+            "name": "credential-init",
+            "image": image,
+            "env": [{{
+                "name": "AWS_WEB_IDENTITY_TOKEN_FILE",
+                "value": "/var/run/unapproved/token",
+            }}],
+        }})
+    elif scenario == "ephemeral_aws_environment":
+        pod_a["spec"]["ephemeralContainers"] = [{{
+            "name": "credential-debugger",
+            "image": image,
+            "env": [{{
+                "name": "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                "value": "http://127.0.0.1/credentials",
+            }}],
+        }}]
+    elif scenario == "secret_aws_mount":
+        pod_a["spec"]["volumes"].append({{
+            "name": "aws-credentials",
+            "secret": {{"secretName": "aws-credentials"}},
+        }})
+        pod_a["spec"]["containers"].append({{
+            "name": "credential-sidecar",
+            "image": image,
+            "volumeMounts": [{{
+                "name": "aws-credentials",
+                "mountPath": "/home/node/.aws",
+                "readOnly": True,
+            }}],
+        }})
+    elif scenario == "sidecar_state_pvc_mount":
+        pod_a["spec"]["containers"].append({{
+            "name": "state-sidecar",
+            "image": image,
+            "volumeMounts": [{{
+                "name": "openclaw-gateway-state",
+                "mountPath": "/home/node/.openclaw",
+            }}],
+        }})
+    elif scenario == "csi_credential_mount":
+        pod_a["spec"]["volumes"].append({{
+            "name": "credential-csi",
+            "csi": {{"driver": "secrets-store.csi.k8s.io"}},
+        }})
+        pod_a["spec"]["containers"][0]["volumeMounts"].append({{
+            "name": "credential-csi",
+            "mountPath": "/mnt/identity",
+            "readOnly": True,
+        }})
+    elif scenario == "pvc_credential_mount":
+        pod_a["spec"]["volumes"].append({{
+            "name": "credential-pvc",
+            "persistentVolumeClaim": {{"claimName": "credential-pvc"}},
+        }})
+        pod_a["spec"]["containers"][0]["volumeMounts"].append({{
+            "name": "credential-pvc",
+            "mountPath": "/mnt/identity",
+        }})
+    elif scenario == "hostpath_credential_mount":
+        pod_a["spec"]["volumes"].append({{
+            "name": "host-credentials",
+            "hostPath": {{"path": "/root/.aws", "type": "Directory"}},
+        }})
+        pod_a["spec"]["containers"][0]["volumeMounts"].append({{
+            "name": "host-credentials",
+            "mountPath": "/mnt/identity",
+            "readOnly": True,
+        }})
 
     def cross_probe(name, include_uid=True):
         phase = "Running" if scenario == "cross_tenant_pvc_mounted" else "Pending"
@@ -284,20 +419,6 @@ FAKE_COMMAND = textwrap.dedent(
     if args == ["get", "--raw=/readyz"]:
         emit("ok")
         sys.exit(0)
-    if args[:3] == ["get", "nodeclass", "default"]:
-        emit({{"spec": {{"networkPolicy": "DefaultAllow"}}}})
-        sys.exit(0)
-    if args[:2] == ["get", "namespace"]:
-        sys.exit(1)
-    if args[:2] == ["create", "namespace"]:
-        (state_dir / "network_namespace").write_text(args[2])
-        sys.exit(0)
-    if args[:2] == ["label", "namespace"]:
-        sys.exit(0)
-    if args[:2] == ["delete", "namespace"]:
-        (state_dir / "network_namespace").unlink(missing_ok=True)
-        sys.exit(0)
-
     namespace = None
     if args[:1] == ["-n"]:
         namespace = args[1]
@@ -363,12 +484,6 @@ FAKE_COMMAND = textwrap.dedent(
         }})
         sys.exit(0)
 
-    if namespace == "kube-system" and args[:3] == ["get", "configmap", "amazon-vpc-cni"]:
-        emit({{"data": {{
-            "enable-network-policy-controller": "true",
-        }}}})
-        sys.exit(0)
-
     if namespace == "openclaw-enterprise-agw" and args[:3] == ["get", "deployment", "agentgateway"]:
         emit({{
             "metadata": {{"generation": 4}},
@@ -399,9 +514,45 @@ FAKE_COMMAND = textwrap.dedent(
         }}
         spec = {{"containers": [{{"name": "agentgateway"}}]}}
         emit({{"items": [
-            {{"metadata": {{"uid": "uid-agw-1"}}, "spec": spec, "status": status}},
-            {{"metadata": {{"uid": "uid-agw-2"}}, "spec": spec, "status": status}},
+            {{
+                "metadata": {{"name": "agentgateway-0", "uid": "uid-agw-1"}},
+                "spec": spec,
+                "status": status,
+            }},
+            {{
+                "metadata": {{"name": "agentgateway-1", "uid": "uid-agw-2"}},
+                "spec": spec,
+                "status": status,
+            }},
         ]}})
+        sys.exit(0)
+    if namespace == "openclaw-enterprise-agw" and args[:1] == ["logs"]:
+        if args[1] != "agentgateway-0":
+            sys.exit(0)
+        model_call_count = int(
+            (state_dir / "model_call_count").read_text()
+            if (state_dir / "model_call_count").exists()
+            else "0"
+        )
+        for call_index in range(1, model_call_count + 1):
+            trace_id = format(call_index, "032x")
+            if scenario == "missing_agw_trace":
+                trace_id = "f" * 32
+            bedrock_model = (
+                "amazon.nova-pro-v1:0"
+                if scenario == "wrong_agw_model"
+                else "amazon.nova-lite-v1:0"
+            )
+            fields = []
+            if scenario != "missing_agw_request_id":
+                fields.append("request.id=" + str(9000 + call_index))
+            fields.extend([
+                'trace.id="' + trace_id + '"',
+                'gen_ai.provider.name="bedrock"',
+                'agw.ai.original_model="nova-lite"',
+                'gen_ai.request.model="' + bedrock_model + '"',
+            ])
+            print(" ".join(fields))
         sys.exit(0)
     if namespace == "oce-system" and args[:2] == ["get", "pods"]:
         emit({{"items": [{{
@@ -535,32 +686,26 @@ FAKE_COMMAND = textwrap.dedent(
                 "252:0:2097152:vda",
             ]))
             sys.exit(0)
-        if "OCE_NETPOL_CANARY" in joined:
-            policy = state_dir / f"netpol-{{namespace}}"
-            allowed = namespace.startswith("oce-live-network-") or policy.exists()
-            if scenario == "network_policy_not_enforced" and namespace.startswith("tenant-"):
-                allowed = True
-            if allowed:
-                print("NETPOL_ALLOWED", end="")
-                sys.exit(0)
-            sys.exit(43)
-        if "NETPOL_BLOCKED" in joined:
-            policy = state_dir / f"netpol-{{namespace}}"
-            blocked = not policy.exists()
-            if scenario == "network_policy_not_enforced" and namespace.startswith("tenant-"):
-                blocked = False
-            if blocked:
-                print("NETPOL_BLOCKED", end="")
-                sys.exit(0)
-            sys.exit(42)
-        if "net.createConnection" in joined:
-            host = remote[-2]
-            if scenario == "egress_allowed" and host == "1.1.1.1":
-                sys.exit(42)
-            print("EGRESS_BLOCKED", end="")
-            sys.exit(0)
-        if "https.request" in joined:
-            emit({{"status": 200, "model": "nova-lite", "text": "OK"}})
+        if "/v1/chat/completions" in joined:
+            model_call_count_file = state_dir / "model_call_count"
+            model_call_count = int(
+                model_call_count_file.read_text()
+                if model_call_count_file.exists()
+                else "0"
+            ) + 1
+            model_call_count_file.write_text(str(model_call_count))
+            emit({{
+                "status": 200,
+                "unauthenticatedStatus": 401,
+                "model": (
+                    "openclaw/unexpected"
+                    if scenario == "wrong_native_model"
+                    else "openclaw/default"
+                ),
+                "requestId": "chatcmpl_" + format(model_call_count, "032x"),
+                "traceId": format(model_call_count, "032x"),
+                "nonceMatch": scenario != "nonce_suffix",
+            }})
             sys.exit(0)
         if "persistent-ok" in joined and remote[:3] == ["sh", "-eu", "-c"]:
             (state_dir / "marker").write_text("persistent-ok")
@@ -585,48 +730,49 @@ FAKE_COMMAND = textwrap.dedent(
         print("unsupported fake exec", remote, file=sys.stderr)
         sys.exit(95)
 
-    if args[:2] == ["get", "networkpolicy"]:
-        sys.exit(0 if (state_dir / f"netpol-{{namespace}}").exists() else 1)
     if args[:2] == ["create", "-f"]:
-        manifest = sys.stdin.read()
-        if "kind: Pod" in manifest:
-            match = re.search(r"(?m)^  name: (oce-live-cross-pvc-[0-9]+)$", manifest)
+        manifest = Path(args[2]).read_text() if args[2] != "-" else sys.stdin.read()
+        try:
+            manifest_json = json.loads(manifest)
+        except json.JSONDecodeError:
+            manifest_json = None
+        if isinstance(manifest_json, dict) and manifest_json.get("kind") == "Pod":
+            metadata = manifest_json.get("metadata", {{}})
+            spec = manifest_json.get("spec", {{}})
+            containers = spec.get("containers", [])
+            volumes = spec.get("volumes", [])
+            name = metadata.get("name", "")
+            claim_name = (
+                volumes[0].get("persistentVolumeClaim", {{}}).get("claimName")
+                if len(volumes) == 1
+                else None
+            )
             if (
                 namespace != "tenant-a-k8s"
-                or match is None
-                or "claimName: pvc-b" not in manifest
+                or re.fullmatch(r"oce-live-cross-pvc-[0-9]+", name) is None
+                or metadata.get("labels") != {{
+                    "app.kubernetes.io/managed-by":
+                        "openclaw-enterprise-blueprint",
+                    "openclaw.dev/validation": "cross-tenant-pvc",
+                }}
+                or spec.get("automountServiceAccountToken") is not False
+                or spec.get("enableServiceLinks") is not False
+                or spec.get("restartPolicy") != "Never"
+                or len(containers) != 1
+                or containers[0].get("name") != "cross-tenant-pvc"
+                or containers[0].get("image") != image
+                or claim_name != "pvc-b"
             ):
                 print("invalid cross-tenant PVC probe", file=sys.stderr)
                 sys.exit(97)
-            (state_dir / "cross_pvc_pod").write_text(match.group(1))
+            (state_dir / "cross_pvc_pod").write_text(name)
             emit(cross_probe(
-                match.group(1),
+                name,
                 include_uid=scenario != "post_create_uid_failure",
             ))
-        elif "kind: NetworkPolicy" in manifest:
-            (state_dir / f"netpol-{{namespace}}").write_text(manifest)
-        elif "kind: Deployment" in manifest and "kind: Service" in manifest:
-            (state_dir / "network_canary").write_text(namespace)
         else:
             print("unsupported fake create manifest", file=sys.stderr)
             sys.exit(97)
-        sys.exit(0)
-    if args[:2] == ["apply", "-f"]:
-        manifest = sys.stdin.read()
-        if "kind: Deployment" in manifest and "kind: Service" in manifest:
-            (state_dir / "network_canary").write_text(namespace)
-            sys.exit(0)
-        print("unsupported fake apply manifest", file=sys.stderr)
-        sys.exit(98)
-    if args[:2] == ["delete", "networkpolicy"]:
-        (state_dir / f"netpol-{{namespace}}").unlink(missing_ok=True)
-        sys.exit(0)
-    if (
-        args[:2] == ["get", "pods"]
-        and namespace
-        and namespace.startswith("oce-live-network-")
-    ):
-        emit("canary-pod")
         sys.exit(0)
     if args[:2] == ["get", "configmap"]:
         sys.exit(1)
@@ -856,7 +1002,9 @@ def test_accepts_raw_one_line_service_keys_for_secret_manager_exports(tmp_path: 
     assert result.returncode == 0, result.stderr
 
 
-def test_fake_live_run_passes_and_writes_only_sanitized_evidence(tmp_path: Path) -> None:
+def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
+    tmp_path: Path,
+) -> None:
     result = _run(tmp_path)
 
     assert result.returncode == 0, result.stderr
@@ -900,6 +1048,24 @@ def test_fake_live_run_passes_and_writes_only_sanitized_evidence(tmp_path: Path)
         "EVIDENCE\tworkload-image-oce-system-1\t"
         "uid=uid-oce-api-1 container=api digest=sha256:" + ("c" * 64)
     ) in evidence
+    for call_index, alias in enumerate(
+        ("tenant-a", "tenant-b", "tenant-a-replacement"), start=1
+    ):
+        trace_id = format(call_index, "032x")
+        native_request_id = "chatcmpl_" + trace_id
+        gateway_request_id = str(9000 + call_index)
+        assert (
+            f"EVIDENCE\tnative-model-correlation-{alias}\t"
+            f"trace-id-sha256={hashlib.sha256(trace_id.encode()).hexdigest()} "
+            "native-request-id-sha256="
+            f"{hashlib.sha256(native_request_id.encode()).hexdigest()} "
+            "gateway-request-id-sha256="
+            f"{hashlib.sha256(gateway_request_id.encode()).hexdigest()} "
+            "native-model=openclaw/default gateway-model=nova-lite "
+            "bedrock-model=amazon.nova-lite-v1:0"
+        ) in evidence
+        assert trace_id not in evidence
+        assert native_request_id not in evidence
     assert "EVIDENCE\ttool-version-aws\taws-cli/2.31.0" in evidence
     assert "EVIDENCE\ttool-version-kubectl\tv1.34.0 darwin/arm64" in evidence
     assert "EVIDENCE\ttool-version-node\tv" in evidence
@@ -908,14 +1074,12 @@ def test_fake_live_run_passes_and_writes_only_sanitized_evidence(tmp_path: Path)
     for check in (
         "runtime-isolation",
         "security-context",
+        "aws-credential-absence",
         "tenant-storage-isolation",
         "cross-tenant-pvc-mount-denied",
         "guest-vm-boundary",
-        "auto-mode-network-policy-configuration",
-        "auto-mode-network-policy-enforcement",
-        "egress-tenant-a-public-ip",
-        "egress-tenant-b-imds",
-        "agentgateway-responses-api",
+        "native-openclaw-model-turn",
+        "agentgateway-model-telemetry",
         "control-plane-evidence",
         "oce-api-loopback-port-forward",
         "oce-deployed-source-revision",
@@ -990,6 +1154,68 @@ def test_fake_live_run_passes_and_writes_only_sanitized_evidence(tmp_path: Path)
     assert not list((tmp_path / "evidence").glob(".live-validation-*"))
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected_detail"),
+    [
+        (
+            "sidecar_aws_environment",
+            'spec.containers[1] ("credential-sidecar") defines prohibited '
+            'AWS credential environment "AWS_ACCESS_KEY_ID"',
+        ),
+        (
+            "init_aws_environment",
+            'spec.initContainers[1] ("credential-init") defines prohibited '
+            'AWS credential environment "AWS_WEB_IDENTITY_TOKEN_FILE"',
+        ),
+        (
+            "ephemeral_aws_environment",
+            'spec.ephemeralContainers[0] ("credential-debugger") defines '
+            'prohibited AWS credential environment '
+            '"AWS_CONTAINER_CREDENTIALS_FULL_URI"',
+        ),
+        (
+            "secret_aws_mount",
+            'spec.containers[1] ("credential-sidecar").volumeMounts[0] mounts '
+            'Secret volume "aws-credentials" at credential-like path '
+            '"/home/node/.aws"',
+        ),
+        (
+            "sidecar_state_pvc_mount",
+            'spec.containers[1] ("state-sidecar").volumeMounts[0] uses '
+            'unapproved PersistentVolumeClaim volume '
+            '"openclaw-gateway-state" at "/home/node/.openclaw"',
+        ),
+        (
+            "csi_credential_mount",
+            'uses unapproved CSI volume "credential-csi" at "/mnt/identity"',
+        ),
+        (
+            "pvc_credential_mount",
+            'uses unapproved PersistentVolumeClaim volume "credential-pvc" '
+            'at "/mnt/identity"',
+        ),
+        (
+            "hostpath_credential_mount",
+            'uses unapproved hostPath volume "host-credentials" at '
+            '"/mnt/identity"',
+        ),
+    ],
+)
+def test_live_run_rejects_credentials_in_every_container_and_volume_source(
+    tmp_path: Path,
+    scenario: str,
+    expected_detail: str,
+) -> None:
+    result = _run(tmp_path, scenario)
+
+    assert result.returncode != 0
+    assert "ERROR [tenant-runtime-contract]" in result.stderr
+    assert expected_detail in result.stderr
+    evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
+    assert "FAIL\ttenant-runtime-contract\t" in evidence
+    assert "RESULT\tPASS" not in evidence
+
+
 def test_bash_trace_cannot_expose_service_keys(tmp_path: Path) -> None:
     result = _run(tmp_path, trace=True)
 
@@ -1056,8 +1282,6 @@ def test_rejects_service_key_with_multiple_hard_links(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("scenario, failed_check", [
     ("wrong_cluster_arn", "eks-cluster"),
-    ("egress_allowed", "tenant-egress-deny"),
-    ("network_policy_not_enforced", "auto-mode-network-policy-enforcement"),
     ("port_forward_early_exit", "oce-api-port-forward"),
     ("port_forward_no_marker", "oce-api-port-forward"),
     ("wrong_oce_revision", "oce-deployed-source-revision"),
@@ -1065,6 +1289,11 @@ def test_rejects_service_key_with_multiple_hard_links(tmp_path: Path) -> None:
     ("cross_tenant_pvc_mounted", "tenant-storage-isolation"),
     ("post_create_uid_failure", "tenant-storage-isolation"),
     ("uid_precondition_rejected", "controller-driven-persistence"),
+    ("nonce_suffix", "native-openclaw-model-turn"),
+    ("wrong_native_model", "native-openclaw-model-turn"),
+    ("wrong_agw_model", "agentgateway-model-telemetry"),
+    ("missing_agw_trace", "agentgateway-model-telemetry"),
+    ("missing_agw_request_id", "agentgateway-model-telemetry"),
     ("kms_verify_failure", "evidence-signing"),
 ])
 def test_live_run_fails_closed_on_security_contract_mismatch(
@@ -1100,14 +1329,27 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     source = SCRIPT.read_text()
 
     assert source.startswith("#!/usr/bin/env bash\nset +x\n")
-    assert 'MODEL_ALIAS="nova-lite"' in source
-    assert 'EXPECTED_MODEL_TEXT="OK"' in source
-    assert 'caPath !== "/etc/agentgateway-ca/ca.crt"' in source
-    assert "fs.readFileSync(caPath)" in source
-    assert "rejectUnauthorized: true" in source
+    assert 'NATIVE_MODEL_ID="openclaw/default"' in source
+    assert 'process.env.OPENCLAW_GATEWAY_PASSWORD || ""' in source
+    assert 'hostname: "127.0.0.1"' in source
+    assert 'path: "/v1/chat/completions"' in source
+    assert "OPENCLAW_LIVE_" in source
+    assert 'value.normalize("NFKC").trim()' in source
+    assert "normalize(text) !== normalize(nonce)" in source
+    assert "!text.includes(nonce)" not in source
+    assert "model: parsed.model" in source
+    assert "requestId: parsed.id" in source
+    assert "nonceMatch: true" in source
+    assert "headers.traceparent = traceparent" in source
+    assert 'AGW_MODEL_ID="nova-lite"' in source
+    assert 'BEDROCK_MODEL_ID="amazon.nova-lite-v1:0"' in source
+    assert '"trace.id"' in source
+    assert r"request\.id" in source
+    assert '"gen_ai.provider.name", "bedrock"' in source
+    assert '"agw.ai.original_model", gatewayModel' in source
+    assert '"gen_ai.request.model", bedrockModel' in source
+    assert "unauthenticatedStatus" in source
     assert "rejectUnauthorized: false" not in source
-    assert '"169.254.170.23" "80" "identity-endpoint"' in source
-    assert '"169.254.169.254" "80" "imds"' in source
     assert source.count("--dry-run=server") >= 3
     assert "admission caller is not an allowed controller identity" in source
     assert "ephemeral containers are not permitted" in source
@@ -1142,7 +1384,6 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert 'stop_oce_api_port_forward >/dev/null 2>&1' in source
     assert 'if wait "$pid" 2>/dev/null; then' in source
     assert 'stop_oce_api_port_forward || die' in source
-    assert 'delete namespace "$NETWORK_VALIDATION_NAMESPACE"' in source
     assert 'delete namespace "$TENANT_A_NAMESPACE"' not in source
     assert 'delete namespace "$TENANT_B_NAMESPACE"' not in source
     assert "delete deployment" not in source

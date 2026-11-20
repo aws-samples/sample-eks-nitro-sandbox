@@ -215,39 +215,6 @@ def test_service_is_cluster_internal_and_forwards_only_to_https_listener():
     ]
 
 
-def test_agentgateway_ingress_is_limited_to_managed_oce_workloads():
-    policy = _one("NetworkPolicy")
-
-    assert policy["metadata"]["namespace"] == NAMESPACE
-    assert policy["spec"]["podSelector"] == {
-        "matchLabels": {"app.kubernetes.io/name": "agentgateway"}
-    }
-    assert policy["spec"]["policyTypes"] == ["Ingress"]
-    assert policy["spec"]["ingress"] == [
-        {
-            "from": [
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {
-                            "app.kubernetes.io/managed-by": "openclaw-enterprise"
-                        }
-                    },
-                    "podSelector": {
-                        "matchExpressions": [
-                            {
-                                "key": "openclaw.dev/workload-role",
-                                "operator": "In",
-                                "values": ["agent", "gateway"],
-                            }
-                        ]
-                    },
-                }
-            ],
-            "ports": [{"protocol": "TCP", "port": 4000}],
-        }
-    ]
-
-
 def test_bedrock_policy_covers_only_the_configured_regional_foundation_model():
     policy = json.loads((IAM / "bedrock-invoke.json").read_text(encoding="utf-8"))
     assert len(policy["Statement"]) == 1

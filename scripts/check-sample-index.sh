@@ -301,7 +301,7 @@ while IFS= read -r s; do
   esac
   in_readme "$s" ||
     finding "$s is not listed in README.md; add '- [<Title>](examples/$s/README.md): <one line>' under its section heading"
-done <<<"$samples"
+done < <(printf '%s\n' "$samples")
 
 # Conflict markers: anchored at the start of a line, in tracked text files only.
 markers=$(git -C "$root" grep -n -I -E '^(<<<<<<<|>>>>>>>)( |$)' 2>/dev/null)

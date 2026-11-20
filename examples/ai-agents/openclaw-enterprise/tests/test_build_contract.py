@@ -536,7 +536,7 @@ def test_fixed_workflow_logs_all_events_and_publishes_xray_traces() -> None:
 def test_readme_states_direct_start_build_is_a_fail_closed_deployment_contract() -> (
     None
 ):
-    readme = (BUILD / "README.md").read_text(encoding="utf-8")
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
 
     assert "no project setting or resource policy" in readme
     assert "`codebuild:StartBuild`" in readme
@@ -544,6 +544,25 @@ def test_readme_states_direct_start_build_is_a_fail_closed_deployment_contract()
     assert "`codebuild:RetryBuild`" in readme
     assert re.search(r"permissions boundary\s+or SCP", readme)
     assert "exempt only `ImageBuildWorkflowRole`" in readme
+
+
+def test_readme_scopes_build_credentials_to_a_subshell() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    build_step = readme.split("**Step 2: Build and scan the images**", 1)[1].split(
+        "**Step 3:", 1
+    )[0]
+
+    assert '(\ncredentials="$(\n  aws sts assume-role' in build_step
+    assert (
+        "trap 'unset credentials AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY "
+        "AWS_SESSION_TOKEN' EXIT" in build_step
+    )
+    assert '>"$image_outputs"\nchmod 600 "$image_outputs"\n)' in build_step
+    assert ") \n\nexport ADAPTER_IMAGE" not in build_step
+    assert (
+        'export ADAPTER_IMAGE="$(\n  jq -er \'.ADAPTER_IMAGE\' '
+        '"$PRIVATE_STATE_DIR/image-build-outputs.json"' in build_step
+    )
 
 
 def test_build_script_builds_each_image_from_the_expected_source() -> None:

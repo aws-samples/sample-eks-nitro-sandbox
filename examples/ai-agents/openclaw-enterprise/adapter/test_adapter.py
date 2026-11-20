@@ -41,7 +41,6 @@ OWNERSHIP_INIT_IMAGE_ENV = "OCE_OWNERSHIP_INIT_IMAGE"
 OWNERSHIP_INIT_IMAGE = f"example.invalid/ownership-helper@sha256:{'b' * 64}"
 NETWORK_PROFILE_LABEL = "openclaw.dev/network-profile"
 OCE_BROAD_EGRESS_PROFILE = "broad-egress-v1"
-NITRO_RESTRICTED_PROFILE = "nitro-central-gateway-v1"
 UNSAFE_GLIBC_ENV_NAMES = (
     "GCONV_PATH",
     "GLIBC_TUNABLES",
@@ -123,6 +122,7 @@ def target_pod() -> dict:
                     "service-agent-agt_11111111-1111-1111-1111-111111111111"
                 ),
                 "openclaw.dev/workload-role": "gateway",
+                NETWORK_PROFILE_LABEL: OCE_BROAD_EGRESS_PROFILE,
             },
             "ownerReferences": [
                 {
@@ -363,42 +363,42 @@ def apply_patch(document: dict, patch: list[dict]) -> dict:
     },
 )
 class BuildPatchTests(unittest.TestCase):
-    def test_replaces_oce_broad_egress_profile_with_restricted_nitro_profile(
-        self,
-    ) -> None:
-        pod = target_pod()
-        pod["metadata"]["labels"][NETWORK_PROFILE_LABEL] = OCE_BROAD_EGRESS_PROFILE
-
-        rendered = apply_patch(pod, build_patch(pod))
-
-        self.assertEqual(
-            rendered["metadata"]["labels"][NETWORK_PROFILE_LABEL],
-            NITRO_RESTRICTED_PROFILE,
-        )
-        validate_pod(rendered)
-
-    def test_adds_restricted_nitro_profile_when_oce_profile_is_absent(self) -> None:
+    def test_preserves_oce_broad_egress_profile(self) -> None:
         pod = target_pod()
 
         rendered = apply_patch(pod, build_patch(pod))
 
         self.assertEqual(
             rendered["metadata"]["labels"][NETWORK_PROFILE_LABEL],
-            NITRO_RESTRICTED_PROFILE,
+            OCE_BROAD_EGRESS_PROFILE,
+        )
+        self.assertFalse(
+            any(
+                operation["path"]
+                == "/metadata/labels/openclaw.dev~1network-profile"
+                for operation in build_patch(pod)
+            )
         )
         validate_pod(rendered)
+
+    def test_refuses_absent_network_profile(self) -> None:
+        pod = target_pod()
+        pod["metadata"]["labels"].pop(NETWORK_PROFILE_LABEL)
+
+        with self.assertRaisesRegex(AdmissionError, "must use.*network-profile"):
+            build_patch(pod)
 
     def test_refuses_unknown_network_profile(self) -> None:
         pod = target_pod()
         pod["metadata"]["labels"][NETWORK_PROFILE_LABEL] = "unexpected-profile"
 
-        with self.assertRaisesRegex(AdmissionError, "unsupported.*network-profile"):
+        with self.assertRaisesRegex(AdmissionError, "must use.*network-profile"):
             build_patch(pod)
 
     def test_final_validator_rejects_network_profile_tampering(self) -> None:
         rendered = apply_patch(target_pod(), build_patch(target_pod()))
 
-        for value in (None, OCE_BROAD_EGRESS_PROFILE, "unexpected-profile"):
+        for value in (None, "unexpected-profile"):
             with self.subTest(value=value):
                 tampered = copy.deepcopy(rendered)
                 labels = tampered["metadata"]["labels"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import stat
 import subprocess
@@ -22,6 +23,28 @@ MODEL_PROVIDER_BASE_URL = (
 DISABLED_DIRECT_API_CLIENT_SELECTOR = {
     "app.kubernetes.io/name": "oce-direct-pod-api-clients-disabled",
     "openclaw.dev/direct-pod-api-client": "disabled",
+}
+RECEIPT_RESOURCE_KEYS = {
+    "namespace/openclaw-system",
+    "namespace/openclaw-enterprise-adapter",
+    "namespace/openclaw-enterprise-agw",
+    "storageclass.storage.k8s.io/gp3",
+    "validatingadmissionpolicies.admissionregistration.k8s.io/"
+    "protect-openclaw-enterprise-namespace-label",
+    "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
+    "protect-openclaw-enterprise-namespace-label",
+    "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
+    "openclaw-enterprise-nitro-adapter",
+    "validatingwebhookconfigurations.admissionregistration.k8s.io/"
+    "openclaw-enterprise-nitro-policy",
+    "clusterrole.rbac.authorization.k8s.io/oce-openclaw-namespace-observer",
+    "clusterrole.rbac.authorization.k8s.io/oce-openclaw-namespace-worker",
+    "clusterrole.rbac.authorization.k8s.io/oce-openclaw-tenant-worker",
+    "clusterrole.rbac.authorization.k8s.io/oce-openclaw-tenant-api",
+    "clusterrole.rbac.authorization.k8s.io/oce-openclaw-tenant-configuration",
+    "clusterrole.rbac.authorization.k8s.io/oce-openclaw-gateway-observer",
+    "clusterrolebinding.rbac.authorization.k8s.io/oce-openclaw-worker-namespaces",
+    "clusterrolebinding.rbac.authorization.k8s.io/oce-openclaw-api-namespaces",
 }
 TEST_CA = """-----BEGIN CERTIFICATE-----
 VEVTVA==
@@ -86,7 +109,6 @@ def test_validation_postgres_is_explicitly_disposable_and_owned() -> None:
     assert [document["kind"] for document in documents] == [
         "Deployment",
         "Service",
-        "NetworkPolicy",
     ]
     for document in documents:
         metadata = document["metadata"]
@@ -102,9 +124,6 @@ def test_validation_postgres_is_explicitly_disposable_and_owned() -> None:
     assert "__OCE_VALIDATION_POSTGRES_IMAGE__" == pod_spec["containers"][0]["image"]
     assert pod_spec["volumes"][0]["emptyDir"]["sizeLimit"] == "2Gi"
     assert "persistentVolumeClaim" not in POSTGRES.read_text()
-    network_policy = documents[2]["spec"]
-    assert network_policy["policyTypes"] == ["Ingress", "Egress"]
-    assert network_policy["egress"] == []
 
 
 def test_help_names_validation_database_limit() -> None:
@@ -276,6 +295,16 @@ while (($#)); do
   if [[ "$1" == --receipt ]]; then receipt=$2; shift 2; else shift; fi
 done
 mkdir "$receipt"
+printf '%s\n' \
+  '{"version":1,"operation":"helm-install","attempt":"attempt-test",'\
+'"createdAt":"2026-11-20T00:00:00Z","clusterSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'\
+'"namespace":"openclaw-system","release":"oce",'\
+'"chartSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'\
+'"valuesSha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}' \
+  >"$receipt/intent.json"
+printf '%s\n' '{"outcome":"unknown"}' >"$receipt/dispatch.json"
+printf '%s\n' '{"outcome":"succeeded"}' >"$receipt/helm-result.json"
+chmod 600 "$receipt"/*.json
 """,
     )
 
@@ -363,6 +392,22 @@ case "$*" in
   *"get job/oce-sample-bootstrap-volume-prep"*) printf '1' ;;
   *"get job oce-sample-bootstrap-volume-prep"*"-o name"*)
     printf 'job.batch/oce-sample-bootstrap-volume-prep\\n' ;;
+  *"jsonpath={.metadata.name}"*"metadata.uid"*)
+    target=
+    previous=
+    for argument in "$@"; do
+      if [[ "$previous" == get ]]; then target=$argument; break; fi
+      previous=$argument
+    done
+    name=${target##*/}
+    owner=openclaw-enterprise-blueprint
+    instance=
+    if [[ "$name" == oce-openclaw-* ]]; then
+      owner=Helm
+      instance=oce
+    fi
+    printf '%s|%s|%s|uid-%s\\n' "$name" "$owner" "$instance" "$name"
+    ;;
   *"get "*" -o name"*)
     printf 'resource/owned\\n' ;;
   *"jsonpath={.metadata.labels.app"*) printf 'openclaw-enterprise-blueprint' ;;
@@ -575,4 +620,14 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
     ):
         assert expected in calls
     assert (state / "receipt").is_dir()
+    resource_receipt = json.loads((state / "receipt" / "resources.json").read_text())
+    assert resource_receipt["version"] == 1
+    assert resource_receipt["attempt"] == "attempt-test"
+    assert set(resource_receipt["resources"]) == RECEIPT_RESOURCE_KEYS
+    assert all(
+        uid.startswith("uid-") for uid in resource_receipt["resources"].values()
+    )
+    assert stat.S_IMODE(
+        (state / "receipt" / "resources.json").stat().st_mode
+    ) == 0o600
     assert (state / "install.complete").is_file()

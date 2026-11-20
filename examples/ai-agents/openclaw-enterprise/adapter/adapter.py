@@ -13,7 +13,6 @@ from typing import Any
 OCE_ROLE = "gateway"
 NETWORK_PROFILE_LABEL = "openclaw.dev/network-profile"
 OCE_BROAD_EGRESS_PROFILE = "broad-egress-v1"
-NITRO_RESTRICTED_PROFILE = "nitro-central-gateway-v1"
 PREP_INIT_NAME = "prepare-private-state"
 OWNER_INIT_NAME = "prepare-embedded-gateway-owner"
 STATE_VOLUME = "openclaw-gateway-state"
@@ -1744,26 +1743,10 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     patch: list[dict[str, Any]] = []
     labels = pod["metadata"]["labels"]
     network_profile = labels.get(NETWORK_PROFILE_LABEL)
-    network_profile_path = "/metadata/labels/openclaw.dev~1network-profile"
-    if network_profile is None:
-        patch.append(
-            {
-                "op": "add",
-                "path": network_profile_path,
-                "value": NITRO_RESTRICTED_PROFILE,
-            }
-        )
-    elif network_profile == OCE_BROAD_EGRESS_PROFILE:
-        patch.append(
-            {
-                "op": "replace",
-                "path": network_profile_path,
-                "value": NITRO_RESTRICTED_PROFILE,
-            }
-        )
-    elif network_profile != NITRO_RESTRICTED_PROFILE:
+    if network_profile != OCE_BROAD_EGRESS_PROFILE:
         raise AdmissionError(
-            f"refusing unsupported {NETWORK_PROFILE_LABEL} {network_profile!r}"
+            f"target OCE Pod must use {NETWORK_PROFILE_LABEL} "
+            f"{OCE_BROAD_EGRESS_PROFILE}"
         )
 
     runtime_class = spec.get("runtimeClassName")
@@ -1876,10 +1859,10 @@ def validate_pod(pod: dict[str, Any]) -> None:
     gateway_id = _validate_provenance(pod, spec, volumes)
     revision_hash = _oce_revision_hash(volumes, gateway_id)
     labels = pod["metadata"]["labels"]
-    if labels.get(NETWORK_PROFILE_LABEL) != NITRO_RESTRICTED_PROFILE:
+    if labels.get(NETWORK_PROFILE_LABEL) != OCE_BROAD_EGRESS_PROFILE:
         raise AdmissionError(
             f"final OCE Pod must use {NETWORK_PROFILE_LABEL} "
-            f"{NITRO_RESTRICTED_PROFILE}"
+            f"{OCE_BROAD_EGRESS_PROFILE}"
         )
     if spec.get("runtimeClassName") != "isolated-sandbox":
         raise AdmissionError("final OCE Pod must use runtimeClassName isolated-sandbox")

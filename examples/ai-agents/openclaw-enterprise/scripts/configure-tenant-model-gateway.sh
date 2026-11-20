@@ -3,18 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
-SAMPLE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-readonly SAMPLE_DIR
 readonly OWNER_LABEL_KEY="app.kubernetes.io/managed-by"
 readonly OWNER_LABEL_VALUE="openclaw-enterprise-blueprint"
 readonly OCE_OWNER_LABEL_VALUE="openclaw-enterprise"
 readonly AGW_NAMESPACE="openclaw-enterprise-agw"
-readonly TENANT_TEMPLATE="${SAMPLE_DIR}/deploy/tenant-model-gateway.yaml.tpl"
 readonly -a TENANT_RESOURCES=(
   "configmap/agentgateway-ca"
-  "networkpolicy.networking.k8s.io/default-deny-egress"
-  "networkpolicy.networking.k8s.io/allow-dns"
-  "networkpolicy.networking.k8s.io/allow-agentgateway"
 )
 
 die() {
@@ -36,7 +30,7 @@ if [[ ! "${TENANT_NAMESPACE}" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
   exit 2
 fi
 
-for command in kubectl jq sed base64 cmp mktemp; do
+for command in kubectl jq base64 cmp mktemp; do
   command -v "${command}" >/dev/null 2>&1 ||
     die "${command} is required."
 done
@@ -101,21 +95,6 @@ for resource in "${TENANT_RESOURCES[@]}"; do
   fi
 done
 
-agentgateway_ip="$(
-  "${KUBECTL[@]}" get service agentgateway \
-    --namespace "${AGW_NAMESPACE}" \
-    --output jsonpath='{.spec.clusterIP}'
-)"
-if [[ ! "${agentgateway_ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-  die "AgentGateway must have an IPv4 ClusterIP."
-fi
-IFS='.' read -r -a agentgateway_octets <<<"${agentgateway_ip}"
-for octet in "${agentgateway_octets[@]}"; do
-  ((10#${octet} <= 255)) ||
-    die "AgentGateway must have an IPv4 ClusterIP."
-done
-readonly agentgateway_cidr="${agentgateway_ip}/32"
-
 work_dir="$(mktemp -d)"
 trap 'rm -rf -- "${work_dir}"' EXIT
 readonly ca_file="${work_dir}/ca.crt"
@@ -166,22 +145,4 @@ if [[ "${ca_config_map_exists}" == false ]]; then
     die "created ConfigMap agentgateway-ca could not be verified."
 fi
 
-sed \
-  -e "s/OCE_TENANT_NAMESPACE/${TENANT_NAMESPACE}/g" \
-  -e "s#OCE_AGENTGATEWAY_SERVICE_CIDR#${agentgateway_cidr}#g" \
-  "${TENANT_TEMPLATE}" |
-  "${KUBECTL[@]}" label \
-    --local \
-    --filename - \
-    "${OWNER_LABEL_KEY}=${OWNER_LABEL_VALUE}" \
-    --overwrite \
-    --output yaml |
-  "${KUBECTL[@]}" apply --filename -
-
-for resource in "${TENANT_RESOURCES[@]:1}"; do
-  owned_resource_exists \
-    "${resource}" "${TENANT_NAMESPACE}" "${OWNER_LABEL_VALUE}" ||
-    die "applied ${resource} could not be verified."
-done
-
-echo "Configured the Nitro Pod Security profile, private AgentGateway trust, and egress path for ${TENANT_NAMESPACE}."
+echo "Configured the Nitro Pod Security profile and private AgentGateway trust for ${TENANT_NAMESPACE}."

@@ -6,8 +6,9 @@ umask 077
 
 AGW_NAMESPACE="openclaw-enterprise-agw"
 AGW_DEPLOYMENT="agentgateway"
-MODEL_ALIAS="nova-lite"
-EXPECTED_MODEL_TEXT="OK"
+AGW_MODEL_ID="nova-lite"
+BEDROCK_MODEL_ID="amazon.nova-lite-v1:0"
+NATIVE_MODEL_ID="openclaw/default"
 OCE_FORBIDDEN_CODE="FORBIDDEN"
 EXPECTED_OCE_SOURCE_REVISION="86c8c12310f691bb21651118ffffd6bfd460e9ff"
 CONTROLLER_DENIAL="admission caller is not an allowed controller identity for this resource"
@@ -15,6 +16,18 @@ EPHEMERAL_DENIAL="ephemeral containers are not permitted in OpenClaw Enterprise 
 PERSISTENT_MARKER="/home/node/.openclaw/.live-validation-marker"
 EPHEMERAL_MARKER="/home/node/.live-validation-marker"
 PERSISTENT_HOME="/home/node/.openclaw"
+RUNTIME_HOME="/home/node"
+PERSISTENT_STATE_ROOT="/gateway-state"
+RUNTIME_STATE_VOLUME="runtime-state"
+PREP_INIT_CONTAINER="prepare-private-state"
+OWNER_INIT_CONTAINER="nitro-prepare-runtime-ownership"
+LINK_INIT_CONTAINER="nitro-link-gateway-state"
+OCE_CONFIGURATION_VOLUME="openclaw-configuration"
+OCE_CONFIGURATION_MOUNT="/etc/openclaw"
+OCE_SERVICE_PRINCIPAL_VOLUME="openclaw-service-principal"
+OCE_SERVICE_PRINCIPAL_MOUNT="/var/run/secrets/openclaw/service-principal"
+AGENTGATEWAY_CA_VOLUME="agentgateway-ca"
+AGENTGATEWAY_CA_MOUNT="/etc/agentgateway-ca"
 
 AWS_ACCOUNT_ID=""
 AWS_REGION=""
@@ -50,9 +63,6 @@ SIGNATURE_FILE=""
 CURRENT_CHECK="argument-validation"
 MARKERS_CREATED="false"
 REPLACEMENT_POD=""
-NETWORK_VALIDATION_NAMESPACE=""
-NETWORK_VALIDATION_CREATED="false"
-NETWORK_POLICY_NAME=""
 CROSS_TENANT_PVC_POD=""
 CROSS_TENANT_PVC_POD_UID=""
 KMS_CANONICAL_KEY_ID=""
@@ -301,23 +311,6 @@ cleanup_cross_tenant_pvc_probe() {
   CROSS_TENANT_PVC_POD_UID=""
 }
 
-cleanup_network_validation() {
-  [[ -n "$NETWORK_VALIDATION_NAMESPACE" ]] || return 0
-  if [[ -n "$NETWORK_POLICY_NAME" ]]; then
-    kube -n "$TENANT_A_NAMESPACE" delete networkpolicy "$NETWORK_POLICY_NAME" \
-      --ignore-not-found --wait=true >/dev/null
-    kube -n "$TENANT_B_NAMESPACE" delete networkpolicy "$NETWORK_POLICY_NAME" \
-      --ignore-not-found --wait=true >/dev/null
-  fi
-  if [[ "$NETWORK_VALIDATION_CREATED" == "true" ]]; then
-    kube delete namespace "$NETWORK_VALIDATION_NAMESPACE" \
-      --ignore-not-found --wait=true >/dev/null
-  fi
-  NETWORK_VALIDATION_NAMESPACE=""
-  NETWORK_VALIDATION_CREATED="false"
-  NETWORK_POLICY_NAME=""
-}
-
 on_exit() {
   local status=$?
   trap - EXIT
@@ -325,7 +318,6 @@ on_exit() {
   stop_oce_api_port_forward >/dev/null 2>&1
   cleanup_markers
   cleanup_cross_tenant_pvc_probe >/dev/null 2>&1
-  cleanup_network_validation >/dev/null 2>&1
   if [[ -n "$FINAL_EVIDENCE_CANDIDATE" ]]; then
     rm -f -- "$FINAL_EVIDENCE_CANDIDATE"
   fi
@@ -615,6 +607,425 @@ pod_container_digest() {
   printf '%s' "$digest"
 }
 
+assert_no_aws_credential_paths() {
+  local tenant_alias="$1"
+  local pod_file="$2"
+  local runtime_container="$3"
+  local finding
+
+  if ! finding="$(
+    jq -r \
+      --arg runtime_container "$runtime_container" \
+      --arg runtime_home "$RUNTIME_HOME" \
+      --arg persistent_home "$PERSISTENT_HOME" \
+      --arg persistent_state_root "$PERSISTENT_STATE_ROOT" \
+      --arg runtime_state_volume "$RUNTIME_STATE_VOLUME" \
+      --arg prep_init_container "$PREP_INIT_CONTAINER" \
+      --arg owner_init_container "$OWNER_INIT_CONTAINER" \
+      --arg link_init_container "$LINK_INIT_CONTAINER" \
+      --arg oce_configuration_volume "$OCE_CONFIGURATION_VOLUME" \
+      --arg oce_configuration_mount "$OCE_CONFIGURATION_MOUNT" \
+      --arg oce_service_principal_volume "$OCE_SERVICE_PRINCIPAL_VOLUME" \
+      --arg oce_service_principal_mount "$OCE_SERVICE_PRINCIPAL_MOUNT" \
+      --arg agentgateway_ca_volume "$AGENTGATEWAY_CA_VOLUME" \
+      --arg agentgateway_ca_mount "$AGENTGATEWAY_CA_MOUNT" '
+      def container_groups:
+        [
+          {field: "containers", items: (.spec.containers // [])},
+          {field: "initContainers", items: (.spec.initContainers // [])},
+          {field: "ephemeralContainers", items: (.spec.ephemeralContainers // [])}
+        ];
+
+      def container_location($group; $entry):
+        "spec.\($group.field)[\($entry.key)] (\($entry.value.name | tojson))";
+
+      def forbidden_aws_environment($name):
+        [
+          "AWS_ACCESS_KEY_ID",
+          "AWS_SECRET_ACCESS_KEY",
+          "AWS_SESSION_TOKEN",
+          "AWS_SECURITY_TOKEN",
+          "AWS_WEB_IDENTITY_TOKEN_FILE",
+          "AWS_ROLE_ARN",
+          "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+          "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+          "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+          "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+          "AWS_SHARED_CREDENTIALS_FILE",
+          "AWS_CONFIG_FILE",
+          "AWS_EC2_METADATA_SERVICE_ENDPOINT"
+        ] | index($name) != null;
+
+      def normalized_path($path):
+        if $path == "/" then "/" else ($path | sub("/+$"; "")) end;
+
+      def paths_overlap($left; $right):
+        (normalized_path($left)) as $left_path
+        | (normalized_path($right)) as $right_path
+        | $left_path == "/"
+          or $right_path == "/"
+          or $left_path == $right_path
+          or ($left_path | startswith($right_path + "/"))
+          or ($right_path | startswith($left_path + "/"));
+
+      def credential_like_path($path):
+        if ($path | type) != "string" then false
+        else
+          paths_overlap($path; "/home/node/.aws")
+          or paths_overlap($path; "/root/.aws")
+          or paths_overlap(
+              $path;
+              "/var/run/secrets/eks.amazonaws.com/serviceaccount"
+            )
+          or paths_overlap(
+              $path;
+              "/var/run/secrets/kubernetes.io/serviceaccount"
+            )
+          or (
+              $path
+              | test(
+                  "(^|/)([.]aws|aws[-_]?credentials?|credentials?|secrets?)(/|$)";
+                  "i"
+                )
+            )
+        end;
+
+      def has_exact_keys($object; $keys):
+        ($object | type) == "object"
+        and (($object | keys | sort) == ($keys | sort));
+
+      def is_empty_dir_volume($volume):
+        has_exact_keys($volume; ["name", "emptyDir"])
+        and (($volume.emptyDir | type) == "object");
+
+      def is_oce_configuration_volume($volume):
+        has_exact_keys($volume; ["name", "configMap"])
+        and $volume.name == $oce_configuration_volume
+        and (($volume.configMap // null) | type) == "object"
+        and (($volume.configMap.name // null) | type) == "string"
+        and ($volume.configMap.name | length) > 0
+        and $volume.configMap.items == [
+          {key: "openclaw.json", path: "openclaw.json"}
+        ]
+        and (($volume.configMap.defaultMode // 420) == 420)
+        and (($volume.configMap.optional // false) == false);
+
+      def is_agentgateway_ca_volume($volume):
+        has_exact_keys($volume; ["name", "configMap"])
+        and $volume.name == $agentgateway_ca_volume
+        and (($volume.configMap // null) | type) == "object"
+        and $volume.configMap.name == $agentgateway_ca_volume
+        and $volume.configMap.items == [
+          {key: "ca.crt", path: "ca.crt"}
+        ]
+        and (($volume.configMap.defaultMode // 420) == 420)
+        and (($volume.configMap.optional // false) == false);
+
+      def is_gateway_state_volume($volume; $persistent_volume):
+        has_exact_keys($volume; ["name", "persistentVolumeClaim"])
+        and $persistent_volume != null
+        and $volume.name == $persistent_volume
+        and has_exact_keys(
+          $volume.persistentVolumeClaim;
+          ["claimName"]
+        )
+        and (($volume.persistentVolumeClaim.claimName // null) | type)
+          == "string"
+        and ($volume.persistentVolumeClaim.claimName | length) > 0;
+
+      def is_oce_service_principal_volume($volume):
+        has_exact_keys($volume; ["name", "projected"])
+        and $volume.name == $oce_service_principal_volume
+        and (($volume.projected // null) | type) == "object"
+        and (($volume.projected.defaultMode // 420) == 420)
+        and $volume.projected.sources == [
+          {
+            serviceAccountToken: {
+              audience: "openclaw-enterprise",
+              expirationSeconds: 900,
+              path: "token"
+            }
+          }
+        ];
+
+      def volume_source($volume):
+        if ($volume | type) != "object" then "malformed"
+        elif ($volume | has("secret")) then "Secret"
+        elif ($volume | has("csi")) then "CSI"
+        elif ($volume | has("persistentVolumeClaim")) then "PersistentVolumeClaim"
+        elif ($volume | has("hostPath")) then "hostPath"
+        elif ($volume | has("nfs")) then "NFS"
+        elif ($volume | has("ephemeral")) then "ephemeral volume claim"
+        elif is_oce_service_principal_volume($volume) then
+          "OCE service-account token"
+        elif (
+          [
+            $volume.projected.sources[]?
+            | select((.secret // null) != null)
+          ] | length
+        ) > 0 then "projected Secret"
+        elif (
+          [
+            $volume.projected.sources[]?
+            | select((.serviceAccountToken // null) != null)
+          ] | length
+        ) > 0 then "service-account token"
+        elif ($volume | has("projected")) then "projected"
+        elif ($volume | has("configMap")) then "ConfigMap"
+        elif ($volume | has("emptyDir")) then "emptyDir"
+        else "unsupported"
+        end;
+
+      def approved_volume($volume; $persistent_volume):
+        is_empty_dir_volume($volume)
+        or is_oce_configuration_volume($volume)
+        or is_agentgateway_ca_volume($volume)
+        or is_gateway_state_volume($volume; $persistent_volume)
+        or is_oce_service_principal_volume($volume);
+
+      def is_runtime_container($group_field; $container_name):
+        $group_field == "containers"
+        and $container_name == $runtime_container;
+
+      def is_init_container($group_field; $container_name; $expected_name):
+        $group_field == "initContainers"
+        and $container_name == $expected_name;
+
+      def approved_runtime_state_mount(
+        $mount;
+        $group_field;
+        $container_name
+      ):
+        (
+          (
+            is_runtime_container($group_field; $container_name)
+            and $mount.mountPath == $runtime_home
+          )
+          or (
+            is_init_container(
+              $group_field;
+              $container_name;
+              $owner_init_container
+            )
+            and $mount.mountPath == $runtime_home
+          )
+          or (
+            (
+              is_init_container(
+                $group_field;
+                $container_name;
+                $prep_init_container
+              )
+              or is_init_container(
+                $group_field;
+                $container_name;
+                $link_init_container
+              )
+            )
+            and $mount.mountPath == "/runtime-state"
+          )
+        )
+        and ($mount.subPath // null) == null
+        and ($mount.subPathExpr // null) == null
+        and ($mount.readOnly // false) == false;
+
+      def approved_gateway_state_mount(
+        $mount;
+        $group_field;
+        $container_name
+      ):
+        (
+          (
+            is_runtime_container($group_field; $container_name)
+            and $mount.mountPath == $persistent_home
+          )
+          or (
+            is_init_container(
+              $group_field;
+              $container_name;
+              $owner_init_container
+            )
+            and $mount.mountPath == $persistent_home
+          )
+          or (
+            (
+              is_init_container(
+                $group_field;
+                $container_name;
+                $prep_init_container
+              )
+              or is_init_container(
+                $group_field;
+                $container_name;
+                $link_init_container
+              )
+            )
+            and $mount.mountPath == $persistent_state_root
+          )
+        )
+        and ($mount.subPath // null) == null
+        and ($mount.subPathExpr // null) == null
+        and ($mount.readOnly // false) == false;
+
+      def approved_mount(
+        $volume;
+        $mount;
+        $persistent_volume;
+        $group_field;
+        $container_name
+      ):
+        if is_empty_dir_volume($volume) then
+          if $volume.name == $runtime_state_volume then
+            approved_runtime_state_mount(
+              $mount;
+              $group_field;
+              $container_name
+            )
+          else true
+          end
+        elif is_gateway_state_volume($volume; $persistent_volume) then
+          approved_gateway_state_mount(
+            $mount;
+            $group_field;
+            $container_name
+          )
+        elif is_oce_configuration_volume($volume) then
+          is_runtime_container($group_field; $container_name)
+          and $mount.mountPath == $oce_configuration_mount
+          and $mount.readOnly == true
+        elif is_agentgateway_ca_volume($volume) then
+          is_runtime_container($group_field; $container_name)
+          and $mount.mountPath == $agentgateway_ca_mount
+          and $mount.readOnly == true
+        elif is_oce_service_principal_volume($volume) then
+          is_runtime_container($group_field; $container_name)
+          and $mount.mountPath == $oce_service_principal_mount
+          and $mount.readOnly == true
+          and ($mount.subPath // null) == null
+          and ($mount.subPathExpr // null) == null
+        else
+          false
+        end;
+
+      def approved_credential_like_mount(
+        $volume;
+        $mount;
+        $group_field;
+        $container_name
+      ):
+        (
+          is_empty_dir_volume($volume)
+          and $volume.name == $runtime_state_volume
+          and approved_runtime_state_mount(
+            $mount;
+            $group_field;
+            $container_name
+          )
+        )
+        or (
+          is_oce_service_principal_volume($volume)
+          and is_runtime_container($group_field; $container_name)
+          and $mount.mountPath == $oce_service_principal_mount
+          and $mount.readOnly == true
+          and ($mount.subPath // null) == null
+          and ($mount.subPathExpr // null) == null
+        );
+
+      . as $pod
+      | [
+          ($pod.spec.containers // [])[]?
+          | select(.name == $runtime_container)
+          | (.volumeMounts // [])[]?
+          | select(.mountPath == $persistent_home)
+          | .name
+        ] as $persistent_volume_candidates
+      | (
+          if ($persistent_volume_candidates | length) == 1
+          then $persistent_volume_candidates[0]
+          else null
+          end
+        ) as $persistent_volume
+      | (
+          [
+            if (
+              ($pod.metadata.annotations // {})["eks.amazonaws.com/role-arn"]
+              != null
+            ) then
+              "metadata.annotations contains eks.amazonaws.com/role-arn"
+            else empty end
+          ]
+          +
+          [
+            container_groups[] as $group
+            | ($group.items | to_entries[]) as $entry
+            | ($entry.value.env // [])[]?
+            | select(forbidden_aws_environment(.name))
+            | "\(container_location($group; $entry)) defines prohibited AWS credential environment \(.name | tojson)"
+          ]
+          +
+          [
+            container_groups[] as $group
+            | ($group.items | to_entries[]) as $entry
+            | select((($entry.value.envFrom // []) | length) > 0)
+            | "\(container_location($group; $entry)) uses envFrom, which can inject AWS credential variables"
+          ]
+          +
+          [
+            container_groups[] as $group
+            | ($group.items | to_entries[]) as $entry
+            | (($entry.value.volumeMounts // []) | to_entries[]) as $mount_entry
+            | $mount_entry.value as $mount
+            | (
+                first(
+                  ($pod.spec.volumes // [])[]?
+                  | select(.name == $mount.name)
+                ) // null
+              ) as $volume
+            | if $volume == null then
+                "\(container_location($group; $entry)).volumeMounts[\($mount_entry.key)] references unknown volume \($mount.name | tojson)"
+              elif (
+                credential_like_path($mount.mountPath)
+                and (
+                  approved_credential_like_mount(
+                    $volume;
+                    $mount;
+                    $group.field;
+                    $entry.value.name
+                  ) | not
+                )
+              ) then
+                "\(container_location($group; $entry)).volumeMounts[\($mount_entry.key)] mounts \(volume_source($volume)) volume \($mount.name | tojson) at credential-like path \($mount.mountPath | tojson)"
+              elif (
+                approved_mount(
+                  $volume;
+                  $mount;
+                  $persistent_volume;
+                  $group.field;
+                  $entry.value.name
+                ) | not
+              ) then
+                "\(container_location($group; $entry)).volumeMounts[\($mount_entry.key)] uses unapproved \(volume_source($volume)) volume \($mount.name | tojson) at \($mount.mountPath | tojson)"
+              else empty end
+          ]
+          +
+          [
+            ($pod.spec.volumes // [] | to_entries[]) as $volume_entry
+            | select(
+                approved_volume($volume_entry.value; $persistent_volume) | not
+              )
+            | "spec.volumes[\($volume_entry.key)] (\($volume_entry.value.name | tojson)) uses unapproved \(volume_source($volume_entry.value)) source"
+          ]
+        )
+      | first // ""
+    ' "$pod_file"
+  )"; then
+    die "$tenant_alias AWS credential inspection could not evaluate the pod"
+  fi
+
+  [[ -z "$finding" ]] ||
+    die "$tenant_alias pod exposes an AWS credential path: $finding"
+}
+
 verify_runtime_pod() {
   local tenant_alias="$1"
   local namespace="$2"
@@ -665,26 +1076,7 @@ verify_runtime_pod() {
       and ($runtime.securityContext.capabilities.drop | index("ALL") != null)
   ' "$output_file" >/dev/null || die "$tenant_alias security context check failed"
 
-  jq -e --arg container "$container" '
-    (.spec.containers[] | select(.name == $container)) as $runtime
-    | (($runtime.env // []) | map(.name) | [
-        .[] | select(
-          . == "AWS_ACCESS_KEY_ID"
-          or . == "AWS_SECRET_ACCESS_KEY"
-          or . == "AWS_SESSION_TOKEN"
-          or . == "AWS_WEB_IDENTITY_TOKEN_FILE"
-          or . == "AWS_ROLE_ARN"
-          or . == "AWS_CONTAINER_CREDENTIALS_FULL_URI"
-          or . == "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"
-        )
-      ] | length == 0)
-      and (($runtime.envFrom // []) | length == 0)
-      and ((.metadata.annotations // {})["eks.amazonaws.com/role-arn"] == null)
-      and ([
-        .spec.volumes[]?.projected.sources[]?.serviceAccountToken?
-        | select(.audience == "sts.amazonaws.com")
-      ] | length == 0)
-  ' "$output_file" >/dev/null || die "$tenant_alias pod exposes an AWS credential path"
+  assert_no_aws_credential_paths "$tenant_alias" "$output_file" "$container"
 }
 
 CURRENT_CHECK="tenant-runtime-contract"
@@ -852,42 +1244,55 @@ set -e
   "$CROSS_TENANT_PVC_LOOKUP" =~ (NotFound|not[[:space:]]found) ]] ||
   die "tenant B PVC name unexpectedly resolves in tenant A or lookup did not fail as NotFound"
 CROSS_TENANT_PVC_POD="oce-live-cross-pvc-$$"
+jq -n \
+  --arg name "$CROSS_TENANT_PVC_POD" \
+  --arg image "$RUNTIME_IMAGE" \
+  --arg claim_name "$TENANT_B_PVC" '
+  {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: $name,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise-blueprint",
+        "openclaw.dev/validation": "cross-tenant-pvc"
+      }
+    },
+    spec: {
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      restartPolicy: "Never",
+      securityContext: {
+        runAsNonRoot: true,
+        runAsUser: 1000,
+        runAsGroup: 1000,
+        seccompProfile: {type: "RuntimeDefault"}
+      },
+      containers: [{
+        name: "cross-tenant-pvc",
+        image: $image,
+        command: ["sh", "-c", "sleep 3600"],
+        volumeMounts: [{
+          name: "cross-tenant-pvc",
+          mountPath: "/cross-tenant"
+        }],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          readOnlyRootFilesystem: true,
+          capabilities: {drop: ["ALL"]}
+        }
+      }],
+      volumes: [{
+        name: "cross-tenant-pvc",
+        persistentVolumeClaim: {claimName: $claim_name}
+      }]
+    }
+  }
+' >"$WORK_DIR/cross-tenant-pvc-probe.json" ||
+  die "could not render the cross-tenant PVC probe"
 kube -n "$TENANT_A_NAMESPACE" create -f - -o json \
-  >"$WORK_DIR/cross-tenant-pvc-pod.json" <<EOF
-apiVersion: v1
-kind: Pod
-metadata:
-  name: $CROSS_TENANT_PVC_POD
-  labels:
-    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
-    openclaw.dev/validation: cross-tenant-pvc
-spec:
-  automountServiceAccountToken: false
-  enableServiceLinks: false
-  restartPolicy: Never
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    runAsGroup: 1000
-    seccompProfile:
-      type: RuntimeDefault
-  containers:
-    - name: cross-tenant-pvc
-      image: $RUNTIME_IMAGE
-      command: [sh, -c, "sleep 3600"]
-      volumeMounts:
-        - name: cross-tenant-pvc
-          mountPath: /cross-tenant
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        capabilities:
-          drop: [ALL]
-  volumes:
-    - name: cross-tenant-pvc
-      persistentVolumeClaim:
-        claimName: $TENANT_B_PVC
-EOF
+  <"$WORK_DIR/cross-tenant-pvc-probe.json" \
+  >"$WORK_DIR/cross-tenant-pvc-pod.json"
 CROSS_TENANT_PVC_POD_UID_CANDIDATE="$(jq -er '.metadata.uid' \
   "$WORK_DIR/cross-tenant-pvc-pod.json")" ||
   die "cross-tenant PVC probe has no workload UID"
@@ -1008,265 +1413,6 @@ guest_evidence "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
 } >>"$EVIDENCE_FILE"
 record_pass "guest-vm-boundary" "kernel and disk evidence captured; boot IDs are distinct"
 
-CURRENT_CHECK="auto-mode-network-policy-configuration"
-kube -n kube-system get configmap amazon-vpc-cni -o json >"$WORK_DIR/vpc-cni.json"
-jq -e '
-  ((.data["enable-network-policy-controller"] // "") | ascii_downcase) == "true"
-' "$WORK_DIR/vpc-cni.json" >/dev/null || die "VPC CNI network policy is not enabled"
-kube get nodeclass default -o json >"$WORK_DIR/default-nodeclass.json"
-jq -e '
-  .spec.networkPolicy == "DefaultAllow" or .spec.networkPolicy == "DefaultDeny"
-' "$WORK_DIR/default-nodeclass.json" >/dev/null ||
-  die "default EKS Auto Mode NodeClass has no valid networkPolicy setting"
-record_pass "auto-mode-network-policy-configuration" \
-  "controller configuration and NodeClass policy mode passed"
-
-NETWORK_VALIDATION_NAMESPACE="oce-live-network-$$"
-NETWORK_POLICY_NAME="oce-live-allow-canary-$$"
-if kube get namespace "$NETWORK_VALIDATION_NAMESPACE" >/dev/null 2>&1; then
-  die "temporary network validation namespace already exists"
-fi
-for tenant_namespace in "$TENANT_A_NAMESPACE" "$TENANT_B_NAMESPACE"; do
-  if kube -n "$tenant_namespace" get networkpolicy "$NETWORK_POLICY_NAME" >/dev/null 2>&1; then
-    die "temporary network validation policy already exists"
-  fi
-done
-kube create namespace "$NETWORK_VALIDATION_NAMESPACE" >/dev/null
-NETWORK_VALIDATION_CREATED="true"
-kube label namespace "$NETWORK_VALIDATION_NAMESPACE" \
-  app.kubernetes.io/managed-by=openclaw-enterprise-blueprint \
-  openclaw.dev/validation=network-policy --overwrite >/dev/null
-
-kube -n "$NETWORK_VALIDATION_NAMESPACE" apply -f - >/dev/null <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: canary
-  labels:
-    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: oce-network-canary
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: oce-network-canary
-        app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
-    spec:
-      automountServiceAccountToken: false
-      enableServiceLinks: false
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: canary
-          image: $RUNTIME_IMAGE
-          command: [node]
-          args:
-            - -e
-            - |
-              require("node:http")
-                .createServer((request, response) => {
-                  response.end("OCE_NETPOL_CANARY");
-                })
-                .listen(8080, "0.0.0.0");
-          ports:
-            - name: http
-              containerPort: 8080
-          readinessProbe:
-            httpGet:
-              path: /
-              port: http
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: canary
-  labels:
-    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
-spec:
-  selector:
-    app.kubernetes.io/name: oce-network-canary
-  ports:
-    - name: http
-      port: 8080
-      targetPort: http
-EOF
-kube -n "$NETWORK_VALIDATION_NAMESPACE" rollout status deployment/canary \
-  --timeout=180s >/dev/null
-NETWORK_CANARY_POD="$(kube -n "$NETWORK_VALIDATION_NAMESPACE" get pods \
-  -l app.kubernetes.io/name=oce-network-canary \
-  -o 'jsonpath={.items[0].metadata.name}')"
-[[ -n "$NETWORK_CANARY_POD" ]] || die "temporary network canary pod was not created"
-NETWORK_CANARY_HOST="canary.${NETWORK_VALIDATION_NAMESPACE}.svc.cluster.local"
-
-network_probe_allowed() {
-  local namespace="$1"
-  local pod="$2"
-  local container="$3"
-  kube -n "$namespace" exec "$pod" -c "$container" -- node -e '
-    const http = require("node:http");
-    const host = process.argv[1];
-    const request = http.get({host, port: 8080, path: "/", timeout: 5000}, response => {
-      let body = "";
-      response.setEncoding("utf8");
-      response.on("data", chunk => { body += chunk; });
-      response.on("end", () => {
-        if (response.statusCode !== 200 || body !== "OCE_NETPOL_CANARY") process.exit(42);
-        process.stdout.write("NETPOL_ALLOWED");
-      });
-    });
-    request.on("timeout", () => request.destroy(new Error("timeout")));
-    request.on("error", () => process.exit(43));
-  ' "$NETWORK_CANARY_HOST"
-}
-
-network_probe_denied() {
-  local namespace="$1"
-  local pod="$2"
-  local container="$3"
-  local attempt result status
-  for attempt in 1 2 3; do
-    set +e
-    result="$(kube -n "$namespace" exec "$pod" -c "$container" -- node -e '
-      const net = require("node:net");
-      const host = process.argv[1];
-      const socket = net.createConnection({host, port: 8080});
-      let finished = false;
-      const done = blocked => {
-        if (finished) return;
-        finished = true;
-        socket.destroy();
-        if (blocked) process.stdout.write("NETPOL_BLOCKED");
-        process.exit(blocked ? 0 : 42);
-      };
-      socket.setTimeout(3000, () => done(true));
-      socket.once("error", () => done(true));
-      socket.once("connect", () => done(false));
-    ' "$NETWORK_CANARY_HOST" 2>/dev/null)"
-    status=$?
-    set -e
-    [[ $status -eq 0 && "$result" == "NETPOL_BLOCKED" ]] ||
-      die "temporary canary was reachable while the allow policy was absent"
-  done
-}
-
-apply_canary_allow_policy() {
-  local namespace="$1"
-  kube -n "$namespace" create -f - >/dev/null <<EOF
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: $NETWORK_POLICY_NAME
-  labels:
-    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
-spec:
-  podSelector:
-    matchLabels:
-      openclaw.dev/workload-role: gateway
-      openclaw.dev/network-profile: nitro-central-gateway-v1
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: $NETWORK_VALIDATION_NAMESPACE
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: oce-network-canary
-      ports:
-        - protocol: TCP
-          port: 8080
-EOF
-}
-
-CURRENT_CHECK="auto-mode-network-policy-enforcement"
-[[ "$(network_probe_allowed "$NETWORK_VALIDATION_NAMESPACE" "$NETWORK_CANARY_POD" canary)" == \
-  "NETPOL_ALLOWED" ]] || die "temporary network canary control request failed"
-for tenant in a b; do
-  if [[ "$tenant" == "a" ]]; then
-    tenant_namespace="$TENANT_A_NAMESPACE"
-    tenant_pod="$TENANT_A_POD"
-    tenant_container="$TENANT_A_CONTAINER"
-  else
-    tenant_namespace="$TENANT_B_NAMESPACE"
-    tenant_pod="$TENANT_B_POD"
-    tenant_container="$TENANT_B_CONTAINER"
-  fi
-  network_probe_denied "$tenant_namespace" "$tenant_pod" "$tenant_container"
-  apply_canary_allow_policy "$tenant_namespace"
-  [[ "$(network_probe_allowed "$tenant_namespace" "$tenant_pod" "$tenant_container")" == \
-    "NETPOL_ALLOWED" ]] || die "temporary canary remained blocked after applying the allow policy"
-  kube -n "$tenant_namespace" delete networkpolicy "$NETWORK_POLICY_NAME" \
-    --wait=true >/dev/null
-  network_probe_denied "$tenant_namespace" "$tenant_pod" "$tenant_container"
-done
-record_pass "auto-mode-network-policy-enforcement" \
-  "both tenant paths were blocked, allowed, and blocked again against one live endpoint"
-
-deny_egress() {
-  local tenant_alias="$1"
-  local namespace="$2"
-  local pod="$3"
-  local container="$4"
-  local host="$5"
-  local port="$6"
-  local destination_alias="$7"
-  local result
-  local status
-  set +e
-  result="$(kube -n "$namespace" exec "$pod" -c "$container" -- node -e '
-    const net = require("node:net");
-    const [host, port] = process.argv.slice(1);
-    const socket = net.createConnection({host, port: Number(port)});
-    let finished = false;
-    const done = (blocked) => {
-      if (finished) return;
-      finished = true;
-      socket.destroy();
-      if (blocked) process.stdout.write("EGRESS_BLOCKED");
-      process.exit(blocked ? 0 : 42);
-    };
-    socket.setTimeout(3000, () => done(true));
-    socket.once("error", () => done(true));
-    socket.once("connect", () => done(false));
-  ' "$host" "$port" 2>/dev/null)"
-  status=$?
-  set -e
-  if [[ $status -eq 0 && "$result" == "EGRESS_BLOCKED" ]]; then
-    record_pass "egress-${tenant_alias}-${destination_alias}" "connection was denied"
-  else
-    die "$tenant_alias reached a prohibited egress destination"
-  fi
-}
-
-CURRENT_CHECK="tenant-egress-deny"
-for tenant in a b; do
-  if [[ "$tenant" == "a" ]]; then
-    tenant_namespace="$TENANT_A_NAMESPACE"
-    tenant_pod="$TENANT_A_POD"
-    tenant_container="$TENANT_A_CONTAINER"
-  else
-    tenant_namespace="$TENANT_B_NAMESPACE"
-    tenant_pod="$TENANT_B_POD"
-    tenant_container="$TENANT_B_CONTAINER"
-  fi
-  deny_egress "tenant-$tenant" "$tenant_namespace" "$tenant_pod" "$tenant_container" \
-    "1.1.1.1" "443" "public-ip"
-  deny_egress "tenant-$tenant" "$tenant_namespace" "$tenant_pod" "$tenant_container" \
-    "169.254.170.23" "80" "identity-endpoint"
-  deny_egress "tenant-$tenant" "$tenant_namespace" "$tenant_pod" "$tenant_container" \
-    "169.254.169.254" "80" "imds"
-done
-
 CURRENT_CHECK="agentgateway-health"
 kube -n "$AGW_NAMESPACE" get deployment "$AGW_DEPLOYMENT" -o json \
   >"$WORK_DIR/agentgateway-deployment.json"
@@ -1354,68 +1500,195 @@ capture_pod_list_evidence "oce-system" "$WORK_DIR/oce-system-pods.json"
 record_pass "agentgateway-health" "deployment readiness probe and pod readiness passed"
 record_pass "control-plane-evidence" "AgentGateway and OCE workload UIDs and image digests captured"
 
-call_model() {
+call_native_openclaw_model() {
   local namespace="$1"
   local pod="$2"
   local container="$3"
   local output_file="$4"
   # shellcheck disable=SC2016 # This JavaScript reads the guest environment.
   kube -n "$namespace" exec "$pod" -c "$container" -- node -e '
-    const fs = require("node:fs");
-    const https = require("node:https");
-    const caPath = process.env.NODE_EXTRA_CA_CERTS;
-    if (caPath !== "/etc/agentgateway-ca/ca.crt") process.exit(49);
-    let ca;
-    try { ca = fs.readFileSync(caPath); } catch { process.exit(49); }
-    const payload = JSON.stringify({
-      model: "nova-lite",
-      input: "Reply with exactly OK.",
-      max_output_tokens: 16
-    });
-    const request = https.request({
-      hostname: "agentgateway.openclaw-enterprise-agw.svc.cluster.local",
-      port: 443,
-      path: "/v1/responses",
-      method: "POST",
-      ca,
-      rejectUnauthorized: true,
-      headers: {
-        authorization: `Bearer ${process.env.OPENAI_API_KEY || ""}`,
+    const crypto = require("node:crypto");
+    const http = require("node:http");
+    const password = process.env.OPENCLAW_GATEWAY_PASSWORD || "";
+    if (!password) process.exit(49);
+
+    function request(payload, authenticated, traceparent = "") {
+      const body = JSON.stringify(payload);
+      const headers = {
         "content-type": "application/json",
-        "content-length": Buffer.byteLength(payload)
-      }
-    }, response => {
-      let body = "";
-      response.setEncoding("utf8");
-      response.on("data", chunk => { body += chunk; });
-      response.on("end", () => {
-        let parsed;
-        try { parsed = JSON.parse(body); } catch { process.exit(50); }
-        const text = (parsed.output || [])
-          .flatMap(item => item.content || [])
-          .filter(item => item.type === "output_text")
-          .map(item => item.text || "")
-          .join("")
-          .trim();
-        if (response.statusCode !== 200 || !parsed.id || text !== "OK") process.exit(51);
-        process.stdout.write(JSON.stringify({status: 200, model: "nova-lite", text: "OK"}));
+        "content-length": Buffer.byteLength(body)
+      };
+      if (authenticated) headers.authorization = `Bearer ${password}`;
+      if (traceparent) headers.traceparent = traceparent;
+      return new Promise((resolve, reject) => {
+        const operation = http.request({
+          hostname: "127.0.0.1",
+          port: 18789,
+          path: "/v1/chat/completions",
+          method: "POST",
+          headers
+        }, response => {
+          let responseBody = "";
+          response.setEncoding("utf8");
+          response.on("data", chunk => { responseBody += chunk; });
+          response.on("end", () => resolve({
+            status: response.statusCode,
+            body: responseBody
+          }));
+        });
+        operation.setTimeout(180000, () => operation.destroy(new Error("timeout")));
+        operation.on("error", reject);
+        operation.end(body);
       });
-    });
-    request.setTimeout(30000, () => request.destroy(new Error("timeout")));
-    request.on("error", () => process.exit(52));
-    request.end(payload);
+    }
+
+    (async () => {
+      const denied = await request({
+        model: "openclaw/default",
+        messages: []
+      }, false);
+      if (![401, 403].includes(denied.status)) process.exit(50);
+
+      const nonce = `OPENCLAW_LIVE_${crypto.randomBytes(12).toString("hex")}`;
+      const traceId = crypto.randomBytes(16).toString("hex");
+      const parentSpanId = crypto.randomBytes(8).toString("hex");
+      const traceparent = `00-${traceId}-${parentSpanId}-01`;
+      const response = await request({
+        model: "openclaw/default",
+        stream: false,
+        messages: [{
+          role: "user",
+          content: `Reply with exactly this nonce and no other text: ${nonce}`
+        }]
+      }, true, traceparent);
+      let parsed;
+      try { parsed = JSON.parse(response.body); } catch { process.exit(51); }
+      const text = parsed?.choices?.[0]?.message?.content;
+      const normalize = value => value.normalize("NFKC").trim();
+      if (
+        response.status !== 200
+        || typeof text !== "string"
+        || normalize(text) !== normalize(nonce)
+      ) {
+        process.exit(52);
+      }
+      process.stdout.write(JSON.stringify({
+        status: 200,
+        unauthenticatedStatus: denied.status,
+        model: parsed.model,
+        requestId: parsed.id,
+        traceId,
+        nonceMatch: true
+      }));
+    })().catch(() => process.exit(53));
   ' >"$output_file"
-  jq -e --arg model "$MODEL_ALIAS" --arg text "$EXPECTED_MODEL_TEXT" '
-    .status == 200 and .model == $model and .text == $text
-  ' "$output_file" >/dev/null || die "AgentGateway response did not match the exact contract"
+  jq -e --arg model "$NATIVE_MODEL_ID" '
+    .status == 200
+    and (.unauthenticatedStatus == 401 or .unauthenticatedStatus == 403)
+    and .model == $model
+    and (.requestId | type == "string" and test("^chatcmpl_[A-Za-z0-9_-]{8,}$"))
+    and (.traceId | type == "string" and test("^[0-9a-f]{32}$"))
+    and .nonceMatch == true
+  ' "$output_file" >/dev/null ||
+    die "native OpenClaw gateway authentication or model response did not match the contract"
 }
 
-CURRENT_CHECK="agentgateway-responses-api"
-call_model "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
+capture_agentgateway_model_evidence() {
+  local native_output="$1"
+  local evidence_alias="$2"
+  local started_at="$3"
+  local trace_id native_request_id pod_name
+  local -a pod_names=()
+  local log_file="$WORK_DIR/agentgateway-${evidence_alias}.log"
+  local telemetry_file="$WORK_DIR/agentgateway-${evidence_alias}.json"
+
+  [[ "$evidence_alias" =~ ^[a-z0-9-]+$ ]] ||
+    die "AgentGateway telemetry evidence alias is invalid"
+  trace_id="$(jq -er '.traceId' "$native_output")"
+  native_request_id="$(jq -er '.requestId' "$native_output")"
+  mapfile -t pod_names < <(
+    jq -er '.items[].metadata.name' "$WORK_DIR/agentgateway-pods.json"
+  )
+  ((${#pod_names[@]} > 0)) || die "no AgentGateway pods were available for telemetry"
+  : >"$log_file"
+  for pod_name in "${pod_names[@]}"; do
+    [[ "$pod_name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
+      die "AgentGateway pod name is invalid"
+    kube -n "$AGW_NAMESPACE" logs "$pod_name" -c agentgateway \
+      --since-time="$started_at" >>"$log_file" 2>/dev/null ||
+      die "could not read AgentGateway telemetry"
+  done
+
+  # shellcheck disable=SC2016 # This JavaScript contains regex metacharacters.
+  if ! node -e '
+    const fs = require("node:fs");
+    const [logFile, traceId, gatewayModel, bedrockModel] = process.argv.slice(1);
+    const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hasField = (line, name, value) => new RegExp(
+      "(?:^|\\s)" + escapeRegex(name) + "=\"?" + escapeRegex(value)
+        + "\"?(?=\\s|$)"
+    ).test(line);
+    const matches = fs.readFileSync(logFile, "utf8").split(/\r?\n/).filter(line =>
+      hasField(line, "trace.id", traceId)
+      && hasField(line, "gen_ai.provider.name", "bedrock")
+      && hasField(line, "agw.ai.original_model", gatewayModel)
+      && hasField(line, "gen_ai.request.model", bedrockModel)
+    );
+    if (matches.length !== 1) process.exit(1);
+    const requestId = matches[0].match(
+      /(?:^|\s)request\.id="?([0-9]+)"?(?=\s|$)/
+    )?.[1];
+    if (!requestId) process.exit(1);
+    process.stdout.write(JSON.stringify({
+      traceId,
+      requestId,
+      provider: "bedrock",
+      gatewayModel,
+      bedrockModel
+    }));
+  ' "$log_file" "$trace_id" "$AGW_MODEL_ID" "$BEDROCK_MODEL_ID" >"$telemetry_file"; then
+    die "native OpenClaw request did not match one AgentGateway Bedrock telemetry event"
+  fi
+
+  jq -e \
+    --arg trace_id "$trace_id" \
+    --arg gateway_model "$AGW_MODEL_ID" \
+    --arg bedrock_model "$BEDROCK_MODEL_ID" '
+      .traceId == $trace_id
+      and (.requestId | type == "string" and test("^[0-9]+$"))
+      and .provider == "bedrock"
+      and .gatewayModel == $gateway_model
+      and .bedrockModel == $bedrock_model
+    ' "$telemetry_file" >/dev/null ||
+    die "AgentGateway telemetry fields did not match the Bedrock model contract"
+
+  printf \
+    'EVIDENCE\tnative-model-correlation-%s\ttrace-id-sha256=%s native-request-id-sha256=%s gateway-request-id-sha256=%s native-model=%s gateway-model=%s bedrock-model=%s\n' \
+    "$evidence_alias" \
+    "$(sha256_text "$trace_id")" \
+    "$(sha256_text "$native_request_id")" \
+    "$(sha256_text "$(jq -er '.requestId' "$telemetry_file")")" \
+    "$NATIVE_MODEL_ID" "$AGW_MODEL_ID" "$BEDROCK_MODEL_ID" >>"$EVIDENCE_FILE"
+}
+
+CURRENT_CHECK="native-openclaw-model-turn"
+MODEL_STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+call_native_openclaw_model "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
   "$WORK_DIR/model-response-a.json"
-call_model "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
+CURRENT_CHECK="agentgateway-model-telemetry"
+capture_agentgateway_model_evidence \
+  "$WORK_DIR/model-response-a.json" "tenant-a" "$MODEL_STARTED_AT"
+CURRENT_CHECK="native-openclaw-model-turn"
+MODEL_STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+call_native_openclaw_model "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
   "$WORK_DIR/model-response-b.json"
-record_pass "agentgateway-responses-api" "both tenants received the exact expected response"
+CURRENT_CHECK="agentgateway-model-telemetry"
+capture_agentgateway_model_evidence \
+  "$WORK_DIR/model-response-b.json" "tenant-b" "$MODEL_STARTED_AT"
+record_pass "native-openclaw-model-turn" \
+  "both native OpenClaw gateways rejected anonymous access and returned only their requested nonce"
+record_pass "agentgateway-model-telemetry" \
+  "both native requests matched one AgentGateway Bedrock model invocation and request ID"
 
 CURRENT_CHECK="oce-api-port-forward"
 start_oce_api_port_forward
@@ -1735,15 +2008,21 @@ if kube -n "$TENANT_A_NAMESPACE" exec "$REPLACEMENT_POD" -c "$TENANT_A_CONTAINER
   test -e "$EPHEMERAL_MARKER"; then
   die "ephemeral home marker unexpectedly survived replacement"
 fi
-call_model "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" "$TENANT_A_CONTAINER" \
+MODEL_STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+call_native_openclaw_model \
+  "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" "$TENANT_A_CONTAINER" \
   "$WORK_DIR/replacement-model-response.json"
+CURRENT_CHECK="agentgateway-model-telemetry"
+capture_agentgateway_model_evidence \
+  "$WORK_DIR/replacement-model-response.json" "tenant-a-replacement" "$MODEL_STARTED_AT"
+CURRENT_CHECK="controller-driven-persistence"
 {
   printf 'EVIDENCE\toce-revision-tenant-a-replacement\t%s\n' "$REPLACEMENT_OCE_REVISION"
   printf 'EVIDENCE\tworkload-image-tenant-a-replacement\tuid=%s container=%s digest=%s\n' \
     "$REPLACEMENT_POD_UID" "$TENANT_A_CONTAINER" "$REPLACEMENT_IMAGE_DIGEST"
 } >>"$EVIDENCE_FILE"
 record_pass "controller-driven-persistence" \
-  "persistent state survived replacement; ephemeral state did not; model access still passed"
+  "persistent state survived replacement; ephemeral state did not; native model turn still passed"
 
 CURRENT_CHECK="temporary-artifact-cleanup"
 kube -n "$TENANT_A_NAMESPACE" exec "$REPLACEMENT_POD" -c "$TENANT_A_CONTAINER" -- \
@@ -1754,11 +2033,10 @@ if ! kube -n "$TENANT_A_NAMESPACE" exec "$REPLACEMENT_POD" -c "$TENANT_A_CONTAIN
 fi
 MARKERS_CREATED="false"
 cleanup_cross_tenant_pvc_probe
-cleanup_network_validation
 [[ "$OCE_PORT_FORWARD_CLEANED" == "true" ]] ||
   die "OCE API port-forward cleanup was not completed"
 record_pass "temporary-artifact-cleanup" \
-  "port-forward, markers, negative PVC pod, network policies, and canary namespace were removed"
+  "port-forward, markers, and the negative PVC pod were removed"
 printf 'CLEANUP\tPASS\tlocal port-forward was reaped; temporary cluster artifacts were deleted and awaited\n' \
   >>"$EVIDENCE_FILE"
 

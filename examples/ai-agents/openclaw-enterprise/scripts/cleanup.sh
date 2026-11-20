@@ -9,7 +9,6 @@ readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff"
 readonly AGW_NAMESPACE="openclaw-enterprise-agw"
 readonly AGW_SERVICE_ACCOUNT="agentgateway"
 readonly STORAGE_CLASS="openclaw-enterprise-gp3"
-readonly VPC_CNI_KEY="enable-network-policy-controller"
 usage() {
   cat >&2 <<'EOF'
 Usage:
@@ -23,7 +22,8 @@ Usage:
      --iam-role-name ROLE_NAME --iam-inline-policy-name POLICY_NAME]
 Paths and context must be explicit. Evidence must prove a successful exact
 install on the selected cluster. AWS arguments are all-or-nothing. Tenant
-namespaces and external databases are preserved.
+namespaces are deleted only after every descendant passes an ownership check.
+External databases are preserved.
 EOF
 }
 die() {
@@ -148,7 +148,7 @@ private_file "--kubeconfig" "$kubeconfig"
 private_directory "--state-dir" "$state_dir"
 private_directory "--receipt" "$receipt"
 private_file "install completion marker" "$state_dir/install.complete"
-for name in intent.json dispatch.json helm-result.json; do
+for name in intent.json dispatch.json helm-result.json resources.json; do
   private_file "receipt/$name" "$receipt/$name"
 done
 canonical_state=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$state_dir")
@@ -169,9 +169,16 @@ context=$("${KC[@]}" config get-contexts "$kube_context" --no-headers --output=n
 "${K[@]}" get --raw=/readyz >/dev/null ||
   die "could not reach kube context $kube_context."
 cluster_config=$(mktemp)
+namespace_inventory_dir=$(mktemp -d)
 aws_error=""
-trap 'rm -f -- "${cluster_config:-}" "${aws_error:-}"' EXIT
+cleanup_temporary_files() {
+  rm -f -- "${cluster_config:-}" "${aws_error:-}"
+  [[ -z "${namespace_inventory_dir:-}" ]] ||
+    rm -rf -- "$namespace_inventory_dir"
+}
+trap cleanup_temporary_files EXIT
 chmod 600 "$cluster_config"
+chmod 700 "$namespace_inventory_dir"
 "${KC[@]}" config view --raw --minify --context "$kube_context" --output=json \
   >"$cluster_config" || die "could not read the selected kube context."
 evidence=$(
@@ -292,6 +299,10 @@ api_path() {
       printf '/apis/networking.k8s.io/v1/namespaces/%s/networkpolicies/%s' \
         "$namespace" "$name"
       ;;
+    rolebinding.rbac.authorization.k8s.io)
+      printf '/apis/rbac.authorization.k8s.io/v1/namespaces/%s/rolebindings/%s' \
+        "$namespace" "$name"
+      ;;
     validatingadmissionpolicies.admissionregistration.k8s.io)
       printf '/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies/%s' "$name"
       ;;
@@ -329,14 +340,353 @@ parse_record() {
     die "Kubernetes returned an incomplete resource identity."
 }
 
-declare -a delete_targets=() verify_targets=() tenant_guards=()
+declare -a delete_targets=() verify_targets=()
 declare -a release_guards=() orphan_release_resources=()
+declare -a namespace_inventory_types=()
+namespace_inventory_types_loaded=false
+
+load_namespace_inventory_types() {
+  local discovered resource_type
+  [[ "$namespace_inventory_types_loaded" == false ]] || return 0
+  discovered=$(
+    "${K[@]}" api-resources --namespaced=true --verbs=list --output=name
+  ) || die "could not discover namespaced resource types; refusing namespace deletion."
+  while IFS= read -r resource_type; do
+    [[ -n "$resource_type" ]] || continue
+    [[ "$resource_type" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] ||
+      die "Kubernetes discovery returned an invalid resource type."
+    case "$resource_type" in
+      events|events.events.k8s.io)
+        # Events are high-churn, server-generated diagnostic history. They do
+        # not hold durable desired state and do not inherit workload ownership.
+        continue
+        ;;
+    esac
+    namespace_inventory_types+=("$resource_type")
+  done < <(printf '%s\n' "$discovered")
+  ((${#namespace_inventory_types[@]} > 0)) ||
+    die "Kubernetes discovery returned no inspectable namespaced resource types."
+  namespace_inventory_types_loaded=true
+}
+
+verify_namespace_descendants() {
+  local namespace=$1 allowed_owners=${2:-$OWNER} resource_type ownership_failures
+  load_namespace_inventory_types
+  for resource_type in "${namespace_inventory_types[@]}"; do
+    "${K[@]}" get "$resource_type" --namespace "$namespace" --output=json \
+      >"$namespace_inventory_dir/$resource_type.json" ||
+      die "could not inventory $resource_type in namespace/$namespace; refusing namespace deletion."
+  done
+  ownership_failures=$(
+    python3 -I -c '
+import json
+import sys
+from pathlib import Path
+
+(
+    namespace,
+    owner_key,
+    allowed_owners_csv,
+    release,
+    system_namespace,
+    inventory_dir,
+    *resource_types,
+) = sys.argv[1:]
+allowed_owners = set(allowed_owners_csv.split(","))
+if not allowed_owners or "" in allowed_owners:
+    raise SystemExit("cleanup: allowed namespace owners are malformed.")
+
+def fail(message):
+    sys.stderr.write(f"cleanup: {message}\n")
+    raise SystemExit(1)
+
+def string_map(value, resource_type, name):
+    value = value or {}
+    if (
+        not isinstance(value, dict)
+        or any(not isinstance(key, str) or not isinstance(item, str)
+               for key, item in value.items())
+    ):
+        fail(f"{resource_type}/{name} has malformed ownership metadata.")
+    return value
+
+nodes = []
+by_uid = {}
+by_type_name = {}
+for resource_type in resource_types:
+    path = Path(inventory_dir, f"{resource_type}.json")
+    try:
+        with path.open(encoding="utf-8") as source:
+            resource_list = json.load(source)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"{resource_type} inventory is not valid JSON: {error}.")
+    if (
+        not isinstance(resource_list, dict)
+        or not isinstance(resource_list.get("items"), list)
+    ):
+        fail(f"{resource_type} inventory is not a Kubernetes List.")
+    for item in resource_list["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("metadata"), dict):
+            fail(f"{resource_type} inventory contains malformed object metadata.")
+        metadata = item["metadata"]
+        name = metadata.get("name")
+        uid = metadata.get("uid")
+        if (
+            not isinstance(name, str)
+            or not name
+            or metadata.get("namespace") != namespace
+            or not isinstance(uid, str)
+            or not uid
+        ):
+            fail(f"{resource_type} inventory contains an incomplete object identity.")
+        labels = string_map(metadata.get("labels"), resource_type, name)
+        annotations = string_map(
+            metadata.get("annotations"), resource_type, name
+        )
+        owner_references = metadata.get("ownerReferences") or []
+        if not isinstance(owner_references, list):
+            fail(f"{resource_type}/{name} has malformed owner references.")
+        node = {
+            "type": resource_type,
+            "name": name,
+            "uid": uid,
+            "item": item,
+            "labels": labels,
+            "annotations": annotations,
+            "ownerReferences": owner_references,
+        }
+        if uid in by_uid or (resource_type, name) in by_type_name:
+            fail(f"{resource_type}/{name} has a duplicate inventory identity.")
+        nodes.append(node)
+        by_uid[uid] = node
+        by_type_name[(resource_type, name)] = node
+
+def directly_owned(node):
+    labels = node["labels"]
+    annotations = node["annotations"]
+    return (
+        labels.get(owner_key) in allowed_owners
+        or (
+            labels.get(owner_key) == "Helm"
+            and annotations.get("meta.helm.sh/release-name") == release
+            and annotations.get("meta.helm.sh/release-namespace") == namespace
+        )
+    )
+
+def expected_tenant_role_binding(node):
+    expected = {
+        "openclaw-enterprise-worker": (
+            f"{release}-openclaw-tenant-worker",
+            "openclaw-enterprise-worker",
+        ),
+        "openclaw-enterprise-api-secrets": (
+            f"{release}-openclaw-tenant-api",
+            "openclaw-enterprise-api",
+        ),
+        "openclaw-enterprise-api-configuration": (
+            f"{release}-openclaw-tenant-configuration",
+            "openclaw-enterprise-api",
+        ),
+    }
+    if node["type"] != "rolebindings.rbac.authorization.k8s.io":
+        return False
+    desired = expected.get(node["name"])
+    if desired is None or node["labels"] or node["ownerReferences"]:
+        return False
+    role_name, service_account_name = desired
+    return (
+        node["annotations"] == {
+            "kubectl.kubernetes.io/last-applied-configuration":
+                node["annotations"].get(
+                    "kubectl.kubernetes.io/last-applied-configuration"
+                )
+        }
+        or not node["annotations"]
+    ) and node["item"].get("roleRef") == {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "ClusterRole",
+        "name": role_name,
+    } and node["item"].get("subjects") == [{
+        "kind": "ServiceAccount",
+        "name": service_account_name,
+        "namespace": system_namespace,
+    }]
+
+def default_service_account(node):
+    # The namespace controller creates this exact account. Custom labels,
+    # annotations, image-pull settings, or token-mount settings make it untrusted.
+    if (
+        node["type"] != "serviceaccounts"
+        or node["name"] != "default"
+        or node["labels"]
+        or node["annotations"]
+        or node["ownerReferences"]
+    ):
+        return False
+    item = node["item"]
+    if "automountServiceAccountToken" in item or item.get("imagePullSecrets"):
+        return False
+    secrets = item.get("secrets") or []
+    return (
+        isinstance(secrets, list)
+        and all(
+            isinstance(secret, dict)
+            and isinstance(secret.get("name"), str)
+            and secret["name"].startswith("default-token-")
+            for secret in secrets
+        )
+    )
+
+def root_ca_configmap(node):
+    # RootCAConfigMapPublisher creates this exact CA-only ConfigMap.
+    if node["type"] != "configmaps" or node["name"] != "kube-root-ca.crt":
+        return False
+    labels = node["labels"]
+    annotations = node["annotations"]
+    data = node["item"].get("data")
+    return (
+        set(labels) <= {"kubernetes.io/metadata.name"}
+        and labels.get("kubernetes.io/metadata.name", namespace) == namespace
+        and set(annotations) == {"kubernetes.io/description"}
+        and annotations["kubernetes.io/description"].startswith(
+            "Contains a CA bundle"
+        )
+        and isinstance(data, dict)
+        and set(data) == {"ca.crt"}
+        and isinstance(data["ca.crt"], str)
+        and bool(data["ca.crt"])
+        and not node["ownerReferences"]
+    )
+
+trusted = {node["uid"] for node in nodes if directly_owned(node)}
+trusted.update(
+    node["uid"]
+    for node in nodes
+    if (
+        default_service_account(node)
+        or root_ca_configmap(node)
+        or expected_tenant_role_binding(node)
+    )
+)
+
+def controller_owned(node):
+    for reference in node["ownerReferences"]:
+        if not isinstance(reference, dict):
+            fail("{}/{} has a malformed owner reference.".format(
+                node["type"], node["name"]
+            ))
+        if reference.get("controller") is True and reference.get("uid") in trusted:
+            return True
+    return False
+
+def generated_endpoint(node):
+    # The endpoint controller mirrors a sample-owned Service without copying
+    # its ownership label onto the legacy Endpoints object.
+    if node["type"] != "endpoints":
+        return False
+    labels = node["labels"]
+    annotations = node["annotations"]
+    return (
+        ("services", node["name"]) in {
+            (item["type"], item["name"])
+            for item in nodes
+            if item["uid"] in trusted
+        }
+        and labels.get("endpoints.kubernetes.io/managed-by")
+        in {"endpoint-controller", "endpoints-controller"}
+        and set(labels)
+        <= {
+            "endpoints.kubernetes.io/managed-by",
+            "service.kubernetes.io/headless",
+        }
+        and set(annotations)
+        <= {"endpoints.kubernetes.io/last-change-trigger-time"}
+        and not node["ownerReferences"]
+    )
+
+def generated_certificate_secret(node):
+    # cert-manager materializes a TLS Secret for a trusted Certificate. Extra
+    # non-cert-manager metadata or unexpected data keys make the Secret untrusted.
+    if node["type"] != "secrets" or node["item"].get("type") != "kubernetes.io/tls":
+        return False
+    certificate_name = node["annotations"].get("cert-manager.io/certificate-name")
+    labels = node["labels"]
+    data = node["item"].get("data")
+    return (
+        isinstance(certificate_name, str)
+        and ("certificates.cert-manager.io", certificate_name)
+        in {
+            (item["type"], item["name"])
+            for item in nodes
+            if item["uid"] in trusted
+        }
+        and set(labels) <= {"controller.cert-manager.io/fao"}
+        and labels.get("controller.cert-manager.io/fao", "true") == "true"
+        and node["annotations"]
+        and all(key.startswith("cert-manager.io/") for key in node["annotations"])
+        and isinstance(data, dict)
+        and {"tls.crt", "tls.key"} <= set(data)
+        and set(data) <= {"ca.crt", "tls.crt", "tls.key"}
+        and all(isinstance(value, str) and value for value in data.values())
+        and not node["ownerReferences"]
+    )
+
+def generated_controller_lease(node):
+    # client-go leader election stores the active sample Pod identity in a
+    # Lease. An unrelated holder or any custom metadata is not exempt.
+    if node["type"] != "leases.coordination.k8s.io":
+        return False
+    spec = node["item"].get("spec")
+    holder = spec.get("holderIdentity") if isinstance(spec, dict) else None
+    pod_names = {
+        item["name"]
+        for item in nodes
+        if item["type"] == "pods" and item["uid"] in trusted
+    }
+    return (
+        isinstance(holder, str)
+        and any(holder == name or holder.startswith(f"{name}_") for name in pod_names)
+        and not node["labels"]
+        and not node["annotations"]
+        and not node["ownerReferences"]
+    )
+
+while True:
+    added = {
+        node["uid"]
+        for node in nodes
+        if node["uid"] not in trusted
+        and (
+            controller_owned(node)
+            or generated_endpoint(node)
+            or generated_certificate_secret(node)
+            or generated_controller_lease(node)
+        )
+    }
+    if not added:
+        break
+    trusted.update(added)
+
+print("\n".join(
+    "{}/{}".format(node["type"], node["name"])
+    for node in nodes
+    if node["uid"] not in trusted
+))
+' "$namespace" "$OWNER_KEY" "$allowed_owners" "$release" "$system_namespace" \
+      "$namespace_inventory_dir" \
+      "${namespace_inventory_types[@]}"
+  ) || die "could not validate descendant ownership in namespace/$namespace."
+  [[ -z "$ownership_failures" ]] ||
+    die "namespace/$namespace contains descendants without exact sample ownership metadata: $ownership_failures"
+}
 
 record_owned() {
-  local resource=$1 namespace=$2 expected_owner=$3 record
+  local resource=$1 namespace=$2 expected_owner=$3 expected_uid=${4:-} record
   record=$(resource_record "$resource" "$namespace")
   [[ -n "$record" ]] || return 0
   parse_record "$record"
+  [[ -z "$expected_uid" || "$R_UID" == "$expected_uid" ]] ||
+    die "$resource${namespace:+ in $namespace} does not match the UID recorded in the installation receipt."
   [[ "$R_NAME" == "${resource##*/}" && "$R_OWNER" == "$expected_owner" ]] ||
     die "$resource${namespace:+ in $namespace} does not carry the exact $OWNER_KEY=$expected_owner ownership label."
   delete_targets+=(
@@ -345,9 +695,22 @@ record_owned() {
   verify_targets+=("$resource|$namespace|$R_UID")
 }
 
+record_exact() {
+  local resource=$1 namespace=$2 record
+  record=$(resource_record "$resource" "$namespace")
+  [[ -n "$record" ]] || return 0
+  parse_record "$record"
+  [[ "$R_NAME" == "${resource##*/}" ]] ||
+    die "$resource in $namespace does not have the expected identity."
+  delete_targets+=(
+    "$(api_path "$resource" "$namespace")|$R_UID|$R_VERSION|$resource|$namespace"
+  )
+  verify_targets+=("$resource|$namespace|$R_UID")
+}
+
 readonly -a system_resources=(
   secret/oce-validation-only-postgres deployment.apps/oce-validation-only-postgres
-  service/oce-validation-only-postgres networkpolicy.networking.k8s.io/oce-validation-only-postgres
+  service/oce-validation-only-postgres
   secret/oce-sample-installation-startup secret/oce-sample-database
   secret/oce-sample-database-ca secret/oce-sample-auth
   job.batch/oce-sample-bootstrap-volume-prep persistentvolumeclaim/oce-sample-bootstrap-output
@@ -359,8 +722,12 @@ readonly -a cluster_resources=(
   validatingwebhookconfigurations.admissionregistration.k8s.io/openclaw-enterprise-nitro-policy
 )
 readonly -a tenant_resources=(
-  configmap/agentgateway-ca networkpolicy.networking.k8s.io/default-deny-egress
-  networkpolicy.networking.k8s.io/allow-dns networkpolicy.networking.k8s.io/allow-agentgateway
+  configmap/agentgateway-ca
+)
+readonly -a tenant_role_bindings=(
+  rolebinding.rbac.authorization.k8s.io/openclaw-enterprise-worker
+  rolebinding.rbac.authorization.k8s.io/openclaw-enterprise-api-secrets
+  rolebinding.rbac.authorization.k8s.io/openclaw-enterprise-api-configuration
 )
 readonly -a release_resources=(
   "clusterrole.rbac.authorization.k8s.io/${release}-openclaw-namespace-observer"
@@ -370,12 +737,92 @@ readonly -a release_resources=(
   "clusterrolebinding.rbac.authorization.k8s.io/${release}-openclaw-worker-namespaces"
   "clusterrolebinding.rbac.authorization.k8s.io/${release}-openclaw-api-namespaces"
 )
+readonly -a receipt_bound_resources=(
+  "namespace/$system_namespace"
+  "namespace/openclaw-enterprise-adapter"
+  "namespace/$AGW_NAMESPACE"
+  "${cluster_resources[@]}"
+  "${release_resources[@]}"
+  "storageclass.storage.k8s.io/$STORAGE_CLASS"
+)
+declare -a receipt_resource_guards=()
+receipt_guard_output=$(
+  python3 -I -c '
+from pathlib import Path
+import json, re, sys
+
+path, attempt, *expected = sys.argv[1:]
+
+def fail(message):
+    sys.stderr.write(f"cleanup: {message}\n")
+    raise SystemExit(1)
+
+try:
+    if Path(path).stat().st_size > 65536:
+        fail("receipt resources.json is too large.")
+    receipt = json.loads(Path(path).read_text(encoding="utf-8"))
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    fail(f"invalid receipt file resources.json: {error}.")
+
+if (
+    not isinstance(receipt, dict)
+    or set(receipt) != {"version", "attempt", "resources"}
+    or receipt["version"] != 1
+    or receipt["attempt"] != attempt
+    or not isinstance(receipt["resources"], dict)
+):
+    fail("receipt resources.json has an unexpected schema or attempt.")
+
+allowed = set(expected)
+for resource, uid in receipt["resources"].items():
+    if resource not in allowed:
+        fail(f"receipt resources.json contains unexpected resource {resource}.")
+    if not isinstance(uid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", uid):
+        fail(f"receipt resources.json contains an invalid UID for {resource}.")
+
+for resource in expected:
+    uid = receipt["resources"].get(resource)
+    if uid is not None:
+        print(f"{resource}\t{uid}")
+' "$receipt/resources.json" "$receipt_attempt" "${receipt_bound_resources[@]}"
+) || die "blueprint resource receipt validation failed."
+if [[ -n "$receipt_guard_output" ]]; then
+  while IFS=$'\t' read -r resource uid extra; do
+    [[ -n "$resource" && -n "$uid" && -z "${extra:-}" ]] ||
+      die "blueprint resource receipt output was malformed."
+    receipt_resource_guards+=("$resource|$uid")
+  done <<<"$receipt_guard_output"
+fi
+
+receipt_uid() {
+  local requested=$1 guard resource uid extra
+  for guard in "${receipt_resource_guards[@]}"; do
+    IFS='|' read -r resource uid extra <<<"$guard"
+    [[ -z "${extra:-}" ]] || die "invalid blueprint resource receipt guard."
+    if [[ "$resource" == "$requested" ]]; then
+      printf '%s' "$uid"
+      return 0
+    fi
+  done
+  return 1
+}
+
+required_receipt_uid() {
+  local resource=$1 uid
+  uid=$(receipt_uid "$resource") ||
+    die "$resource is live but has no UID in the installation receipt."
+  printf '%s' "$uid"
+}
 
 system_record=$(resource_record "namespace/$system_namespace" "")
 if [[ -n "$system_record" ]]; then
   parse_record "$system_record"
+  expected_uid=$(required_receipt_uid "namespace/$system_namespace")
+  [[ "$R_UID" == "$expected_uid" ]] ||
+    die "namespace/$system_namespace does not match the UID recorded in the installation receipt."
   [[ "$R_OWNER" == "$OWNER" ]] ||
     die "namespace/$system_namespace does not carry the exact $OWNER_KEY=$OWNER ownership label."
+  verify_namespace_descendants "$system_namespace"
   for resource in "${system_resources[@]}"; do
     record_owned "$resource" "$system_namespace" "$OWNER"
   done
@@ -397,17 +844,41 @@ for namespace in "${tenant_namespaces[@]}"; do
   parse_record "$record"
   [[ "$R_OWNER" == "$OCE_OWNER" ]] ||
     die "tenant namespace/$namespace is not owned by $OCE_OWNER."
-  tenant_guards+=("$namespace|$R_UID")
+  tenant_uid=$R_UID
+  tenant_version=$R_VERSION
+  verify_namespace_descendants "$namespace" "$OWNER,$OCE_OWNER"
   for resource in "${tenant_resources[@]}"; do
     record_owned "$resource" "$namespace" "$OWNER"
   done
+  for resource in "${tenant_role_bindings[@]}"; do
+    record_exact "$resource" "$namespace"
+  done
+  delete_targets+=(
+    "$(api_path "namespace/$namespace" "")|$tenant_uid|$tenant_version|namespace/$namespace|"
+  )
+  verify_targets+=("namespace/$namespace||$tenant_uid")
 done
 
 for resource in "${cluster_resources[@]}"; do
-  record_owned "$resource" "" "$OWNER"
+  record=$(resource_record "$resource" "")
+  [[ -n "$record" ]] || continue
+  expected_uid=$(required_receipt_uid "$resource")
+  record_owned "$resource" "" "$OWNER" "$expected_uid"
 done
 for namespace in openclaw-enterprise-adapter "$AGW_NAMESPACE"; do
-  record_owned "namespace/$namespace" "" "$OWNER"
+  record=$(resource_record "namespace/$namespace" "")
+  [[ -n "$record" ]] || continue
+  parse_record "$record"
+  expected_uid=$(required_receipt_uid "namespace/$namespace")
+  [[ "$R_UID" == "$expected_uid" ]] ||
+    die "namespace/$namespace does not match the UID recorded in the installation receipt."
+  [[ "$R_NAME" == "$namespace" && "$R_OWNER" == "$OWNER" ]] ||
+    die "namespace/$namespace does not carry the exact $OWNER_KEY=$OWNER ownership label."
+  verify_namespace_descendants "$namespace"
+  delete_targets+=(
+    "$(api_path "namespace/$namespace" "")|$R_UID|$R_VERSION|namespace/$namespace|"
+  )
+  verify_targets+=("namespace/$namespace||$R_UID")
 done
 if [[ -n "$system_record" ]]; then
   parse_record "$system_record"
@@ -422,40 +893,24 @@ for resource in "${release_resources[@]}"; do
   [[ -n "$record" ]] || continue
   parse_record "$record"
   if [[ "$release_present" == true ]]; then
+    expected_uid=$(required_receipt_uid "$resource")
+    [[ "$R_UID" == "$expected_uid" ]] ||
+      die "$resource does not match the UID recorded in the installation receipt."
+    [[ "$R_OWNER" == "Helm" && "$R_INSTANCE" == "$release" ]] ||
+      die "$resource does not carry the exact Helm release ownership labels."
     release_guards+=("$resource|$R_UID")
   else
     orphan_release_resources+=("$resource")
   fi
 done
 
-vpc_json=$("${K[@]}" get configmap amazon-vpc-cni --namespace kube-system \
-  --ignore-not-found --output=json) || die "could not inspect the VPC CNI ConfigMap."
-vpc_plan=$(
-  python3 -c '
-import json, sys
-raw, owner, key = sys.stdin.read(), sys.argv[1], sys.argv[2]
-if not raw.strip():
-    print("absent"); raise SystemExit
-resource = json.loads(raw)
-metadata, data = resource.get("metadata", {}), resource.get("data") or {}
-if key not in data:
-    print("field-absent"); raise SystemExit
-managers = {
-    entry.get("manager") for entry in metadata.get("managedFields") or []
-    if f"f:{key}" in ((entry.get("fieldsV1") or {}).get("f:data") or {})
-}
-if managers != {owner}:
-    print("preserve-unowned"); raise SystemExit
-if data[key] != "true":
-    print("preserve-changed"); raise SystemExit
-print("remove\t{}\t{}".format(metadata["uid"], metadata["resourceVersion"]))
-' "$OWNER" "$VPC_CNI_KEY" <<<"$vpc_json"
-) || die "VPC CNI ConfigMap returned malformed ownership data."
-
 storage_record=$(resource_record "storageclass.storage.k8s.io/$STORAGE_CLASS" "")
 storage_plan="absent"
 if [[ -n "$storage_record" ]]; then
   parse_record "$storage_record"
+  expected_uid=$(required_receipt_uid "storageclass.storage.k8s.io/$STORAGE_CLASS")
+  [[ "$R_UID" == "$expected_uid" ]] ||
+    die "storageclass.storage.k8s.io/$STORAGE_CLASS does not match the UID recorded in the installation receipt."
   if [[ "$R_OWNER" != "$OWNER" ]]; then
     storage_plan="preserve-unowned"
   else
@@ -570,15 +1025,6 @@ fi
 for target in "${delete_targets[@]}"; do delete_guarded "$target"; done
 for target in "${verify_targets[@]}"; do verify_absent "$target"; done
 
-for guard in "${tenant_guards[@]}"; do
-  IFS='|' read -r namespace uid <<<"$guard"
-  record=$(resource_record "namespace/$namespace" "")
-  [[ -n "$record" ]] || die "tenant namespace/$namespace disappeared."
-  parse_record "$record"
-  [[ "$R_UID" == "$uid" && "$R_OWNER" == "$OCE_OWNER" ]] ||
-    die "tenant namespace/$namespace changed identity or ownership."
-done
-
 for guard in "${release_guards[@]}"; do
   IFS='|' read -r resource uid <<<"$guard"
   record=$(resource_record "$resource" "")
@@ -595,43 +1041,6 @@ for resource in "${orphan_release_resources[@]}"; do
     "$resource" >&2
   incomplete=1
 done
-
-IFS=$'\t' read -r vpc_action vpc_uid vpc_version <<<"$vpc_plan"
-case "$vpc_action" in
-  absent|field-absent|preserve-unowned) ;;
-  preserve-changed)
-    printf 'Preserved sample-owned VPC CNI field because its value changed.\n' >&2
-    incomplete=1
-    ;;
-  remove)
-    patch=$(python3 -c '
-import json, sys
-uid, version, key = sys.argv[1:]
-path = "/data/" + key.replace("~", "~0").replace("/", "~1")
-print(json.dumps([
-  {"op": "test", "path": "/metadata/uid", "value": uid},
-  {"op": "test", "path": "/metadata/resourceVersion", "value": version},
-  {"op": "test", "path": path, "value": "true"},
-  {"op": "remove", "path": path},
-], separators=(",", ":")))
-' "$vpc_uid" "$vpc_version" "$VPC_CNI_KEY")
-    "${K[@]}" patch configmap amazon-vpc-cni --namespace kube-system \
-      --type=json --patch="$patch" >/dev/null ||
-      die "VPC CNI ConfigMap changed after preflight; it was preserved."
-    vpc_json=$("${K[@]}" get configmap amazon-vpc-cni --namespace kube-system \
-      --output=json) || die "could not verify the VPC CNI ConfigMap."
-    python3 -c '
-import json, sys
-resource = json.load(sys.stdin)
-if resource["metadata"]["uid"] != sys.argv[1]:
-    raise SystemExit("VPC CNI ConfigMap was replaced during cleanup.")
-if sys.argv[2] in (resource.get("data") or {}):
-    raise SystemExit("sample-owned VPC CNI field still exists after cleanup.")
-' "$vpc_uid" "$VPC_CNI_KEY" <<<"$vpc_json" ||
-      die "VPC CNI cleanup verification failed."
-    ;;
-  *) die "invalid VPC CNI cleanup plan." ;;
-esac
 
 if [[ "$storage_plan" == delete ]]; then
   pvc_json=$("${K[@]}" get persistentvolumeclaims --all-namespaces --output=json) ||

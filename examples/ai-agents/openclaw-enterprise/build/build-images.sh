@@ -168,7 +168,7 @@ docker buildx build \
   "$OCE_SOURCE_DIR"
 
 read_digest() {
-  python3 - "$1" <<'PY'
+  python3 -c '
 import json
 import re
 import sys
@@ -178,7 +178,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
     raise SystemExit(f"invalid image digest in {sys.argv[1]}: {digest!r}")
 print(digest)
-PY
+' "$1"
 }
 
 adapter_digest="$(read_digest "$metadata_dir/adapter.json")"

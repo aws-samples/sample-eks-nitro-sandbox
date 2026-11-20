@@ -293,26 +293,6 @@ def test_webhook_certificate_and_service_names_match() -> None:
     ]
 
 
-def test_webhook_network_policy_limits_ingress_port_and_adds_no_egress() -> None:
-    documents = _yaml_documents(DEPLOY / "adapter-webhook.yaml")
-    policy = _one(
-        documents,
-        "NetworkPolicy",
-        "restrict-openclaw-enterprise-nitro-adapter",
-    )
-
-    assert policy["spec"] == {
-        "podSelector": {
-            "matchLabels": {
-                "app.kubernetes.io/name": "openclaw-enterprise-nitro-adapter"
-            }
-        },
-        "policyTypes": ["Ingress", "Egress"],
-        "ingress": [{"ports": [{"protocol": "TCP", "port": 8443}]}],
-        "egress": [],
-    }
-
-
 def test_rendered_deployment_uses_exact_distinct_images() -> None:
     adapter_image = f"example.invalid/adapter@sha256:{'a' * 64}"
     ownership_image = f"example.invalid/ownership@sha256:{'b' * 64}"

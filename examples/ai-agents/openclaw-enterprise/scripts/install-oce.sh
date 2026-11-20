@@ -15,6 +15,9 @@ readonly DATABASE_CA_SECRET="oce-sample-database-ca"
 readonly DATABASE_CA_KEY="ca.pem"
 readonly DATABASE_CA_MOUNT_PATH="/etc/openclaw/database-ca"
 readonly DATABASE_CA_PATH="$DATABASE_CA_MOUNT_PATH/$DATABASE_CA_KEY"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly SCRIPT_DIR
+readonly INPUT_VALIDATOR="$SCRIPT_DIR/install-oce-inputs.py"
 
 usage() {
   printf '%s\n' \
@@ -68,6 +71,11 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing prerequisite: $1."
 }
 
+require_input_validator() {
+  [[ -f "$INPUT_VALIDATOR" && ! -L "$INPUT_VALIDATOR" && -r "$INPUT_VALIDATOR" ]] ||
+    die "missing input validator: $INPUT_VALIDATOR."
+}
+
 is_dns_label() {
   local LC_ALL=C value=$1
   [[ ${#value} -le 63 && "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
@@ -87,7 +95,7 @@ require_immutable_image() {
 
 require_ipv4_cidr() {
   local flag=$1 cidr=$2 exact_host=${3:-false}
-  python3 - "$flag" "$cidr" "$exact_host" <<'PY' ||
+  python3 -c '
 import ipaddress
 import sys
 
@@ -104,7 +112,7 @@ if network.version != 4 or (exact_host == "true" and network.prefixlen != 32):
 if network.prefixlen == 0:
     sys.stderr.write(f"install-oce: {flag} must not allow all IPv4 addresses.\n")
     raise SystemExit(1)
-PY
+' "$flag" "$cidr" "$exact_host" ||
     die "$flag is invalid."
 }
 
@@ -125,211 +133,24 @@ require_private_file() {
 
 install_postgres_url() {
   local flag=$1 source=$2 destination=$3
-  python3 - "$flag" "$source" "$destination" "$DATABASE_CA_PATH" <<'PY' ||
-import ipaddress
-import os
-from pathlib import Path
-import re
-import sys
-from urllib.parse import parse_qsl, urlsplit
-
-flag, source, destination, ca_path = sys.argv[1:]
-
-
-def reject(reason):
-    sys.stderr.write(f"install-oce: {flag} {reason}.\n")
-    raise SystemExit(1)
-
-
-try:
-    raw = Path(source).read_bytes()
-except OSError:
-    reject("could not be read")
-if not raw or len(raw) > 16384:
-    reject("must contain one PostgreSQL URL no larger than 16 KiB")
-if raw.endswith(b"\n"):
-    raw = raw[:-1]
-if any(byte < 0x21 or byte > 0x7E for byte in raw):
-    reject("must contain one ASCII URL with no whitespace or embedded newlines")
-try:
-    value = raw.decode("ascii")
-except UnicodeDecodeError:
-    reject("must contain one ASCII URL")
-if "\\" in value or re.search(r"%(?![0-9A-Fa-f]{2})", value):
-    reject("contains malformed URL escaping")
-
-try:
-    parsed = urlsplit(value)
-    host = parsed.hostname
-    port = parsed.port
-except ValueError:
-    reject("contains a malformed PostgreSQL URL")
-if (
-    parsed.scheme not in {"postgres", "postgresql"}
-    or not parsed.netloc
-    or not host
-    or parsed.fragment
-    or parsed.path in {"", "/"}
-):
-    reject("must contain one PostgreSQL URL with a host and database name")
-try:
-    ipaddress.ip_address(host)
-except ValueError:
-    pass
-else:
-    reject("must use a DNS hostname so verify-full checks the server identity")
-dns_labels = host.split(".")
-if (
-    len(host) > 253
-    or any(
-        len(label) > 63
-        or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?", label)
-        for label in dns_labels
-    )
-):
-    reject("must use a valid DNS hostname so verify-full checks the server identity")
-if port not in {None, 5432}:
-    reject("must use a DNS hostname on PostgreSQL port 5432")
-
-try:
-    pairs = parse_qsl(
-        parsed.query,
-        keep_blank_values=True,
-        strict_parsing=True,
-        encoding="utf-8",
-        errors="strict",
-        max_num_fields=100,
-    )
-except (UnicodeDecodeError, ValueError):
-    reject("contains malformed query parameters")
-keys = [key.casefold() for key, _ in pairs]
-if len(keys) != len(set(keys)):
-    reject("must not contain duplicate query parameters")
-parameters = {key.casefold(): value for key, value in pairs}
-if "connectionstring" in parameters or "ssl" in parameters:
-    reject("contains an unsupported nested or overriding TLS parameter")
-if parameters.get("sslmode") != "verify-full":
-    reject("must set sslmode=verify-full exactly once")
-if parameters.get("sslrootcert") != ca_path:
-    reject(f"must set sslrootcert={ca_path} exactly once")
-
-flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-if hasattr(os, "O_NOFOLLOW"):
-    flags |= os.O_NOFOLLOW
-try:
-    descriptor = os.open(destination, flags, 0o600)
-    with os.fdopen(descriptor, "wb") as output:
-        output.write(raw)
-    os.chmod(destination, 0o600)
-except OSError:
-    reject("could not be copied into the protected state directory")
-PY
+  if ! python3 "$INPUT_VALIDATOR" postgres-url \
+    "$flag" "$source" "$destination" "$DATABASE_CA_PATH"; then
     die "$flag is invalid."
+  fi
 }
 
 install_ca_bundle() {
   local flag=$1 source=$2 destination=$3
-  python3 - "$flag" "$source" "$destination" <<'PY' ||
-import os
-from pathlib import Path
-import re
-import subprocess
-import sys
-
-flag, source, destination = sys.argv[1:]
-
-
-def reject(reason):
-    sys.stderr.write(f"install-oce: {flag} {reason}.\n")
-    raise SystemExit(1)
-
-
-try:
-    raw = Path(source).read_bytes()
-except OSError:
-    reject("could not be read")
-if not raw or len(raw) > 1024 * 1024:
-    reject("must contain a nonempty PEM CA bundle no larger than 1 MiB")
-try:
-    value = raw.decode("ascii")
-except UnicodeDecodeError:
-    reject("must contain ASCII PEM certificates")
-pattern = re.compile(
-    r"-----BEGIN CERTIFICATE-----\r?\n"
-    r"[A-Za-z0-9+/=\r\n]+"
-    r"-----END CERTIFICATE-----"
-)
-certificates = pattern.findall(value)
-if not certificates or pattern.sub("", value).strip():
-    reject("must contain only PEM certificates, with no private keys or other text")
-for index, certificate in enumerate(certificates, start=1):
-    result = subprocess.run(
-        ["openssl", "x509", "-noout", "-text"],
-        input=certificate,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        reject(f"contains an invalid X.509 certificate at position {index}")
-    if not re.search(r"\bCA\s*:\s*TRUE\b", result.stdout, re.IGNORECASE):
-        reject(f"certificate {index} is not a CA certificate")
-
-flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-if hasattr(os, "O_NOFOLLOW"):
-    flags |= os.O_NOFOLLOW
-try:
-    descriptor = os.open(destination, flags, 0o600)
-    with os.fdopen(descriptor, "wb") as output:
-        output.write(raw)
-    os.chmod(destination, 0o600)
-except OSError:
-    reject("could not be copied into the protected state directory")
-PY
+  if ! python3 "$INPUT_VALIDATOR" ca-bundle \
+    "$flag" "$source" "$destination"; then
     die "$flag is invalid."
+  fi
 }
 
 require_validation_cluster_tags() {
   local tags_json=$1
-  python3 - "$tags_json" "$VALIDATION_CLUSTER_TAG_KEY" \
-    "$VALIDATION_CLUSTER_TAG_VALUE" <<'PY' ||
-import json
-import sys
-
-raw, required_key, required_value = sys.argv[1:]
-try:
-    tags = json.loads(raw)
-except json.JSONDecodeError:
-    tags = None
-if not isinstance(tags, dict) or not all(
-    isinstance(key, str) and isinstance(value, str)
-    for key, value in tags.items()
-):
-    sys.stderr.write("install-oce: EKS returned malformed cluster tags.\n")
-    raise SystemExit(1)
-
-production = []
-for key, value in tags.items():
-    if key.casefold() in {"environment", "stage"} and value.casefold() in {
-        "prod",
-        "production",
-    }:
-        production.append(f"{key}={value}")
-if production:
-    sys.stderr.write(
-        "install-oce: --validation-postgres rejects production-tagged EKS "
-        f"clusters ({', '.join(production)}).\n"
-    )
-    raise SystemExit(1)
-
-actual_value = tags.get(required_key)
-if not isinstance(actual_value, str) or actual_value.casefold() != required_value:
-    sys.stderr.write(
-        "install-oce: --validation-postgres requires the exact EKS tag "
-        f"{required_key}={required_value} (value is case-insensitive).\n"
-    )
-    raise SystemExit(1)
-PY
+  python3 "$INPUT_VALIDATOR" validation-cluster-tags \
+    "$tags_json" "$VALIDATION_CLUSTER_TAG_KEY" "$VALIDATION_CLUSTER_TAG_VALUE" ||
     die "EKS cluster is not explicitly tagged for validation."
 }
 
@@ -472,6 +293,8 @@ while (($#)); do
   esac
 done
 
+require_input_validator
+
 [[ "$aws_account_id" =~ ^[0-9]{12}$ ]] ||
   die "--aws-account-id must be a 12-digit AWS account ID."
 [[ "$aws_region" =~ ^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$ ]] ||
@@ -555,18 +378,10 @@ require_private_file --kubeconfig "$kubeconfig"
 install -d -m 700 "$state_dir"
 [[ -O "$state_dir" ]] || die "--state-dir must be owned by the current user."
 chmod 700 "$state_dir"
-state_dir=$(python3 - "$state_dir" <<'PY'
-import os
-import sys
-print(os.path.realpath(sys.argv[1]))
-PY
-)
-receipt=$(python3 - "$receipt" <<'PY'
-import os
-import sys
-print(os.path.realpath(sys.argv[1]))
-PY
-)
+state_dir=$(python3 -c \
+  'import os,sys; print(os.path.realpath(sys.argv[1]))' "$state_dir")
+receipt=$(python3 -c \
+  'import os,sys; print(os.path.realpath(sys.argv[1]))' "$receipt")
 [[ "$receipt" == "$state_dir/"* ]] ||
   die "--receipt must be below --state-dir."
 
@@ -630,9 +445,6 @@ context_name=$(kubectl --kubeconfig "$kubeconfig" config get-contexts \
   "$kube_context" -o name)
 [[ "$context_name" == "$kube_context" ]] ||
   die "kube context $kube_context does not exist in $kubeconfig."
-current_context=$(kubectl --kubeconfig "$kubeconfig" config current-context)
-[[ "$current_context" == "$kube_context" ]] ||
-  die "wrong active kube context: expected $kube_context, found $current_context."
 context_endpoint=$(kubectl --kubeconfig "$kubeconfig" config view --raw --minify \
   --context "$kube_context" -o 'jsonpath={.clusters[0].cluster.server}')
 [[ "$context_endpoint" == "$cluster_endpoint" ]] ||
@@ -648,7 +460,8 @@ release_names=$(helm list --kubeconfig "$kubeconfig" --kube-context "$kube_conte
   --namespace "$namespace" --all --short)
 marker="$state_dir/install.complete"
 if grep -Fqx "$release" <<<"$release_names"; then
-  [[ -f "$marker" && ! -L "$marker" && -d "$receipt" ]] ||
+  [[ -f "$marker" && ! -L "$marker" && -d "$receipt" &&
+    -f "$receipt/resources.json" && ! -L "$receipt/resources.json" ]] ||
     die "Helm release $release exists without this installer's completion evidence."
   if ! grep -Fqx "source=$OCE_SOURCE_PIN" "$marker" ||
     ! grep -Fqx "cluster_arn=$cluster_arn" "$marker" ||
@@ -741,7 +554,6 @@ data:
     die "validation PostgreSQL image placeholder was not replaced."
   resource_is_owned deployment oce-validation-only-postgres || true
   resource_is_owned service oce-validation-only-postgres || true
-  resource_is_owned networkpolicy oce-validation-only-postgres || true
   "${KUBE[@]}" --namespace "$namespace" apply \
     --server-side --field-manager="$OWNER_LABEL" -f "$validation_manifest" >/dev/null
   "${KUBE[@]}" --namespace "$namespace" rollout status \
@@ -1059,6 +871,80 @@ chmod 600 "$rendered"
   --values "$values_yaml" \
   --receipt "$receipt" \
   --wait-timeout "$wait_timeout"
+
+declare -a receipt_resource_guards=()
+record_receipt_resource() {
+  local resource=$1 expected_owner=$2 expected_instance=$3
+  local expected_name=${resource##*/}
+  local record name owner instance uid extra
+  record=$("${KUBE[@]}" get "$resource" \
+    -o 'jsonpath={.metadata.name}{"|"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"|"}{.metadata.labels.app\.kubernetes\.io/instance}{"|"}{.metadata.uid}{"\n"}') ||
+    die "could not bind $resource to the installation receipt."
+  IFS='|' read -r name owner instance uid extra <<<"$record"
+  [[ -z "${extra:-}" && "$name" == "$expected_name" &&
+    "$owner" == "$expected_owner" && "$instance" == "$expected_instance" &&
+    "$uid" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
+    die "$resource does not match the expected ownership identity; refusing to record it."
+  receipt_resource_guards+=("$resource|$uid")
+}
+
+readonly -a adapter_resources=(
+  namespace/openclaw-enterprise-adapter
+  validatingadmissionpolicies.admissionregistration.k8s.io/protect-openclaw-enterprise-namespace-label
+  validatingadmissionpolicybindings.admissionregistration.k8s.io/protect-openclaw-enterprise-namespace-label
+  mutatingwebhookconfigurations.admissionregistration.k8s.io/openclaw-enterprise-nitro-adapter
+  validatingwebhookconfigurations.admissionregistration.k8s.io/openclaw-enterprise-nitro-policy
+)
+readonly -a release_resources=(
+  "clusterrole.rbac.authorization.k8s.io/${release}-openclaw-namespace-observer"
+  "clusterrole.rbac.authorization.k8s.io/${release}-openclaw-namespace-worker"
+  "clusterrole.rbac.authorization.k8s.io/${release}-openclaw-tenant-worker"
+  "clusterrole.rbac.authorization.k8s.io/${release}-openclaw-tenant-api"
+  "clusterrole.rbac.authorization.k8s.io/${release}-openclaw-tenant-configuration"
+  "clusterrole.rbac.authorization.k8s.io/${release}-openclaw-gateway-observer"
+  "clusterrolebinding.rbac.authorization.k8s.io/${release}-openclaw-worker-namespaces"
+  "clusterrolebinding.rbac.authorization.k8s.io/${release}-openclaw-api-namespaces"
+)
+
+record_receipt_resource "namespace/$namespace" "$OWNER_LABEL" ""
+record_receipt_resource namespace/openclaw-enterprise-agw "$OWNER_LABEL" ""
+record_receipt_resource \
+  "storageclass.storage.k8s.io/$runtime_storage_class" "$OWNER_LABEL" ""
+for resource in "${adapter_resources[@]}"; do
+  record_receipt_resource "$resource" "$OWNER_LABEL" ""
+done
+for resource in "${release_resources[@]}"; do
+  record_receipt_resource "$resource" Helm "$release"
+done
+
+write_private "$receipt/resources.json" python3 -I -c '
+from pathlib import Path
+import json, re, sys
+
+intent_path, *records = sys.argv[1:]
+intent = json.loads(Path(intent_path).read_text(encoding="utf-8"))
+attempt = intent.get("attempt")
+if not isinstance(attempt, str) or not attempt or "\t" in attempt:
+    raise SystemExit("invalid OCC attempt identifier")
+
+resources = {}
+for record in records:
+    resource, separator, uid = record.partition("|")
+    if (
+        not separator
+        or resource in resources
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}", resource)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", uid)
+    ):
+        raise SystemExit("invalid resource identity")
+    resources[resource] = uid
+
+print(json.dumps(
+    {"version": 1, "attempt": attempt, "resources": resources},
+    sort_keys=True,
+    separators=(",", ":"),
+))
+' "$receipt/intent.json" "${receipt_resource_guards[@]}"
 
 write_private "$marker" printf '%s\n' \
   "source=$OCE_SOURCE_PIN" \

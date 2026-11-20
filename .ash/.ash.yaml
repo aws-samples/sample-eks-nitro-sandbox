@@ -2186,7 +2186,7 @@ global_settings:
       path: 'examples/ai-agents/openclaw-enterprise/adapter/server.py'
       line_start: 451
       line_end: 451
-      reason: 'The admission webhook must listen on the pod interface for the ClusterIP Service; TLS and the adapter NetworkPolicy restrict access'
+      reason: 'The admission webhook must listen on the pod interface so the Kubernetes API server can reach its ClusterIP Service; it serves TLS and accepts only bounded admission and health endpoints'
       expiration: '2027-12-31'
     - rule_id: B108
       path: 'examples/ai-agents/openclaw-enterprise/adapter/adapter.py'
@@ -2220,7 +2220,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
-      reason: 'Pre-admission test fixture, not a deployed workload; the adapter tests transform it and verify the tenant NetworkPolicy contract'
+      reason: 'Pre-admission test fixture, not a deployed workload; adapter contract tests transform it and verify that the OCE-owned network-profile selector is preserved'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_29
       path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
