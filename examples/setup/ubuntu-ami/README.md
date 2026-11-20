@@ -345,8 +345,9 @@ blueprint's local state lives under `tmp/issue10/run`, in `logs/`, `out/` and `r
 git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/setup/ubuntu-ami
 cp config.env.example config.env
-# Set KUBE_CONTEXT (the kubectl context of CLUSTER_NAME), BUILD_SUBNET_ID, NODE_SUBNET_IDS and
-# VPC_CNI_ADDON_VERSION. Your usual CLUSTER_NAME, AWS_REGION and AWS_PROFILE remain in effect.
+# Set KUBE_CONTEXT (the kubectl context of CLUSTER_NAME), BUILD_SUBNET_ID, NODE_SUBNET_IDS,
+# VPC_CNI_ADDON_VERSION and KUBE_PROXY_ADDON_VERSION. Your usual CLUSTER_NAME, AWS_REGION and
+# AWS_PROFILE remain in effect.
 # The scripts pass --context "$KUBE_CONTEXT" to every kubectl call and never change the
 # current context.
 $EDITOR config.env
@@ -366,7 +367,7 @@ must be one no other blueprint uses.
 
 ```mermaid
 flowchart TB
-  P["Verify pinned inputs + the runtime release's signed manifest locally"] --> Q["Check vpc-cni add-on + RuntimeClass (read only)"]
+  P["Verify pinned inputs + the runtime release's signed manifest locally"] --> Q["Check vpc-cni + kube-proxy add-ons + RuntimeClass (read only)"]
   Q --> Z["Create scoped IAM roles + build-host instance profile"]
   Z --> A["Resolve base AMI via SSM; record serial"]
   A --> S["Per-run S3 staging bucket; upload the scripts"]
@@ -433,9 +434,10 @@ and the sidecars of the guest image's two files and of Firecracker. The kernel, 
 erofs-utils are downloaded (or reused when a copy already matches its pin) and checked against
 their pins without a line of their own; a mismatch stops the run on a `FATAL` line. The closing
 `all pinned public inputs verified` line covers all seven. A full `./setup.sh` then
-reads two cluster-wide prerequisites before it creates anything: the `vpc-cni` add-on is
-`ACTIVE`, and the shared `isolated-sandbox` RuntimeClass selects only labels the blueprint's
-node will carry. It stops with the command to run if either is not so.
+reads three cluster-wide prerequisites before it creates anything: the `vpc-cni` add-on and
+the `kube-proxy` add-on are `ACTIVE`, and the shared `isolated-sandbox` RuntimeClass selects
+only labels the blueprint's node will carry. It stops with the command to run if any of them
+is not so.
 
 **2. Resolve the base AMI.** The build resolves the Canonical EKS Ubuntu 24.04 AMI for
 Kubernetes 1.36 from the public SSM parameter path for your Region at run time, and records
@@ -1138,7 +1140,7 @@ bash packages/test-inputs.sh          # runtime release signature and pins, gues
 bash scripts/test-host-gates.sh       # containerd gate, .config assertion, root filesystem at boot, IMDS token never on argv
 bash scripts/test-runtime-install.sh  # the full runtime install stage in a fixture tree, and every refusal, including nested guest image and data folders (Python 3.11+)
 bash scripts/test-smoke.sh            # the Firecracker smoke stage against a stand-in for the v1.18.0 API: the exact calls and bodies, the handshake, every refusal, the clean up
-bash scripts/test-cluster-gates.sh    # kube context, vpc-cni ACTIVE (network policy on or off), RuntimeClass, user data, node capacity, namespace, pod wait
+bash scripts/test-cluster-gates.sh    # kube context, vpc-cni ACTIVE (network policy on or off), kube-proxy ACTIVE, RuntimeClass, user data, node capacity, namespace, pod wait
 bash scripts/test-launch-specs.sh     # IMDSv2 hop limit 1, enclaves and run tags on the node template, verification instance and build host; strict bootstrap.sh user data
 bash scripts/test-run-scope.sh        # per-run IAM, run-scoped clean up, the run's lock and record, IAM by name, the node role's access entry, --keep-ami, every failed lookup, --list-runs, staging revocation
 bash scripts/test-image-checks.sh     # containerd wiring, the shim config's keys and folders, AppArmor stage, package holds, bake residue, verify-image.py with the guest kernel in the EIF and the signed manifest (Python 3.11+)
@@ -1226,24 +1228,27 @@ something stops before any call unless you add `--lost-run`. Before you add it, 
 check this and proceeds on the run's tags.
 
 **What stays.** The clean up never removes a shared install. The `isolated-sandbox`
-RuntimeClass stays (Getting started created it). The `vpc-cni` add-on you installed as a
-prerequisite stays, and `./clean.sh` says so. If you installed it only for this blueprint, you
-can remove it from EKS management yourself:
+RuntimeClass stays (Getting started created it). The `vpc-cni` and `kube-proxy` add-ons you
+installed as prerequisites stay, and `./clean.sh` says so. If you installed an add-on only for
+this blueprint, and nothing else on the cluster depends on it, you can remove it from EKS
+management yourself, one command per add-on:
 
 ```bash
 aws eks delete-addon --region <AWS_REGION> --cluster-name <CLUSTER_NAME> --addon-name vpc-cni --preserve
+aws eks delete-addon --region <AWS_REGION> --cluster-name <CLUSTER_NAME> --addon-name kube-proxy --preserve
 ```
 
 `--preserve` leaves the add-on's software on the cluster as a self-managed install. Do not
-leave it out: without it, EKS deletes the add-on's software, which can include the
+leave it out: without it, EKS deletes the add-on's software. For `vpc-cni`, that can include the
 `amazon-vpc-cni` ConfigMap the add-on adopted and gave its Helm labels. Where that ConfigMap
 was there before the add-on, as on an EKS Auto Mode cluster with network policy turned on, it
 holds `enable-network-policy-controller`, the setting that turns network policy enforcement on,
 so deleting it can turn enforcement off for the workloads whose network policy enforcement
 depends on that VPC CNI setting.
-Removing the software also takes pod networking away from every node that gets it from
+Removing the `vpc-cni` software also takes pod networking away from every node that gets it from
 `aws-node`, managed node group nodes included; nodes kept off `aws-node` for another CNI are
-not affected.
+not affected. For `kube-proxy`, the software is what gives managed node group nodes their
+Service (ClusterIP) routing ([Prerequisites](#prerequisites)).
 
 ## Troubleshooting
 

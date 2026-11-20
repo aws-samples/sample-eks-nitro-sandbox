@@ -176,8 +176,9 @@ open_evidence new
 record RUN_ID "$RUN_ID"
 
 # --- Cluster-wide prerequisites, read only, before anything is created ---------------------
-# The managed vpc-cni add-on (the node's pod network), and the shared isolated-sandbox
-# RuntimeClass. Both are the reader's; this run checks them and stops with the command to run.
+# The managed vpc-cni add-on (the node's pod network), the managed kube-proxy add-on (the node's
+# Service routing), and the shared isolated-sandbox RuntimeClass. All three are the reader's; this
+# run checks them and stops with the command to run.
 # --ami-only skips them: only the node group (step 10, ./setup.sh --join) needs them.
 if [ "$MODE" = full ]; then
   log "checking the cluster-wide prerequisites (scripts/00c-check-cluster.sh, read only)"

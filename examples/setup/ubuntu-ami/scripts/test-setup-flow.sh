@@ -329,6 +329,25 @@ join_state j-nocni 'del s["eks"]["addons"]'
 join_reject j-nocni "REJECT --join on a cluster with no vpc-cni" 'PREREQUISITE NOT MET: cluster example-cluster has no managed vpc-cni add-on'
 join_state j-nokubeproxy 'del s["eks"]["addons"]["example-cluster/kube-proxy"]'
 join_reject j-nokubeproxy "REJECT --join on a cluster with no kube-proxy" 'PREREQUISITE NOT MET: cluster example-cluster has no managed kube-proxy add-on'
+# The page's Build section names all three prerequisites 00c-check-cluster.sh reads: in the
+# config.env input comment, the flowchart's check node, and step 1.
+python3 - "$SAMPLE/README.md" <<'PY'; ok "  ... and the README's Build section names kube-proxy beside vpc-cni and the RuntimeClass: input comment, flowchart, step 1" $?
+import re, sys
+sec = open(sys.argv[1]).read().split("\n## Build\n", 1)[1].split("\n## ", 1)[0]
+first = re.search(r"```bash\n(.*?)```", sec, re.S).group(1)
+comment = " ".join(l.lstrip("# ").strip() for l in first.splitlines() if l.startswith("#"))
+setting = re.search(r"Set KUBE_CONTEXT [^.]*\.", comment).group(0)
+assert "VPC_CNI_ADDON_VERSION and KUBE_PROXY_ADDON_VERSION." in setting, setting
+flow = re.search(r"```mermaid\n(.*?)```", sec, re.S).group(1)
+node = re.search(r'\bQ\["([^"]*)"\]', flow).group(1)
+assert node == "Check vpc-cni + kube-proxy add-ons + RuntimeClass (read only)", node
+step = " ".join(sec.split("**1. Check the inputs and the cluster.**", 1)[1].split("\n\n", 1)[0].split())
+want = ("reads three cluster-wide prerequisites before it creates anything: the `vpc-cni` add-on and "
+        "the `kube-proxy` add-on are `ACTIVE`, and the shared `isolated-sandbox` RuntimeClass selects "
+        "only labels the blueprint's node will carry. It stops with the command to run if any of them "
+        "is not so.")
+assert want in step, step
+PY
 join_state j-noami
 sed -i '/^AMI_ID=/d' "$ISSUE10_RUN_DIR/out/runs/$RUNID/run-state.env"
 join_reject j-noami "REJECT --join for a run with no AMI recorded" 'has no AMI_ID'
