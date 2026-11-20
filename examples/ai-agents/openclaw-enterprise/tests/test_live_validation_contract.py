@@ -322,6 +322,66 @@ FAKE_COMMAND = textwrap.dedent(
             }},
         }}
 
+    def ordinary_control(name, include_uid=True):
+        metadata = {{
+            "name": name,
+            "namespace": "openclaw-enterprise-agw",
+            "labels": {{
+                "app.kubernetes.io/managed-by":
+                    "openclaw-enterprise-blueprint",
+                "openclaw.dev/validation": "ordinary-pod-control",
+            }},
+        }}
+        if include_uid:
+            metadata["uid"] = "uid-ordinary-control"
+        control = {{
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": metadata,
+            "spec": {{
+                "automountServiceAccountToken": False,
+                "enableServiceLinks": False,
+                "restartPolicy": "Never",
+                "serviceAccountName": "default",
+                "containers": [{{
+                    "name": "ordinary-control",
+                    "image": image,
+                    "command": ["sh", "-c", "sleep 3600"],
+                    "securityContext": {{
+                        "allowPrivilegeEscalation": False,
+                        "privileged": False,
+                        "readOnlyRootFilesystem": True,
+                        "runAsNonRoot": True,
+                        "runAsUser": 1000,
+                        "runAsGroup": 1000,
+                        "seccompProfile": {{"type": "RuntimeDefault"}},
+                        "capabilities": {{"drop": ["ALL"]}},
+                    }},
+                }}],
+            }},
+            "status": {{
+                "phase": "Running",
+                "containerStatuses": [{{
+                    "name": "ordinary-control",
+                    "ready": True,
+                    "state": {{"running": {{}}}},
+                }}],
+            }},
+        }}
+        if scenario == "ordinary_sandboxed_control":
+            control["spec"]["runtimeClassName"] = "isolated-sandbox"
+        elif scenario == "ordinary_control_has_volume":
+            control["spec"]["volumes"] = [{{
+                "name": "unexpected",
+                "emptyDir": {{}},
+            }}]
+        elif scenario == "ordinary_not_ready":
+            control["status"] = {{
+                "phase": "Pending",
+                "containerStatuses": [],
+            }}
+        return control
+
     def pvc(namespace, name, uid, pv_name):
         return {{
             "metadata": {{"namespace": namespace, "name": name, "uid": uid}},
@@ -473,6 +533,11 @@ FAKE_COMMAND = textwrap.dedent(
             and name == (state_dir / "cross_pvc_pod").read_text()
         ):
             emit(cross_probe(name))
+        elif (
+            (state_dir / "ordinary_control_pod").exists()
+            and name == (state_dir / "ordinary_control_pod").read_text()
+        ):
+            emit(ordinary_control(name))
         else:
             sys.exit(94)
         sys.exit(0)
@@ -556,7 +621,11 @@ FAKE_COMMAND = textwrap.dedent(
         sys.exit(0)
     if namespace == "oce-system" and args[:2] == ["get", "pods"]:
         emit({{"items": [{{
-            "metadata": {{"uid": "uid-oce-api-1"}},
+            "metadata": {{
+                "name": "oce-api-0",
+                "uid": "uid-oce-api-1",
+                "labels": {{"app.kubernetes.io/component": "api"}},
+            }},
             "spec": {{"containers": [{{"name": "api"}}]}},
             "status": {{
                 "phase": "Running",
@@ -671,12 +740,116 @@ FAKE_COMMAND = textwrap.dedent(
         pod_name = args[2] if args[1] == "-i" else args[1]
         remote = args[args.index("--") + 1:]
         joined = " ".join(remote)
-        if "LIVE_GUEST_EVIDENCE" in joined:
-            boot_id = (
-                "11111111-1111-4111-8111-111111111111"
-                if namespace == "tenant-a-k8s"
-                else "22222222-2222-4222-8222-222222222222"
+        if "LIVE_AGENTGATEWAY_KEY_CONTRACT" in joined:
+            if (
+                namespace not in ("tenant-a-k8s", "tenant-b-k8s")
+                or pod_name not in ("tenant-a-pod", "tenant-b-pod")
+            ):
+                print("invalid AgentGateway key probe target", file=sys.stderr)
+                sys.exit(102)
+            with (state_dir / "agentgateway_key_calls.jsonl").open("a") as calls:
+                calls.write(json.dumps({{
+                    "namespace": namespace,
+                    "pod": pod_name,
+                }}) + "\\n")
+            no_key_status = 200 if scenario == "agw_missing_key_accepted" else 401
+            wrong_key_status = 200 if scenario == "agw_wrong_key_accepted" else 403
+            accepted_status = (
+                403
+                if scenario == "agw_correct_key_denied"
+                or (
+                    scenario == "agw_tenant_b_correct_key_denied"
+                    and namespace == "tenant-b-k8s"
+                )
+                else 200
             )
+            if scenario == "agw_key_malformed_output":
+                print('{{"marker":')
+                sys.exit(0)
+            emit({{
+                "marker": (
+                    "WRONG_AGENTGATEWAY_KEY_CONTRACT"
+                    if scenario == "agw_key_marker_missing"
+                    else "LIVE_AGENTGATEWAY_KEY_CONTRACT"
+                ),
+                "noKeyStatus": no_key_status,
+                "wrongKeyStatus": wrong_key_status,
+                "acceptedStatus": accepted_status,
+                "nonceMatch": scenario != "agw_key_nonce_mismatch",
+            }})
+            sys.exit(0)
+        if "LIVE_NATIVE_TOOL_EXECUTION" in joined:
+            if (
+                namespace != "oce-system"
+                or pod_name != "oce-api-0"
+                or remote[:1] != ["env"]
+                or (
+                    "OCE_TEST_NAMESPACE_ID="
+                    "ns_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                ) not in remote
+                or (
+                    "OCE_TEST_AGENT_ID="
+                    "agt_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                ) not in remote
+            ):
+                print("invalid native tool execution target", file=sys.stderr)
+                sys.exit(103)
+            (state_dir / "native_tool_execution").write_text(
+                json.dumps({{
+                    "namespace": namespace,
+                    "pod": pod_name,
+                    "container": args[args.index("-c") + 1],
+                }})
+            )
+            if scenario == "native_tool_malformed_output":
+                print('{{"marker":')
+                sys.exit(0)
+            if scenario == "native_tool_wrong_name":
+                print("native transcript used the wrong tool", file=sys.stderr)
+                sys.exit(105)
+            emit({{
+                "marker": (
+                    "WRONG_NATIVE_TOOL_EXECUTION"
+                    if scenario == "native_tool_marker_missing"
+                    else "LIVE_NATIVE_TOOL_EXECUTION"
+                ),
+                "outcome": (
+                    "error"
+                    if scenario == "native_tool_outcome_error"
+                    else "ok"
+                ),
+                "toolCallCount": (
+                    0 if scenario == "native_tool_missing_exec_call" else 1
+                ),
+                "execResultCount": (
+                    0 if scenario == "native_tool_uncorrelated_result" else 1
+                ),
+                "exactCommand": scenario != "native_tool_wrong_command",
+                "resultMarker": scenario != "native_tool_result_marker_missing",
+                "finalReply": scenario != "native_tool_wrong_final_reply",
+                "runIdHash": (
+                    "not-a-hash"
+                    if scenario == "native_tool_invalid_run_hash"
+                    else "d" * 64
+                ),
+            }})
+            sys.exit(0)
+        if "LIVE_GUEST_EVIDENCE" in joined:
+            if namespace == "tenant-a-k8s":
+                boot_id = "11111111-1111-4111-8111-111111111111"
+            elif namespace == "tenant-b-k8s":
+                boot_id = "22222222-2222-4222-8222-222222222222"
+            elif namespace == "openclaw-enterprise-agw":
+                boot_id = (
+                    "11111111-1111-4111-8111-111111111111"
+                    if scenario == "ordinary_shared_boot_id"
+                    else "33333333-3333-4333-8333-333333333333"
+                )
+                if scenario == "ordinary_invalid_boot_id":
+                    boot_id = "not-a-boot-id"
+            else:
+                print("invalid guest evidence target", file=sys.stderr)
+                sys.exit(104)
             emit("\\n".join([
                 "LIVE_GUEST_EVIDENCE",
                 boot_id,
@@ -738,38 +911,95 @@ FAKE_COMMAND = textwrap.dedent(
             manifest_json = None
         if isinstance(manifest_json, dict) and manifest_json.get("kind") == "Pod":
             metadata = manifest_json.get("metadata", {{}})
-            spec = manifest_json.get("spec", {{}})
-            containers = spec.get("containers", [])
-            volumes = spec.get("volumes", [])
             name = metadata.get("name", "")
-            claim_name = (
-                volumes[0].get("persistentVolumeClaim", {{}}).get("claimName")
-                if len(volumes) == 1
-                else None
-            )
-            if (
-                namespace != "tenant-a-k8s"
-                or re.fullmatch(r"oce-live-cross-pvc-[0-9]+", name) is None
-                or metadata.get("labels") != {{
-                    "app.kubernetes.io/managed-by":
-                        "openclaw-enterprise-blueprint",
-                    "openclaw.dev/validation": "cross-tenant-pvc",
+            if metadata.get("labels", {{}}).get(
+                "openclaw.dev/validation"
+            ) == "cross-tenant-pvc":
+                expected_manifest = {{
+                    "apiVersion": "v1",
+                    "kind": "Pod",
+                    "metadata": {{
+                        "name": name,
+                        "labels": {{
+                            "app.kubernetes.io/managed-by":
+                                "openclaw-enterprise-blueprint",
+                            "openclaw.dev/validation": "cross-tenant-pvc",
+                        }},
+                    }},
+                    "spec": {{
+                        "automountServiceAccountToken": False,
+                        "enableServiceLinks": False,
+                        "restartPolicy": "Never",
+                        "securityContext": {{
+                            "runAsNonRoot": True,
+                            "runAsUser": 1000,
+                            "runAsGroup": 1000,
+                            "seccompProfile": {{"type": "RuntimeDefault"}},
+                        }},
+                        "containers": [{{
+                            "name": "cross-tenant-pvc",
+                            "image": image,
+                            "command": ["sh", "-c", "sleep 3600"],
+                            "volumeMounts": [{{
+                                "name": "cross-tenant-pvc",
+                                "mountPath": "/cross-tenant",
+                            }}],
+                            "securityContext": {{
+                                "allowPrivilegeEscalation": False,
+                                "readOnlyRootFilesystem": True,
+                                "capabilities": {{"drop": ["ALL"]}},
+                            }},
+                        }}],
+                        "volumes": [{{
+                            "name": "cross-tenant-pvc",
+                            "persistentVolumeClaim": {{
+                                "claimName": "pvc-b",
+                            }},
+                        }}],
+                    }},
                 }}
-                or spec.get("automountServiceAccountToken") is not False
-                or spec.get("enableServiceLinks") is not False
-                or spec.get("restartPolicy") != "Never"
-                or len(containers) != 1
-                or containers[0].get("name") != "cross-tenant-pvc"
-                or containers[0].get("image") != image
-                or claim_name != "pvc-b"
-            ):
-                print("invalid cross-tenant PVC probe", file=sys.stderr)
+                if (
+                    namespace != "tenant-a-k8s"
+                    or re.fullmatch(
+                        r"oce-live-cross-pvc-[0-9]+", name
+                    ) is None
+                    or manifest_json != expected_manifest
+                ):
+                    print("invalid cross-tenant PVC probe", file=sys.stderr)
+                    sys.exit(97)
+                (state_dir / "cross_pvc_pod").write_text(name)
+                emit(cross_probe(
+                    name,
+                    include_uid=scenario != "post_create_uid_failure",
+                ))
+            elif metadata.get("labels", {{}}).get(
+                "openclaw.dev/validation"
+            ) == "ordinary-pod-control":
+                expected_manifest = ordinary_control(name)
+                expected_manifest.pop("status")
+                expected_manifest["metadata"].pop("uid", None)
+                expected_manifest["spec"].pop("runtimeClassName", None)
+                expected_manifest["spec"].pop("volumes", None)
+                if (
+                    namespace != "openclaw-enterprise-agw"
+                    or re.fullmatch(r"oce-live-ordinary-[0-9]+", name) is None
+                    or manifest_json != expected_manifest
+                ):
+                    print("invalid ordinary control pod", file=sys.stderr)
+                    sys.exit(97)
+                (state_dir / "ordinary_control_manifest.json").write_text(
+                    json.dumps(manifest_json, sort_keys=True)
+                )
+                (state_dir / "ordinary_control_pod").write_text(name)
+                emit(ordinary_control(
+                    name,
+                    include_uid=(
+                        scenario != "ordinary_post_create_uid_failure"
+                    ),
+                ))
+            else:
+                print("unsupported fake pod manifest", file=sys.stderr)
                 sys.exit(97)
-            (state_dir / "cross_pvc_pod").write_text(name)
-            emit(cross_probe(
-                name,
-                include_uid=scenario != "post_create_uid_failure",
-            ))
         else:
             print("unsupported fake create manifest", file=sys.stderr)
             sys.exit(97)
@@ -808,8 +1038,10 @@ FAKE_COMMAND = textwrap.dedent(
             sys.exit(99)
         delete_namespace, pod_name = match.groups()
         cross_file = state_dir / "cross_pvc_pod"
+        ordinary_file = state_dir / "ordinary_control_pod"
         if pod_name == "tenant-a-pod":
             expected_uid = "uid-a-old"
+            expected_namespace = "tenant-a-k8s"
             if scenario == "uid_precondition_rejected":
                 print("Conflict: pod UID precondition failed", file=sys.stderr)
                 sys.exit(1)
@@ -818,19 +1050,51 @@ FAKE_COMMAND = textwrap.dedent(
             (state_dir / "ephemeral").unlink(missing_ok=True)
         elif cross_file.exists() and pod_name == cross_file.read_text():
             expected_uid = "uid-cross-pvc"
+            expected_namespace = "tenant-a-k8s"
             (state_dir / "cross_deleted_uid").write_text(supplied_uid or "")
-            cross_file.unlink()
+        elif ordinary_file.exists() and pod_name == ordinary_file.read_text():
+            expected_uid = "uid-ordinary-control"
+            expected_namespace = "openclaw-enterprise-agw"
+            (state_dir / "ordinary_deleted_uid").write_text(supplied_uid or "")
+            if scenario == "ordinary_uid_precondition_rejected":
+                print("Conflict: pod UID precondition failed", file=sys.stderr)
+                sys.exit(1)
         else:
             print("unexpected pod delete target", file=sys.stderr)
             sys.exit(99)
-        if delete_namespace != "tenant-a-k8s" or supplied_uid != expected_uid:
+        if (
+            delete_namespace != expected_namespace
+            or supplied_uid != expected_uid
+        ):
             print("Conflict: pod UID precondition failed", file=sys.stderr)
             sys.exit(1)
+        if cross_file.exists() and pod_name == cross_file.read_text():
+            cross_file.unlink()
+        if ordinary_file.exists() and pod_name == ordinary_file.read_text():
+            ordinary_file.unlink()
         sys.exit(0)
+    if args[:1] == ["wait"] and "--for=condition=Ready" in args:
+        pod_name = next(
+            value.removeprefix("pod/")
+            for value in args
+            if value.startswith("pod/")
+        )
+        ordinary_file = state_dir / "ordinary_control_pod"
+        if (
+            not ordinary_file.exists()
+            or ordinary_file.read_text() != pod_name
+            or namespace != "openclaw-enterprise-agw"
+        ):
+            print("unexpected ready wait target", file=sys.stderr)
+            sys.exit(99)
+        sys.exit(1 if scenario == "ordinary_not_ready" else 0)
     if args[:1] == ["wait"] and "--for=delete" in args:
         pod_name = next(value.removeprefix("pod/") for value in args if value.startswith("pod/"))
         cross_file = state_dir / "cross_pvc_pod"
+        ordinary_file = state_dir / "ordinary_control_pod"
         if cross_file.exists() and cross_file.read_text() == pod_name:
+            sys.exit(1)
+        if ordinary_file.exists() and ordinary_file.read_text() == pod_name:
             sys.exit(1)
         sys.exit(0)
     if args[:2] == ["delete", "pod"]:
@@ -928,6 +1192,12 @@ def _run(
     kms_key_id: str | None = None,
     trace: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    timeout = (
+        180
+        if scenario
+        in {"wrong_agw_model", "missing_agw_trace", "missing_agw_request_id"}
+        else 90
+    )
     fake_bin, state_dir = _make_fake_commands(tmp_path)
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
@@ -943,7 +1213,7 @@ def _run(
         capture_output=True,
         text=True,
         env=env,
-        timeout=90,
+        timeout=timeout,
     )
 
 
@@ -1069,6 +1339,11 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "EVIDENCE\ttool-version-aws\taws-cli/2.31.0" in evidence
     assert "EVIDENCE\ttool-version-kubectl\tv1.34.0 darwin/arm64" in evidence
     assert "EVIDENCE\ttool-version-node\tv" in evidence
+    assert (
+        "EVIDENCE\tnative-tool-run-id-sha256\t" + ("d" * 64)
+    ) in evidence
+    assert "EVIDENCE\tordinary-control-kernel\t6.1.99 x86_64" in evidence
+    assert "EVIDENCE\tordinary-control-root\t/dev/vda1 ext4" in evidence
     assert "EVIDENCE\tsignature-status\tunsigned;" in evidence
     assert "CLEANUP\tPASS\t" in evidence
     for check in (
@@ -1078,7 +1353,9 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         "tenant-storage-isolation",
         "cross-tenant-pvc-mount-denied",
         "guest-vm-boundary",
+        "agentgateway-key-authorization",
         "native-openclaw-model-turn",
+        "native-openclaw-tool-execution",
         "agentgateway-model-telemetry",
         "control-plane-evidence",
         "oce-api-loopback-port-forward",
@@ -1115,12 +1392,73 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert (state_dir / "deleted").read_text() == "tenant-a-pod"
     assert (state_dir / "deleted_uid").read_text() == "uid-a-old"
     assert (state_dir / "cross_deleted_uid").read_text() == "uid-cross-pvc"
+    assert (
+        state_dir / "ordinary_deleted_uid"
+    ).read_text() == "uid-ordinary-control"
     assert not (state_dir / "marker").exists()
     assert not (state_dir / "ephemeral").exists()
     assert not (state_dir / "cross_pvc_pod").exists()
+    assert not (state_dir / "ordinary_control_pod").exists()
+    ordinary_manifest = json.loads(
+        (state_dir / "ordinary_control_manifest.json").read_text()
+    )
+    assert ordinary_manifest == {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": ordinary_manifest["metadata"]["name"],
+            "namespace": "openclaw-enterprise-agw",
+            "labels": {
+                "app.kubernetes.io/managed-by":
+                    "openclaw-enterprise-blueprint",
+                "openclaw.dev/validation": "ordinary-pod-control",
+            },
+        },
+        "spec": {
+            "automountServiceAccountToken": False,
+            "enableServiceLinks": False,
+            "restartPolicy": "Never",
+            "serviceAccountName": "default",
+            "containers": [{
+                "name": "ordinary-control",
+                "image": RUNTIME_IMAGE,
+                "command": ["sh", "-c", "sleep 3600"],
+                "securityContext": {
+                    "allowPrivilegeEscalation": False,
+                    "privileged": False,
+                    "readOnlyRootFilesystem": True,
+                    "runAsNonRoot": True,
+                    "runAsUser": 1000,
+                    "runAsGroup": 1000,
+                    "seccompProfile": {"type": "RuntimeDefault"},
+                    "capabilities": {"drop": ["ALL"]},
+                },
+            }],
+        },
+    }
+    assert ordinary_manifest["metadata"]["name"].startswith(
+        "oce-live-ordinary-"
+    )
+    key_calls = [
+        json.loads(line)
+        for line in (
+            state_dir / "agentgateway_key_calls.jsonl"
+        ).read_text().splitlines()
+    ]
+    assert key_calls == [
+        {"namespace": "tenant-a-k8s", "pod": "tenant-a-pod"},
+        {"namespace": "tenant-b-k8s", "pod": "tenant-b-pod"},
+    ]
+    assert json.loads((state_dir / "native_tool_execution").read_text()) == {
+        "namespace": "oce-system",
+        "pod": "oce-api-0",
+        "container": "api",
+    }
     command_log = (state_dir / "commands.jsonl").read_text()
     assert "tenant-a-secret" not in command_log
     assert "tenant-b-secret" not in command_log
+    assert "tenant-a-secret" not in result.stdout + result.stderr
+    assert "tenant-b-secret" not in result.stdout + result.stderr
     assert '"kms"' not in command_log
     commands = [json.loads(line) for line in command_log.splitlines()]
     port_forward_commands = [
@@ -1295,6 +1633,30 @@ def test_rejects_service_key_with_multiple_hard_links(tmp_path: Path) -> None:
     ("missing_agw_trace", "agentgateway-model-telemetry"),
     ("missing_agw_request_id", "agentgateway-model-telemetry"),
     ("kms_verify_failure", "evidence-signing"),
+    ("ordinary_post_create_uid_failure", "guest-vm-evidence"),
+    ("ordinary_sandboxed_control", "guest-vm-evidence"),
+    ("ordinary_control_has_volume", "guest-vm-evidence"),
+    ("ordinary_not_ready", "guest-vm-evidence"),
+    ("ordinary_shared_boot_id", "guest-vm-evidence"),
+    ("ordinary_invalid_boot_id", "guest-vm-evidence"),
+    ("ordinary_uid_precondition_rejected", "temporary-artifact-cleanup"),
+    ("agw_missing_key_accepted", "agentgateway-key-authorization"),
+    ("agw_wrong_key_accepted", "agentgateway-key-authorization"),
+    ("agw_correct_key_denied", "agentgateway-key-authorization"),
+    ("agw_tenant_b_correct_key_denied", "agentgateway-key-authorization"),
+    ("agw_key_marker_missing", "agentgateway-key-authorization"),
+    ("agw_key_nonce_mismatch", "agentgateway-key-authorization"),
+    ("agw_key_malformed_output", "agentgateway-key-authorization"),
+    ("native_tool_marker_missing", "native-openclaw-tool-execution"),
+    ("native_tool_malformed_output", "native-openclaw-tool-execution"),
+    ("native_tool_outcome_error", "native-openclaw-tool-execution"),
+    ("native_tool_missing_exec_call", "native-openclaw-tool-execution"),
+    ("native_tool_wrong_name", "native-openclaw-tool-execution"),
+    ("native_tool_wrong_command", "native-openclaw-tool-execution"),
+    ("native_tool_uncorrelated_result", "native-openclaw-tool-execution"),
+    ("native_tool_result_marker_missing", "native-openclaw-tool-execution"),
+    ("native_tool_wrong_final_reply", "native-openclaw-tool-execution"),
+    ("native_tool_invalid_run_hash", "native-openclaw-tool-execution"),
 ])
 def test_live_run_fails_closed_on_security_contract_mismatch(
     tmp_path: Path, scenario: str, failed_check: str
@@ -1308,6 +1670,36 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
     assert "RESULT\tPASS" not in evidence
     if scenario in ("cross_tenant_pvc_mounted", "post_create_uid_failure"):
         assert (tmp_path / "state" / "cross_deleted_uid").read_text() == "uid-cross-pvc"
+    if scenario.startswith("ordinary_"):
+        assert (
+            tmp_path / "state" / "ordinary_deleted_uid"
+        ).read_text() == "uid-ordinary-control"
+    if scenario.startswith("agw_"):
+        key_calls = [
+            json.loads(line)
+            for line in (
+                tmp_path / "state" / "agentgateway_key_calls.jsonl"
+            ).read_text().splitlines()
+        ]
+        assert key_calls[0] == {
+            "namespace": "tenant-a-k8s",
+            "pod": "tenant-a-pod",
+        }
+        if scenario == "agw_tenant_b_correct_key_denied":
+            assert key_calls == [
+                {"namespace": "tenant-a-k8s", "pod": "tenant-a-pod"},
+                {"namespace": "tenant-b-k8s", "pod": "tenant-b-pod"},
+            ]
+        else:
+            assert len(key_calls) == 1
+    if scenario.startswith("native_tool_"):
+        assert json.loads(
+            (tmp_path / "state" / "native_tool_execution").read_text()
+        ) == {
+            "namespace": "oce-system",
+            "pod": "oce-api-0",
+            "container": "api",
+        }
     if scenario in (
         "wrong_cross_code",
         "wrong_oce_revision",
@@ -1323,6 +1715,11 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
     evidence_dir = tmp_path / "evidence"
     if evidence_dir.exists():
         assert not list(evidence_dir.glob(".live-validation-*"))
+    command_log = (tmp_path / "state" / "commands.jsonl").read_text()
+    combined_output = result.stdout + result.stderr + evidence
+    for secret in ("tenant-a-secret", "tenant-b-secret"):
+        assert secret not in command_log
+        assert secret not in combined_output
 
 
 def test_script_contains_destructive_and_api_contract_guards() -> None:
@@ -1364,6 +1761,14 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert '--raw="/api/v1/namespaces/${namespace}/pods/${pod}"' in source
     assert 'delete pod "$TENANT_A_POD"' not in source
     assert "cross-tenant-pvc-mount-denied" in source
+    assert 'ORDINARY_CONTROL_POD="oce-live-ordinary-$$"' in source
+    assert "cleanup_ordinary_control_pod" in source
+    assert '"openclaw.dev/validation": "ordinary-pod-control"' in source
+    assert "(.spec.runtimeClassName == null)" in source
+    assert "(.spec.volumes // [] | length == 0)" in source
+    assert '.spec.serviceAccountName == "default"' in source
+    assert "$ORDINARY_CONTROL_POD_UID" in source
+    assert "three distinct boot IDs" in source
     assert "volume-handle-sha256-tenant-a" in source
     assert "oce-deployed-source-revision" in source
     assert 'target.pathname !== "/console/"' in source
@@ -1381,6 +1786,36 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "export TENANT_B_CREDENTIAL" not in source
     assert """printf '%s\\0%s' "$request_url" "$credential" |""" in source
     assert 'const separator = input.indexOf("\\0");' in source
+    assert 'path: "/v1/responses"' in source
+    assert (
+        "if (token !== null) headers.authorization = `Bearer ${token}`;"
+        in source
+    )
+    assert 'marker: "LIVE_AGENTGATEWAY_KEY_CONTRACT"' in source
+    assert ".noKeyStatus == 401 or .noKeyStatus == 403" in source
+    assert ".wrongKeyStatus == 401 or .wrongKeyStatus == 403" in source
+    assert ".acceptedStatus == 200" in source
+    assert ".nonceMatch == true" in source
+    assert "verify_agentgateway_key_contract" in source
+    assert 'const { GatewayClient } = await import(' in source
+    assert 'const exactCommand = `printf ${toolMarker}`;' in source
+    assert 'toolCall.block.name !== "exec"' in source
+    assert "toolCall.block?.arguments?.command !== exactCommand" in source
+    assert "message.toolCallId === toolCall.block.id" in source
+    assert 'message.toolName === "exec"' in source
+    assert "result.message.isError === true" in source
+    assert "textOf(result.message.content).includes(toolMarker)" in source
+    assert (
+        "normalize(textOf(message.content)) === normalize(finalMarker)"
+        in source
+    )
+    assert "outcome?.runId !== sent.runId" in source
+    assert 'marker: "LIVE_NATIVE_TOOL_EXECUTION"' in source
+    assert ".toolCallCount == 1" in source
+    assert ".execResultCount == 1" in source
+    assert ".exactCommand == true" in source
+    assert ".resultMarker == true" in source
+    assert ".finalReply == true" in source
     assert 'stop_oce_api_port_forward >/dev/null 2>&1' in source
     assert 'if wait "$pid" 2>/dev/null; then' in source
     assert 'stop_oce_api_port_forward || die' in source

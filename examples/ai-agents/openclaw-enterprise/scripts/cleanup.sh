@@ -39,8 +39,16 @@ valid_dns_label() {
     "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]
 }
 file_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null ||
+  local mode
+  if mode=$(stat -c '%a' "$1" 2>/dev/null) &&
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$mode"
+  elif mode=$(stat -f '%Lp' "$1" 2>/dev/null) &&
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$mode"
+  else
     die "could not inspect permissions for $1."
+  fi
 }
 private_file() {
   local label=$1 path=$2 mode

@@ -65,6 +65,8 @@ MARKERS_CREATED="false"
 REPLACEMENT_POD=""
 CROSS_TENANT_PVC_POD=""
 CROSS_TENANT_PVC_POD_UID=""
+ORDINARY_CONTROL_POD=""
+ORDINARY_CONTROL_POD_UID=""
 KMS_CANONICAL_KEY_ID=""
 KMS_KEY_ID_HASH=""
 OCE_PORT_FORWARD_PID=""
@@ -311,6 +313,46 @@ cleanup_cross_tenant_pvc_probe() {
   CROSS_TENANT_PVC_POD_UID=""
 }
 
+cleanup_ordinary_control_pod() {
+  [[ -n "$ORDINARY_CONTROL_POD" ]] || return 0
+  if [[ -z "$ORDINARY_CONTROL_POD_UID" ]]; then
+    local recovered_probe="$WORK_DIR/ordinary-control-pod-recovered.json"
+    kube -n "$AGW_NAMESPACE" get pod "$ORDINARY_CONTROL_POD" -o json \
+      >"$recovered_probe" || return 1
+    jq -e \
+      --arg namespace "$AGW_NAMESPACE" \
+      --arg name "$ORDINARY_CONTROL_POD" \
+      --arg image "$RUNTIME_IMAGE" '
+      .metadata.namespace == $namespace
+      and .metadata.name == $name
+      and .metadata.labels["app.kubernetes.io/managed-by"] ==
+        "openclaw-enterprise-blueprint"
+      and .metadata.labels["openclaw.dev/validation"] == "ordinary-pod-control"
+      and (.metadata.uid | type == "string" and length > 0)
+      and (.spec.runtimeClassName == null)
+      and (.spec.volumes // [] | length == 0)
+      and .spec.automountServiceAccountToken == false
+      and .spec.enableServiceLinks == false
+      and .spec.restartPolicy == "Never"
+      and .spec.serviceAccountName == "default"
+      and (.spec.containers | length == 1)
+      and .spec.containers[0].name == "ordinary-control"
+      and .spec.containers[0].image == $image
+      and .spec.containers[0].command == ["sh", "-c", "sleep 3600"]
+    ' "$recovered_probe" >/dev/null || return 1
+    ORDINARY_CONTROL_POD_UID="$(jq -er '.metadata.uid' "$recovered_probe")" || return 1
+  fi
+  delete_pod_with_uid \
+    "$AGW_NAMESPACE" \
+    "$ORDINARY_CONTROL_POD" \
+    "$ORDINARY_CONTROL_POD_UID" \
+    "$WORK_DIR/ordinary-control-delete-options.json"
+  kube -n "$AGW_NAMESPACE" wait \
+    --for=delete "pod/$ORDINARY_CONTROL_POD" --timeout=60s >/dev/null
+  ORDINARY_CONTROL_POD=""
+  ORDINARY_CONTROL_POD_UID=""
+}
+
 on_exit() {
   local status=$?
   trap - EXIT
@@ -318,6 +360,7 @@ on_exit() {
   stop_oce_api_port_forward >/dev/null 2>&1
   cleanup_markers
   cleanup_cross_tenant_pvc_probe >/dev/null 2>&1
+  cleanup_ordinary_control_pod >/dev/null 2>&1
   if [[ -n "$FINAL_EVIDENCE_CANDIDATE" ]]; then
     rm -f -- "$FINAL_EVIDENCE_CANDIDATE"
   fi
@@ -449,9 +492,11 @@ read_credential() {
   [[ -f "$file" && ! -L "$file" && -r "$file" ]] ||
     die "credential file must be a readable regular, non-symlink file"
   exec 3<"$file" || die "could not open credential file"
-  if metadata="$(stat -f '%u %l %Lp %z' /dev/fd/3 2>/dev/null)"; then
+  if metadata="$(stat -Lc '%u %h %a %s' /proc/self/fd/3 2>/dev/null)" &&
+    [[ "$metadata" =~ ^[0-9]+\ [0-9]+\ [0-7]{3,4}\ [0-9]+$ ]]; then
     :
-  elif metadata="$(stat -Lc '%u %h %a %s' /proc/self/fd/3 2>/dev/null)"; then
+  elif metadata="$(stat -f '%u %l %Lp %z' /dev/fd/3 2>/dev/null)" &&
+    [[ "$metadata" =~ ^[0-9]+\ [0-9]+\ [0-7]{3,4}\ [0-9]+$ ]]; then
     :
   else
     exec 3<&-
@@ -1394,13 +1439,108 @@ guest_evidence() {
 }
 
 CURRENT_CHECK="guest-vm-evidence"
+ORDINARY_CONTROL_POD="oce-live-ordinary-$$"
+jq -n \
+  --arg name "$ORDINARY_CONTROL_POD" \
+  --arg namespace "$AGW_NAMESPACE" \
+  --arg image "$RUNTIME_IMAGE" '
+  {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: $name,
+      namespace: $namespace,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise-blueprint",
+        "openclaw.dev/validation": "ordinary-pod-control"
+      }
+    },
+    spec: {
+      automountServiceAccountToken: false,
+      enableServiceLinks: false,
+      restartPolicy: "Never",
+      serviceAccountName: "default",
+      containers: [{
+        name: "ordinary-control",
+        image: $image,
+        command: ["sh", "-c", "sleep 3600"],
+        securityContext: {
+          allowPrivilegeEscalation: false,
+          privileged: false,
+          readOnlyRootFilesystem: true,
+          runAsNonRoot: true,
+          runAsUser: 1000,
+          runAsGroup: 1000,
+          seccompProfile: {type: "RuntimeDefault"},
+          capabilities: {drop: ["ALL"]}
+        }
+      }]
+    }
+  }' >"$WORK_DIR/ordinary-control-manifest.json"
+kube -n "$AGW_NAMESPACE" create -f "$WORK_DIR/ordinary-control-manifest.json" -o json \
+  >"$WORK_DIR/ordinary-control-created.json"
+ORDINARY_CONTROL_POD_UID="$(
+  jq -er \
+    --arg namespace "$AGW_NAMESPACE" \
+    --arg name "$ORDINARY_CONTROL_POD" '
+    select(
+      .metadata.namespace == $namespace
+      and .metadata.name == $name
+      and (.metadata.uid | type == "string" and length > 0)
+    )
+    | .metadata.uid
+  ' "$WORK_DIR/ordinary-control-created.json"
+)" || die "ordinary control pod creation did not return its UID"
+[[ "$ORDINARY_CONTROL_POD_UID" =~ ^[A-Za-z0-9._:-]+$ ]] ||
+  die "ordinary control pod UID is invalid"
+kube -n "$AGW_NAMESPACE" wait \
+  --for=condition=Ready "pod/$ORDINARY_CONTROL_POD" "--timeout=${TIMEOUT_SECONDS}s" >/dev/null
+kube -n "$AGW_NAMESPACE" get pod "$ORDINARY_CONTROL_POD" -o json \
+  >"$WORK_DIR/ordinary-control-pod.json"
+jq -e \
+  --arg namespace "$AGW_NAMESPACE" \
+  --arg name "$ORDINARY_CONTROL_POD" \
+  --arg uid "$ORDINARY_CONTROL_POD_UID" \
+  --arg image "$RUNTIME_IMAGE" '
+  .metadata.namespace == $namespace
+  and .metadata.name == $name
+  and .metadata.uid == $uid
+  and .metadata.labels["app.kubernetes.io/managed-by"] ==
+    "openclaw-enterprise-blueprint"
+  and .metadata.labels["openclaw.dev/validation"] == "ordinary-pod-control"
+  and (.spec.runtimeClassName == null)
+  and (.spec.volumes // [] | length == 0)
+  and .spec.automountServiceAccountToken == false
+  and .spec.enableServiceLinks == false
+  and .spec.restartPolicy == "Never"
+  and .spec.serviceAccountName == "default"
+  and (.spec.containers | length == 1)
+  and .spec.containers[0].name == "ordinary-control"
+  and .spec.containers[0].image == $image
+  and .spec.containers[0].command == ["sh", "-c", "sleep 3600"]
+  and .status.phase == "Running"
+  and ((.status.containerStatuses // []) | any(
+    .name == "ordinary-control"
+    and .ready == true
+    and .state.running != null
+  ))
+' "$WORK_DIR/ordinary-control-pod.json" >/dev/null ||
+  die "ordinary control pod did not preserve its non-sandboxed contract"
 guest_evidence "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
   "$WORK_DIR/tenant-a-guest.txt"
 guest_evidence "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
   "$WORK_DIR/tenant-b-guest.txt"
-[[ "$(sed -n '2p' "$WORK_DIR/tenant-a-guest.txt")" != \
-  "$(sed -n '2p' "$WORK_DIR/tenant-b-guest.txt")" ]] ||
-  die "tenant pods reported the same guest boot ID"
+guest_evidence "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" \
+  "$WORK_DIR/ordinary-control-guest.txt"
+GUEST_BOOT_IDS=(
+  "$(sed -n '2p' "$WORK_DIR/tenant-a-guest.txt")"
+  "$(sed -n '2p' "$WORK_DIR/tenant-b-guest.txt")"
+  "$(sed -n '2p' "$WORK_DIR/ordinary-control-guest.txt")"
+)
+[[ ${#GUEST_BOOT_IDS[@]} -eq 3 ]] ||
+  die "guest comparison did not return three boot IDs"
+[[ "$(printf '%s\n' "${GUEST_BOOT_IDS[@]}" | sort -u | wc -l | tr -d ' ')" == "3" ]] ||
+  die "sandboxed tenants and the ordinary pod did not report three distinct boot IDs"
 {
   printf 'EVIDENCE\tguest-a-kernel\t%s %s\n' \
     "$(sed -n '3p' "$WORK_DIR/tenant-a-guest.txt")" \
@@ -1410,8 +1550,14 @@ guest_evidence "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
     "$(sed -n '3p' "$WORK_DIR/tenant-b-guest.txt")" \
     "$(sed -n '4p' "$WORK_DIR/tenant-b-guest.txt")"
   printf 'EVIDENCE\tguest-b-root\t%s\n' "$(sed -n '5p' "$WORK_DIR/tenant-b-guest.txt")"
+  printf 'EVIDENCE\tordinary-control-kernel\t%s %s\n' \
+    "$(sed -n '3p' "$WORK_DIR/ordinary-control-guest.txt")" \
+    "$(sed -n '4p' "$WORK_DIR/ordinary-control-guest.txt")"
+  printf 'EVIDENCE\tordinary-control-root\t%s\n' \
+    "$(sed -n '5p' "$WORK_DIR/ordinary-control-guest.txt")"
 } >>"$EVIDENCE_FILE"
-record_pass "guest-vm-boundary" "kernel and disk evidence captured; boot IDs are distinct"
+record_pass "guest-vm-boundary" \
+  "two sandboxed runtimes and one ordinary pod reported three distinct boot IDs"
 
 CURRENT_CHECK="agentgateway-health"
 kube -n "$AGW_NAMESPACE" get deployment "$AGW_DEPLOYMENT" -o json \
@@ -1499,6 +1645,117 @@ kube -n "$OCE_SYSTEM_NAMESPACE" get pods -o json >"$WORK_DIR/oce-system-pods.jso
 capture_pod_list_evidence "oce-system" "$WORK_DIR/oce-system-pods.json"
 record_pass "agentgateway-health" "deployment readiness probe and pod readiness passed"
 record_pass "control-plane-evidence" "AgentGateway and OCE workload UIDs and image digests captured"
+
+verify_agentgateway_key_contract() {
+  local namespace="$1"
+  local pod="$2"
+  local container="$3"
+  local output_file="$4"
+  # shellcheck disable=SC2016 # This JavaScript reads credentials only inside the guest.
+  kube -n "$namespace" exec "$pod" -c "$container" -- node -e '
+    const crypto = require("node:crypto");
+    const fs = require("node:fs");
+    const https = require("node:https");
+    const key = process.env.OPENAI_API_KEY || "";
+    if (!key) process.exit(70);
+    const ca = fs.readFileSync("/etc/agentgateway-ca/ca.crt");
+
+    function request(token, nonce) {
+      const body = JSON.stringify({
+        model: "nova-lite",
+        input: `Reply with exactly this nonce and no other text: ${nonce}`
+      });
+      const headers = {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(body)
+      };
+      if (token !== null) headers.authorization = `Bearer ${token}`;
+      return new Promise((resolve, reject) => {
+        const operation = https.request({
+          hostname: "agentgateway.openclaw-enterprise-agw.svc.cluster.local",
+          port: 4000,
+          path: "/v1/responses",
+          method: "POST",
+          ca,
+          rejectUnauthorized: true,
+          headers
+        }, response => {
+          let responseBody = "";
+          response.setEncoding("utf8");
+          response.on("data", chunk => {
+            responseBody += chunk;
+            if (responseBody.length > 1048576) {
+              operation.destroy(new Error("response too large"));
+            }
+          });
+          response.on("end", () => resolve({
+            status: response.statusCode,
+            body: responseBody
+          }));
+        });
+        operation.setTimeout(180000, () => operation.destroy(new Error("timeout")));
+        operation.on("error", reject);
+        operation.end(body);
+      });
+    }
+
+    const outputText = response => {
+      if (typeof response?.output_text === "string") return response.output_text;
+      if (!Array.isArray(response?.output)) return "";
+      return response.output.flatMap(item =>
+        Array.isArray(item?.content) ? item.content : []
+      ).filter(item =>
+        item?.type === "output_text" && typeof item.text === "string"
+      ).map(item => item.text).join("");
+    };
+    const normalize = value => value.normalize("NFKC").trim();
+
+    (async () => {
+      const nonce = `AGW_KEY_${crypto.randomBytes(12).toString("hex")}`;
+      const noKey = await request(null, nonce);
+      const wrongKey = await request(
+        `wrong-${crypto.randomBytes(24).toString("hex")}`,
+        nonce
+      );
+      if (![401, 403].includes(noKey.status)) process.exit(71);
+      if (![401, 403].includes(wrongKey.status)) process.exit(72);
+      const accepted = await request(key, nonce);
+      let parsed;
+      try { parsed = JSON.parse(accepted.body); } catch { process.exit(73); }
+      if (
+        accepted.status !== 200
+        || normalize(outputText(parsed)) !== normalize(nonce)
+      ) {
+        process.exit(74);
+      }
+      process.stdout.write(JSON.stringify({
+        marker: "LIVE_AGENTGATEWAY_KEY_CONTRACT",
+        noKeyStatus: noKey.status,
+        wrongKeyStatus: wrongKey.status,
+        acceptedStatus: accepted.status,
+        nonceMatch: true
+      }));
+    })().catch(() => process.exit(75));
+  ' >"$output_file"
+  jq -e '
+    .marker == "LIVE_AGENTGATEWAY_KEY_CONTRACT"
+    and (.noKeyStatus == 401 or .noKeyStatus == 403)
+    and (.wrongKeyStatus == 401 or .wrongKeyStatus == 403)
+    and .acceptedStatus == 200
+    and .nonceMatch == true
+  ' "$output_file" >/dev/null ||
+    die "AgentGateway key authorization did not deny both invalid cases and accept the tenant key"
+}
+
+CURRENT_CHECK="agentgateway-key-authorization"
+verify_agentgateway_key_contract \
+  "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
+  "$WORK_DIR/agentgateway-key-tenant-a.json"
+verify_agentgateway_key_contract \
+  "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
+  "$WORK_DIR/agentgateway-key-tenant-b.json"
+record_pass "agentgateway-key-authorization" \
+  "missing and incorrect keys were denied; each tenant key completed one Responses API turn"
 
 call_native_openclaw_model() {
   local namespace="$1"
@@ -1591,6 +1848,266 @@ call_native_openclaw_model() {
     and .nonceMatch == true
   ' "$output_file" >/dev/null ||
     die "native OpenClaw gateway authentication or model response did not match the contract"
+}
+
+verify_native_tool_execution() {
+  local output_file="$1"
+  local api_pod api_container="api"
+  api_pod="$(
+    jq -er '
+      [
+        .items[]
+        | select(
+            .metadata.labels["app.kubernetes.io/component"] == "api"
+            and .status.phase == "Running"
+            and ((.status.containerStatuses // []) | any(
+              .name == "api" and .ready == true and .state.running != null
+            ))
+          )
+        | .metadata.name
+      ]
+      | if length == 1 then .[0] else error("expected exactly one ready API pod") end
+    ' "$WORK_DIR/oce-system-pods.json"
+  )" || die "could not select exactly one ready OCE API pod for native tool validation"
+  [[ "$api_pod" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
+    die "OCE API pod name is invalid"
+
+  # shellcheck disable=SC2016 # This JavaScript runs inside the OCE API container.
+  kube -n "$OCE_SYSTEM_NAMESPACE" exec "$api_pod" -c "$api_container" -- \
+    env \
+      "OCE_TEST_NAMESPACE_ID=$TENANT_A_OCE_NAMESPACE" \
+      "OCE_TEST_AGENT_ID=$TENANT_A_AGENT_ID" \
+    node --input-type=module -e '
+      import { readFileSync } from "node:fs";
+      import { createRequire } from "node:module";
+      import { randomBytes, randomUUID, createHash } from "node:crypto";
+
+      const require = createRequire("/app/apps/controller/package.json");
+      const { GatewayClient } = await import(
+        require.resolve("@openclaw/gateway-client")
+      );
+      const { loadYaml } = require("@kubernetes/client-node");
+      const config = loadYaml(
+        readFileSync(process.env.OCC_CONFIG_PATH, "utf8")
+      );
+      const route = config.drivers.compute.configuration.gatewayRouting;
+      const port = route.endpointPort ?? 443;
+      const host = route.hostname + (port === 443 ? "" : `:${port}`);
+      const namespace = process.env.OCE_TEST_NAMESPACE_ID;
+      const agent = process.env.OCE_TEST_AGENT_ID;
+      if (!/^ns_[A-Za-z0-9-]+$/.test(namespace || "")) process.exit(80);
+      if (!/^agt_[A-Za-z0-9-]+$/.test(agent || "")) process.exit(81);
+
+      const nonce = randomBytes(12).toString("hex");
+      const toolMarker = `TOOL_${nonce}`;
+      const finalMarker = `DONE_${nonce}`;
+      const exactCommand = `printf ${toolMarker}`;
+      const prompt = [
+        "Use the exec tool exactly once.",
+        `Run exactly this command: ${exactCommand}`,
+        `After it succeeds, reply with exactly ${finalMarker} and no other text.`
+      ].join(" ");
+      const sessionKey = `agent:main:api-tool-check-${randomUUID()}`;
+      const connected = Promise.withResolvers();
+      const client = new GatewayClient({
+        url: `wss://${host}/namespaces/${namespace}/agents/${agent}`,
+        edgeAuthHeaders: {
+          "x-api-key": readFileSync(
+            process.env.OCC_GATEWAY_API_KEY_PATH,
+            "utf8"
+          ).trim()
+        },
+        clientName: "gateway-client",
+        mode: "backend",
+        role: "operator",
+        scopes: [],
+        deviceIdentity: null,
+        minProtocol: 4,
+        maxProtocol: 4,
+        onHelloOk: connected.resolve,
+        onConnectError: connected.reject
+      });
+      const helloTimer = setTimeout(
+        () => connected.reject(new Error("hello timeout")),
+        20000
+      );
+      const normalize = value => value.normalize("NFKC").trim();
+      const textOf = value => {
+        if (typeof value === "string") return value;
+        if (Array.isArray(value)) return value.map(textOf).join("");
+        if (value && typeof value === "object") {
+          if (value.type === "text" && typeof value.text === "string") {
+            return value.text;
+          }
+          return Object.values(value).map(textOf).join("");
+        }
+        return "";
+      };
+
+      try {
+        client.start();
+        await connected.promise;
+        clearTimeout(helloTimer);
+        const signal = AbortSignal.timeout(600000);
+        const call = (method, params) =>
+          client.request(method, params, { signal, timeoutMs: 30000 });
+        const sent = await call("chat.send", {
+          sessionKey,
+          idempotencyKey: randomUUID(),
+          message: prompt
+        });
+        if (typeof sent?.runId !== "string" || sent.runId.length === 0) {
+          process.exit(82);
+        }
+        const waitDeadline = Date.now() + 600000;
+        let outcome;
+        while (true) {
+          outcome = await call("agent.wait", {
+            runId: sent.runId,
+            timeoutMs: 3000
+          });
+          if (outcome?.runId !== sent.runId) process.exit(83);
+          if (outcome.status === "ok") break;
+          if (
+            outcome.status === "error"
+            || outcome.endedAt != null
+            || outcome.stopReason != null
+            || !["pending", "timeout"].includes(outcome.status)
+            || Date.now() >= waitDeadline
+          ) {
+            process.exit(84);
+          }
+        }
+
+        const findEvidence = history => {
+          if (!Array.isArray(history?.messages)) return null;
+          const messages = history.messages;
+          if (messages.some(message =>
+            !message || typeof message !== "object" || Array.isArray(message)
+          )) {
+            throw new Error("malformed transcript row");
+          }
+          const userIndexes = messages.flatMap((message, index) =>
+            message.role === "user" && textOf(message.content).includes(nonce)
+              ? [index]
+              : []
+          );
+          if (userIndexes.length !== 1) return null;
+          const userIndex = userIndexes[0];
+          const belongsToRun = message => {
+            const attributedRunId = message?.__openclaw?.runId;
+            return attributedRunId == null || attributedRunId === sent.runId;
+          };
+          const toolCalls = [];
+          for (let index = userIndex + 1; index < messages.length; index += 1) {
+            const message = messages[index];
+            if (message.role !== "assistant" || !belongsToRun(message)) continue;
+            if (Array.isArray(message.content)) {
+              for (const block of message.content) {
+                if (!block || typeof block !== "object" || Array.isArray(block)) {
+                  throw new Error("malformed assistant content block");
+                }
+                if (block.type === "toolCall") toolCalls.push({ index, block });
+              }
+            }
+          }
+          if (toolCalls.length === 0) return null;
+          if (toolCalls.length !== 1) throw new Error("unexpected tool-call count");
+          const toolCall = toolCalls[0];
+          if (
+            toolCall.block.name !== "exec"
+            || typeof toolCall.block.id !== "string"
+            || toolCall.block.id.length === 0
+            || toolCall.block?.arguments?.command !== exactCommand
+          ) {
+            throw new Error("unexpected exec tool call");
+          }
+          const results = messages.flatMap((message, index) =>
+            index > toolCall.index
+            && belongsToRun(message)
+            && message.role === "toolResult"
+            && message.toolCallId === toolCall.block.id
+            && message.toolName === "exec"
+              ? [{ index, message }]
+              : []
+          );
+          if (results.length === 0) return null;
+          if (results.length !== 1) throw new Error("unexpected tool-result count");
+          const result = results[0];
+          if (
+            result.message.isError === true
+            || !textOf(result.message.content).includes(toolMarker)
+          ) {
+            throw new Error("exec tool result did not prove success");
+          }
+          const finalMessages = messages.flatMap((message, index) => {
+            if (
+              index <= result.index
+              || message.role !== "assistant"
+              || !belongsToRun(message)
+            ) {
+              return [];
+            }
+            const blocks = Array.isArray(message.content) ? message.content : [];
+            if (blocks.some(block => block?.type === "toolCall")) return [];
+            if (["toolUse", "error", "aborted"].includes(message.stopReason)) {
+              return [];
+            }
+            return normalize(textOf(message.content)) === normalize(finalMarker)
+              ? [{ index, message }]
+              : [];
+          });
+          if (finalMessages.length === 0) return null;
+          if (finalMessages.length !== 1) {
+            throw new Error("unexpected final reply count");
+          }
+          return {
+            toolCallCount: toolCalls.length,
+            execResultCount: results.length
+          };
+        };
+
+        const historyDeadline = Date.now() + 30000;
+        let evidence;
+        while (!evidence && Date.now() < historyDeadline) {
+          evidence = findEvidence(
+            await call("chat.history", { sessionKey, limit: 200 })
+          );
+          if (!evidence) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+        if (!evidence) process.exit(85);
+        process.stdout.write(JSON.stringify({
+          marker: "LIVE_NATIVE_TOOL_EXECUTION",
+          outcome: "ok",
+          toolCallCount: evidence.toolCallCount,
+          execResultCount: evidence.execResultCount,
+          exactCommand: true,
+          resultMarker: true,
+          finalReply: true,
+          runIdHash: createHash("sha256")
+            .update(String(sent.runId))
+            .digest("hex")
+        }));
+      } finally {
+        clearTimeout(helloTimer);
+        await client.stopAndWait({ timeoutMs: 1000 });
+      }
+    ' >"$output_file"
+  jq -e '
+    .marker == "LIVE_NATIVE_TOOL_EXECUTION"
+    and .outcome == "ok"
+    and .toolCallCount == 1
+    and .execResultCount == 1
+    and .exactCommand == true
+    and .resultMarker == true
+    and .finalReply == true
+    and (.runIdHash | type == "string" and test("^[0-9a-f]{64}$"))
+  ' "$output_file" >/dev/null ||
+    die "native OCE session did not prove one successful exec tool call and exact final reply"
+  printf 'EVIDENCE\tnative-tool-run-id-sha256\t%s\n' \
+    "$(jq -er '.runIdHash' "$output_file")" >>"$EVIDENCE_FILE"
 }
 
 capture_agentgateway_model_evidence() {
@@ -1689,6 +2206,10 @@ record_pass "native-openclaw-model-turn" \
   "both native OpenClaw gateways rejected anonymous access and returned only their requested nonce"
 record_pass "agentgateway-model-telemetry" \
   "both native requests matched one AgentGateway Bedrock model invocation and request ID"
+CURRENT_CHECK="native-openclaw-tool-execution"
+verify_native_tool_execution "$WORK_DIR/native-tool-execution.json"
+record_pass "native-openclaw-tool-execution" \
+  "one native OCE session recorded one successful exec tool call and its exact result"
 
 CURRENT_CHECK="oce-api-port-forward"
 start_oce_api_port_forward
@@ -2033,10 +2554,11 @@ if ! kube -n "$TENANT_A_NAMESPACE" exec "$REPLACEMENT_POD" -c "$TENANT_A_CONTAIN
 fi
 MARKERS_CREATED="false"
 cleanup_cross_tenant_pvc_probe
+cleanup_ordinary_control_pod
 [[ "$OCE_PORT_FORWARD_CLEANED" == "true" ]] ||
   die "OCE API port-forward cleanup was not completed"
 record_pass "temporary-artifact-cleanup" \
-  "port-forward, markers, and the negative PVC pod were removed"
+  "port-forward, markers, and both temporary validation pods were removed"
 printf 'CLEANUP\tPASS\tlocal port-forward was reaped; temporary cluster artifacts were deleted and awaited\n' \
   >>"$EVIDENCE_FILE"
 

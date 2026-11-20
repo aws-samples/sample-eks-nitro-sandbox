@@ -144,6 +144,7 @@ export AWS_ACCOUNT_ID='<12-digit-account-id>'
 export AWS_REGION='us-west-2'
 export EKS_CLUSTER_NAME='<eks-cluster-name>'
 export PRIVATE_STATE_DIR='<private-directory-outside-the-repository>'
+export OCE_SOURCE_REVISION='86c8c12310f691bb21651118ffffd6bfd460e9ff'
 export CERT_MANAGER_VERSION='v1.21.3'
 export YQ_VERSION='v4.54.3'
 
@@ -490,10 +491,8 @@ Clone OCE into a clean directory and verify the exact revision:
 ```bash
 export OCE_SOURCE_DIR='<clean-openclaw-enterprise-checkout>'
 git clone https://github.com/openclaw/openclaw-enterprise.git "$OCE_SOURCE_DIR"
-git -C "$OCE_SOURCE_DIR" switch --detach \
-  86c8c12310f691bb21651118ffffd6bfd460e9ff
-test "$(git -C "$OCE_SOURCE_DIR" rev-parse HEAD)" = \
-  86c8c12310f691bb21651118ffffd6bfd460e9ff
+git -C "$OCE_SOURCE_DIR" switch --detach "$OCE_SOURCE_REVISION"
+test "$(git -C "$OCE_SOURCE_DIR" rev-parse HEAD)" = "$OCE_SOURCE_REVISION"
 test -z "$(git -C "$OCE_SOURCE_DIR" status --porcelain)"
 ```
 
@@ -567,6 +566,8 @@ In another terminal:
 ```bash
 export OCC_URL='http://127.0.0.1:18080'
 export OCC_SERVICE_KEY_FILE="$PRIVATE_STATE_DIR/initial-admin-service-key.json"
+export OCC_BIN="$OCE_STATE_DIR/occ-$OCE_SOURCE_REVISION"
+test -x "$OCC_BIN"
 ```
 
 The installer writes the bootstrap response to
@@ -660,7 +661,7 @@ namespace:
 ```bash
 export TENANT_NAME='<tenant-a-or-tenant-b>'
 export NAMESPACE_ID="$(
-  occ namespace create "$TENANT_NAME" --output json |
+  "$OCC_BIN" namespace create "$TENANT_NAME" --output json |
     jq -er '.id'
 )"
 export TENANT_NAMESPACE="$(
@@ -709,7 +710,7 @@ jq -Rs \
   '{name:"agentgateway-key",value:gsub("\n";"")}' \
   "$TENANT_MODEL_KEY_FILE" >"$TENANT_WORK_DIR/model-secret.json"
 export MODEL_SECRET_ID="$(
-  occ secret create \
+  "$OCC_BIN" secret create \
     --file "$TENANT_WORK_DIR/model-secret.json" \
     --output json |
     jq -er '.id'
@@ -783,13 +784,13 @@ cat >"$TENANT_WORK_DIR/configuration.json" <<'JSON'
 JSON
 
 export CONFIGURATION_ID="$(
-  occ configuration create \
+  "$OCC_BIN" configuration create \
     --file "$TENANT_WORK_DIR/configuration.json" \
     --output json |
     jq -er '.id'
 )"
 export CONFIGURATION_GENERATION="$(
-  occ configuration get "$CONFIGURATION_ID" --output json |
+  "$OCC_BIN" configuration get "$CONFIGURATION_ID" --output json |
     jq -er '.generation'
 )"
 ```
@@ -816,7 +817,7 @@ jq -n \
     }
   }' >"$TENANT_WORK_DIR/agent.json"
 export AGENT_RESPONSE="$(
-  occ agent create \
+  "$OCC_BIN" agent create \
     --file "$TENANT_WORK_DIR/agent.json" \
     --output json
 )"
@@ -844,7 +845,7 @@ cat >"$TENANT_WORK_DIR/model-secret-role.json" <<'JSON'
 }
 JSON
 export MODEL_SECRET_ROLE_ID="$(
-  occ iam role create \
+  "$OCC_BIN" iam role create \
     --file "$TENANT_WORK_DIR/model-secret-role.json" \
     --output json |
     jq -er '.id'
@@ -860,7 +861,7 @@ jq -n \
     resourceKind: "secret",
     resourceId: $secret
   }' >"$TENANT_WORK_DIR/model-secret-binding.json"
-occ iam access-binding create \
+"$OCC_BIN" iam access-binding create \
   --file "$TENANT_WORK_DIR/model-secret-binding.json" \
   --output json >/dev/null
 ```
@@ -870,14 +871,14 @@ Deploy exactly the configuration generation you reviewed:
 ```bash
 export FIRST_DEPLOYMENT_KEY="$TENANT_NAME-first"
 export REVISION_ID="$(
-  occ agent deploy-first "$AGENT_ID" \
+  "$OCC_BIN" agent deploy-first "$AGENT_ID" \
     --configuration "$CONFIGURATION_ID" \
     --generation "$CONFIGURATION_GENERATION" \
     --key "$FIRST_DEPLOYMENT_KEY" \
     --output json |
     jq -er '.revisionId'
 )"
-occ agent deployment-status "$AGENT_ID" "$REVISION_ID"
+"$OCC_BIN" agent deployment-status "$AGENT_ID" "$REVISION_ID"
 ```
 
 Create a separate validator service principal for this tenant. Grant it
@@ -886,7 +887,7 @@ protected file:
 
 ```bash
 export VALIDATOR_SERVICE_PRINCIPAL_ID="$(
-  occ iam service-principal create \
+  "$OCC_BIN" iam service-principal create \
     --namespace "$NAMESPACE_ID" \
     --output json |
     jq -er '.id'
@@ -907,7 +908,7 @@ cat >"$TENANT_WORK_DIR/validator-role.json" <<'JSON'
 }
 JSON
 export VALIDATOR_ROLE_ID="$(
-  occ iam role create \
+  "$OCC_BIN" iam role create \
     --file "$TENANT_WORK_DIR/validator-role.json" \
     --output json |
     jq -er '.id'
@@ -925,14 +926,14 @@ for target in "namespace:$NAMESPACE_ID" "agent:$AGENT_ID"; do
       resourceKind: $kind,
       resourceId: $id
     }' >"$TENANT_WORK_DIR/validator-binding.json"
-  occ iam access-binding create \
+  "$OCC_BIN" iam access-binding create \
     --file "$TENANT_WORK_DIR/validator-binding.json" \
     --output json >/dev/null
 done
 
 export VALIDATOR_KEY_FILE="$TENANT_WORK_DIR/validator-service-key.json"
 test ! -e "$VALIDATOR_KEY_FILE"
-occ service-key create \
+"$OCC_BIN" service-key create \
   --namespace "$NAMESPACE_ID" \
   --service-principal "$VALIDATOR_SERVICE_PRINCIPAL_ID" \
   --name "$TENANT_NAME-validator" \
@@ -940,8 +941,12 @@ occ service-key create \
   --out "$VALIDATOR_KEY_FILE"
 jq -e '.data.key | type == "string" and length > 0' \
   "$VALIDATOR_KEY_FILE" >/dev/null
-test "$(stat -f '%Lp' "$VALIDATOR_KEY_FILE" 2>/dev/null ||
-  stat -c '%a' "$VALIDATOR_KEY_FILE")" = '600'
+if VALIDATOR_KEY_MODE="$(stat -c '%a' "$VALIDATOR_KEY_FILE" 2>/dev/null)"; then
+  :
+else
+  VALIDATOR_KEY_MODE="$(stat -f '%Lp' "$VALIDATOR_KEY_FILE")"
+fi
+test "$VALIDATOR_KEY_MODE" = '600'
 ```
 
 Discover the one ready gateway pod for the deployed revision:
@@ -1055,11 +1060,16 @@ The command exits zero only after it verifies:
 3. Neither runtime receives an AWS credential path.
 4. A cross-tenant PVC mount, forged pod, forged revision ConfigMap, and
    ephemeral-container update are denied.
-5. Each native OpenClaw gateway rejects an unauthenticated request, then returns
-   its requested nonce through AgentGateway and Amazon Bedrock.
-6. Each validator key reads its own OCE namespace and agent; both cross-tenant
+5. The two sandboxed runtimes and a temporary ordinary pod have distinct boot
+   identities, proving that the sandbox evidence differs from a normal pod.
+6. AgentGateway rejects missing and incorrect tenant keys and accepts the
+   matching tenant key over verified TLS.
+7. Each native OpenClaw gateway rejects an unauthenticated request, returns its
+   requested nonce through AgentGateway and Amazon Bedrock, and completes one
+   recorded `exec` tool call with the requested output.
+8. Each validator key reads its own OCE namespace and agent; both cross-tenant
    reads return HTTP `403` with code `FORBIDDEN`.
-7. Tenant A's `.openclaw` marker and model path survive controller-driven pod
+9. Tenant A's `.openclaw` marker and model path survive controller-driven pod
    replacement, while a generic home marker does not.
 
 Do not publish successful output until a fresh run has completed against the

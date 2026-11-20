@@ -120,9 +120,11 @@ require_private_file() {
   local flag=$1 path=$2 mode
   [[ -f "$path" && ! -L "$path" && -r "$path" ]] ||
     die "$flag must be a readable regular file, not a symlink."
-  if mode=$(stat -f '%Lp' "$path" 2>/dev/null); then
+  if mode=$(stat -c '%a' "$path" 2>/dev/null) &&
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
     :
-  elif mode=$(stat -c '%a' "$path" 2>/dev/null); then
+  elif mode=$(stat -f '%Lp' "$path" 2>/dev/null) &&
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
     :
   else
     die "could not inspect permissions for $flag."
