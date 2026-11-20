@@ -180,6 +180,21 @@ def test_codebuild_has_no_local_source_and_exports_digest_outputs() -> None:
     assert "build/build-images.sh" in buildspec
 
 
+def test_codebuild_starts_docker_before_building_images() -> None:
+    commands = yaml.safe_load(_buildspec())["phases"]["build"]["commands"]
+
+    start_index = commands.index("/usr/local/bin/dockerd-entrypoint.sh true")
+    ready_index = commands.index(
+        "docker info --format 'daemon {{.ServerVersion}}, storage driver {{.Driver}}'"
+    )
+    build_index = commands.index(
+        "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/"
+        "build/build-images.sh"
+    )
+
+    assert start_index < ready_index < build_index
+
+
 def test_stack_inputs_are_exact_revisions_and_a_controller_digest() -> None:
     parameters = _template()["Parameters"]
 

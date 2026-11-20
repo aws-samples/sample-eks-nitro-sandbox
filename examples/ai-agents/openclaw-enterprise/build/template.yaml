@@ -286,6 +286,8 @@ Resources:
                 - git -C "$SAMPLE_SOURCE_DIR" fetch --depth 1 origin "$SAMPLE_GIT_REVISION"
                 - test "$(git -C "$SAMPLE_SOURCE_DIR" rev-parse FETCH_HEAD)" = "$SAMPLE_GIT_REVISION"
                 - git -C "$SAMPLE_SOURCE_DIR" checkout --detach "$SAMPLE_GIT_REVISION"
+                - /usr/local/bin/dockerd-entrypoint.sh true
+                - docker info --format 'daemon {{.ServerVersion}}, storage driver {{.Driver}}'
                 - export BUILD_OUTPUT_ENV="$CODEBUILD_SRC_DIR/image-build.env"; readonly BUILD_OUTPUT_ENV
                 - "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/build-images.sh"
                 - source "$BUILD_OUTPUT_ENV"
