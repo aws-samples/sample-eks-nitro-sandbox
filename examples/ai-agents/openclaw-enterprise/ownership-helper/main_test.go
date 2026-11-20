@@ -127,8 +127,12 @@ func TestRunRejectsSymlinkedOptionalDirectory(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".openclaw"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	target := t.TempDir()
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(
-		t.TempDir(),
+		target,
 		filepath.Join(root, ".openclaw", "control"),
 	); err != nil {
 		t.Fatal(err)
@@ -140,8 +144,15 @@ func TestRunRejectsSymlinkedOptionalDirectory(t *testing.T) {
 		"--dir", ".openclaw",
 		"--optional-dir", ".openclaw/control",
 	)
-	if !errors.Is(err, syscall.ELOOP) {
-		t.Fatalf("expected symlinked optional directory to fail with ELOOP, got %v", err)
+	if err == nil {
+		t.Fatal("expected symlinked optional directory to fail")
+	}
+	info, statErr := os.Stat(target)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("symlink target mode changed to %o", info.Mode().Perm())
 	}
 }
 
