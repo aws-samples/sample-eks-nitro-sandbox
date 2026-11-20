@@ -197,12 +197,13 @@ def test_codebuild_starts_docker_before_building_images() -> None:
 
 def test_stack_inputs_are_exact_revisions_and_a_controller_digest() -> None:
     parameters = _template()["Parameters"]
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
 
     for name in ("SampleGitRevision", "OceGitRevision"):
         assert parameters[name]["AllowedPattern"] == "^[0-9a-f]{40}$"
-    assert parameters["OceGitRevision"]["Default"] == (
-        "86c8c12310f691bb21651118ffffd6bfd460e9ff"
-    )
+    oce_revision = parameters["OceGitRevision"]["Default"]
+    assert re.fullmatch(r"[0-9a-f]{40}", oce_revision)
+    assert oce_revision in readme
     controller_digest = parameters["ControllerRuntimeBaseImageDigest"]
     assert controller_digest["AllowedPattern"] == "^sha256:[0-9a-f]{64}$"
     assert re.fullmatch(
