@@ -2190,14 +2190,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: B108
       path: 'examples/ai-agents/openclaw-enterprise/adapter/adapter.py'
-      line_start: 707
-      line_end: 707
+      line_start: 706
+      line_end: 706
       reason: 'This is a validated in-guest mount path, not a host temporary file or directory'
       expiration: '2027-12-31'
     - rule_id: B108
       path: 'examples/ai-agents/openclaw-enterprise/adapter/adapter.py'
-      line_start: 2105
-      line_end: 2105
+      line_start: 2088
+      line_end: 2088
       reason: 'This is a validated in-guest mount path, not a host temporary file or directory'
       expiration: '2027-12-31'
     - rule_id: B108
@@ -2217,6 +2217,12 @@ global_settings:
       line_start: 47
       line_end: 47
       reason: 'The contract test loader subclasses yaml.SafeLoader and adds constructors only for CloudFormation tags'
+      expiration: '2027-12-31'
+    - rule_id: B104
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
+      line_start: 1473
+      line_end: 1473
+      reason: 'The assertion rejects wildcard and ambiguous port-forward bind addresses; it does not create a listener'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
@@ -2266,20 +2272,126 @@ global_settings:
       path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
       reason: 'Source template intentionally contains a rejected placeholder; render-adapter-manifest.sh requires and injects exact distinct SHA-256 image digests before apply'
       expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'Validation-only source template contains a rejected placeholder; install-oce.sh requires and injects the documented digest-pinned PostgreSQL image before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'The pinned upstream PostgreSQL image uses its documented non-root UID 999; the manifest enforces runAsNonRoot and a restricted container security context'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'The disposable validation database reads its generated password from a Kubernetes Secret reference; no plaintext value is stored in the manifest'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'The reusable template omits a namespace; install-oce.sh validates the dedicated namespace and applies both resources with that explicit namespace'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
+      reason: 'The adapter has a dedicated NetworkPolicy manifest that install-oce.sh renders and applies with the deployment'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
+      reason: 'AgentGateway has a dedicated NetworkPolicy manifest that install-oce.sh renders and applies with the deployment'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'The validation database has a dedicated NetworkPolicy manifest that install-oce.sh renders and applies with the deployment'
+      expiration: '2027-12-31'
     - rule_id: CKV_K8S_35
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
       reason: 'AgentGateway reads tenant key hashes and its session key from environment variables backed by Kubernetes Secrets; no plaintext secret is stored in this manifest'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/README.md'
+      line_start: 150
+      line_end: 150
+      reason: 'Public pinned upstream OCE Git commit, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/install-oce.sh'
+      line_start: 6
+      line_end: 6
+      reason: 'Public pinned upstream OCE Git commit used by the installer, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/install-oce.sh'
+      line_start: 14
+      line_end: 14
+      reason: 'Kubernetes Secret object name for the database CA certificate, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/cleanup.sh'
+      line_start: 8
+      line_end: 8
+      reason: 'Public pinned upstream OCE Git commit used to verify cleanup ownership, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/validate-live.sh'
+      line_start: 13
+      line_end: 13
+      reason: 'Public pinned upstream OCE Git commit used to verify live evidence, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_build_contract.py'
-      line_start: 120
-      line_end: 120
+      line_start: 189
+      line_end: 189
       reason: 'Public pinned upstream OCE Git commit used as a test assertion, not a credential'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_cleanup_contract.py'
+      line_start: 20
+      line_end: 20
+      reason: 'Public pinned upstream OCE Git commit used as a cleanup contract fixture, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_cleanup_contract.py'
+      line_start: 120
+      line_end: 120
+      reason: 'Test mapping names the Kubernetes Secret resource type; it contains no credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_install_oce_contract.py'
+      line_start: 19
+      line_end: 19
+      reason: 'Public pinned upstream OCE Git commit used as an installer contract fixture, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASIC-AUTH-CREDENTIALS
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_install_oce_contract.py'
+      line_start: 248
+      line_end: 248
+      reason: 'Synthetic PostgreSQL URL under the reserved example.test domain used only by installer contract tests'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASIC-AUTH-CREDENTIALS
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_install_oce_contract.py'
+      line_start: 252
+      line_end: 252
+      reason: 'Synthetic PostgreSQL URL under the reserved example.test domain used only by installer contract tests'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASIC-AUTH-CREDENTIALS
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_install_oce_contract.py'
+      line_start: 456
+      line_end: 456
+      reason: 'Synthetic invalid PostgreSQL URL under the reserved example.test domain used to test TLS rejection'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
+      line_start: 18
+      line_end: 18
+      reason: 'Public pinned upstream OCE Git commit used as a live-validation contract fixture, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
+      line_start: 235
+      line_end: 235
+      reason: 'Synthetic Kubernetes Secret volume used to test fail-closed credential-source rejection; it contains no secret value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_tenant_isolation_contract.py'
-      line_start: 197
-      line_end: 197
+      line_start: 196
+      line_end: 196
       reason: 'Synthetic short gateway identifier used to prove tenant PVC derivation, not a credential'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
@@ -2296,32 +2408,32 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
-      line_start: 32
-      line_end: 32
+      line_start: 39
+      line_end: 39
       reason: 'cert-manager Certificate output Secret name, not a credential value'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
-      line_start: 36
-      line_end: 36
+      line_start: 43
+      line_end: 43
       reason: 'cert-manager CA Certificate output Secret name, not a credential value'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
-      line_start: 56
-      line_end: 56
+      line_start: 67
+      line_end: 67
       reason: 'cert-manager serving Certificate output Secret name, not a credential value'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_agentgateway_contract.py'
-      line_start: 76
-      line_end: 76
+      line_start: 78
+      line_end: 78
       reason: 'Test assertion for a Kubernetes Secret object name, not a credential value'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_agentgateway_contract.py'
-      line_start: 83
-      line_end: 83
+      line_start: 85
+      line_end: 85
       reason: 'Test assertion for a Kubernetes Secret object name, not a credential value'
       expiration: '2027-12-31'
     # Coder blueprint (issue #278). Keycloak and PostgreSQL are ordinary control-plane pods

@@ -127,6 +127,7 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: !Sub ${RepositoryPrefix}/adapter
+      EmptyOnDelete: true
       ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration:
         ScanOnPush: true
@@ -141,6 +142,7 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: !Sub ${RepositoryPrefix}/controller
+      EmptyOnDelete: true
       ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration:
         ScanOnPush: true
@@ -155,6 +157,7 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: !Sub ${RepositoryPrefix}/ownership-helper
+      EmptyOnDelete: true
       ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration:
         ScanOnPush: true
@@ -169,6 +172,7 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: !Sub ${RepositoryPrefix}/runtime
+      EmptyOnDelete: true
       ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration:
         ScanOnPush: true

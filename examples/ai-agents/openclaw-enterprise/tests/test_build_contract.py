@@ -83,6 +83,75 @@ def test_template_creates_four_immutable_scan_on_push_repositories() -> None:
         }
 
 
+def test_ecr_repositories_are_empty_on_stack_delete() -> None:
+    repositories = _resources("AWS::ECR::Repository")
+
+    assert {
+        repository["Properties"]["RepositoryName"]: repository["Properties"].get(
+            "EmptyOnDelete"
+        )
+        for repository in repositories
+    } == {
+        "${RepositoryPrefix}/adapter": True,
+        "${RepositoryPrefix}/controller": True,
+        "${RepositoryPrefix}/ownership-helper": True,
+        "${RepositoryPrefix}/runtime": True,
+    }
+
+
+def test_readme_requires_nodejs_22_or_later_for_live_validation() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    prerequisites = readme.split("## Prerequisites", 1)[1].split("## Overview", 1)[0]
+
+    assert re.search(r"\bDocker\b", prerequisites)
+    assert re.search(
+        r"\bNode(?:\.js)?\s+(?:v?22\+|v?22\s+or\s+(?:later|newer))",
+        prerequisites,
+        re.IGNORECASE,
+    ), "README prerequisites must require Node.js 22 or later"
+
+
+def test_readme_mirrors_a_pinned_builder_and_resolves_the_trusted_principal() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    build_step = readme.split("**Step 2: Build and scan the images**", 1)[1].split(
+        "**Step 3:", 1
+    )[0]
+
+    assert re.search(
+        r"BUILDER_SOURCE_IMAGE='[^']+@sha256:[0-9a-f]{64}'", build_step
+    )
+    assert "docker pull --platform linux/amd64" in build_step
+    assert 'BuilderImageRepositoryName="$BUILDER_REPOSITORY"' in build_step
+    assert 'BuilderImageDigest="$BUILDER_DIGEST"' in build_step
+    assert 'TrustedBuildInvokerArn="$TRUSTED_BUILD_INVOKER_ARN"' in build_step
+    assert '"Key=OpenClawValidationRun,Value=$EKS_CLUSTER_NAME"' in build_step
+    assert "aws iam get-role" in readme
+
+
+def test_readme_resolves_private_eks_api_addresses_from_control_plane_enis() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    install_step = readme.split("**Step 6: Install the pinned OCE revision**", 1)[
+        1
+    ].split("**Step 7:", 1)[0]
+
+    assert "cluster.resourcesVpcConfig.clusterSecurityGroupId" in install_step
+    assert '"Name=description,Values=Amazon EKS $EKS_CLUSTER_NAME"' in install_step
+    assert "'Name=requester-managed,Values=true'" in install_step
+    assert "'Name=status,Values=in-use'" in install_step
+    assert "socket.getaddrinfo" not in install_step
+    assert '"${cluster_api_cidr_args[@]}"' in install_step
+
+
+def test_readme_deletes_only_the_builder_repository_owned_by_this_run() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    cleanup = readme.split("## Clean up", 1)[1]
+
+    assert "aws ecr list-tags-for-resource" in cleanup
+    assert "OpenClawValidationRun" in cleanup
+    assert '[[ "$builder_repository_run" == "$EKS_CLUSTER_NAME" ]]' in cleanup
+    assert "aws ecr delete-repository" in cleanup
+
+
 def test_codebuild_has_no_local_source_and_exports_digest_outputs() -> None:
     project = _resources("AWS::CodeBuild::Project")[0]["Properties"]
     buildspec = project["Source"]["BuildSpec"]

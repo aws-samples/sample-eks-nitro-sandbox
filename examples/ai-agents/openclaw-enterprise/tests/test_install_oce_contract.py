@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -14,6 +15,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "install-oce.sh"
 POSTGRES = ROOT / "deploy" / "oce-validation-postgres.yaml"
+README = ROOT / "README.md"
 PIN = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
 DIGEST = "a" * 64
 DATABASE_CA_PATH = "/etc/openclaw/database-ca/ca.pem"
@@ -631,3 +633,46 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
         (state / "receipt" / "resources.json").stat().st_mode
     ) == 0o600
     assert (state / "install.complete").is_file()
+
+
+def test_readme_targets_cert_manager_at_the_explicit_context() -> None:
+    readme = README.read_text(encoding="utf-8")
+    cert_manager_step = readme.split(
+        "Install the pinned cert-manager release", 1
+    )[1].split("cert-manager is a shared cluster prerequisite", 1)[0]
+
+    assert re.search(
+        r"helm upgrade --install cert-manager\s*\\?\s*"
+        r"oci://quay\.io/jetstack/charts/cert-manager\s*\\?\s*"
+        r'--kube-context "\$KUBE_CONTEXT"',
+        cert_manager_step,
+    )
+
+
+def test_readme_derives_network_inputs_and_pins_validation_postgres() -> None:
+    readme = README.read_text(encoding="utf-8")
+    install_step = readme.split("**Step 6: Install the pinned OCE revision**", 1)[
+        1
+    ].split("**Step 7:", 1)[0]
+
+    assert re.search(
+        r"OCE_VALIDATION_POSTGRES_IMAGE='[^']+@sha256:[0-9a-f]{64}'",
+        install_step,
+    )
+    assert "sample_pod_ip=" in install_step
+    assert "ipaddress.ip_network" in install_step
+    assert "cluster.resourcesVpcConfig.clusterSecurityGroupId" in install_step
+    assert '"Name=description,Values=Amazon EKS $EKS_CLUSTER_NAME"' in install_step
+    assert "'Name=requester-managed,Values=true'" in install_step
+    assert "socket.getaddrinfo" not in install_step
+    assert 'cluster_api_cidr_args+=(--cluster-api-cidr "$ip/32")' in install_step
+    assert '"${cluster_api_cidr_args[@]}"' in install_step
+
+
+def test_readme_changes_to_repository_root_before_static_tests() -> None:
+    readme = README.read_text(encoding="utf-8")
+    validation_step = readme.split(
+        "**Step 8: Validate the two-tenant boundary**", 1
+    )[1].split("**Step 9:", 1)[0]
+
+    assert 'cd "$(git -C "$SAMPLE_DIR" rev-parse --show-toplevel)"' in validation_step

@@ -12,6 +12,7 @@ import yaml
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = SAMPLE / "deploy" / "agentgateway.yaml"
 IAM = SAMPLE / "iam"
+README = SAMPLE / "README.md"
 NAMESPACE = "openclaw-enterprise-agw"
 REGION = "us-west-2"
 MODEL = "amazon.nova-lite-v1:0"
@@ -145,6 +146,51 @@ def test_client_key_comes_only_from_a_kubernetes_secret():
         "optional": False,
     }
     assert not any(document["kind"] == "Secret" for document in _documents())
+
+
+def test_readme_labels_agentgateway_secrets_before_apply():
+    readme = README.read_text(encoding="utf-8")
+    unlabelled = []
+
+    for secret_name in ("agw-client-key", "agw-session-key"):
+        command = re.search(
+            rf"^kubectl\b(?:(?!\n\n).)*?create secret generic {secret_name}\b"
+            r"(?:(?!\n\n).)*",
+            readme,
+            re.MULTILINE | re.DOTALL,
+        )
+        assert command, f"README does not create {secret_name}"
+        pipeline = command.group(0)
+        label = "app.kubernetes.io/managed-by=openclaw-enterprise-blueprint"
+        apply = re.search(r"^ *kubectl\b[^\n]*\bapply\b", pipeline, re.MULTILINE)
+        assert apply, f"README does not apply {secret_name}"
+        before_apply = pipeline[: apply.start()]
+        if not (
+            re.search(
+                r"^ *kubectl\b(?:(?!\n\n).)*?\blabel\b(?:(?!\n\n).)*?--local\b",
+                before_apply,
+                re.MULTILINE | re.DOTALL,
+            )
+            and label in before_apply
+        ):
+            unlabelled.append(secret_name)
+
+    assert not unlabelled, f"README applies secrets before labelling them: {unlabelled}"
+
+
+def test_readme_writes_agentgateway_keys_without_trailing_newlines():
+    readme = README.read_text(encoding="utf-8")
+
+    for key_file in (
+        "tenant-a-agentgateway.key",
+        "tenant-b-agentgateway.key",
+        "agentgateway-session.key",
+    ):
+        assert re.search(
+            rf'printf \'%s\' "\$\(openssl rand -hex 32\)"\s*\\?\s*'
+            rf'>"\$PRIVATE_STATE_DIR/{re.escape(key_file)}"',
+            readme,
+        )
 
 
 def test_bedrock_model_uses_direct_regional_foundation_model_inference():

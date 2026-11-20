@@ -43,7 +43,8 @@ Editable diagrams:
   `cert-manager.io/v1` `Issuer` and `Certificate` APIs. The adapter and
   AgentGateway manifests create these resources.
 - A reviewed, digest-pinned CodeBuild builder image in private Amazon ECR.
-- AWS CLI v2, Bash, Git, Go, Helm, `jq`, `kubectl`, OpenSSL, Python 3, and
+- AWS CLI v2, Bash, Docker, Git, Go, Helm, `jq`, `kubectl`, Node.js 22 or
+  later, OpenSSL, Python 3, and
   [Mike Farah `yq`](https://github.com/mikefarah/yq) `v4.54.3`.
 - Kubernetes permission to create cluster-scoped admission resources and a
   StorageClass and create `pods/portforward` requests.
@@ -117,6 +118,8 @@ when your threat model requires those stronger boundaries.
 | Amazon Bedrock model | `amazon.nova-lite-v1:0` in `us-west-2` |
 | Adapter, controller, ownership helper, runtime | Digest-qualified outputs from one successful CodeBuild run |
 | cert-manager | `v1.21.3` |
+| Validation PostgreSQL | `16.16-bookworm`, digest-pinned in Step 6 |
+| Node.js | `22` or later |
 | `yq` | Mike Farah `yq` `v4.54.3` |
 
 ## Files
@@ -150,9 +153,32 @@ export YQ_VERSION='v4.54.3'
 
 chmod 600 "$KUBECONFIG"
 install -d -m 700 "$PRIVATE_STATE_DIR"
+caller_arn="$(aws sts get-caller-identity --query Arn --output text)"
+case "$caller_arn" in
+  arn:aws:iam::*:role/*|arn:aws:iam::*:user/*)
+    export TRUSTED_BUILD_INVOKER_ARN="$caller_arn"
+    ;;
+  arn:aws:sts::*:assumed-role/*/*)
+    caller_role_and_session="${caller_arn#*:assumed-role/}"
+    caller_role_name="${caller_role_and_session%%/*}"
+    export TRUSTED_BUILD_INVOKER_ARN="$(
+      aws iam get-role \
+        --role-name "$caller_role_name" \
+        --query 'Role.Arn' \
+        --output text
+    )"
+    ;;
+  *)
+    printf 'Set TRUSTED_BUILD_INVOKER_ARN to your IAM role or user ARN.\n' >&2
+    return 1 2>/dev/null || exit 1
+    ;;
+esac
 kubectl --context "$KUBE_CONTEXT" config get-contexts "$KUBE_CONTEXT"
 kubectl --context "$KUBE_CONTEXT" get --raw=/readyz
 test "$(yq --version | awk '{print $NF}')" = "$YQ_VERSION"
+node_major="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+test "$node_major" -ge 22
+docker version >/dev/null
 ```
 
 Install the pinned cert-manager release when the cluster does not already have
@@ -179,6 +205,7 @@ if kubectl --context "$KUBE_CONTEXT" \
 else
   helm upgrade --install cert-manager \
     oci://quay.io/jetstack/charts/cert-manager \
+    --kube-context "$KUBE_CONTEXT" \
     --version "$CERT_MANAGER_VERSION" \
     --namespace cert-manager \
     --create-namespace \
@@ -213,20 +240,59 @@ TODO: output from the fresh run
 
 **Step 2: Build and scan the images**
 
-Mirror a reviewed CodeBuild builder image into private ECR and record its
-digest. This image runs privileged Docker and can write release images, so do
-not select it by tag.
+Mirror the pinned CodeBuild standard 5.0 builder into private ECR. The build
+project selects the private copy by digest because this image runs privileged
+Docker and can write the four release images.
 
 ```bash
+export BUILDER_SOURCE_IMAGE='public.ecr.aws/codebuild/amazonlinux-x86_64-standard@sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660'
+export BUILDER_REPOSITORY='openclaw-enterprise/codebuild-builder'
+export BUILDER_TAG='codebuild-5.0-20261102'
+export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+if ! aws ecr describe-repositories \
+  --region "$AWS_REGION" \
+  --repository-names "$BUILDER_REPOSITORY" >/dev/null 2>&1; then
+  aws ecr create-repository \
+    --region "$AWS_REGION" \
+    --repository-name "$BUILDER_REPOSITORY" \
+    --image-tag-mutability IMMUTABLE \
+    --image-scanning-configuration scanOnPush=true \
+    --encryption-configuration encryptionType=AES256 \
+    --tags "Key=OpenClawValidationRun,Value=$EKS_CLUSTER_NAME" >/dev/null
+fi
+
+aws ecr get-login-password --region "$AWS_REGION" |
+  docker login --username AWS --password-stdin "$ECR_REGISTRY"
+if ! aws ecr describe-images \
+  --region "$AWS_REGION" \
+  --repository-name "$BUILDER_REPOSITORY" \
+  --image-ids "imageTag=$BUILDER_TAG" >/dev/null 2>&1; then
+  docker pull --platform linux/amd64 "$BUILDER_SOURCE_IMAGE"
+  docker tag "$BUILDER_SOURCE_IMAGE" \
+    "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
+  docker push "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
+fi
+export BUILDER_DIGEST="$(
+  aws ecr describe-images \
+    --region "$AWS_REGION" \
+    --repository-name "$BUILDER_REPOSITORY" \
+    --image-ids "imageTag=$BUILDER_TAG" \
+    --query 'imageDetails[0].imageDigest' \
+    --output text
+)"
+[[ "$BUILDER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+
 aws cloudformation deploy \
+  --region "$AWS_REGION" \
   --stack-name openclaw-enterprise-images \
   --template-file build/template.yaml \
   --capabilities CAPABILITY_IAM \
   --parameter-overrides \
     SampleGitRevision="$(git -C ../../.. rev-parse HEAD)" \
-    BuilderImageRepositoryName='<reviewed-builder-repository>' \
-    BuilderImageDigest='sha256:<64-lowercase-hex-characters>' \
-    TrustedBuildInvokerArn="arn:aws:iam::${AWS_ACCOUNT_ID}:role/<release-role-name>"
+    BuilderImageRepositoryName="$BUILDER_REPOSITORY" \
+    BuilderImageDigest="$BUILDER_DIGEST" \
+    TrustedBuildInvokerArn="$TRUSTED_BUILD_INVOKER_ARN"
 ```
 
 The stack creates four encrypted, immutable ECR repositories and a fixed Step
@@ -417,29 +483,41 @@ Record the returned association ID for cleanup:
 export POD_IDENTITY_ASSOCIATION_ID='<association-id-from-script-output>'
 ```
 
-Create distinct tenant keys and the AgentGateway session key:
+Create distinct tenant keys and the AgentGateway session key. Write the tenant
+keys without a trailing newline so the stored hashes match the submitted keys:
 
 ```bash
 umask 077
-openssl rand -hex 32 >"$PRIVATE_STATE_DIR/tenant-a-agentgateway.key"
-openssl rand -hex 32 >"$PRIVATE_STATE_DIR/tenant-b-agentgateway.key"
+printf '%s' "$(openssl rand -hex 32)" \
+  >"$PRIVATE_STATE_DIR/tenant-a-agentgateway.key"
+printf '%s' "$(openssl rand -hex 32)" \
+  >"$PRIVATE_STATE_DIR/tenant-b-agentgateway.key"
 openssl dgst -sha256 -r "$PRIVATE_STATE_DIR/tenant-a-agentgateway.key" |
   awk '{print $1}' >"$PRIVATE_STATE_DIR/tenant-a-sha256"
 openssl dgst -sha256 -r "$PRIVATE_STATE_DIR/tenant-b-agentgateway.key" |
   awk '{print $1}' >"$PRIVATE_STATE_DIR/tenant-b-sha256"
-openssl rand -hex 32 >"$PRIVATE_STATE_DIR/agentgateway-session.key"
+printf '%s' "$(openssl rand -hex 32)" \
+  >"$PRIVATE_STATE_DIR/agentgateway-session.key"
 
 kubectl --context "$KUBE_CONTEXT" \
   --namespace openclaw-enterprise-agw create secret generic agw-client-key \
   --from-file=tenant-a-sha256="$PRIVATE_STATE_DIR/tenant-a-sha256" \
   --from-file=tenant-b-sha256="$PRIVATE_STATE_DIR/tenant-b-sha256" \
   --dry-run=client --output=yaml |
+  kubectl label --local --filename - \
+    app.kubernetes.io/managed-by=openclaw-enterprise-blueprint \
+    app.kubernetes.io/part-of=openclaw-enterprise-blueprint \
+    --dry-run=client --output=yaml |
   kubectl --context "$KUBE_CONTEXT" apply --filename -
 
 kubectl --context "$KUBE_CONTEXT" \
   --namespace openclaw-enterprise-agw create secret generic agw-session-key \
   --from-file=key="$PRIVATE_STATE_DIR/agentgateway-session.key" \
   --dry-run=client --output=yaml |
+  kubectl label --local --filename - \
+    app.kubernetes.io/managed-by=openclaw-enterprise-blueprint \
+    app.kubernetes.io/part-of=openclaw-enterprise-blueprint \
+    --dry-run=client --output=yaml |
   kubectl --context "$KUBE_CONTEXT" apply --filename -
 
 kubectl --context "$KUBE_CONTEXT" apply \
@@ -503,7 +581,81 @@ Use the disposable PostgreSQL mode only on an EKS cluster tagged
 export OCE_NAMESPACE='openclaw-system'
 export OCE_STATE_DIR="$PRIVATE_STATE_DIR/oce-install"
 export OCE_RECEIPT_DIR="$OCE_STATE_DIR/receipt"
-export OCE_VALIDATION_POSTGRES_IMAGE='<postgres-repository>@sha256:<digest>'
+export OCE_VALIDATION_POSTGRES_IMAGE='public.ecr.aws/docker/library/postgres@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175'
+
+cluster_arn="$(
+  aws eks describe-cluster \
+    --region "$AWS_REGION" \
+    --name "$EKS_CLUSTER_NAME" \
+    --query 'cluster.arn' \
+    --output text
+)"
+aws eks tag-resource \
+  --region "$AWS_REGION" \
+  --resource-arn "$cluster_arn" \
+  --tags Environment=validation
+
+vpc_id="$(
+  aws eks describe-cluster \
+    --region "$AWS_REGION" \
+    --name "$EKS_CLUSTER_NAME" \
+    --query 'cluster.resourcesVpcConfig.vpcId' \
+    --output text
+)"
+sample_pod_ip="$(
+  kubectl --context "$KUBE_CONTEXT" get pods --all-namespaces \
+    --field-selector=status.phase=Running --output json |
+    jq -er '[.items[].status.podIP | select(test("^[0-9.]+$"))][0]'
+)"
+read -r -a vpc_cidrs <<<"$(
+  aws ec2 describe-vpcs \
+    --region "$AWS_REGION" \
+    --vpc-ids "$vpc_id" \
+    --query 'Vpcs[0].CidrBlockAssociationSet[?CidrBlockState.State==`associated`].CidrBlock' \
+    --output text
+)"
+export POD_CIDR="$(
+  python3 - "$sample_pod_ip" "${vpc_cidrs[@]}" <<'PY'
+import ipaddress
+import sys
+
+pod_ip = ipaddress.ip_address(sys.argv[1])
+matches = [cidr for cidr in sys.argv[2:] if pod_ip in ipaddress.ip_network(cidr)]
+if len(matches) != 1:
+    raise SystemExit(f"expected one VPC CIDR for pod IP, found {matches}")
+print(matches[0])
+PY
+)"
+
+cluster_security_group_id="$(
+  aws eks describe-cluster \
+    --region "$AWS_REGION" \
+    --name "$EKS_CLUSTER_NAME" \
+    --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' \
+    --output text
+)"
+cluster_api_cidr_args=()
+while IFS= read -r ip; do
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+    printf 'Invalid EKS control-plane address: %s\n' "$ip" >&2
+    exit 1
+  }
+  cluster_api_cidr_args+=(--cluster-api-cidr "$ip/32")
+done < <(
+  aws ec2 describe-network-interfaces \
+    --region "$AWS_REGION" \
+    --filters \
+      "Name=vpc-id,Values=$vpc_id" \
+      "Name=group-id,Values=$cluster_security_group_id" \
+      "Name=description,Values=Amazon EKS $EKS_CLUSTER_NAME" \
+      'Name=requester-managed,Values=true' \
+      'Name=status,Values=in-use' \
+    --query 'NetworkInterfaces[].PrivateIpAddress' \
+    --output text |
+    tr '\t' '\n' |
+    sort -u
+)
+((${#cluster_api_cidr_args[@]} > 0))
 
 "$SAMPLE_DIR/scripts/install-oce.sh" \
   --aws-account-id "$AWS_ACCOUNT_ID" \
@@ -519,8 +671,8 @@ export OCE_VALIDATION_POSTGRES_IMAGE='<postgres-repository>@sha256:<digest>'
   --agent-domain '<private-agent-domain>' \
   --admin-email '<initial-admin-email>' \
   --runtime-storage-class "$RUNTIME_STORAGE_CLASS" \
-  --pod-cidr '<cluster-pod-cidr>' \
-  --cluster-api-cidr '<eks-private-api-ip>/32' \
+  --pod-cidr "$POD_CIDR" \
+  "${cluster_api_cidr_args[@]}" \
   --state-dir "$OCE_STATE_DIR" \
   --receipt "$OCE_RECEIPT_DIR" \
   --namespace "$OCE_NAMESPACE" \
@@ -1008,6 +1160,7 @@ TODO: output from the fresh run
 Run the static contracts from the repository root:
 
 ```bash
+cd "$(git -C "$SAMPLE_DIR" rev-parse --show-toplevel)"
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install \
@@ -1125,6 +1278,38 @@ state, receipt, context, tenant namespaces, and Pod Identity values:
   --pod-identity-association-id "$POD_IDENTITY_ASSOCIATION_ID" \
   --iam-role-name openclaw-enterprise-agentgateway \
   --iam-inline-policy-name openclaw-enterprise-bedrock-invoke
+
+aws cloudformation delete-stack \
+  --stack-name openclaw-enterprise-images \
+  --region "$AWS_REGION"
+aws cloudformation wait stack-delete-complete \
+  --stack-name openclaw-enterprise-images \
+  --region "$AWS_REGION"
+
+if builder_repository_arn="$(
+  aws ecr describe-repositories \
+    --region "$AWS_REGION" \
+    --repository-names "$BUILDER_REPOSITORY" \
+    --query 'repositories[0].repositoryArn' \
+    --output text 2>/dev/null
+)"; then
+  builder_repository_run="$(
+    aws ecr list-tags-for-resource \
+      --region "$AWS_REGION" \
+      --resource-arn "$builder_repository_arn" \
+      --query 'tags[?Key==`OpenClawValidationRun`].Value | [0]' \
+      --output text
+  )"
+  if [[ "$builder_repository_run" == "$EKS_CLUSTER_NAME" ]]; then
+    aws ecr delete-repository \
+      --region "$AWS_REGION" \
+      --repository-name "$BUILDER_REPOSITORY" \
+      --force >/dev/null
+  else
+    printf 'Preserving builder repository without this run ownership tag: %s\n' \
+      "$BUILDER_REPOSITORY"
+  fi
+fi
 ```
 
 Cleanup verifies the installation receipt and resource ownership before it
@@ -1136,7 +1321,10 @@ blueprint-owned, nor a narrow expected Kubernetes-generated object.
 
 It preserves any external database. It deletes the blueprint StorageClass only
 when no PVC still references it. Cleanup exits non-zero when a blueprint-owned
-resource must be preserved for safety.
+resource must be preserved for safety. The final two commands delete the image
+build workflow and its four ECR repositories, including the sample images. The
+final ownership check deletes the mirrored builder repository only when its tag
+matches this validation run.
 
 ```text
 TODO: output from the fresh run
