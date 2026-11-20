@@ -1,0 +1,35 @@
+# Pinned build tools of the sandbox AMI. Each key appears exactly once.
+# scripts/10-build-ami-packer.sh reads the Packer keys on the operator machine;
+# scripts/builder/10-host-setup.sh reads the other keys on the builder.
+#
+# Packer and the Amazon plugin: the zip digest must equal the line in HashiCorp's
+# SHA256SUMS file, and that file must have a good signature from the key with the primary
+# fingerprint HASHICORP_KEY_FPR (HashiCorp's release key, published at HASHICORP_KEY_URL).
+# One zip digest per operator platform (<os>_<arch>, as HashiCorp names the zips).
+PACKER_VERSION=1.16.2
+PACKER_ZIP_SHA256_LINUX_AMD64=abbfe0cf74985084112659b53e3565f264f70a20914c3b7c4f789f54f61c2414
+PACKER_ZIP_SHA256_LINUX_ARM64=5d7d6de86a49b2d64f3c0eef5766855b580e10a7c45bd6605ba8f1dead7815ea
+PACKER_ZIP_SHA256_DARWIN_AMD64=cca17e6889754c8f6e9d9a2646a9f9cc650a70dfdafc8e7da7e5279977b7d812
+PACKER_ZIP_SHA256_DARWIN_ARM64=3d7e4df8e7e8c21bdf495c4f63ad9189e22540dc8126dee6db791aa8519e8b3a
+AMAZON_PLUGIN_VERSION=1.8.4
+AMAZON_PLUGIN_API=x5.0
+AMAZON_PLUGIN_ZIP_SHA256_LINUX_AMD64=8c86e53023a436d7b3e1ee41f48e0ac7a563200ebc01d3c1dfae82500d1e4332
+AMAZON_PLUGIN_ZIP_SHA256_LINUX_ARM64=d072dd2a104355c186458c5c17c000d2c7616f04125daa7d742b03d3f4ae5db4
+AMAZON_PLUGIN_ZIP_SHA256_DARWIN_AMD64=6f540452b0d307e053486ef488c90862ceff6ba922d656d627ab8be7766d9ebd
+AMAZON_PLUGIN_ZIP_SHA256_DARWIN_ARM64=9944848b18d912d6070b677cb59b7e9e9301209546162cac09890c2345e311c7
+HASHICORP_RELEASES_URL=https://releases.hashicorp.com
+HASHICORP_KEY_URL=https://www.hashicorp.com/.well-known/pgp-key.txt
+HASHICORP_KEY_FPR=C874011F0AB405110D02105534365D9472D7468F
+# Twoliter: the version and x86_64 digest that Makefile.toml of Bottlerocket v1.70.0 sets.
+# The release's own .sha256 file gives the same digest.
+TWOLITER_VERSION=v0.27.0
+TWOLITER_SHA256_X86_64=3c0571467304fe0dd9d7a1d0855437cb071103e80a7e9695c57c63f4da772d73
+# rustup-init: the digest of the published rustup-init.sha256 file. rustup then checks each
+# toolchain component against the SHA-256 values in the Rust channel manifest.
+RUSTUP_VERSION=1.29.3
+RUSTUP_INIT_SHA256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+RUST_TOOLCHAIN=1.100.0
+# cargo-make: the crate checksum of the crates.io index. cargo checks it, and --locked uses
+# the Cargo.lock inside the crate, which pins the checksum of every dependency.
+CARGO_MAKE_VERSION=0.37.24
+CARGO_MAKE_CRATE_SHA256=7f304f6f709b5dbbc0efe9c84af1f42af22e0636e625c54799a60ec3d6efb64f

@@ -1,0 +1,43 @@
+[package]
+name = "nitro-sandbox"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "../build.rs"
+
+[lib]
+path = "../packages.rs"
+
+# The builder downloads and verifies these files before the build
+# (packages/lib/runtime_verify.py: SHA-256 and the signed SHA256SUM) and puts them in this
+# folder. buildsys then checks each SHA-512 again and does not download a file that matches.
+# The values must equal packages/sources.lock; scripts/builder/30-overlay.sh compares them.
+[[package.metadata.build-package.external-files]]
+path = "nitro-sandboxes-runtime.tar.gz"
+url = "https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/nitro-sandboxes-runtime.tar.gz"
+sha512 = "3d68cb102a02985169abfe43593ca14069e82b90f80a43071e7530b539de85b39a53485f27a85933f6072cf619d1ba4f6bdda22f4c004b68ad1130357a5be603"  # pragma: allowlist secret
+force-upstream = true
+
+[[package.metadata.build-package.external-files]]
+path = "firecracker-v1.18.0-x86_64.tgz"
+url = "https://github.com/firecracker-microvm/firecracker/releases/download/v1.18.0/firecracker-v1.18.0-x86_64.tgz"
+sha512 = "86d687ab22e6d744e21fe4df692de1f1fbdc6a8f6d9ae40f0d519caf384e5349f80532e27f055246af0ccf0d7b295388022047f1dedad7b5d0bf5fa211136818"  # pragma: allowlist secret
+force-upstream = true
+
+[[package.metadata.build-package.external-files]]
+path = "nitro-sandbox-guest.eif"
+url = "https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest.eif"
+sha512 = "20ddda43709008b0e669fd5c36a6301375fd991f742fb62fd0550fa21ab5a095bf0f4be2839ccca585f5fe4981feee2063ba168db190047ca35a5c98d946a355"  # pragma: allowlist secret
+force-upstream = true
+
+[[package.metadata.build-package.external-files]]
+path = "nitro-sandbox-guest-disk.img"
+url = "https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest-disk.img"
+sha512 = "69fb520442ce52d61100959a75ead9f3a41bac08ec641ecf001f508b26d1ebf9e80a174c6e573e341944e8a83121cf96ce70d68a1225304c5fe1ee9c096c975a"  # pragma: allowlist secret
+force-upstream = true
+
+# RPM BuildRequires
+[build-dependencies]
+
+# RPM Requires
+[dependencies]
