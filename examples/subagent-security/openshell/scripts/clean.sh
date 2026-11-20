@@ -31,8 +31,10 @@
 # use, and which hold the operator's gateway client certificate and key.
 #
 # It never removes a shared install or a cluster-wide setting. This sample has two of
-# those, the RuntimeClass approval label and the agent-sandbox controller, and both are
-# left in place with the command to undo them printed at the end.
+# those, the RuntimeClass approval label and the agent-sandbox controller. It never adds,
+# changes or removes the label (the cluster owner sets it before setup.sh runs, and
+# setup.sh only reads it), and it leaves the controller in place with the command to
+# remove it printed at the end.
 set -uo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -45,7 +47,7 @@ delete_aws=false
 for arg in "$@"; do
   case "$arg" in
     --delete-aws) delete_aws=true ;;
-    --help|-h) sed -n '2,35p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,37p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -595,20 +597,8 @@ cat <<EOF
      Every OpenShell gateway on this cluster reads the same label, and without it none of
      them may attach that RuntimeClass to a sandbox. Removing it would break another
      gateway's sandboxes, not just this sample's.
-EOF
-if [[ "${RUNTIME_CLASS_LABELLED:-false}" == true ]]; then
-  cat <<EOF
-     This run's setup added it, so it was not there before. If no other OpenShell gateway
-     needs it:
-       kubectl ${KUBE_CONTEXT:+--context $KUBE_CONTEXT }label runtimeclass $RUNTIME_CLASS $APPROVAL_LABEL-
-EOF
-else
-  cat <<EOF
      It was already on the RuntimeClass before this run, so it is not this sample's to
      remove.
-EOF
-fi
-cat <<EOF
 
   2. The agent-sandbox controller, which OpenShell's Kubernetes driver creates Sandbox
      objects for. setup.sh reused the install already on this cluster and changed nothing

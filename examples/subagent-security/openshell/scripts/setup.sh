@@ -8,8 +8,9 @@
 #
 # What it does, in order (the first five stages are the ones every Subagent security
 # sample shares, and print their own "N/7" counter from analyst-lib.sh):
-#   1. checks the tools, the kube context, the isolated-sandbox RuntimeClass, the Bedrock
-#      model, the MutatingAdmissionPolicy API and the shared agent-sandbox install;
+#   1. checks the tools, the kube context, the isolated-sandbox RuntimeClass and its
+#      OpenShell approval label, the Bedrock model, the MutatingAdmissionPolicy API and
+#      the shared agent-sandbox install;
 #   2. creates the namespace when it is absent, and the analyst ServiceAccount;
 #   3. generates the supplier API key and a sample certificate authority;
 #   4. builds and pushes the supplier API image and starts it as an ordinary pod;
@@ -52,7 +53,7 @@ LOCAL_DIR="$TMP_DIR/local"
 
 for arg in "$@"; do
   case "$arg" in
-    --help|-h) sed -n '2,38p' "$0"; exit 0 ;;
+    --help|-h) sed -n '2,39p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -138,20 +139,24 @@ kc get crd sandboxes.agents.x-k8s.io -o name >/dev/null 2>&1 ||
   kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.10/sandbox-with-extensions.yaml"
 echo "  agent-sandbox: reusing the install already on this cluster"
 
-# OpenShell will not attach a RuntimeClass an operator has not approved. The label is
-# shared with any other OpenShell gateway on the cluster and changes nothing for other
-# pods, so this sample never removes it, and adds it only when it is absent.
-runtime_label="$(kc get runtimeclass "$RUNTIME_CLASS" \
-  -o jsonpath="{.metadata.labels['openshell\.ai/sandbox-attachable']}" 2>/dev/null)" ||
-  die "could not read the $RUNTIME_CLASS RuntimeClass"
-if [[ "$runtime_label" == "true" ]]; then
-  echo "  runtime class: $RUNTIME_CLASS already carries $APPROVAL_LABEL=true"
-  state_put RUNTIME_CLASS_LABELLED false
-else
-  kc label runtimeclass "$RUNTIME_CLASS" "$APPROVAL_LABEL=true"
-  echo "  runtime class: added $APPROVAL_LABEL=true to $RUNTIME_CLASS"
-  state_put RUNTIME_CLASS_LABELLED true
+# OpenShell will not attach a RuntimeClass an operator has not approved with this label.
+# The RuntimeClass is shared by every workload on the cluster, and the label by every
+# OpenShell gateway on it, so the label is a prerequisite the cluster owner sets (the
+# page's prerequisites say how). This script only reads it. It never adds, changes or
+# removes a label on any RuntimeClass, and it stops here, before it creates anything,
+# unless the value is exactly the string "true": a read that fails, an absent label, and
+# any other value or type all stop it.
+rc_context="${KUBE_CONTEXT:-$(kubectl config current-context 2>/dev/null)}" || rc_context=""
+rc_reader="kubectl --context ${rc_context:-<context>} get runtimeclass $RUNTIME_CLASS -o jsonpath=\"{.metadata.labels['openshell\\.ai/sandbox-attachable']}\""
+rc_json="$(kc get runtimeclass "$RUNTIME_CLASS" -o json 2>/dev/null)" ||
+  die "could not read the $RUNTIME_CLASS RuntimeClass, so it is unknown whether it carries $APPROVAL_LABEL=true; created nothing. To read the label:
+  $rc_reader"
+if ! jq -e --arg k "$APPROVAL_LABEL" '.metadata.labels[$k] == "true"' <<<"$rc_json" >/dev/null 2>&1; then
+  found="$(jq -c --arg k "$APPROVAL_LABEL" '.metadata.labels[$k]' <<<"$rc_json" 2>/dev/null)" || found=""
+  die "the $RUNTIME_CLASS RuntimeClass does not carry $APPROVAL_LABEL=true (found: ${found:-unreadable}); created nothing. OpenShell attaches only a RuntimeClass an operator approved with this label. The RuntimeClass is shared, so this script never sets the label: that is the cluster owner's decision, as the page's prerequisites say. To read the label:
+  $rc_reader"
 fi
+echo "  runtime class: $RUNTIME_CLASS already carries $APPROVAL_LABEL=true"
 
 # Refuse a cluster-scoped adapter that is not this sample's, before anything is created.
 for kind in mutatingadmissionpolicy mutatingadmissionpolicybinding; do

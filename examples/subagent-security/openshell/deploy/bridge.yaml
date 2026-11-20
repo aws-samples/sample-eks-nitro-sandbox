@@ -53,17 +53,23 @@ spec:
         app: analyst-bridge
         app.kubernetes.io/managed-by: <MANAGED_BY>
     spec:
-      # The ServiceAccount the Pod Identity association names. The ServiceAccount itself
-      # sets automountServiceAccountToken: false, so this pod gets AWS credentials from
-      # the Pod Identity endpoint and no Kubernetes token on disk.
+      # The ServiceAccount the Pod Identity association names. The bridge never calls the
+      # Kubernetes API, so the pod turns off the default API token (the kube-api-access
+      # volume), as the ServiceAccount also does. EKS Pod Identity still projects its own,
+      # separate token for the Pod Identity endpoint, which is how the bridge gets its AWS
+      # credentials.
       serviceAccountName: analyst
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
+        # Not the image's analyst user (1000). Only the analyst has to run as the UID the
+        # OpenShell policy names; this pod is outside OpenShell, and nothing in it depends
+        # on that number.
+        runAsUser: 10001
+        runAsGroup: 10001
         # A Secret volume is owned by root, so fsGroup is what lets the container read
         # its own key and certificate at mode 0440.
-        fsGroup: 1000
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
@@ -83,6 +89,14 @@ spec:
             - { containerPort: 8443, protocol: TCP }
           readinessProbe:
             httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
+          # The same endpoint, given a minute of failures before the kubelet restarts the
+          # container. /healthz needs no key and writes nothing to the request log.
+          livenessProbe:
+            httpGet: { scheme: HTTPS, path: /healthz, port: 8443 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
           volumeMounts:
             # The same key the supplier API checks. The bridge is a second destination
             # behind the same brokered credential, so the analyst holds one placeholder.
