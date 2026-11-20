@@ -2,6 +2,6 @@
 # requirements.txt beside this file is the locked, hash-pinned resolution:
 #   uv pip compile requirements.in --python-version 3.13 --generate-hashes \
 #     --output-file requirements.txt
-strands-agents==1.62.0
+strands-agents==1.63.0
 boto3==1.43.118
 pydantic==2.14.1

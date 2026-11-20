@@ -85,7 +85,7 @@ This folder was built against these releases. Pin each to its latest when you bu
 | Component | Version |
 |---|---|
 | [nono](https://github.com/nolabs-ai/nono/releases) | 0.80.0, pinned in the `Dockerfile` by release tag and by the SHA-256 of the release archive |
-| [`strands-agents`](https://pypi.org/project/strands-agents/) | 1.62.0 |
+| [`strands-agents`](https://pypi.org/project/strands-agents/) | 1.63.0 |
 | [`boto3`](https://pypi.org/project/boto3/) | 1.43.118 |
 | [`pydantic`](https://pypi.org/project/pydantic/) | 2.14.1 |
 | [Python](https://www.python.org/downloads/) base image | 3.13 (`public.ecr.aws/docker/library/python:3.13-slim`) |
