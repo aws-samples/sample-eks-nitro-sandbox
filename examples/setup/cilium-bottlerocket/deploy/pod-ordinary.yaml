@@ -1,0 +1,57 @@
+# Two ordinary pods (no runtimeClassName), for comparison with the sandbox pod.
+#   cb-ordinary-sandbox-node runs on the sandbox node, next to the sandbox pod. It shows the
+#   node kernel, the node uptime and the nvme disks of the instance.
+#   cb-ordinary-system-node runs on the system node.
+# test.sh runs the same pod-to-pod, ClusterIP Service and DNS checks from both.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cb-ordinary-sandbox-node
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+    app.kubernetes.io/name: cb-ordinary-sandbox-node
+spec:
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: sandbox
+  tolerations:
+    - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+      command: ["sleep", "86400"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cb-ordinary-system-node
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+    app.kubernetes.io/name: cb-ordinary-system-node
+spec:
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: system
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+      command: ["sleep", "86400"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]

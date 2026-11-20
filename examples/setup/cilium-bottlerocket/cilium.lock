@@ -1,0 +1,7 @@
+# The one source of the Cilium version for this sample.
+#
+# setup.sh installs this chart at this version, test.sh compares the live agent image tag
+# with it, and the page and the run evidence read it from here. No other file states the
+# Cilium version. After a change here, run every Cilium check again on a live cluster.
+CILIUM_VERSION=1.20.5
+CILIUM_CHART=oci://quay.io/cilium/charts/cilium

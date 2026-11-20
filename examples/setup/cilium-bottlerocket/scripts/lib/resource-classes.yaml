@@ -1,0 +1,70 @@
+# The closed inventory of the AWS resource classes that a run creates. Data only:
+# scripts/lib/cb_inventory.py reads it for `audit-tags`, `tag-sweep` and `owned`, and fails when
+# a class has no discovery function, a discovery function has no class, or a resource in the
+# VPC of the run has a type that no class covers.
+#
+# Fields:
+#   class      the name used in output and in the tests
+#   made_by    the stage or tool that creates it
+#   tags       how it gets ManagedBy and RunId when it is created:
+#                cfn      eksctl metadata.tags, which CloudFormation copies to the resource
+#                eksctl   eksctl gives the tags to the EKS object (cluster, node group, add-on,
+#                         Pod Identity association)
+#                spec     a TagSpecifications or --tags argument on the create call
+#                lt       the TagSpecifications of the launch template (instance, volume, ENI)
+#                cilium   eni.eniTags in cilium-values.yaml plus --set eni.eniTags.RunId
+#                packer   run_tags, run_volume_tags, tags or snapshot_tags of the Packer template
+#                sweep    AWS makes it with no tag; setup.sh stage node-checks runs tag-sweep,
+#                         which tags exactly the members that it finds by one exact relation
+#   readback   the call that reads the tags back
+#   state      the state key that names it, or "-" when discovery is by tags or relation only
+#   discover   the discovery function in cb_inventory.py (clean.sh and the audit use it)
+#   absent     the read that shows it is gone, and the not-found code
+#   transient  true when the class exists only during a stage and must be gone after it
+classes:
+  - {class: cfn-stack, made_by: eksctl, tags: cfn, readback: cloudformation describe-stacks, state: "-", discover: stacks, absent: "cloudformation describe-stacks (ValidationError)"}
+  - {class: eks-cluster, made_by: setup cluster, tags: eksctl, readback: eks describe-cluster, state: CLUSTER_ENDPOINT, discover: cluster, absent: "eks describe-cluster (ResourceNotFoundException)"}
+  - {class: eks-addon, made_by: setup cluster, tags: eksctl, readback: eks describe-addon, state: "-", discover: addons, absent: "eks describe-cluster (ResourceNotFoundException)"}
+  - {class: vpc, made_by: setup cluster, tags: cfn, readback: ec2 describe-vpcs, state: VPC_ID, discover: vpc, absent: "ec2 describe-vpcs (InvalidVpcID.NotFound)"}
+  - {class: subnet, made_by: setup cluster, tags: cfn, readback: ec2 describe-subnets, state: PRIVATE_SUBNET_IDS, discover: subnets, absent: "ec2 describe-subnets (InvalidSubnetID.NotFound)"}
+  - {class: route-table, made_by: setup cluster, tags: cfn, readback: ec2 describe-route-tables, state: "-", discover: route_tables, absent: "ec2 describe-route-tables (InvalidRouteTableID.NotFound)"}
+  - {class: main-route-table, made_by: AWS with the VPC, tags: sweep, readback: ec2 describe-route-tables, state: "-", discover: main_route_table, absent: "goes with the VPC"}
+  - {class: network-acl, made_by: AWS with the VPC, tags: sweep, readback: ec2 describe-network-acls, state: "-", discover: network_acls, absent: "goes with the VPC"}
+  - {class: internet-gateway, made_by: setup cluster, tags: cfn, readback: ec2 describe-internet-gateways, state: "-", discover: internet_gateways, absent: "ec2 describe-internet-gateways (InvalidInternetGatewayID.NotFound)"}
+  - {class: nat-gateway, made_by: setup cluster, tags: cfn, readback: ec2 describe-nat-gateways, state: "-", discover: nat_gateways, absent: "ec2 describe-nat-gateways (state deleted)"}
+  - {class: elastic-ip, made_by: setup cluster, tags: cfn, readback: ec2 describe-addresses, state: "-", discover: elastic_ips, absent: "ec2 describe-addresses (InvalidAllocationID.NotFound)"}
+  - {class: security-group, made_by: setup cluster, tags: cfn, readback: ec2 describe-security-groups, state: "-", discover: stack_security_groups, absent: "ec2 describe-security-groups (InvalidGroup.NotFound)"}
+  - {class: default-security-group, made_by: AWS with the VPC, tags: sweep, readback: ec2 describe-security-groups, state: "-", discover: default_security_group, absent: "goes with the VPC"}
+  - {class: cluster-security-group, made_by: EKS with the cluster, tags: sweep, readback: ec2 describe-security-groups, state: CLUSTER_SG_ID, discover: cluster_security_group, absent: "goes with the cluster"}
+  - {class: control-plane-eni, made_by: EKS with the cluster, tags: sweep, readback: ec2 describe-network-interfaces, state: "-", discover: control_plane_enis, absent: "goes with the cluster"}
+  - {class: nat-gateway-eni, made_by: AWS with the NAT gateway, tags: sweep, readback: ec2 describe-network-interfaces, state: "-", discover: nat_enis, absent: "goes with the NAT gateway"}
+  - {class: iam-role, made_by: setup cluster and cilium (eksctl), tags: cfn, readback: iam list-role-tags, state: OPERATOR_ROLE_NAME, discover: roles, absent: "iam get-role (NoSuchEntity)"}
+  - {class: pod-identity-association, made_by: setup cilium, tags: eksctl, readback: eks describe-pod-identity-association, state: POD_IDENTITY_ASSOCIATION_ID, discover: pod_identity, absent: "eks list-pod-identity-associations (empty)"}
+  - {class: cilium-eni, made_by: Cilium operator, tags: cilium, readback: ec2 describe-network-interfaces, state: "-", discover: cilium_enis, absent: "ec2 describe-network-interfaces (InvalidNetworkInterfaceID.NotFound)"}
+  - {class: launch-template, made_by: setup system-node and sandbox-node, tags: spec, readback: ec2 describe-launch-templates, state: SYSTEM_LAUNCH_TEMPLATE_ID SANDBOX_LAUNCH_TEMPLATE_ID, discover: launch_templates, absent: "ec2 describe-launch-templates (InvalidLaunchTemplateId.NotFound)"}
+  - {class: eks-nodegroup, made_by: setup system-node and sandbox-node, tags: eksctl, readback: eks describe-nodegroup, state: "-", discover: nodegroups, absent: "eks describe-nodegroup (ResourceNotFoundException)"}
+  - {class: autoscaling-group, made_by: EKS with each node group, tags: sweep, readback: autoscaling describe-auto-scaling-groups, state: "-", discover: asgs, absent: "goes with the node group"}
+  - {class: eks-launch-template-copy, made_by: EKS with each node group, tags: sweep, readback: ec2 describe-launch-templates, state: "-", discover: lt_copies, absent: "goes with the node group"}
+  - {class: node-instance-profile, made_by: EKS with each node group, tags: sweep, readback: iam list-instance-profile-tags, state: "-", discover: node_instance_profiles, absent: "goes with the node group"}
+  - {class: node-instance, made_by: EKS from the launch template, tags: lt, readback: ec2 describe-instances, state: SYSTEM_NODE SANDBOX_NODE, discover: node_instances, absent: "ec2 describe-instances (terminated)"}
+  - {class: node-volume, made_by: EKS from the launch template, tags: lt, readback: ec2 describe-volumes, state: "-", discover: node_volumes, absent: "ec2 describe-volumes (InvalidVolume.NotFound)"}
+  - {class: node-eni, made_by: EKS from the launch template, tags: lt, readback: ec2 describe-network-interfaces, state: "-", discover: node_enis, absent: "goes with the instance"}
+  - {class: builder-security-group, made_by: AMI lane 10-build-ami-packer.sh, tags: spec, readback: ec2 describe-security-groups, state: BUILDER_SG_ID, discover: builder_sg, absent: "ec2 describe-security-groups (InvalidGroup.NotFound)", transient: true}
+  - {class: builder-role, made_by: AMI lane 10-build-ami-packer.sh, tags: spec, readback: iam list-role-tags, state: BUILDER_ROLE_NAME, discover: builder_role, absent: "iam get-role (NoSuchEntity)", transient: true}
+  - {class: builder-instance-profile, made_by: AMI lane 10-build-ami-packer.sh, tags: spec, readback: iam list-instance-profile-tags, state: BUILDER_PROFILE_NAME, discover: builder_profile, absent: "iam get-instance-profile (NoSuchEntity)", transient: true}
+  - {class: builder-instance, made_by: Packer, tags: packer, readback: ec2 describe-instances, state: BUILDER_INSTANCE_ID, discover: builder_instances, absent: "ec2 describe-instances (terminated)", transient: true}
+  - {class: builder-volume, made_by: Packer, tags: packer, readback: ec2 describe-volumes, state: BUILDER_VOLUME_IDS, discover: builder_volumes, absent: "ec2 describe-volumes (InvalidVolume.NotFound)", transient: true}
+  - {class: builder-eni, made_by: EC2 with the builder instance, tags: none, readback: ec2 describe-network-interfaces, state: "-", discover: builder_enis, absent: "goes with the builder instance", transient: true}
+  - {class: ami, made_by: Packer, tags: packer, readback: ec2 describe-images, state: SANDBOX_AMI_ID, discover: images, absent: "ec2 describe-images (empty)"}
+  - {class: ami-snapshot, made_by: Packer, tags: packer, readback: ec2 describe-snapshots, state: SANDBOX_AMI_SNAPSHOT_IDS, discover: snapshots, absent: "ec2 describe-snapshots (InvalidSnapshot.NotFound)"}
+# The VPC resource types that the audit reads by vpc-id. Each one must belong to a class above.
+vpc_types:
+  subnet: [subnet]
+  route-table: [route-table, main-route-table]
+  network-acl: [network-acl]
+  security-group: [security-group, default-security-group, cluster-security-group, builder-security-group]
+  network-interface: [control-plane-eni, nat-gateway-eni, cilium-eni, node-eni, builder-eni]
+  nat-gateway: [nat-gateway]
+  internet-gateway: [internet-gateway]
+  instance: [node-instance, builder-instance]
+  vpc-endpoint: []

@@ -1,0 +1,31 @@
+# The sandbox pod. runtimeClassName: isolated-sandbox starts it in its own Nitro sandbox guest
+# on the sandbox node. The RuntimeClass selects the node (eks.amazonaws.com/nitro-sandbox=true).
+# The toleration lets the pod use the tainted sandbox node. The pod keeps its network: test.sh
+# runs the pod-to-pod, ClusterIP Service and DNS checks from it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cb-sandbox
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+    app.kubernetes.io/name: cb-sandbox
+spec:
+  runtimeClassName: isolated-sandbox
+  tolerations:
+    - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+      command: ["sleep", "86400"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]

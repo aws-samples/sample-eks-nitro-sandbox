@@ -1,0 +1,36 @@
+# The target of the pod-to-pod and ClusterIP Service checks: a small HTTP server on the system
+# node. It listens on port 8080 inside the pod. Only the ClusterIP Service in service.yaml
+# selects it, and nothing publishes the port outside the cluster.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cb-server
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+    app.kubernetes.io/name: cb-server
+spec:
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: system
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+      command:
+        - sh
+        - -c
+        - mkdir -p /tmp/www && echo cb-server-ok > /tmp/www/index.html && exec httpd -f -p 8080 -h /tmp/www
+      ports:
+        - name: http
+          containerPort: 8080
+      readinessProbe:
+        tcpSocket:
+          port: 8080
+        periodSeconds: 5
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]

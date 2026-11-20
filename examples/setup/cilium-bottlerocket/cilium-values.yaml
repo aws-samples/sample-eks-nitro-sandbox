@@ -1,0 +1,52 @@
+# Helm values for Cilium, the only CNI of the cluster. setup.sh installs Cilium before any
+# node joins:
+#
+#   helm upgrade --install cilium <CILIUM_CHART> --version <CILIUM_VERSION> -n kube-system \
+#     -f cilium-values.yaml --set cluster.name=<cluster> \
+#     --set k8sServiceHost=<API server host> --set eni.eniTags.RunId=<run ID>
+#
+# cilium.lock gives the chart and the version. setup.sh supplies the three --set values from
+# the new cluster and the run. The Cilium design is the same as in ../cilium-ubuntu. Only the
+# tags differ. A value that this file does not set keeps the chart default.
+
+# ENI mode: the operator attaches ENIs to each node and gives their secondary IP addresses to
+# pods. Each pod IP address is a VPC address, and traffic is routed natively, with no overlay.
+eni:
+  enabled: true
+  # Tags for the ENIs that the operator creates. clean.sh finds the ENIs that remain by these
+  # tags. setup.sh adds RunId=<run ID>.
+  eniTags:
+    ManagedBy: cilium-bottlerocket-sample
+ipam:
+  mode: eni
+# Native routing, not the default VXLAN tunnel. ENI mode gives each pod a routable VPC address.
+routingMode: native
+
+# Cilium replaces kube-proxy. The cluster has no kube-proxy add-on (eksctl/cluster.yaml), and
+# the eBPF programs of Cilium implement each Service. This needs a node kernel with BTF.
+# setup.sh checks /sys/kernel/btf/vmlinux on each node.
+kubeProxyReplacement: true
+# With no kube-proxy, the agents connect to the API server directly. setup.sh sets
+# k8sServiceHost to the endpoint of the cluster.
+k8sServicePort: 443
+
+# A Nitro sandbox pod needs this setting when Cilium replaces kube-proxy. The processes of a
+# sandbox pod call connect() in their own guest kernel, so the socket hooks of the node kernel
+# do not see them. hostNamespaceOnly: true limits the socket load balancer to the network
+# namespace of the node, so each pod uses the per-packet load balancer at its interface.
+# Without this setting, a sandbox pod cannot use a ClusterIP Service or the cluster DNS.
+# test.sh reads "Socket LB Coverage: Hostns-only" from the live agent on each node.
+socketLB:
+  hostNamespaceOnly: true
+
+# One operator, on the system node group. The operator is the only Cilium component that calls
+# the EC2 API. Its AWS permissions come from its own EKS Pod Identity role
+# (eksctl/pod-identity.yaml), never from a node role.
+operator:
+  replicas: 1
+  nodeSelector:
+    eks.amazonaws.com/nodegroup: system
+  rollOutPods: true
+
+# Restart the agents when this file changes, so that a new run of setup.sh applies the change.
+rollOutCiliumPods: true

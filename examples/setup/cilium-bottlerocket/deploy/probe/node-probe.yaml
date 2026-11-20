@@ -1,0 +1,41 @@
+# A probe pod for the node checks. setup.sh and test.sh render one per node, with the ${...}
+# values filled in, create it in the namespace of the sample, read the node through it, and
+# delete it by its exact name. It reads the node: the kernel log, BTF, the merged containerd
+# configuration, the shim configuration, the SELinux mode and the SELinux domain of each
+# process. Bottlerocket has no shell on the host, so the probe runs host binaries with
+# chroot /host <binary>. The cluster is the dedicated cluster of the sample.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${PROBE_NAME}
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+    app.kubernetes.io/name: cb-node-probe
+spec:
+  nodeName: ${NODE_NAME}
+  hostPID: true
+  restartPolicy: Never
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: probe
+      image: ${BUSYBOX_IMAGE}
+      command: ["sleep", "3600"]
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: host
+          mountPath: /host
+          readOnly: true
+        - name: scratch
+          mountPath: /host-run-probe
+  volumes:
+    - name: host
+      hostPath:
+        path: /
+        type: Directory
+    - name: scratch
+      hostPath:
+        path: /run/cb-probe
+        type: DirectoryOrCreate

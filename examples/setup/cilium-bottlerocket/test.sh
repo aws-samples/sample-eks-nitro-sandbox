@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Prove the claims of the sample on the cluster that ./setup.sh made, read-only except for the
+# probe pods it creates and deletes by exact name, and a scratch folder under /run/cb-probe on
+# the sandbox node for the containerd drop-in test.
+#
+#   RUN_ID=<id> ./test.sh     (RUN_ID defaults to the last run of setup.sh)
+#
+# Each line is PASS, FAIL or SKIP!. A check that could not run (SKIP!) counts as a failure, and
+# the script exits non-zero unless every check passed.
+# shellcheck source=../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../scripts/lib/require-bash.sh"
+set -uo pipefail
+SAMPLE_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/common.sh
+source "$SAMPLE_DIR/scripts/common.sh"
+
+require_commands aws kubectl python3
+require_region
+require_caller_account
+require_run_id
+check_run_record
+[[ "$(state_get STAGE_DONE)" == workloads ]] || die E_RUN_STAGE "run $RUN_ID has not finished setup (STAGE_DONE=$(state_get STAGE_DONE)); run RUN_ID=$RUN_ID ./setup.sh"
+require_sample_cluster
+require_kube_context
+OUT="$EVIDENCE_DIR/test"
+private_dirs "$OUT" || die E_RUN_DIR "could not create $OUT"
+SYSTEM_NODE="$(state_need SYSTEM_NODE)" || exit 1
+SANDBOX_NODE="$(state_need SANDBOX_NODE)" || exit 1
+NS="$NAMESPACE"
+SVC_HOST="cb-server.$NS.svc.cluster.local"
+
+# pyc <subcommand> [args]: one helper check; its exit code (0, 1, 2) is the result.
+pyc() { python3 "$PY" "$@"; }
+# in_pod <pod> <command...>: run a command in a workload pod of the sample.
+in_pod() { local pod="$1"; shift; kc -n "$NS" exec "$pod" -- "$@"; }
+# save <file> <command...>: the output of a command, or an empty file when it fails.
+save() { local f="$1"; shift; "$@" >"$f" 2>"$f.err" || : >"$f"; }
+eq() { [[ "$1" == "$2" ]]; }
+
+step "1. the dedicated cluster and its CNI"
+check "cluster $CLUSTER_NAME is Kubernetes $KUBERNETES_VERSION and this run's" \
+  eq "$(aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --query cluster.version --output text)" "$KUBERNETES_VERSION"
+addons="$(aws eks list-addons --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --query addons --output text 2>/dev/null)" || addons="<unreadable>"
+no_cni_addon() { [[ "$addons" != "<unreadable>" ]] || return 2; [[ " $addons " != *" vpc-cni "* && " $addons " != *" kube-proxy "* ]]; }
+check "no vpc-cni and no kube-proxy add-on (add-ons: $addons)" no_cni_addon
+no_cni_ds() { local out; out="$(kc -n kube-system get daemonset aws-node kube-proxy --ignore-not-found -o name)" || return 2; [[ -z "$out" ]]; }
+check "no aws-node and no kube-proxy DaemonSet" no_cni_ds
+node_count() { local n; n="$(kc get nodes -l "eks.amazonaws.com/nodegroup=$1" -o name | wc -l)" || return 2; eq "$n" 1; }
+check "exactly one system node" node_count system
+check "exactly one sandbox node" node_count sandbox
+operator_ready() { local r; r="$(kc -n kube-system get deployment cilium-operator -o jsonpath='{.status.readyReplicas}')" || return 2; eq "$r" 1; }
+check "the Cilium operator is Ready on the system node group" operator_ready
+agent_image() {
+  local images; images="$(kc -n kube-system get daemonset cilium -o jsonpath='{.spec.template.spec.containers[*].image}')" || return 2
+  [[ "$images" =~ cilium/cilium:v${CILIUM_VERSION//./\\.}(@|$) ]]
+}
+check "the Cilium agent image is v$CILIUM_VERSION (cilium.lock)" agent_image
+for node in "$SYSTEM_NODE" "$SANDBOX_NODE"; do
+  agent="$(kc -n kube-system get pods -l k8s-app=cilium --field-selector "spec.nodeName=$node" -o jsonpath='{.items[0].metadata.name}')"
+  save "$OUT/cilium-status-$node.txt" kc -n kube-system exec "$agent" -c cilium-agent -- cilium-dbg status --verbose
+  check "cilium status on $node: ENI IPAM, native routing, kube-proxy replacement, Socket LB Hostns-only" \
+    pyc kpr-status "$OUT/cilium-status-$node.txt"
+done
+
+step "2. the AMIs of the node groups"
+instance_ami() { # instance_ami <node> <want>
+  local ami; ami="$(aws ec2 describe-instances --region "$AWS_REGION" --filters "Name=private-dns-name,Values=$1" \
+    --query 'Reservations[].Instances[].ImageId' --output text)" || return 2
+  eq "$ami" "$2"
+}
+check "the system node runs the stock Bottlerocket AMI that setup.sh recorded" instance_ami "$SYSTEM_NODE" "$(state_get SYSTEM_AMI_ID)"
+check "the sandbox node runs the built AMI" instance_ami "$SANDBOX_NODE" "$(state_get SANDBOX_AMI_ID)"
+
+step "3. the sandbox node: runtime, SELinux, networkd, containerd, density"
+save "$OUT/node-sandbox.json" kc get node "$SANDBOX_NODE" -o json
+save "$OUT/configz-sandbox.json" kc get --raw "/api/v1/nodes/$SANDBOX_NODE/proxy/configz"
+probe="$(probe_name sandbox)"
+probe_start "$probe" "$SANDBOX_NODE"
+probe_capture "$probe" "$OUT/probe-sandbox"
+P="$OUT/probe-sandbox"
+check "OS image Bottlerocket $BOTTLEROCKET_VERSION ($SANDBOX_VARIANT)" pyc check-os-image sandbox "$OUT/node-sandbox.json"
+check "/sys/kernel/btf/vmlinux is present" pyc check-btf "$P/btf.txt"
+check "the kernel log shows the nitro_enclaves memory reservation" pyc check-mempool --cmdline "$P/cmdline.txt" --kernel-log "$P/kernel.log"
+check "the kubelet runtime endpoint is $CRI_PROXY_ENDPOINT" pyc check-runtime-endpoint "$OUT/configz-sandbox.json"
+check "the merged containerd config has the isolated-sandbox handler and discard_unpacked_layers = false" \
+  pyc check-containerd-dump "$P/containerd-dump.toml"
+check "allocatable eks.amazonaws.com/nitro-sandbox is more than 0" pyc check-allocatable "$OUT/node-sandbox.json"
+check "max-pods and pcie_slots equal SANDBOX_SLOTS=$SANDBOX_SLOTS" \
+  pyc check-density --node "$OUT/node-sandbox.json" --shim-toml "$P/nitro-sandbox.toml"
+shim_file() { probe_exec "$probe" test -x "/host$SHIM_PATH"; }
+check "the shim is at $SHIM_PATH" shim_file
+check "SELinux is enforcing" pyc check-selinux-mode "$P/selinux-enforce.txt"
+check "the shim and the CRI proxy run in the SELinux domain runtime_t" pyc check-selinux-domains "$P/domains.txt"
+check "no SELinux denial in the kernel log or the journal since boot (fails closed)" \
+  pyc selinux-audit "$P/kernel.log" "$P/journal.log"
+check "systemd-networkd leaves each Cilium ENI (eth1 and later) unmanaged" pyc check-networkd "$P/networkd.txt"
+check "the root file system is the read-only dm-verity device" pyc check-dm-verity "$P/dm-verity.txt"
+
+# The drop-in test: containerd config dump of the node's own containerd with a copy of its
+# config.toml whose imports point at a scratch folder holding the valid drop-in, no drop-in,
+# or a malformed drop-in. The scratch folder is /run/cb-probe on the node, removed after.
+# shellcheck disable=SC2016
+dropin_case() { # dropin_case <valid|missing|malformed>
+  probe_exec "$probe" sh -c '
+    set -e; c="$1"; s=/host-run-probe/$c; rm -rf "$s"; mkdir -p "$s/config.d"
+    src=$(grep -l "isolated-sandbox" /host/etc/containerd/config.d/*.toml | head -n1)
+    [ -n "$src" ] || { echo "no drop-in with isolated-sandbox" >&2; exit 3; }
+    sed "s#/etc/containerd/config.d/#/run/cb-probe/$c/config.d/#g" /host/etc/containerd/config.toml > "$s/config.toml"
+    case "$c" in
+      valid) cp "$src" "$s/config.d/" ;;
+      malformed) { cat "$src"; echo "[[[ not toml"; } > "$s/config.d/${src##*/}" ;;
+    esac
+    chroot /host /usr/bin/containerd --config "/run/cb-probe/$c/config.toml" config dump 2>&1 || true
+    rm -rf "$s"' sh "$1"
+}
+for c in valid missing malformed; do save "$OUT/containerd-dump-$c.toml" dropin_case "$c"; done
+not_accepted() { local rc=0; pyc check-containerd-dump "$1" >/dev/null 2>&1 || rc=$?; ((rc == 1)); }
+check "containerd config dump with the valid drop-in: the handler is there" pyc check-containerd-dump "$OUT/containerd-dump-valid.toml"
+check "containerd config dump with no drop-in: the node check refuses it" not_accepted "$OUT/containerd-dump-missing.toml"
+check "containerd config dump with a malformed drop-in: the node check refuses it" not_accepted "$OUT/containerd-dump-malformed.toml"
+probe_stop "$probe"
+
+step "4. the sandbox pod runs in its own guest"
+sandbox_ip="$(kc -n "$NS" get pod cb-sandbox -o jsonpath='{.status.podIP}')"
+server_ip="$(kc -n "$NS" get pod cb-server -o jsonpath='{.status.podIP}')"
+check "cb-sandbox has runtimeClassName isolated-sandbox" eq "$(kc -n "$NS" get pod cb-sandbox -o jsonpath='{.spec.runtimeClassName}')" isolated-sandbox
+check "cb-sandbox runs on the sandbox node" eq "$(kc -n "$NS" get pod cb-sandbox -o jsonpath='{.spec.nodeName}')" "$SANDBOX_NODE"
+guest="$(in_pod cb-sandbox uname -rv)"; host="$(in_pod cb-ordinary-sandbox-node uname -rv)"
+printf 'sandbox pod  uname -rv: %s\nordinary pod uname -rv: %s\n' "$guest" "$host"
+differ() { [[ -n "$1" && -n "$2" && "$1" != "$2" ]]; }
+check "the sandbox pod has its own kernel build" differ "$guest" "$host"
+up_guest="$(in_pod cb-sandbox cut -d. -f1 /proc/uptime)"; up_host="$(in_pod cb-ordinary-sandbox-node cut -d. -f1 /proc/uptime)"
+printf 'sandbox pod uptime %ss, ordinary pod (node) uptime %ss\n' "$up_guest" "$up_host"
+younger() { [[ "$1" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]] || return 2; (($1 < $2)); }
+check "the sandbox pod booted with the pod, after the node" younger "$up_guest" "$up_host"
+disks_guest="$(in_pod cb-sandbox ls /sys/block | tr '\n' ' ')"; disks_host="$(in_pod cb-ordinary-sandbox-node ls /sys/block | tr '\n' ' ')"
+printf 'sandbox pod disks: %s\nordinary pod disks: %s\n' "$disks_guest" "$disks_host"
+virtio() { [[ " $1" == *" vd"* && " $1" != *" nvme"* && " $2" == *" nvme"* ]]; }
+check "the sandbox pod sees virtio vd* disks, the ordinary pod the nvme disks of the instance" virtio "$disks_guest" "$disks_host"
+printf 'product_name: sandbox %s, ordinary %s\n' "$(in_pod cb-sandbox cat /sys/class/dmi/id/product_name)" \
+  "$(in_pod cb-ordinary-sandbox-node cat /sys/class/dmi/id/product_name)"
+
+step "5. pod networking: ENI address, CiliumEndpoint, pod to pod, ClusterIP Service, DNS"
+sandbox_instance="$(aws ec2 describe-instances --region "$AWS_REGION" --filters "Name=private-dns-name,Values=$SANDBOX_NODE" \
+  --query 'Reservations[0].Instances[0].InstanceId' --output text)"
+save "$OUT/enis-sandbox.json" aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+  --filters "Name=attachment.instance-id,Values=$sandbox_instance" --output json
+check "the sandbox pod IP $sandbox_ip is a secondary IP of an ENI of its node" pyc pod-in-eni "$sandbox_ip" "$OUT/enis-sandbox.json"
+check "the CiliumEndpoint of cb-sandbox is ready" eq "$(kc -n "$NS" get ciliumendpoint cb-sandbox -o jsonpath='{.status.state}')" ready
+check "Service cb-server is ClusterIP" eq "$(kc -n "$NS" get service cb-server -o jsonpath='{.spec.type}')" ClusterIP
+fetch() { local out; out="$(in_pod "$1" wget -q -T 5 -O- "$2")" || return 1; [[ "$out" == cb-server-ok ]]; }
+resolve() { in_pod "$1" nslookup "$SVC_HOST" >/dev/null 2>&1; }
+for pod in cb-sandbox cb-ordinary-sandbox-node cb-ordinary-system-node; do
+  check "$pod: pod to pod (http://$server_ip:8080/)" fetch "$pod" "http://$server_ip:8080/"
+  check "$pod: ClusterIP Service (http://$SVC_HOST/)" fetch "$pod" "http://$SVC_HOST/"
+  check "$pod: DNS ($SVC_HOST)" resolve "$pod"
+done
+isolated_capture() {
+  { echo "==addr=="; in_pod cb-sandbox-isolated ip -o addr; echo "==route=="; in_pod cb-sandbox-isolated ip route
+    local rc=0; out="$(in_pod cb-sandbox-isolated nslookup "$SVC_HOST" 2>&1)" || rc=$?
+    echo "==dns rc=$rc=="; printf '%s\n' "$out"; }
+}
+save "$OUT/network-isolated.txt" isolated_capture
+check "the network-isolated sandbox pod has only loopback, no route and no DNS" pyc check-network-isolated "$OUT/network-isolated.txt"
+
+step "6. AWS permissions and exposure"
+check "the Cilium operator role has only the EC2 actions of the Cilium list; node roles have none" pyc check-operator-role
+only_operator() {
+  local out; out="$(aws eks list-pod-identity-associations --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" \
+    --query 'associations[].[namespace,serviceAccount]' --output text)" || return 2
+  eq "$out" "$(printf 'kube-system\tcilium-operator')"
+}
+check "the only Pod Identity association is kube-system/cilium-operator" only_operator
+no_creds() { local n; n="$(in_pod "$1" sh -c 'env | cut -d= -f1 | grep -c "^AWS_" || true')" || return 2; eq "$n" 0; }
+for pod in cb-sandbox cb-ordinary-sandbox-node cb-ordinary-system-node; do
+  check "$pod has no AWS credential variable" no_creds "$pod"
+done
+cluster_ip_only() {
+  local types; types="$(kc get services -A -o jsonpath='{range .items[*]}{.spec.type}{"\n"}{end}' | sort -u)" || return 2
+  eq "$types" ClusterIP
+}
+check "every Service of the cluster is ClusterIP (no LoadBalancer, no NodePort)" cluster_ip_only
+none_of() { local out; out="$(kc get "$1" -A -o name 2>/dev/null)" || return 2; [[ -z "$out" ]]; }
+check "no Ingress" none_of ingresses.networking.k8s.io
+check "no NetworkPolicy" none_of networkpolicies.networking.k8s.io
+check "no CiliumNetworkPolicy" none_of ciliumnetworkpolicies.cilium.io
+check "no CiliumClusterwideNetworkPolicy" none_of ciliumclusterwidenetworkpolicies.cilium.io
+check "every resource of every class carries ManagedBy and RunId" pyc audit-tags --after-build
+
+demo_summary "the Cilium on Bottlerocket sample (run $RUN_ID)"

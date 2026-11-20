@@ -1,0 +1,33 @@
+# The network-isolated sandbox pod. The annotation sandbox.amazonaws.com/network-isolated: "true"
+# boots the guest with loopback only: no network interface, no route and no DNS. kubectl exec
+# still operates, because it uses the internal control channel of the guest. test.sh shows each
+# of these three results.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cb-sandbox-isolated
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+    app.kubernetes.io/name: cb-sandbox-isolated
+  annotations:
+    sandbox.amazonaws.com/network-isolated: "true"
+spec:
+  runtimeClassName: isolated-sandbox
+  tolerations:
+    - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+      command: ["sleep", "86400"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
