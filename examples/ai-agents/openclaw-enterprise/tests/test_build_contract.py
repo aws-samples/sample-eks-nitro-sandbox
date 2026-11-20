@@ -562,7 +562,7 @@ def test_fixed_workflow_logs_all_events_and_publishes_xray_traces() -> None:
         "Destinations": [
             {
                 "CloudWatchLogsLogGroup": {
-                    "LogGroupArn": "${ImageBuildStateMachineLogGroup.Arn}:*"
+                    "LogGroupArn": "ImageBuildStateMachineLogGroup.Arn"
                 }
             }
         ],

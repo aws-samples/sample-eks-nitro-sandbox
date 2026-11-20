@@ -365,7 +365,7 @@ Resources:
       LoggingConfiguration:
         Destinations:
           - CloudWatchLogsLogGroup:
-              LogGroupArn: !Sub ${ImageBuildStateMachineLogGroup.Arn}:*
+              LogGroupArn: !GetAtt ImageBuildStateMachineLogGroup.Arn
         IncludeExecutionData: false
         Level: ALL
       TracingConfiguration:
