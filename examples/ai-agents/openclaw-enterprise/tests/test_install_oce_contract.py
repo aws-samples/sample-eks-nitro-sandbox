@@ -669,6 +669,17 @@ def test_readme_derives_network_inputs_and_pins_validation_postgres() -> None:
     assert '"${cluster_api_cidr_args[@]}"' in install_step
 
 
+def test_readme_requires_a_preexisting_validation_cluster_tag() -> None:
+    readme = README.read_text(encoding="utf-8")
+    install_step = readme.split("**Step 6: Install the pinned OCE revision**", 1)[
+        1
+    ].split("**Step 7:", 1)[0]
+
+    assert "aws eks list-tags-for-resource" in install_step
+    assert '"$cluster_environment" != validation' in install_step
+    assert "aws eks tag-resource" not in readme
+
+
 def test_readme_changes_to_repository_root_before_static_tests() -> None:
     readme = README.read_text(encoding="utf-8")
     validation_step = readme.split(

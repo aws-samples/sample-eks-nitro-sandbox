@@ -76,6 +76,9 @@ FINAL_EVIDENCE_CANDIDATE=""
 FINAL_MANIFEST_CANDIDATE=""
 FINAL_SIGNATURE_CANDIDATE=""
 EVIDENCE_PREPASS_BACKUP=""
+NATIVE_HISTORY_EVALUATOR_PATH=""
+NATIVE_HISTORY_EVALUATOR_B64=""
+NATIVE_HISTORY_EVALUATOR_SHA256=""
 
 usage() {
   printf '%s\n' \
@@ -132,6 +135,18 @@ sha256_text() {
   local digest_output digest
   digest_output="$(printf '%s' "$1" | openssl dgst -sha256 -r)" ||
     die "could not hash value"
+  digest="${digest_output%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "hash command returned an invalid SHA-256 digest"
+  printf '%s' "$digest"
+}
+
+sha256_base64() {
+  local digest_output digest
+  digest_output="$(
+    printf '%s' "$1" |
+      openssl base64 -A -d |
+      openssl dgst -sha256 -r
+  )" || die "could not hash base64 value"
   digest="${digest_output%% *}"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "hash command returned an invalid SHA-256 digest"
   printf '%s' "$digest"
@@ -565,6 +580,17 @@ SIGNATURE_FILE="$EVIDENCE_DIR/live-validation-evidence.sig.b64"
   die "evidence manifest or signature already exists; choose a fresh directory"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-live-validation.XXXXXX")"
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+NATIVE_HISTORY_EVALUATOR_PATH="$(dirname "$SCRIPT_PATH")/lib/evaluate-native-tool-history.mjs"
+[[ -f "$NATIVE_HISTORY_EVALUATOR_PATH" &&
+  ! -L "$NATIVE_HISTORY_EVALUATOR_PATH" &&
+  -r "$NATIVE_HISTORY_EVALUATOR_PATH" ]] ||
+  die "native tool-history evaluator must be a readable regular, non-symlink file"
+NATIVE_HISTORY_EVALUATOR_B64="$(
+  openssl base64 -A -in "$NATIVE_HISTORY_EVALUATOR_PATH"
+)" || die "could not encode the native tool-history evaluator"
+[[ -n "$NATIVE_HISTORY_EVALUATOR_B64" ]] ||
+  die "native tool-history evaluator encoding is empty"
+NATIVE_HISTORY_EVALUATOR_SHA256="$(sha256_base64 "$NATIVE_HISTORY_EVALUATOR_B64")"
 REPO_ROOT="$(git -C "$(dirname "$SCRIPT_PATH")" rev-parse --show-toplevel)"
 GIT_REVISION="$(git -C "$REPO_ROOT" rev-parse --verify 'HEAD^{commit}')"
 [[ "$GIT_REVISION" =~ ^[0-9a-f]{40}$ ]] || die "could not resolve an exact Git revision"
@@ -594,6 +620,8 @@ done
   printf 'EVIDENCE\tgit-revision\t%s\n' "$GIT_REVISION"
   printf 'EVIDENCE\tgit-worktree-state\t%s\n' "$GIT_WORKTREE_STATE"
   printf 'EVIDENCE\tvalidator-sha256\t%s\n' "$VALIDATOR_SHA256"
+  printf 'EVIDENCE\tnative-history-evaluator-sha256\t%s\n' \
+    "$NATIVE_HISTORY_EVALUATOR_SHA256"
   printf 'EVIDENCE\toce-source-revision\t%s\n' "$OCE_SOURCE_REVISION"
   printf 'EVIDENCE\ttool-version-aws\t%s\n' "$AWS_VERSION"
   printf 'EVIDENCE\ttool-version-kubectl\t%s\n' "$KUBECTL_VERSION"
@@ -1414,6 +1442,14 @@ guest_evidence() {
   local pod="$2"
   local container="$3"
   local output_file="$4"
+  local expected_kind="$5"
+  local evidence_line block_name partition_name
+  local saw_block="false"
+  local saw_partition="false"
+  local saw_virtio_block="false"
+  local saw_virtio_partition="false"
+  local saw_nvme_block="false"
+  local saw_nvme_partition="false"
   # shellcheck disable=SC2016 # This program expands inside the guest, not locally.
   kube -n "$namespace" exec "$pod" -c "$container" -- sh -eu -c '
     printf "LIVE_GUEST_EVIDENCE\n"
@@ -1421,7 +1457,11 @@ guest_evidence() {
     uname -r
     uname -m
     awk "\$2 == \"/\" { print \$1 \" \" \$3; exit }" /proc/mounts
-    awk "NR > 2 && \$4 != \"\" { print \$1 \":\" \$2 \":\" \$3 \":\" \$4 }" /proc/partitions
+    for block_path in /sys/block/*; do
+      [ -e "$block_path" ] || continue
+      printf "BLOCK:%s\n" "${block_path##*/}"
+    done
+    awk "NR > 2 && \$4 != \"\" { print \"PARTITION:\" \$1 \":\" \$2 \":\" \$3 \":\" \$4 }" /proc/partitions
   ' >"$output_file"
   [[ "$(sed -n '1p' "$output_file")" == "LIVE_GUEST_EVIDENCE" ]] ||
     die "guest evidence marker is missing"
@@ -1435,7 +1475,47 @@ guest_evidence() {
     die "guest architecture contains unsafe evidence characters"
   [[ "$(sed -n '5p' "$output_file")" =~ ^[A-Za-z0-9._/+:-]+\ [A-Za-z0-9._+-]+$ ]] ||
     die "guest root disk evidence is incomplete"
-  [[ -n "$(sed -n '6,$p' "$output_file")" ]] || die "guest partition evidence is incomplete"
+  while IFS= read -r evidence_line; do
+    case "$evidence_line" in
+      BLOCK:*)
+        [[ "$evidence_line" =~ ^BLOCK:([A-Za-z0-9._+-]+)$ ]] ||
+          die "guest block-device evidence is malformed"
+        block_name="${BASH_REMATCH[1]}"
+        saw_block="true"
+        [[ "$block_name" =~ ^vd[a-z]+$ ]] && saw_virtio_block="true"
+        [[ "$block_name" =~ ^nvme[0-9]+n[0-9]+$ ]] && saw_nvme_block="true"
+        ;;
+      PARTITION:*)
+        [[ "$evidence_line" =~ ^PARTITION:[0-9]+:[0-9]+:[0-9]+:([A-Za-z0-9._+-]+)$ ]] ||
+          die "guest partition evidence is malformed"
+        partition_name="${BASH_REMATCH[1]}"
+        saw_partition="true"
+        [[ "$partition_name" =~ ^vd[a-z]+[0-9]+$ ]] && saw_virtio_partition="true"
+        [[ "$partition_name" =~ ^nvme[0-9]+n[0-9]+p[0-9]+$ ]] &&
+          saw_nvme_partition="true"
+        ;;
+      *)
+        die "guest disk evidence contains an unexpected row"
+        ;;
+    esac
+  done < <(sed -n '6,$p' "$output_file")
+  [[ "$saw_block" == "true" ]] || die "guest block-device evidence is incomplete"
+  [[ "$saw_partition" == "true" ]] || die "guest partition evidence is incomplete"
+  case "$expected_kind" in
+    sandbox)
+      [[ "$saw_virtio_block" == "true" && "$saw_virtio_partition" == "true" ]] ||
+        die "sandbox guest did not expose a virtio block device and partition"
+      ;;
+    ordinary)
+      [[ "$saw_virtio_block" == "false" && "$saw_virtio_partition" == "false" ]] ||
+        die "ordinary control pod unexpectedly exposed sandbox virtio disks"
+      [[ "$saw_nvme_block" == "true" && "$saw_nvme_partition" == "true" ]] ||
+        die "ordinary control pod did not expose the expected NVMe disk contrast"
+      ;;
+    *)
+      die "guest evidence kind is invalid"
+      ;;
+  esac
 }
 
 CURRENT_CHECK="guest-vm-evidence"
@@ -1527,11 +1607,11 @@ jq -e \
 ' "$WORK_DIR/ordinary-control-pod.json" >/dev/null ||
   die "ordinary control pod did not preserve its non-sandboxed contract"
 guest_evidence "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
-  "$WORK_DIR/tenant-a-guest.txt"
+  "$WORK_DIR/tenant-a-guest.txt" "sandbox"
 guest_evidence "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
-  "$WORK_DIR/tenant-b-guest.txt"
+  "$WORK_DIR/tenant-b-guest.txt" "sandbox"
 guest_evidence "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" \
-  "$WORK_DIR/ordinary-control-guest.txt"
+  "$WORK_DIR/ordinary-control-guest.txt" "ordinary"
 GUEST_BOOT_IDS=(
   "$(sed -n '2p' "$WORK_DIR/tenant-a-guest.txt")"
   "$(sed -n '2p' "$WORK_DIR/tenant-b-guest.txt")"
@@ -1546,18 +1626,24 @@ GUEST_BOOT_IDS=(
     "$(sed -n '3p' "$WORK_DIR/tenant-a-guest.txt")" \
     "$(sed -n '4p' "$WORK_DIR/tenant-a-guest.txt")"
   printf 'EVIDENCE\tguest-a-root\t%s\n' "$(sed -n '5p' "$WORK_DIR/tenant-a-guest.txt")"
+  printf 'EVIDENCE\tguest-a-block-devices\t%s\n' \
+    "$(sed -n 's/^BLOCK://p' "$WORK_DIR/tenant-a-guest.txt" | tr '\n' ',' | sed 's/,$//')"
   printf 'EVIDENCE\tguest-b-kernel\t%s %s\n' \
     "$(sed -n '3p' "$WORK_DIR/tenant-b-guest.txt")" \
     "$(sed -n '4p' "$WORK_DIR/tenant-b-guest.txt")"
   printf 'EVIDENCE\tguest-b-root\t%s\n' "$(sed -n '5p' "$WORK_DIR/tenant-b-guest.txt")"
+  printf 'EVIDENCE\tguest-b-block-devices\t%s\n' \
+    "$(sed -n 's/^BLOCK://p' "$WORK_DIR/tenant-b-guest.txt" | tr '\n' ',' | sed 's/,$//')"
   printf 'EVIDENCE\tordinary-control-kernel\t%s %s\n' \
     "$(sed -n '3p' "$WORK_DIR/ordinary-control-guest.txt")" \
     "$(sed -n '4p' "$WORK_DIR/ordinary-control-guest.txt")"
   printf 'EVIDENCE\tordinary-control-root\t%s\n' \
     "$(sed -n '5p' "$WORK_DIR/ordinary-control-guest.txt")"
+  printf 'EVIDENCE\tordinary-control-block-devices\t%s\n' \
+    "$(sed -n 's/^BLOCK://p' "$WORK_DIR/ordinary-control-guest.txt" | tr '\n' ',' | sed 's/,$//')"
 } >>"$EVIDENCE_FILE"
 record_pass "guest-vm-boundary" \
-  "two sandboxed runtimes and one ordinary pod reported three distinct boot IDs"
+  "sandbox guests exposed virtio disks, the ordinary pod exposed NVMe, and all three boot IDs differed"
 
 CURRENT_CHECK="agentgateway-health"
 kube -n "$AGW_NAMESPACE" get deployment "$AGW_DEPLOYMENT" -o json \
@@ -1877,11 +1963,17 @@ verify_native_tool_execution() {
     env \
       "OCE_TEST_NAMESPACE_ID=$TENANT_A_OCE_NAMESPACE" \
       "OCE_TEST_AGENT_ID=$TENANT_A_AGENT_ID" \
+      "OCE_NATIVE_HISTORY_EVALUATOR_B64=$NATIVE_HISTORY_EVALUATOR_B64" \
     node --input-type=module -e '
       import { readFileSync } from "node:fs";
       import { createRequire } from "node:module";
       import { randomBytes, randomUUID, createHash } from "node:crypto";
 
+      const { evaluateNativeToolHistory } = await import(
+        `data:text/javascript;base64,${
+          process.env.OCE_NATIVE_HISTORY_EVALUATOR_B64 || ""
+        }`
+      );
       const require = createRequire("/app/apps/controller/package.json");
       const { GatewayClient } = await import(
         require.resolve("@openclaw/gateway-client")
@@ -1931,18 +2023,6 @@ verify_native_tool_execution() {
         () => connected.reject(new Error("hello timeout")),
         20000
       );
-      const normalize = value => value.normalize("NFKC").trim();
-      const textOf = value => {
-        if (typeof value === "string") return value;
-        if (Array.isArray(value)) return value.map(textOf).join("");
-        if (value && typeof value === "object") {
-          if (value.type === "text" && typeof value.text === "string") {
-            return value.text;
-          }
-          return Object.values(value).map(textOf).join("");
-        }
-        return "";
-      };
 
       try {
         client.start();
@@ -1979,100 +2059,17 @@ verify_native_tool_execution() {
           }
         }
 
-        const findEvidence = history => {
-          if (!Array.isArray(history?.messages)) return null;
-          const messages = history.messages;
-          if (messages.some(message =>
-            !message || typeof message !== "object" || Array.isArray(message)
-          )) {
-            throw new Error("malformed transcript row");
-          }
-          const userIndexes = messages.flatMap((message, index) =>
-            message.role === "user" && textOf(message.content).includes(nonce)
-              ? [index]
-              : []
-          );
-          if (userIndexes.length !== 1) return null;
-          const userIndex = userIndexes[0];
-          const belongsToRun = message => {
-            const attributedRunId = message?.__openclaw?.runId;
-            return attributedRunId == null || attributedRunId === sent.runId;
-          };
-          const toolCalls = [];
-          for (let index = userIndex + 1; index < messages.length; index += 1) {
-            const message = messages[index];
-            if (message.role !== "assistant" || !belongsToRun(message)) continue;
-            if (Array.isArray(message.content)) {
-              for (const block of message.content) {
-                if (!block || typeof block !== "object" || Array.isArray(block)) {
-                  throw new Error("malformed assistant content block");
-                }
-                if (block.type === "toolCall") toolCalls.push({ index, block });
-              }
-            }
-          }
-          if (toolCalls.length === 0) return null;
-          if (toolCalls.length !== 1) throw new Error("unexpected tool-call count");
-          const toolCall = toolCalls[0];
-          if (
-            toolCall.block.name !== "exec"
-            || typeof toolCall.block.id !== "string"
-            || toolCall.block.id.length === 0
-            || toolCall.block?.arguments?.command !== exactCommand
-          ) {
-            throw new Error("unexpected exec tool call");
-          }
-          const results = messages.flatMap((message, index) =>
-            index > toolCall.index
-            && belongsToRun(message)
-            && message.role === "toolResult"
-            && message.toolCallId === toolCall.block.id
-            && message.toolName === "exec"
-              ? [{ index, message }]
-              : []
-          );
-          if (results.length === 0) return null;
-          if (results.length !== 1) throw new Error("unexpected tool-result count");
-          const result = results[0];
-          if (
-            result.message.isError === true
-            || !textOf(result.message.content).includes(toolMarker)
-          ) {
-            throw new Error("exec tool result did not prove success");
-          }
-          const finalMessages = messages.flatMap((message, index) => {
-            if (
-              index <= result.index
-              || message.role !== "assistant"
-              || !belongsToRun(message)
-            ) {
-              return [];
-            }
-            const blocks = Array.isArray(message.content) ? message.content : [];
-            if (blocks.some(block => block?.type === "toolCall")) return [];
-            if (["toolUse", "error", "aborted"].includes(message.stopReason)) {
-              return [];
-            }
-            return normalize(textOf(message.content)) === normalize(finalMarker)
-              ? [{ index, message }]
-              : [];
-          });
-          if (finalMessages.length === 0) return null;
-          if (finalMessages.length !== 1) {
-            throw new Error("unexpected final reply count");
-          }
-          return {
-            toolCallCount: toolCalls.length,
-            execResultCount: results.length
-          };
-        };
-
         const historyDeadline = Date.now() + 30000;
         let evidence;
         while (!evidence && Date.now() < historyDeadline) {
-          evidence = findEvidence(
-            await call("chat.history", { sessionKey, limit: 200 })
-          );
+          evidence = evaluateNativeToolHistory({
+            history: await call("chat.history", { sessionKey, limit: 200 }),
+            nonce,
+            runId: sent.runId,
+            exactCommand,
+            toolMarker,
+            finalMarker
+          });
           if (!evidence) {
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
@@ -2083,6 +2080,7 @@ verify_native_tool_execution() {
           outcome: "ok",
           toolCallCount: evidence.toolCallCount,
           execResultCount: evidence.execResultCount,
+          finalReplyCount: evidence.finalReplyCount,
           exactCommand: true,
           resultMarker: true,
           finalReply: true,
@@ -2099,13 +2097,14 @@ verify_native_tool_execution() {
     .marker == "LIVE_NATIVE_TOOL_EXECUTION"
     and .outcome == "ok"
     and .toolCallCount == 1
-    and .execResultCount == 1
+    and .execResultCount >= 1
+    and .finalReplyCount == 1
     and .exactCommand == true
     and .resultMarker == true
     and .finalReply == true
     and (.runIdHash | type == "string" and test("^[0-9a-f]{64}$"))
   ' "$output_file" >/dev/null ||
-    die "native OCE session did not prove one successful exec tool call and exact final reply"
+    die "native OCE session did not prove successful exec tool evidence and an exact final reply"
   printf 'EVIDENCE\tnative-tool-run-id-sha256\t%s\n' \
     "$(jq -er '.runIdHash' "$output_file")" >>"$EVIDENCE_FILE"
 }

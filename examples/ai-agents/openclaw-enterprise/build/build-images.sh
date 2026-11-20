@@ -61,6 +61,31 @@ SAMPLE_SOURCE_REVISION="$(git -C "$SAMPLE_SOURCE_DIR" rev-parse HEAD)"
 [[ "$SAMPLE_SOURCE_REVISION" == "$SAMPLE_GIT_REVISION" ]] ||
   die "sample checkout resolved to $SAMPLE_SOURCE_REVISION, expected $SAMPLE_GIT_REVISION"
 
+metadata_dir="$CODEBUILD_SRC_DIR/image-metadata"
+mkdir -p "$metadata_dir"
+inspector_account_status="$metadata_dir/inspector-account-status.json"
+registry_scanning_config="$metadata_dir/ecr-registry-scanning-config.json"
+if ! aws inspector2 batch-get-account-status \
+  --region "$AWS_DEFAULT_REGION" \
+  --account-ids "$AWS_ACCOUNT_ID" \
+  --output json >"$inspector_account_status"; then
+  die "could not verify Amazon Inspector account status"
+fi
+if ! aws ecr get-registry-scanning-configuration \
+  --region "$AWS_DEFAULT_REGION" \
+  --output json >"$registry_scanning_config"; then
+  die "could not verify the ECR registry scanning configuration"
+fi
+python3 -I \
+  "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-enhanced-scanning.py" \
+  "$inspector_account_status" \
+  "$registry_scanning_config" \
+  "$AWS_ACCOUNT_ID" \
+  "$ADAPTER_REPOSITORY" \
+  "$CONTROLLER_REPOSITORY" \
+  "$OWNERSHIP_HELPER_REPOSITORY" \
+  "$RUNTIME_REPOSITORY"
+
 OCE_SOURCE_DIR="$CODEBUILD_SRC_DIR/oce-source"
 git init "$OCE_SOURCE_DIR"
 git -C "$OCE_SOURCE_DIR" remote add origin "$OCE_REPOSITORY_URL"
@@ -86,8 +111,6 @@ trap 'docker logout "$REGISTRY" >/dev/null 2>&1 || true' EXIT
 build_identity="$(printf '%s' "$CODEBUILD_BUILD_ARN" | sha256sum | cut -c1-16)"
 sample_tag="${SAMPLE_SOURCE_REVISION}-${build_identity}"
 oce_tag="${OCE_SOURCE_REVISION}-${build_identity}"
-metadata_dir="$CODEBUILD_SRC_DIR/image-metadata"
-mkdir -p "$metadata_dir"
 
 adapter_tagged="${REGISTRY}/${ADAPTER_REPOSITORY}:${sample_tag}"
 controller_tagged="${REGISTRY}/${CONTROLLER_REPOSITORY}:${oce_tag}"
@@ -212,8 +235,6 @@ verify_digest "$RUNTIME_REPOSITORY" "$runtime_digest"
 verify_scan() {
   local repository="$1"
   local digest="$2"
-  local response="$metadata_dir/scan-${repository//\//-}.json"
-  local error_response="$metadata_dir/scan-${repository//\//-}.stderr"
   local coverage_response="$metadata_dir/coverage-${repository//\//-}.json"
   local findings_response="$metadata_dir/findings-${repository//\//-}.json"
   local filter_dir="$metadata_dir/filters-${repository//\//-}"
@@ -259,29 +280,6 @@ findings = {
 PY
 
   for _ in {1..120}; do
-    if aws ecr describe-image-scan-findings \
-        --region "$AWS_DEFAULT_REGION" \
-        --repository-name "$repository" \
-        --image-id "imageDigest=$digest" \
-        --output json >"$response" 2>"$error_response"; then
-      if python3 -I \
-        "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-image-scan.py" \
-        <"$response"; then
-        return 0
-      else
-        scan_result=$?
-      fi
-      [[ "$scan_result" -eq 10 ]] ||
-        die "ECR scan gate rejected $repository@$digest"
-      sleep 5
-      continue
-    fi
-
-    if ! grep -Fq "ScanNotFoundException" "$error_response"; then
-      cat "$error_response" >&2
-      die "ECR scan lookup failed for $repository@$digest"
-    fi
-
     if ! aws inspector2 list-coverage \
       --region "$AWS_DEFAULT_REGION" \
       --filter-criteria "file://$filter_dir/coverage.json" \
@@ -315,7 +313,7 @@ PY
       die "Inspector scan gate rejected $repository@$digest"
     sleep 5
   done
-  die "image scan for $repository@$digest did not produce completed findings"
+  die "Inspector PACKAGE scan for $repository@$digest did not complete; confirm Amazon Inspector enhanced ECR scanning is enabled"
 }
 
 verify_scan "$ADAPTER_REPOSITORY" "$adapter_digest"

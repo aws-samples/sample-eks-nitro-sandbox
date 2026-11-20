@@ -2290,15 +2290,15 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
-      reason: 'The adapter has a dedicated NetworkPolicy manifest that install-oce.sh renders and applies with the deployment'
+      reason: 'By design: the admission adapter is an ordinary control-plane Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
-      reason: 'AgentGateway has a dedicated NetworkPolicy manifest that install-oce.sh renders and applies with the deployment'
+      reason: 'By design: the shared stateless AgentGateway is an ordinary Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
-      reason: 'The validation database has a dedicated NetworkPolicy manifest that install-oce.sh renders and applies with the deployment'
+      reason: 'By design: the disposable validation database is an ordinary Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_35
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'

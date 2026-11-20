@@ -43,6 +43,9 @@ Editable diagrams:
   `cert-manager.io/v1` `Issuer` and `Certificate` APIs. The adapter and
   AgentGateway manifests create these resources.
 - A reviewed, digest-pinned CodeBuild builder image in private Amazon ECR.
+- Amazon Inspector enhanced scanning for Amazon ECR already enabled in the
+  build account and Region, with a registry rule that covers
+  `openclaw-enterprise/*`.
 - AWS CLI v2, Bash, Docker, Git, Go, Helm, `jq`, `kubectl`, Node.js 22 or
   later, OpenSSL, Python 3, and
   [Mike Farah `yq`](https://github.com/mikefarah/yq) `v4.54.3`.
@@ -128,11 +131,14 @@ when your threat model requires those stronger boundaries.
 |---|---|
 | [`build/template.yaml`](build/template.yaml) | Build and scan the four deployable images. |
 | [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml) | Define the admission adapter; adjacent manifests define AgentGateway and storage settings. |
+| [`scripts/manage-builder-repository.sh`](scripts/manage-builder-repository.sh) | Create and delete one receipt-bound private builder repository. |
+| [`scripts/manage-image-build-stack.sh`](scripts/manage-image-build-stack.sh) | Create and delete one receipt-bound image build stack. |
 | [`scripts/setup-storage-class.sh`](scripts/setup-storage-class.sh) | Create or verify the blueprint-owned EKS Auto Mode StorageClass. |
 | [`scripts/setup-agentgateway-pod-identity.sh`](scripts/setup-agentgateway-pod-identity.sh) | Create or verify AgentGateway's IAM role, Bedrock policy, and Pod Identity association. |
 | [`scripts/install-oce.sh`](scripts/install-oce.sh) | Install the exact OCE revision in a terminal-managed topology. |
 | [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Add private AgentGateway CA trust to one OCE tenant namespace. |
 | [`scripts/validate-live.sh`](scripts/validate-live.sh) | Run the destructive two-tenant validation. |
+| [`scripts/lib/evaluate-native-tool-history.mjs`](scripts/lib/evaluate-native-tool-history.mjs) | Evaluate native OpenClaw tool-call history for live validation. |
 | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove resources only after ownership checks pass. |
 
 **Step 1: Set local values and check access**
@@ -147,6 +153,8 @@ export AWS_ACCOUNT_ID='<12-digit-account-id>'
 export AWS_REGION='us-west-2'
 export EKS_CLUSTER_NAME='<eks-cluster-name>'
 export PRIVATE_STATE_DIR='<private-directory-outside-the-repository>'
+export BUILDER_REPOSITORY_RECEIPT="$PRIVATE_STATE_DIR/builder-repository.json"
+export IMAGE_BUILD_STACK_RECEIPT="$PRIVATE_STATE_DIR/image-build-stack.json"
 export OCE_SOURCE_REVISION='86c8c12310f691bb21651118ffffd6bfd460e9ff'
 export CERT_MANAGER_VERSION='v1.21.3'
 export YQ_VERSION='v4.54.3'
@@ -238,6 +246,30 @@ delete or upgrade it.
 TODO: output from the fresh run
 ```
 
+Before building images, verify that Amazon Inspector enhanced scanning is
+enabled for Amazon ECR and that a registry rule covers
+`openclaw-enterprise/*`. These are account-and-Region settings. Ask the
+registry owner to configure them by following the
+[Amazon ECR enhanced scanning documentation](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning-enhanced.html)
+if either check fails. The sample reads this configuration but does not change
+or later restore shared registry settings.
+
+```bash
+aws inspector2 batch-get-account-status \
+  --region "$AWS_REGION" \
+  --account-ids "$AWS_ACCOUNT_ID" \
+  --query 'accounts[0].{Inspector:state.status,ECR:resourceState.ecr.status}'
+aws ecr get-registry-scanning-configuration \
+  --region "$AWS_REGION" \
+  --query 'scanningConfiguration.{ScanType:scanType,Rules:rules}'
+```
+
+Both Inspector statuses must be `ENABLED`, the scan type must be `ENHANCED`,
+and an enabled `SCAN_ON_PUSH` or `CONTINUOUS_SCAN` rule must cover the sample
+repositories. The build repeats these checks and stops before cloning or
+building when the configuration is incomplete. Amazon Inspector charges apply
+to images covered by the rule.
+
 **Step 2: Build and scan the images**
 
 Mirror the pinned CodeBuild standard 5.0 builder into private ECR. The build
@@ -246,33 +278,22 @@ Docker and can write the four release images.
 
 ```bash
 export BUILDER_SOURCE_IMAGE='public.ecr.aws/codebuild/amazonlinux-x86_64-standard@sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660'
-export BUILDER_REPOSITORY='openclaw-enterprise/codebuild-builder'
 export BUILDER_TAG='codebuild-5.0-20261102'
 export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-if ! aws ecr describe-repositories \
-  --region "$AWS_REGION" \
-  --repository-names "$BUILDER_REPOSITORY" >/dev/null 2>&1; then
-  aws ecr create-repository \
-    --region "$AWS_REGION" \
-    --repository-name "$BUILDER_REPOSITORY" \
-    --image-tag-mutability IMMUTABLE \
-    --image-scanning-configuration scanOnPush=true \
-    --encryption-configuration encryptionType=AES256 \
-    --tags "Key=OpenClawValidationRun,Value=$EKS_CLUSTER_NAME" >/dev/null
-fi
+"$SAMPLE_DIR/scripts/manage-builder-repository.sh" create \
+  --receipt "$BUILDER_REPOSITORY_RECEIPT" \
+  --region "$AWS_REGION"
+export BUILDER_REPOSITORY="$(
+  jq -er '.repositoryName' "$BUILDER_REPOSITORY_RECEIPT"
+)"
 
 aws ecr get-login-password --region "$AWS_REGION" |
   docker login --username AWS --password-stdin "$ECR_REGISTRY"
-if ! aws ecr describe-images \
-  --region "$AWS_REGION" \
-  --repository-name "$BUILDER_REPOSITORY" \
-  --image-ids "imageTag=$BUILDER_TAG" >/dev/null 2>&1; then
-  docker pull --platform linux/amd64 "$BUILDER_SOURCE_IMAGE"
-  docker tag "$BUILDER_SOURCE_IMAGE" \
-    "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
-  docker push "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
-fi
+docker pull --platform linux/amd64 "$BUILDER_SOURCE_IMAGE"
+docker tag "$BUILDER_SOURCE_IMAGE" \
+  "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
+docker push "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
 export BUILDER_DIGEST="$(
   aws ecr describe-images \
     --region "$AWS_REGION" \
@@ -282,23 +303,37 @@ export BUILDER_DIGEST="$(
     --output text
 )"
 [[ "$BUILDER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+expected_builder_digest="${BUILDER_SOURCE_IMAGE##*@}"
+test "$BUILDER_DIGEST" = "$expected_builder_digest"
 
-aws cloudformation deploy \
+export SAMPLE_GIT_REVISION="$(git -C ../../.. rev-parse HEAD)"
+"$SAMPLE_DIR/scripts/manage-image-build-stack.sh" create \
+  --receipt "$IMAGE_BUILD_STACK_RECEIPT" \
   --region "$AWS_REGION" \
-  --stack-name openclaw-enterprise-images \
-  --template-file build/template.yaml \
-  --capabilities CAPABILITY_IAM \
-  --parameter-overrides \
-    SampleGitRevision="$(git -C ../../.. rev-parse HEAD)" \
-    BuilderImageRepositoryName="$BUILDER_REPOSITORY" \
-    BuilderImageDigest="$BUILDER_DIGEST" \
-    TrustedBuildInvokerArn="$TRUSTED_BUILD_INVOKER_ARN"
+  --sample-revision "$SAMPLE_GIT_REVISION" \
+  --builder-repository "$BUILDER_REPOSITORY" \
+  --builder-digest "$BUILDER_DIGEST" \
+  --trusted-build-invoker-arn "$TRUSTED_BUILD_INVOKER_ARN"
+export IMAGE_BUILD_STACK_ID="$(
+  jq -er '.stackId' "$IMAGE_BUILD_STACK_RECEIPT"
+)"
 ```
 
-The stack creates four encrypted, immutable ECR repositories and a fixed Step
-Functions workflow. CodeBuild checks out this repository and OCE at exact
-commits, builds the adapter, controller, ownership helper, and runtime images,
-waits for their scans, and exports digest-qualified references.
+Use new builder-repository and image-build-stack receipt files for each build.
+Both `create` actions refuse to replace an existing receipt. If stack creation
+or deletion cannot confirm the CloudFormation outcome, rerun the
+`manage-image-build-stack.sh delete` command in Cleanup with the same receipt.
+It safely reconciles `create-planned`, `create-unconfirmed`, and
+`delete-unconfirmed` receipts, verifies ownership before deleting a present
+stack, and records an absent or deleted stack as `deleted`.
+
+The script creates a uniquely named, run-owned stack and records its exact ARN
+in a private receipt. The stack creates four encrypted, immutable ECR
+repositories and a fixed Step Functions workflow. CodeBuild checks out this
+repository and OCE at exact commits, builds the adapter, controller, ownership
+helper, and runtime images, waits for Amazon Inspector `PACKAGE` coverage, and
+rejects active `HIGH` or `CRITICAL` findings before it exports digest-qualified
+references. ECR basic scanning alone does not meet this gate.
 
 Assume the generated invocation role in a subshell and start the fixed
 workflow. The temporary credentials disappear when the subshell exits; only
@@ -307,17 +342,20 @@ the four non-secret image references are returned to the operator shell:
 ```bash
 invocation_role_arn="$(
   aws cloudformation describe-stacks \
-    --stack-name openclaw-enterprise-images \
+    --region "$AWS_REGION" \
+    --stack-name "$IMAGE_BUILD_STACK_ID" \
     --query 'Stacks[0].Outputs[?OutputKey==`BuildInvocationRoleArn`].OutputValue' \
     --output text
 )"
 state_machine_arn="$(
   aws cloudformation describe-stacks \
-    --stack-name openclaw-enterprise-images \
+    --region "$AWS_REGION" \
+    --stack-name "$IMAGE_BUILD_STACK_ID" \
     --query 'Stacks[0].Outputs[?OutputKey==`BuildStateMachineArn`].OutputValue' \
     --output text
 )"
 (
+set +x
 credentials="$(
   aws sts assume-role \
     --role-arn "$invocation_role_arn" \
@@ -574,8 +612,9 @@ test "$(git -C "$OCE_SOURCE_DIR" rev-parse HEAD)" = "$OCE_SOURCE_REVISION"
 test -z "$(git -C "$OCE_SOURCE_DIR" status --porcelain)"
 ```
 
-Use the disposable PostgreSQL mode only on an EKS cluster tagged
-`Environment=validation`:
+Use the disposable PostgreSQL mode only on an EKS cluster that was already
+tagged `Environment=validation` through your cluster provisioning or
+administrator-approved process. Verify the existing tag without changing it:
 
 ```bash
 export OCE_NAMESPACE='openclaw-system'
@@ -590,10 +629,17 @@ cluster_arn="$(
     --query 'cluster.arn' \
     --output text
 )"
-aws eks tag-resource \
-  --region "$AWS_REGION" \
-  --resource-arn "$cluster_arn" \
-  --tags Environment=validation
+cluster_environment="$(
+  aws eks list-tags-for-resource \
+    --region "$AWS_REGION" \
+    --resource-arn "$cluster_arn" \
+    --query 'tags.Environment' \
+    --output text
+)"
+if [[ "$cluster_environment" != validation ]]; then
+  printf 'This sample requires the existing EKS tag Environment=validation.\n' >&2
+  exit 1
+fi
 
 vpc_id="$(
   aws eks describe-cluster \
@@ -1213,13 +1259,15 @@ The command exits zero only after it verifies:
 3. Neither runtime receives an AWS credential path.
 4. A cross-tenant PVC mount, forged pod, forged revision ConfigMap, and
    ephemeral-container update are denied.
-5. The two sandboxed runtimes and a temporary ordinary pod have distinct boot
-   identities, proving that the sandbox evidence differs from a normal pod.
+5. Each sandbox exposes a virtio block device and partition, the temporary
+   ordinary pod exposes no virtio device and has an NVMe block device and
+   partition, and all three boot identities differ.
 6. AgentGateway rejects missing and incorrect tenant keys and accepts the
    matching tenant key over verified TLS.
 7. Each native OpenClaw gateway rejects an unauthenticated request, returns its
-   requested nonce through AgentGateway and Amazon Bedrock, and completes one
-   recorded `exec` tool call with the requested output.
+   requested nonce through AgentGateway and Amazon Bedrock, and records one
+   unique `exec` tool call, at least one correlated successful result, and
+   exactly one requested final reply.
 8. Each validator key reads its own OCE namespace and agent; both cross-tenant
    reads return HTTP `403` with code `FORBIDDEN`.
 9. Tenant A's `.openclaw` marker and model path survive controller-driven pod
@@ -1231,7 +1279,8 @@ exact OCE revision and image digests.
 Keep the evidence private. It contains deployment identifiers and topology
 details, but not service keys. A passing run validates only the exact
 Kubernetes, OCE API, AgentGateway, Bedrock, source revision, and image digests
-supplied to the command.
+supplied to the command. It also records SHA-256 digests for the validator and
+its native tool-history evaluator.
 
 ```text
 TODO: output from the fresh run
@@ -1279,37 +1328,11 @@ state, receipt, context, tenant namespaces, and Pod Identity values:
   --iam-role-name openclaw-enterprise-agentgateway \
   --iam-inline-policy-name openclaw-enterprise-bedrock-invoke
 
-aws cloudformation delete-stack \
-  --stack-name openclaw-enterprise-images \
-  --region "$AWS_REGION"
-aws cloudformation wait stack-delete-complete \
-  --stack-name openclaw-enterprise-images \
-  --region "$AWS_REGION"
+"$SAMPLE_DIR/scripts/manage-image-build-stack.sh" delete \
+  --receipt "$IMAGE_BUILD_STACK_RECEIPT"
 
-if builder_repository_arn="$(
-  aws ecr describe-repositories \
-    --region "$AWS_REGION" \
-    --repository-names "$BUILDER_REPOSITORY" \
-    --query 'repositories[0].repositoryArn' \
-    --output text 2>/dev/null
-)"; then
-  builder_repository_run="$(
-    aws ecr list-tags-for-resource \
-      --region "$AWS_REGION" \
-      --resource-arn "$builder_repository_arn" \
-      --query 'tags[?Key==`OpenClawValidationRun`].Value | [0]' \
-      --output text
-  )"
-  if [[ "$builder_repository_run" == "$EKS_CLUSTER_NAME" ]]; then
-    aws ecr delete-repository \
-      --region "$AWS_REGION" \
-      --repository-name "$BUILDER_REPOSITORY" \
-      --force >/dev/null
-  else
-    printf 'Preserving builder repository without this run ownership tag: %s\n' \
-      "$BUILDER_REPOSITORY"
-  fi
-fi
+"$SAMPLE_DIR/scripts/manage-builder-repository.sh" delete \
+  --receipt "$BUILDER_REPOSITORY_RECEIPT"
 ```
 
 Cleanup verifies the installation receipt and resource ownership before it
@@ -1321,10 +1344,11 @@ blueprint-owned, nor a narrow expected Kubernetes-generated object.
 
 It preserves any external database. It deletes the blueprint StorageClass only
 when no PVC still references it. Cleanup exits non-zero when a blueprint-owned
-resource must be preserved for safety. The final two commands delete the image
-build workflow and its four ECR repositories, including the sample images. The
-final ownership check deletes the mirrored builder repository only when its tag
-matches this validation run.
+resource must be preserved for safety. The stack manager deletes the image
+build workflow and its four ECR repositories, including the sample images, then
+marks its private receipt as deleted. The builder repository manager separately
+deletes only the exact private mirror recorded in its receipt after it verifies
+the AWS account, Region, repository ARN, and random ownership tag.
 
 ```text
 TODO: output from the fresh run

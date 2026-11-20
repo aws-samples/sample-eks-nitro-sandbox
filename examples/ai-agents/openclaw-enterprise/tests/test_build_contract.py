@@ -18,11 +18,14 @@ TEMPLATE = BUILD / "template.yaml"
 SCRIPT = BUILD / "build-images.sh"
 SCAN_CHECK = BUILD / "check-image-scan.py"
 INSPECTOR_SCAN_CHECK = BUILD / "check-inspector-scan.py"
+ENHANCED_SCAN_CHECK = BUILD / "check-enhanced-scanning.py"
 OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
 ADAPTER_DOCKERFILE = SAMPLE / "adapter" / "Dockerfile"
 CONTROLLER_DOCKERFILE = BUILD / "controller-runtime.Dockerfile"
 OWNERSHIP_HELPER = SAMPLE / "ownership-helper"
 OWNERSHIP_HELPER_DOCKERFILE = OWNERSHIP_HELPER / "Dockerfile"
+STACK_MANAGER = SAMPLE / "scripts" / "manage-image-build-stack.sh"
+BUILDER_REPOSITORY_MANAGER = SAMPLE / "scripts" / "manage-builder-repository.sh"
 
 
 class _CloudFormationLoader(yaml.SafeLoader):
@@ -116,15 +119,20 @@ def test_readme_mirrors_a_pinned_builder_and_resolves_the_trusted_principal() ->
     build_step = readme.split("**Step 2: Build and scan the images**", 1)[1].split(
         "**Step 3:", 1
     )[0]
+    stack_manager = STACK_MANAGER.read_text(encoding="utf-8")
 
-    assert re.search(
-        r"BUILDER_SOURCE_IMAGE='[^']+@sha256:[0-9a-f]{64}'", build_step
-    )
+    assert re.search(r"BUILDER_SOURCE_IMAGE='[^']+@sha256:[0-9a-f]{64}'", build_step)
     assert "docker pull --platform linux/amd64" in build_step
-    assert 'BuilderImageRepositoryName="$BUILDER_REPOSITORY"' in build_step
-    assert 'BuilderImageDigest="$BUILDER_DIGEST"' in build_step
-    assert 'TrustedBuildInvokerArn="$TRUSTED_BUILD_INVOKER_ARN"' in build_step
-    assert '"Key=OpenClawValidationRun,Value=$EKS_CLUSTER_NAME"' in build_step
+    assert 'test "$BUILDER_DIGEST" = "$expected_builder_digest"' in build_step
+    assert 'manage-builder-repository.sh" create' in build_step
+    assert "BUILDER_REPOSITORY_RECEIPT" in build_step
+    assert '--builder-repository "$BUILDER_REPOSITORY"' in build_step
+    assert '--builder-digest "$BUILDER_DIGEST"' in build_step
+    assert '--trusted-build-invoker-arn "$TRUSTED_BUILD_INVOKER_ARN"' in build_step
+    assert '"BuilderImageRepositoryName=$builder_repository"' in stack_manager
+    assert '"BuilderImageDigest=$builder_digest"' in stack_manager
+    assert "must match the reviewed privileged builder image" in stack_manager
+    assert '"TrustedBuildInvokerArn=$trusted_invoker_arn"' in stack_manager
     assert "aws iam get-role" in readme
 
 
@@ -146,10 +154,21 @@ def test_readme_deletes_only_the_builder_repository_owned_by_this_run() -> None:
     readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
     cleanup = readme.split("## Clean up", 1)[1]
 
-    assert "aws ecr list-tags-for-resource" in cleanup
-    assert "OpenClawValidationRun" in cleanup
-    assert '[[ "$builder_repository_run" == "$EKS_CLUSTER_NAME" ]]' in cleanup
-    assert "aws ecr delete-repository" in cleanup
+    assert 'manage-builder-repository.sh" delete' in cleanup
+    assert "BUILDER_REPOSITORY_RECEIPT" in cleanup
+    manager = BUILDER_REPOSITORY_MANAGER.read_text(encoding="utf-8")
+    assert "aws ecr list-tags-for-resource" in manager
+    assert "OpenClawValidationRun" in manager
+    assert "aws ecr delete-repository" in manager
+
+
+def test_readme_disables_xtrace_before_loading_temporary_credentials() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    build_step = readme.split("**Step 2: Build and scan the images**", 1)[1].split(
+        "**Step 3:", 1
+    )[0]
+
+    assert build_step.index("set +x") < build_step.index('credentials="$(')
 
 
 def test_codebuild_has_no_local_source_and_exports_digest_outputs() -> None:
@@ -336,11 +355,9 @@ def test_build_log_groups_use_a_rotating_customer_managed_key() -> None:
 
     assert key["Type"] == "AWS::KMS::Key"
     assert key["Properties"]["EnableKeyRotation"] is True
-    assert {
-        log_group["Properties"]["LogGroupName"] for log_group in log_groups
-    } == {
-        "/aws/codebuild/openclaw-enterprise-images",
-        "/aws/vendedlogs/states/openclaw-enterprise-image-build",
+    assert {log_group["Properties"]["LogGroupName"] for log_group in log_groups} == {
+        "/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}",
+        "/aws/vendedlogs/states/openclaw-enterprise-image-build-${ValidationRunId}",
     }
     for log_group in log_groups:
         assert log_group["Properties"]["KmsKeyId"] == "BuildEncryptionKey.Arn"
@@ -376,12 +393,13 @@ def test_codebuild_role_is_scoped_to_builder_logs_scans_and_release_repositories
         "ecr:BatchCheckLayerAvailability",
         "ecr:BatchGetImage",
         "ecr:CompleteLayerUpload",
-        "ecr:DescribeImageScanFindings",
         "ecr:DescribeImages",
         "ecr:GetDownloadUrlForLayer",
+        "ecr:GetRegistryScanningConfiguration",
         "ecr:InitiateLayerUpload",
         "ecr:PutImage",
         "ecr:UploadLayerPart",
+        "inspector2:BatchGetAccountStatus",
         "inspector2:ListCoverage",
         "inspector2:ListFindings",
     }
@@ -391,11 +409,11 @@ def test_codebuild_role_is_scoped_to_builder_logs_scans_and_release_repositories
     assert set(logs_statement["Resource"]) == {
         (
             "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:"
-            "log-group:/aws/codebuild/openclaw-enterprise-images"
+            "log-group:/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}"
         ),
         (
             "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:"
-            "log-group:/aws/codebuild/openclaw-enterprise-images:*"
+            "log-group:/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}:*"
         ),
     }
     push_statement = next(
@@ -525,7 +543,7 @@ def test_only_fixed_workflow_role_can_start_the_privileged_build() -> None:
         "Action": "states:DescribeExecution",
         "Resource": (
             "arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:"
-            "execution:openclaw-enterprise-image-build:*"
+            "execution:openclaw-enterprise-image-build-${ValidationRunId}:*"
         ),
     }
     assert allows["ReadFixedCodeBuildResult"] == {
@@ -588,7 +606,9 @@ def test_fixed_workflow_logs_all_events_and_publishes_xray_traces() -> None:
     assert state_machine["TracingConfiguration"] == {"Enabled": True}
 
     logging = next(
-        statement for statement in statements if statement["Sid"] == "DeliverWorkflowLogs"
+        statement
+        for statement in statements
+        if statement["Sid"] == "DeliverWorkflowLogs"
     )
     assert set(logging["Action"]) == {
         "logs:CreateLogDelivery",
@@ -637,7 +657,7 @@ def test_readme_scopes_build_credentials_to_a_subshell() -> None:
         "**Step 3:", 1
     )[0]
 
-    assert '(\ncredentials="$(\n  aws sts assume-role' in build_step
+    assert '(\nset +x\ncredentials="$(\n  aws sts assume-role' in build_step
     assert (
         "trap 'unset credentials AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY "
         "AWS_SESSION_TOKEN' EXIT" in build_step
@@ -645,7 +665,7 @@ def test_readme_scopes_build_credentials_to_a_subshell() -> None:
     assert '>"$image_outputs"\nchmod 600 "$image_outputs"\n)' in build_step
     assert ") \n\nexport ADAPTER_IMAGE" not in build_step
     assert (
-        'export ADAPTER_IMAGE="$(\n  jq -er \'.ADAPTER_IMAGE\' '
+        "export ADAPTER_IMAGE=\"$(\n  jq -er '.ADAPTER_IMAGE' "
         '"$PRIVATE_STATE_DIR/image-build-outputs.json"' in build_step
     )
 
@@ -793,20 +813,33 @@ def test_controller_runtime_base_has_an_allowlisted_repository_and_exact_digest(
 
 def test_build_outputs_are_verified_digest_references() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
+    verify_scan = script.split("verify_scan() {", 1)[1].split(
+        '\n}\n\nverify_scan "$ADAPTER_REPOSITORY"', 1
+    )[0]
 
     assert 'digest = json.load(handle).get("containerimage.digest", "")' in script
     assert "aws ecr describe-images \\" in script
-    assert "aws ecr describe-image-scan-findings" in script
-    assert 'grep -Fq "ScanNotFoundException"' in script
+    assert "aws inspector2 batch-get-account-status" in script
+    assert "aws ecr get-registry-scanning-configuration" in script
+    assert "check-enhanced-scanning.py" in script
     assert "aws inspector2 list-coverage" in script
     assert "aws inspector2 list-findings" in script
     assert script.count("--no-paginate") == 2
     assert '"resourceId": equals(resource_id)' in script
     assert '"ecrImageHash": equals(digest)' in script
     assert '"findingStatus": equals("ACTIVE")' in script
-    assert "check-image-scan.py" in script
     assert "check-inspector-scan.py" in script
+    assert "describe-image-scan-findings" not in verify_scan
+    assert "check-image-scan.py" not in verify_scan
+    assert verify_scan.count("return 0") == 1
+    assert verify_scan.index("check-inspector-scan.py") < verify_scan.index("return 0")
+    assert (
+        "Inspector PACKAGE scan for $repository@$digest did not complete" in verify_scan
+    )
     assert script.count('verify_scan "$') == 4
+    assert script.index("check-enhanced-scanning.py") < script.index(
+        'git init "$OCE_SOURCE_DIR"'
+    )
     for name in (
         "ADAPTER_IMAGE",
         "CONTROLLER_IMAGE",
@@ -821,6 +854,136 @@ def test_build_outputs_are_verified_digest_references() -> None:
     assert "printf 'export OWNERSHIP_INIT_IMAGE=%q\\n'" in script
     assert '"ownershipHelper": {' in script
     assert '"image": os.environ["OWNERSHIP_INIT_IMAGE"]' in script
+
+
+def _enhanced_scan_result(
+    tmp_path: pathlib.Path,
+    *,
+    account_status: dict[str, object],
+    registry_config: dict[str, object],
+) -> subprocess.CompletedProcess[str]:
+    account_status_path = tmp_path / "account-status.json"
+    registry_config_path = tmp_path / "registry-config.json"
+    account_status_path.write_text(json.dumps(account_status), encoding="utf-8")
+    registry_config_path.write_text(json.dumps(registry_config), encoding="utf-8")
+    return subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(ENHANCED_SCAN_CHECK),
+            str(account_status_path),
+            str(registry_config_path),
+            "123456789012",
+            "openclaw-enterprise/run/adapter",
+            "openclaw-enterprise/run/runtime",
+        ],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _enabled_inspector_account() -> dict[str, Any]:
+    return {
+        "accounts": [
+            {
+                "accountId": "123456789012",
+                "state": {"status": "ENABLED"},
+                "resourceState": {"ecr": {"status": "ENABLED"}},
+            }
+        ],
+        "failedAccounts": [],
+    }
+
+
+def _enhanced_registry_config(
+    pattern: str = "openclaw-enterprise/*",
+) -> dict[str, Any]:
+    return {
+        "registryId": "123456789012",
+        "scanningConfiguration": {
+            "scanType": "ENHANCED",
+            "rules": [
+                {
+                    "scanFrequency": "CONTINUOUS_SCAN",
+                    "repositoryFilters": [
+                        {"filter": pattern, "filterType": "WILDCARD"}
+                    ],
+                }
+            ],
+        },
+    }
+
+
+def test_enhanced_scan_preflight_accepts_covered_release_repositories(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _enhanced_scan_result(
+        tmp_path,
+        account_status=_enabled_inspector_account(),
+        registry_config=_enhanced_registry_config(),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_enhanced_scan_preflight_uses_ecr_substring_filter_semantics(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _enhanced_scan_result(
+        tmp_path,
+        account_status=_enabled_inspector_account(),
+        registry_config=_enhanced_registry_config("openclaw-enterprise/"),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_enhanced_scan_preflight_rejects_disabled_ecr_scanning(
+    tmp_path: pathlib.Path,
+) -> None:
+    account_status = _enabled_inspector_account()
+    account_status["accounts"][0]["resourceState"]["ecr"]["status"] = "DISABLED"
+    result = _enhanced_scan_result(
+        tmp_path,
+        account_status=account_status,
+        registry_config=_enhanced_registry_config(),
+    )
+
+    assert result.returncode != 0
+    assert "ECR scanning is not enabled" in result.stderr
+
+
+def test_enhanced_scan_preflight_rejects_basic_or_uncovered_registries(
+    tmp_path: pathlib.Path,
+) -> None:
+    basic = _enhanced_registry_config()
+    basic["scanningConfiguration"]["scanType"] = "BASIC"
+    basic_result = _enhanced_scan_result(
+        tmp_path,
+        account_status=_enabled_inspector_account(),
+        registry_config=basic,
+    )
+    uncovered_result = _enhanced_scan_result(
+        tmp_path,
+        account_status=_enabled_inspector_account(),
+        registry_config=_enhanced_registry_config("different-prefix/*"),
+    )
+
+    assert basic_result.returncode != 0
+    assert "scan type must be ENHANCED" in basic_result.stderr
+    assert uncovered_result.returncode != 0
+    assert "no enabled enhanced-scanning rule covers" in uncovered_result.stderr
+
+
+def test_readme_treats_enhanced_scanning_as_read_only_shared_configuration() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+
+    assert "aws inspector2 batch-get-account-status" in readme
+    assert "aws ecr get-registry-scanning-configuration" in readme
+    assert "image-scanning-enhanced.html" in readme
+    assert "aws inspector2 enable" not in readme
+    assert "aws ecr put-registry-scanning-configuration" not in readme
 
 
 def _scan_result(payload: object) -> subprocess.CompletedProcess[str]:
@@ -1006,6 +1169,26 @@ def test_inspector_gate_retries_pending_or_missing_coverage(
         result = _inspector_scan_result(tmp_path, coverage, {"findings": []})
 
         assert result.returncode == 10
+
+
+def test_basic_scan_success_cannot_replace_inspector_package_evidence(
+    tmp_path: pathlib.Path,
+) -> None:
+    basic_result = _scan_result(_scan_payload("COMPLETE", {}))
+    missing_inspector_result = _inspector_scan_result(
+        tmp_path,
+        {"coveredResources": []},
+        {"findings": []},
+    )
+    script = SCRIPT.read_text(encoding="utf-8")
+    verify_scan = script.split("verify_scan() {", 1)[1].split(
+        '\n}\n\nverify_scan "$ADAPTER_REPOSITORY"', 1
+    )[0]
+
+    assert basic_result.returncode == 0, basic_result.stderr
+    assert missing_inspector_result.returncode == 10
+    assert "check-image-scan.py" not in verify_scan
+    assert "check-inspector-scan.py" in verify_scan
 
 
 def test_inspector_gate_fails_closed_on_mismatched_or_failed_responses(

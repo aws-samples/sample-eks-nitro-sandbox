@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "validate-live.sh"
+NATIVE_HISTORY_EVALUATOR = ROOT / "scripts" / "lib" / "evaluate-native-tool-history.mjs"
 DIGEST = "a" * 64
 RUNTIME_IMAGE = f"registry.example/oce-runtime@sha256:{DIGEST}"
 OCE_SOURCE_REVISION = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
@@ -819,11 +821,16 @@ FAKE_COMMAND = textwrap.dedent(
                     else "ok"
                 ),
                 "toolCallCount": (
-                    0 if scenario == "native_tool_missing_exec_call" else 1
+                    0
+                    if scenario == "native_tool_missing_exec_call"
+                    else 1
                 ),
                 "execResultCount": (
-                    0 if scenario == "native_tool_uncorrelated_result" else 1
+                    0
+                    if scenario == "native_tool_uncorrelated_result"
+                    else 2 if scenario == "native_tool_harmless_retry" else 1
                 ),
+                "finalReplyCount": 1,
                 "exactCommand": scenario != "native_tool_wrong_command",
                 "resultMarker": scenario != "native_tool_result_marker_missing",
                 "finalReply": scenario != "native_tool_wrong_final_reply",
@@ -835,6 +842,7 @@ FAKE_COMMAND = textwrap.dedent(
             }})
             sys.exit(0)
         if "LIVE_GUEST_EVIDENCE" in joined:
+            is_sandbox = namespace in ("tenant-a-k8s", "tenant-b-k8s")
             if namespace == "tenant-a-k8s":
                 boot_id = "11111111-1111-4111-8111-111111111111"
             elif namespace == "tenant-b-k8s":
@@ -850,13 +858,55 @@ FAKE_COMMAND = textwrap.dedent(
             else:
                 print("invalid guest evidence target", file=sys.stderr)
                 sys.exit(104)
+            if is_sandbox:
+                root = "/dev/vda1 ext4"
+                disk_rows = [
+                    "BLOCK:vda",
+                    "PARTITION:252:0:2097152:vda",
+                    "PARTITION:252:1:2096128:vda1",
+                ]
+            else:
+                root = "overlay overlay"
+                disk_rows = [
+                    "BLOCK:nvme0n1",
+                    "PARTITION:259:0:2097152:nvme0n1",
+                    "PARTITION:259:1:2096128:nvme0n1p1",
+                ]
+            if scenario == "ordinary_sandbox_disk" and not is_sandbox:
+                root = "/dev/vda1 ext4"
+                disk_rows = [
+                    "BLOCK:vda",
+                    "PARTITION:252:0:2097152:vda",
+                    "PARTITION:252:1:2096128:vda1",
+                ]
+            if scenario == "sandbox_non_virtio_disk" and namespace == "tenant-a-k8s":
+                root = "/dev/nvme0n1p1 ext4"
+                disk_rows = [
+                    "BLOCK:nvme0n1",
+                    "PARTITION:259:0:2097152:nvme0n1",
+                    "PARTITION:259:1:2096128:nvme0n1p1",
+                ]
+            if scenario == "sandbox_missing_partition" and namespace == "tenant-a-k8s":
+                disk_rows = ["BLOCK:vda"]
+            if scenario == "sandbox_whole_disk_only" and namespace == "tenant-a-k8s":
+                disk_rows = [
+                    "BLOCK:vda",
+                    "PARTITION:252:0:2097152:vda",
+                ]
+            if scenario == "ordinary_whole_disk_only" and not is_sandbox:
+                disk_rows = [
+                    "BLOCK:nvme0n1",
+                    "PARTITION:259:0:2097152:nvme0n1",
+                ]
+            if scenario == "sandbox_malformed_partition" and namespace == "tenant-a-k8s":
+                disk_rows = ["BLOCK:vda", "PARTITION:not-valid"]
             emit("\\n".join([
                 "LIVE_GUEST_EVIDENCE",
                 boot_id,
                 "6.1.99",
                 "x86_64",
-                "/dev/vda1 ext4",
-                "252:0:2097152:vda",
+                root,
+                *disk_rows,
             ]))
             sys.exit(0)
         if "/v1/chat/completions" in joined:
@@ -869,7 +919,9 @@ FAKE_COMMAND = textwrap.dedent(
             model_call_count_file.write_text(str(model_call_count))
             emit({{
                 "status": 200,
-                "unauthenticatedStatus": 401,
+                "unauthenticatedStatus": (
+                    200 if scenario == "native_unauthenticated_accepted" else 401
+                ),
                 "model": (
                     "openclaw/unexpected"
                     if scenario == "wrong_native_model"
@@ -1217,7 +1269,229 @@ def _run(
     )
 
 
-def test_requires_every_explicit_target_and_replacement_confirmation(tmp_path: Path) -> None:
+def _evaluate_native_history(
+    messages: list[object],
+) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+    payload = {
+        "history": {"messages": messages},
+        "nonce": "nonce-123",
+        "runId": "run-123",
+        "exactCommand": "printf TOOL_nonce-123",
+        "toolMarker": "TOOL_nonce-123",
+        "finalMarker": "DONE_nonce-123",
+    }
+    program = """
+      import { readFileSync } from "node:fs";
+      const { evaluateNativeToolHistory } = await import(process.argv[1]);
+      const payload = JSON.parse(readFileSync(0, "utf8"));
+      try {
+        const evidence = evaluateNativeToolHistory(payload);
+        process.stdout.write(JSON.stringify({ ok: true, evidence }));
+      } catch (error) {
+        process.stdout.write(JSON.stringify({ ok: false, error: error.message }));
+        process.exitCode = 2;
+      }
+    """
+    result = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            program,
+            NATIVE_HISTORY_EVALUATOR.as_uri(),
+        ],
+        input=json.dumps(payload),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result, json.loads(result.stdout)
+
+
+def _valid_native_history() -> list[object]:
+    run = {"runId": "run-123"}
+    return [
+        {
+            "role": "user",
+            "content": "Run the check for nonce-123",
+            "__openclaw": run,
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "toolCall",
+                    "id": "call-1",
+                    "name": "exec",
+                    "arguments": {"command": "printf TOOL_nonce-123"},
+                }
+            ],
+            "__openclaw": run,
+        },
+        {
+            "role": "toolResult",
+            "toolCallId": "call-1",
+            "toolName": "exec",
+            "isError": False,
+            "content": "TOOL_nonce-123",
+            "__openclaw": run,
+        },
+        {
+            "role": "assistant",
+            "content": "DONE_nonce-123",
+            "__openclaw": run,
+        },
+    ]
+
+
+def test_native_history_evaluator_accepts_harmless_retries_and_extra_messages() -> None:
+    valid = _valid_native_history()
+    messages = [
+        {"role": "system", "content": "session metadata"},
+        valid[0],
+        {"role": "assistant", "content": "Working on it"},
+        valid[1],
+        json.loads(json.dumps(valid[1])),
+        valid[2],
+        json.loads(json.dumps(valid[2])),
+        valid[3],
+    ]
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 0, result.stderr
+    assert output == {
+        "ok": True,
+        "evidence": {
+            "toolCallCount": 1,
+            "execResultCount": 2,
+            "finalReplyCount": 1,
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "mutate, expected_error",
+    [
+        (
+            lambda messages: messages[1]["content"].__setitem__(0, None),
+            "malformed assistant content block",
+        ),
+        (
+            lambda messages: messages[1]["content"][0]["arguments"].__setitem__(
+                "command", "printf WRONG"
+            ),
+            "unexpected exec tool call",
+        ),
+        (
+            lambda messages: messages[2].__setitem__("toolCallId", "call-other"),
+            "uncorrelated exec tool result",
+        ),
+        (
+            lambda messages: messages[2].__setitem__("isError", True),
+            "exec tool result did not prove success",
+        ),
+        (
+            lambda messages: messages[2].__setitem__("isError", None),
+            "exec tool result did not prove success",
+        ),
+        (
+            lambda messages: messages[2].__setitem__(
+                "content",
+                {
+                    "command": "printf TOOL_nonce-123",
+                    "output": "TOOL_nonce-123",
+                },
+            ),
+            "unsupported transcript content shape",
+        ),
+        (
+            lambda messages: messages[2].__setitem__(
+                "content", "prefix TOOL_nonce-123 suffix"
+            ),
+            "exec tool result did not prove success",
+        ),
+    ],
+)
+def test_native_history_evaluator_rejects_malformed_or_inconsistent_evidence(
+    mutate, expected_error: str
+) -> None:
+    messages = _valid_native_history()
+    mutate(messages)
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 2
+    assert output == {"ok": False, "error": expected_error}
+
+
+def test_native_history_evaluator_rejects_multiple_distinct_tool_calls() -> None:
+    messages = _valid_native_history()
+    messages.insert(
+        2,
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "toolCall",
+                    "id": "call-2",
+                    "name": "exec",
+                    "arguments": {"command": "printf TOOL_nonce-123"},
+                }
+            ],
+            "__openclaw": {"runId": "run-123"},
+        },
+    )
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 2
+    assert output == {"ok": False, "error": "unexpected tool-call count"}
+
+
+def test_native_history_evaluator_rejects_multiple_exact_final_replies() -> None:
+    messages = _valid_native_history()
+    messages.append(json.loads(json.dumps(messages[-1])))
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 2
+    assert output == {"ok": False, "error": "unexpected final reply count"}
+
+
+def test_native_history_evaluator_does_not_accept_mismatched_run_ids() -> None:
+    messages = _valid_native_history()
+    for message in messages[1:]:
+        message["__openclaw"] = {"runId": "run-other"}
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 0, result.stderr
+    assert output == {"ok": True, "evidence": None}
+
+
+def test_native_history_evaluator_requires_the_final_nonce() -> None:
+    messages = _valid_native_history()[:-1]
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 0, result.stderr
+    assert output == {"ok": True, "evidence": None}
+
+
+def test_fake_live_run_accepts_harmless_native_tool_retry(tmp_path: Path) -> None:
+    result = _run(tmp_path, "native_tool_harmless_retry")
+
+    assert result.returncode == 0, result.stderr
+    evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
+    assert "PASS\tnative-openclaw-tool-execution\t" in evidence
+    assert "RESULT\tPASS" in evidence
+
+
+def test_requires_every_explicit_target_and_replacement_confirmation(
+    tmp_path: Path,
+) -> None:
     result = subprocess.run(
         [str(SCRIPT), "--region", "us-west-2"],
         check=False,
@@ -1249,7 +1523,9 @@ def test_requires_an_explicit_unprivileged_loopback_port(tmp_path: Path) -> None
     assert not (tmp_path / "evidence").exists()
 
 
-def test_accepts_raw_one_line_service_keys_for_secret_manager_exports(tmp_path: Path) -> None:
+def test_accepts_raw_one_line_service_keys_for_secret_manager_exports(
+    tmp_path: Path,
+) -> None:
     arguments = _arguments(tmp_path)
     for tenant in ("a", "b"):
         credential = tmp_path / f"tenant-{tenant}.key"
@@ -1339,11 +1615,12 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "EVIDENCE\ttool-version-aws\taws-cli/2.31.0" in evidence
     assert "EVIDENCE\ttool-version-kubectl\tv1.34.0 darwin/arm64" in evidence
     assert "EVIDENCE\ttool-version-node\tv" in evidence
-    assert (
-        "EVIDENCE\tnative-tool-run-id-sha256\t" + ("d" * 64)
-    ) in evidence
+    assert ("EVIDENCE\tnative-tool-run-id-sha256\t" + ("d" * 64)) in evidence
     assert "EVIDENCE\tordinary-control-kernel\t6.1.99 x86_64" in evidence
-    assert "EVIDENCE\tordinary-control-root\t/dev/vda1 ext4" in evidence
+    assert "EVIDENCE\tguest-a-block-devices\tvda" in evidence
+    assert "EVIDENCE\tguest-b-block-devices\tvda" in evidence
+    assert "EVIDENCE\tordinary-control-root\toverlay overlay" in evidence
+    assert "EVIDENCE\tordinary-control-block-devices\tnvme0n1" in evidence
     assert "EVIDENCE\tsignature-status\tunsigned;" in evidence
     assert "CLEANUP\tPASS\t" in evidence
     for check in (
@@ -1392,9 +1669,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert (state_dir / "deleted").read_text() == "tenant-a-pod"
     assert (state_dir / "deleted_uid").read_text() == "uid-a-old"
     assert (state_dir / "cross_deleted_uid").read_text() == "uid-cross-pvc"
-    assert (
-        state_dir / "ordinary_deleted_uid"
-    ).read_text() == "uid-ordinary-control"
+    assert (state_dir / "ordinary_deleted_uid").read_text() == "uid-ordinary-control"
     assert not (state_dir / "marker").exists()
     assert not (state_dir / "ephemeral").exists()
     assert not (state_dir / "cross_pvc_pod").exists()
@@ -1409,8 +1684,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
             "name": ordinary_manifest["metadata"]["name"],
             "namespace": "openclaw-enterprise-agw",
             "labels": {
-                "app.kubernetes.io/managed-by":
-                    "openclaw-enterprise-blueprint",
+                "app.kubernetes.io/managed-by": "openclaw-enterprise-blueprint",
                 "openclaw.dev/validation": "ordinary-pod-control",
             },
         },
@@ -1419,31 +1693,31 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
             "enableServiceLinks": False,
             "restartPolicy": "Never",
             "serviceAccountName": "default",
-            "containers": [{
-                "name": "ordinary-control",
-                "image": RUNTIME_IMAGE,
-                "command": ["sh", "-c", "sleep 3600"],
-                "securityContext": {
-                    "allowPrivilegeEscalation": False,
-                    "privileged": False,
-                    "readOnlyRootFilesystem": True,
-                    "runAsNonRoot": True,
-                    "runAsUser": 1000,
-                    "runAsGroup": 1000,
-                    "seccompProfile": {"type": "RuntimeDefault"},
-                    "capabilities": {"drop": ["ALL"]},
-                },
-            }],
+            "containers": [
+                {
+                    "name": "ordinary-control",
+                    "image": RUNTIME_IMAGE,
+                    "command": ["sh", "-c", "sleep 3600"],
+                    "securityContext": {
+                        "allowPrivilegeEscalation": False,
+                        "privileged": False,
+                        "readOnlyRootFilesystem": True,
+                        "runAsNonRoot": True,
+                        "runAsUser": 1000,
+                        "runAsGroup": 1000,
+                        "seccompProfile": {"type": "RuntimeDefault"},
+                        "capabilities": {"drop": ["ALL"]},
+                    },
+                }
+            ],
         },
     }
-    assert ordinary_manifest["metadata"]["name"].startswith(
-        "oce-live-ordinary-"
-    )
+    assert ordinary_manifest["metadata"]["name"].startswith("oce-live-ordinary-")
     key_calls = [
         json.loads(line)
-        for line in (
-            state_dir / "agentgateway_key_calls.jsonl"
-        ).read_text().splitlines()
+        for line in (state_dir / "agentgateway_key_calls.jsonl")
+        .read_text()
+        .splitlines()
     ]
     assert key_calls == [
         {"namespace": "tenant-a-k8s", "pod": "tenant-a-pod"},
@@ -1461,6 +1735,27 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "tenant-b-secret" not in result.stdout + result.stderr
     assert '"kms"' not in command_log
     commands = [json.loads(line) for line in command_log.splitlines()]
+    native_tool_commands = [
+        command
+        for command in commands
+        if command["tool"] == "kubectl"
+        and any(
+            arg.startswith("OCE_NATIVE_HISTORY_EVALUATOR_B64=")
+            for arg in command["args"]
+        )
+    ]
+    assert len(native_tool_commands) == 1
+    encoded_evaluator = next(
+        arg.removeprefix("OCE_NATIVE_HISTORY_EVALUATOR_B64=")
+        for arg in native_tool_commands[0]["args"]
+        if arg.startswith("OCE_NATIVE_HISTORY_EVALUATOR_B64=")
+    )
+    executed_evaluator = base64.b64decode(encoded_evaluator, validate=True)
+    assert executed_evaluator == NATIVE_HISTORY_EVALUATOR.read_bytes()
+    assert (
+        "EVIDENCE\tnative-history-evaluator-sha256\t"
+        f"{hashlib.sha256(executed_evaluator).hexdigest()}"
+    ) in evidence
     port_forward_commands = [
         command
         for command in commands
@@ -1470,7 +1765,9 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     port_forward_args = port_forward_commands[0]["args"]
     assert "--address=127.0.0.1" in port_forward_args
     assert "service/openclaw-enterprise-api" in port_forward_args
-    assert not any("0.0.0.0" in arg or arg == "--address=localhost" for arg in port_forward_args)
+    assert not any(
+        "0.0.0.0" in arg or arg == "--address=localhost" for arg in port_forward_args
+    )
     assert not any(
         "deployment/oce-api-cli-client" in arg
         for command in commands
@@ -1508,7 +1805,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         (
             "ephemeral_aws_environment",
             'spec.ephemeralContainers[0] ("credential-debugger") defines '
-            'prohibited AWS credential environment '
+            "prohibited AWS credential environment "
             '"AWS_CONTAINER_CREDENTIALS_FULL_URI"',
         ),
         (
@@ -1520,7 +1817,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         (
             "sidecar_state_pvc_mount",
             'spec.containers[1] ("state-sidecar").volumeMounts[0] uses '
-            'unapproved PersistentVolumeClaim volume '
+            "unapproved PersistentVolumeClaim volume "
             '"openclaw-gateway-state" at "/home/node/.openclaw"',
         ),
         (
@@ -1534,8 +1831,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         ),
         (
             "hostpath_credential_mount",
-            'uses unapproved hostPath volume "host-credentials" at '
-            '"/mnt/identity"',
+            'uses unapproved hostPath volume "host-credentials" at "/mnt/identity"',
         ),
     ],
 )
@@ -1561,9 +1857,7 @@ def test_bash_trace_cannot_expose_service_keys(tmp_path: Path) -> None:
     combined_output = result.stdout + result.stderr
     command_log = (tmp_path / "state" / "commands.jsonl").read_text()
     evidence_files = [
-        path.read_text()
-        for path in (tmp_path / "evidence").iterdir()
-        if path.is_file()
+        path.read_text() for path in (tmp_path / "evidence").iterdir() if path.is_file()
     ]
     for secret in ("tenant-a-secret", "tenant-b-secret"):
         assert secret not in combined_output
@@ -1571,7 +1865,9 @@ def test_bash_trace_cannot_expose_service_keys(tmp_path: Path) -> None:
         assert all(secret not in content for content in evidence_files)
 
 
-def test_kms_signing_occurs_only_when_key_is_explicitly_supplied(tmp_path: Path) -> None:
+def test_kms_signing_occurs_only_when_key_is_explicitly_supplied(
+    tmp_path: Path,
+) -> None:
     result = _run(tmp_path, kms_key_id="alias/evidence-test")
 
     assert result.returncode == 0, result.stderr
@@ -1618,46 +1914,79 @@ def test_rejects_service_key_with_multiple_hard_links(tmp_path: Path) -> None:
     assert not (state_dir / "commands.jsonl").exists()
 
 
-@pytest.mark.parametrize("scenario, failed_check", [
-    ("wrong_cluster_arn", "eks-cluster"),
-    ("port_forward_early_exit", "oce-api-port-forward"),
-    ("port_forward_no_marker", "oce-api-port-forward"),
-    ("wrong_oce_revision", "oce-deployed-source-revision"),
-    ("wrong_cross_code", "oce-tenant-api-isolation"),
-    ("cross_tenant_pvc_mounted", "tenant-storage-isolation"),
-    ("post_create_uid_failure", "tenant-storage-isolation"),
-    ("uid_precondition_rejected", "controller-driven-persistence"),
-    ("nonce_suffix", "native-openclaw-model-turn"),
-    ("wrong_native_model", "native-openclaw-model-turn"),
-    ("wrong_agw_model", "agentgateway-model-telemetry"),
-    ("missing_agw_trace", "agentgateway-model-telemetry"),
-    ("missing_agw_request_id", "agentgateway-model-telemetry"),
-    ("kms_verify_failure", "evidence-signing"),
-    ("ordinary_post_create_uid_failure", "guest-vm-evidence"),
-    ("ordinary_sandboxed_control", "guest-vm-evidence"),
-    ("ordinary_control_has_volume", "guest-vm-evidence"),
-    ("ordinary_not_ready", "guest-vm-evidence"),
-    ("ordinary_shared_boot_id", "guest-vm-evidence"),
-    ("ordinary_invalid_boot_id", "guest-vm-evidence"),
-    ("ordinary_uid_precondition_rejected", "temporary-artifact-cleanup"),
-    ("agw_missing_key_accepted", "agentgateway-key-authorization"),
-    ("agw_wrong_key_accepted", "agentgateway-key-authorization"),
-    ("agw_correct_key_denied", "agentgateway-key-authorization"),
-    ("agw_tenant_b_correct_key_denied", "agentgateway-key-authorization"),
-    ("agw_key_marker_missing", "agentgateway-key-authorization"),
-    ("agw_key_nonce_mismatch", "agentgateway-key-authorization"),
-    ("agw_key_malformed_output", "agentgateway-key-authorization"),
-    ("native_tool_marker_missing", "native-openclaw-tool-execution"),
-    ("native_tool_malformed_output", "native-openclaw-tool-execution"),
-    ("native_tool_outcome_error", "native-openclaw-tool-execution"),
-    ("native_tool_missing_exec_call", "native-openclaw-tool-execution"),
-    ("native_tool_wrong_name", "native-openclaw-tool-execution"),
-    ("native_tool_wrong_command", "native-openclaw-tool-execution"),
-    ("native_tool_uncorrelated_result", "native-openclaw-tool-execution"),
-    ("native_tool_result_marker_missing", "native-openclaw-tool-execution"),
-    ("native_tool_wrong_final_reply", "native-openclaw-tool-execution"),
-    ("native_tool_invalid_run_hash", "native-openclaw-tool-execution"),
-])
+@pytest.mark.parametrize(
+    ("scenario", "expected_error"),
+    [
+        (
+            "sandbox_whole_disk_only",
+            "sandbox guest did not expose a virtio block device and partition",
+        ),
+        (
+            "ordinary_whole_disk_only",
+            "ordinary control pod did not expose the expected NVMe disk contrast",
+        ),
+    ],
+)
+def test_whole_disk_rows_do_not_count_as_partition_evidence(
+    tmp_path: Path, scenario: str, expected_error: str
+) -> None:
+    result = _run(tmp_path, scenario)
+
+    assert result.returncode != 0
+    assert f"ERROR [guest-vm-evidence]: {expected_error}" in result.stderr
+    evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
+    assert "FAIL\tguest-vm-evidence\t" in evidence
+    assert "RESULT\tPASS" not in evidence
+
+
+@pytest.mark.parametrize(
+    "scenario, failed_check",
+    [
+        ("wrong_cluster_arn", "eks-cluster"),
+        ("port_forward_early_exit", "oce-api-port-forward"),
+        ("port_forward_no_marker", "oce-api-port-forward"),
+        ("wrong_oce_revision", "oce-deployed-source-revision"),
+        ("wrong_cross_code", "oce-tenant-api-isolation"),
+        ("cross_tenant_pvc_mounted", "tenant-storage-isolation"),
+        ("post_create_uid_failure", "tenant-storage-isolation"),
+        ("uid_precondition_rejected", "controller-driven-persistence"),
+        ("nonce_suffix", "native-openclaw-model-turn"),
+        ("wrong_native_model", "native-openclaw-model-turn"),
+        ("wrong_agw_model", "agentgateway-model-telemetry"),
+        ("missing_agw_trace", "agentgateway-model-telemetry"),
+        ("missing_agw_request_id", "agentgateway-model-telemetry"),
+        ("kms_verify_failure", "evidence-signing"),
+        ("ordinary_post_create_uid_failure", "guest-vm-evidence"),
+        ("ordinary_sandboxed_control", "guest-vm-evidence"),
+        ("ordinary_control_has_volume", "guest-vm-evidence"),
+        ("ordinary_not_ready", "guest-vm-evidence"),
+        ("ordinary_shared_boot_id", "guest-vm-evidence"),
+        ("ordinary_invalid_boot_id", "guest-vm-evidence"),
+        ("ordinary_sandbox_disk", "guest-vm-evidence"),
+        ("sandbox_non_virtio_disk", "guest-vm-evidence"),
+        ("sandbox_missing_partition", "guest-vm-evidence"),
+        ("sandbox_malformed_partition", "guest-vm-evidence"),
+        ("ordinary_uid_precondition_rejected", "temporary-artifact-cleanup"),
+        ("native_unauthenticated_accepted", "native-openclaw-model-turn"),
+        ("agw_missing_key_accepted", "agentgateway-key-authorization"),
+        ("agw_wrong_key_accepted", "agentgateway-key-authorization"),
+        ("agw_correct_key_denied", "agentgateway-key-authorization"),
+        ("agw_tenant_b_correct_key_denied", "agentgateway-key-authorization"),
+        ("agw_key_marker_missing", "agentgateway-key-authorization"),
+        ("agw_key_nonce_mismatch", "agentgateway-key-authorization"),
+        ("agw_key_malformed_output", "agentgateway-key-authorization"),
+        ("native_tool_marker_missing", "native-openclaw-tool-execution"),
+        ("native_tool_malformed_output", "native-openclaw-tool-execution"),
+        ("native_tool_outcome_error", "native-openclaw-tool-execution"),
+        ("native_tool_missing_exec_call", "native-openclaw-tool-execution"),
+        ("native_tool_wrong_name", "native-openclaw-tool-execution"),
+        ("native_tool_wrong_command", "native-openclaw-tool-execution"),
+        ("native_tool_uncorrelated_result", "native-openclaw-tool-execution"),
+        ("native_tool_result_marker_missing", "native-openclaw-tool-execution"),
+        ("native_tool_wrong_final_reply", "native-openclaw-tool-execution"),
+        ("native_tool_invalid_run_hash", "native-openclaw-tool-execution"),
+    ],
+)
 def test_live_run_fails_closed_on_security_contract_mismatch(
     tmp_path: Path, scenario: str, failed_check: str
 ) -> None:
@@ -1677,9 +2006,9 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
     if scenario.startswith("agw_"):
         key_calls = [
             json.loads(line)
-            for line in (
-                tmp_path / "state" / "agentgateway_key_calls.jsonl"
-            ).read_text().splitlines()
+            for line in (tmp_path / "state" / "agentgateway_key_calls.jsonl")
+            .read_text()
+            .splitlines()
         ]
         assert key_calls[0] == {
             "namespace": "tenant-a-k8s",
@@ -1724,6 +2053,7 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
 
 def test_script_contains_destructive_and_api_contract_guards() -> None:
     source = SCRIPT.read_text()
+    evaluator_source = NATIVE_HISTORY_EVALUATOR.read_text(encoding="utf-8")
 
     assert source.startswith("#!/usr/bin/env bash\nset +x\n")
     assert 'NATIVE_MODEL_ID="openclaw/default"' in source
@@ -1755,7 +2085,7 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "credential file must be owned by the effective user" in source
     assert "credential file must have exactly one hard link" in source
     assert "read -r -d '' credential_blob <&3" in source
-    assert 'jq -er \'.data.key\' "$file"' not in source
+    assert "jq -er '.data.key' \"$file\"" not in source
     assert 'cat "$file"' not in source
     assert '"kind":"DeleteOptions","preconditions":{"uid":"%s"}' in source
     assert '--raw="/api/v1/namespaces/${namespace}/pods/${pod}"' in source
@@ -1768,7 +2098,11 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "(.spec.volumes // [] | length == 0)" in source
     assert '.spec.serviceAccountName == "default"' in source
     assert "$ORDINARY_CONTROL_POD_UID" in source
-    assert "three distinct boot IDs" in source
+    assert "sandbox guest did not expose a virtio block device and partition" in source
+    assert "ordinary control pod unexpectedly exposed sandbox virtio disks" in source
+    assert (
+        "ordinary control pod did not expose the expected NVMe disk contrast" in source
+    )
     assert "volume-handle-sha256-tenant-a" in source
     assert "oce-deployed-source-revision" in source
     assert 'target.pathname !== "/console/"' in source
@@ -1787,38 +2121,41 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert """printf '%s\\0%s' "$request_url" "$credential" |""" in source
     assert 'const separator = input.indexOf("\\0");' in source
     assert 'path: "/v1/responses"' in source
-    assert (
-        "if (token !== null) headers.authorization = `Bearer ${token}`;"
-        in source
-    )
+    assert "if (token !== null) headers.authorization = `Bearer ${token}`;" in source
     assert 'marker: "LIVE_AGENTGATEWAY_KEY_CONTRACT"' in source
     assert ".noKeyStatus == 401 or .noKeyStatus == 403" in source
     assert ".wrongKeyStatus == 401 or .wrongKeyStatus == 403" in source
     assert ".acceptedStatus == 200" in source
     assert ".nonceMatch == true" in source
     assert "verify_agentgateway_key_contract" in source
-    assert 'const { GatewayClient } = await import(' in source
-    assert 'const exactCommand = `printf ${toolMarker}`;' in source
-    assert 'toolCall.block.name !== "exec"' in source
-    assert "toolCall.block?.arguments?.command !== exactCommand" in source
-    assert "message.toolCallId === toolCall.block.id" in source
-    assert 'message.toolName === "exec"' in source
-    assert "result.message.isError === true" in source
-    assert "textOf(result.message.content).includes(toolMarker)" in source
-    assert (
-        "normalize(textOf(message.content)) === normalize(finalMarker)"
-        in source
-    )
+    assert "const { GatewayClient } = await import(" in source
+    assert "evaluateNativeToolHistory" in source
+    assert "OCE_NATIVE_HISTORY_EVALUATOR_B64" in source
+    assert "const exactCommand = `printf ${toolMarker}`;" in source
     assert "outcome?.runId !== sent.runId" in source
+    assert 'block.name !== "exec"' in evaluator_source
+    assert "block?.arguments?.command !== exactCommand" in evaluator_source
+    assert 'message.toolName !== "exec"' in evaluator_source
+    assert "!toolCallIds.has(message.toolCallId)" in evaluator_source
+    assert "message.isError !== false" in evaluator_source
+    assert (
+        "normalize(contentText(message.content)) !== normalize(toolMarker)"
+        in evaluator_source
+    )
+    assert (
+        "normalize(assistantReplyText(message.content)) ==="
+        in evaluator_source
+    )
     assert 'marker: "LIVE_NATIVE_TOOL_EXECUTION"' in source
     assert ".toolCallCount == 1" in source
-    assert ".execResultCount == 1" in source
+    assert ".execResultCount >= 1" in source
+    assert ".finalReplyCount == 1" in source
     assert ".exactCommand == true" in source
     assert ".resultMarker == true" in source
     assert ".finalReply == true" in source
-    assert 'stop_oce_api_port_forward >/dev/null 2>&1' in source
+    assert "stop_oce_api_port_forward >/dev/null 2>&1" in source
     assert 'if wait "$pid" 2>/dev/null; then' in source
-    assert 'stop_oce_api_port_forward || die' in source
+    assert "stop_oce_api_port_forward || die" in source
     assert 'delete namespace "$TENANT_A_NAMESPACE"' not in source
     assert 'delete namespace "$TENANT_B_NAMESPACE"' not in source
     assert "delete deployment" not in source

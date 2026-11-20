@@ -2,6 +2,11 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Build the OpenClaw Enterprise sample images from source in CodeBuild.
 
 Parameters:
+  ValidationRunId:
+    Type: String
+    AllowedPattern: ^[a-f0-9]{24}$
+    ConstraintDescription: Use a 24-character lowercase hexadecimal run identifier.
+    Description: Unique identity for this validation run and its build resources.
   SampleGitRevision:
     Type: String
     AllowedPattern: ^[0-9a-f]{40}$
@@ -26,8 +31,10 @@ Parameters:
     Description: ECR repository containing a reviewed copy of the CodeBuild builder image.
   BuilderImageDigest:
     Type: String
+    AllowedValues:
+      - sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660
     AllowedPattern: ^sha256:[0-9a-f]{64}$
-    ConstraintDescription: Use an exact lowercase sha256 image digest.
+    ConstraintDescription: Use the reviewed CodeBuild standard 5.0 image digest.
     Description: Digest of the reviewed privileged builder image in BuilderImageRepositoryName.
   TrustedBuildInvokerArn:
     Type: String
@@ -64,6 +71,8 @@ Resources:
       Tags:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   BuildEncryptionKey:
     Type: AWS::KMS::Key
@@ -97,31 +106,37 @@ Resources:
                 aws:SourceAccount: !Ref AWS::AccountId
               ArnLike:
                 kms:EncryptionContext:aws:logs:arn:
-                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images
-                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/openclaw-enterprise-image-build
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/openclaw-enterprise-image-build-${ValidationRunId}
       Tags:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   ImageBuildLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /aws/codebuild/openclaw-enterprise-images
+      LogGroupName: !Sub /aws/codebuild/openclaw-enterprise-images-${ValidationRunId}
       KmsKeyId: !GetAtt BuildEncryptionKey.Arn
       RetentionInDays: 365
       Tags:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   ImageBuildStateMachineLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /aws/vendedlogs/states/openclaw-enterprise-image-build
+      LogGroupName: !Sub /aws/vendedlogs/states/openclaw-enterprise-image-build-${ValidationRunId}
       KmsKeyId: !GetAtt BuildEncryptionKey.Arn
       RetentionInDays: 365
       Tags:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   AdapterRepository:
     Type: AWS::ECR::Repository
@@ -137,6 +152,8 @@ Resources:
       Tags:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   ControllerRepository:
     Type: AWS::ECR::Repository
@@ -152,6 +169,8 @@ Resources:
       Tags:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   OwnershipHelperRepository:
     Type: AWS::ECR::Repository
@@ -167,6 +186,8 @@ Resources:
       Tags:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   RuntimeRepository:
     Type: AWS::ECR::Repository
@@ -182,6 +203,8 @@ Resources:
       Tags:
         - Key: ManagedBy
           Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   ImageBuildRole:
     Type: AWS::IAM::Role
@@ -204,8 +227,8 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource:
-                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images
-                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images:*
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}:*
               - Sid: GetEcrAuthorizationToken
                 Effect: Allow
                 Action: ecr:GetAuthorizationToken
@@ -220,6 +243,8 @@ Resources:
               - Sid: VerifyEnhancedImageScans
                 Effect: Allow
                 Action:
+                  - ecr:GetRegistryScanningConfiguration
+                  - inspector2:BatchGetAccountStatus
                   - inspector2:ListCoverage
                   - inspector2:ListFindings
                 Resource: "*"
@@ -229,7 +254,6 @@ Resources:
                   - ecr:BatchCheckLayerAvailability
                   - ecr:BatchGetImage
                   - ecr:CompleteLayerUpload
-                  - ecr:DescribeImageScanFindings
                   - ecr:DescribeImages
                   - ecr:GetDownloadUrlForLayer
                   - ecr:InitiateLayerUpload
@@ -244,7 +268,7 @@ Resources:
   ImageBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: openclaw-enterprise-images
+      Name: !Sub openclaw-enterprise-images-${ValidationRunId}
       Description: Builds the sample adapter, ownership helper, and pinned OCE images.
       ServiceRole: !GetAtt ImageBuildRole.Arn
       QueuedTimeoutInMinutes: 60
@@ -301,8 +325,13 @@ Resources:
       LogsConfig:
         CloudWatchLogs:
           Status: ENABLED
-          GroupName: /aws/codebuild/openclaw-enterprise-images
+          GroupName: !Sub /aws/codebuild/openclaw-enterprise-images-${ValidationRunId}
           StreamName: images
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   ImageBuildWorkflowRole:
     Type: AWS::IAM::Role
@@ -361,7 +390,7 @@ Resources:
   ImageBuildStateMachine:
     Type: AWS::StepFunctions::StateMachine
     Properties:
-      StateMachineName: openclaw-enterprise-image-build
+      StateMachineName: !Sub openclaw-enterprise-image-build-${ValidationRunId}
       RoleArn: !GetAtt ImageBuildWorkflowRole.Arn
       StateMachineType: STANDARD
       LoggingConfiguration:
@@ -382,6 +411,11 @@ Resources:
             Parameters:
               ProjectName: !Ref ImageBuildProject
             End: true
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
 
   ImageBuildInvocationRole:
     Type: AWS::IAM::Role
@@ -413,13 +447,15 @@ Resources:
               - Sid: ReadFixedBuildWorkflowResult
                 Effect: Allow
                 Action: states:DescribeExecution
-                Resource: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:openclaw-enterprise-image-build:*
+                Resource: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:openclaw-enterprise-image-build-${ValidationRunId}:*
               - Sid: ReadFixedCodeBuildResult
                 Effect: Allow
                 Action: codebuild:BatchGetBuilds
                 Resource: !GetAtt ImageBuildProject.Arn
 
 Outputs:
+  ValidationRunId:
+    Value: !Ref ValidationRunId
   ProjectName:
     Value: !Ref ImageBuildProject
   BuildStateMachineArn:
