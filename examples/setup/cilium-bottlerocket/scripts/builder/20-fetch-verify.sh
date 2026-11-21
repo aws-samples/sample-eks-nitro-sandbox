@@ -17,7 +17,7 @@ log "bottlerocket $ref commit=$commit tag_object=$tag_object"
 # Twoliter's version and digest in the clone must be the pinned ones.
 for k in TWOLITER_VERSION TWOLITER_SHA256_X86_64; do
   want=$(tool_lock "$k")
-  [ "$(grep -c "^$k = \"$want\"$" "$CLONE/Makefile.toml")" = 1 ] || die "E_TWOLITER: Makefile.toml does not set $k = $want"
+  [ "$(grep -cxF "$k = \"$want\"" "$CLONE/Makefile.toml")" = 1 ] || die "E_TWOLITER: Makefile.toml does not set $k = $want"
 done
 
 python3 -I "$OVERLAY/packages/lib/runtime_verify.py" fetch "$LOCK" "$INPUTS" || die "E_INPUTS: an input did not verify (see the line above)"

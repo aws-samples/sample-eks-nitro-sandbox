@@ -12,7 +12,7 @@ set -euo pipefail
 python3 -I "$OVERLAY/packages/lib/runtime_verify.py" check "$LOCK" "$INPUTS" >/dev/null \
   || die "E_INPUTS: the inputs changed after fetch-verify"
 
-cp "$CLONE/Cargo.lock" "$WORK/Cargo.lock.before"
+cp "$CLONE/Cargo.lock" "$WORK/Cargo.lock.before" || die "E_CARGO_LOCK: could not copy $CLONE/Cargo.lock"
 python3 -I "$OVERLAY/variant/register-variant.py" apply --clone "$CLONE" --overlay "$OVERLAY/variant" \
   --lock "$LOCK" --slots "$CB_SANDBOX_SLOTS" || die "E_OVERLAY: register-variant.py refused (see the line above)"
 
