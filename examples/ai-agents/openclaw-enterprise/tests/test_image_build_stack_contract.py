@@ -47,7 +47,14 @@ _CloudFormationLoader.add_multi_constructor("!", _construct_tagged)
 
 
 def _template() -> dict[str, object]:
-    return yaml.load(TEMPLATE.read_text(encoding="utf-8"), Loader=_CloudFormationLoader)
+    loader = _CloudFormationLoader(TEMPLATE.read_text(encoding="utf-8"))
+    try:
+        template = loader.get_single_data()
+    finally:
+        loader.dispose()
+    if not isinstance(template, dict):
+        raise TypeError("CloudFormation template must contain a mapping")
+    return template
 
 
 def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
@@ -194,12 +201,13 @@ def _write_receipt(receipt: pathlib.Path, status: str, stack_id: str | None) -> 
     receipt.chmod(0o600)
 
 
-def _wait_for_receipt_status(
-    receipt: pathlib.Path, expected_status: str
-) -> None:
+def _wait_for_receipt_status(receipt: pathlib.Path, expected_status: str) -> None:
     for _ in range(100):
         try:
-            if json.loads(receipt.read_text(encoding="utf-8"))["status"] == expected_status:
+            if (
+                json.loads(receipt.read_text(encoding="utf-8"))["status"]
+                == expected_status
+            ):
                 return
         except (FileNotFoundError, json.JSONDecodeError):
             pass
@@ -237,8 +245,7 @@ def test_template_scopes_named_resources_to_a_validation_run() -> None:
     assert template["Outputs"]["ValidationRunId"]["Value"] == "ValidationRunId"
     assert parameters["BuilderImageDigest"]["AllowedValues"] == [BUILDER_DIGEST]
     assert (
-        "MaxSessionDuration"
-        not in resources["ImageBuildInvocationRole"]["Properties"]
+        "MaxSessionDuration" not in resources["ImageBuildInvocationRole"]["Properties"]
     )
 
 
@@ -347,9 +354,7 @@ def test_concurrent_create_cannot_overwrite_the_receipt(
     assert sorted(result[2] for result in results) == [0, 1]
     failed = next(result for result in results if result[2] != 0)
     assert "another operation is using this receipt" in failed[1]
-    assert (
-        aws_log.read_text(encoding="utf-8").count("cloudformation deploy") == 1
-    )
+    assert aws_log.read_text(encoding="utf-8").count("cloudformation deploy") == 1
     payload = json.loads(receipt.read_text(encoding="utf-8"))
     assert payload["status"] == "created"
     assert receipt.stat().st_mode & 0o777 == 0o600

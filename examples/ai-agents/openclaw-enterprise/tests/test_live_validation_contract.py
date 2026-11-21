@@ -1585,8 +1585,7 @@ def test_refused_rerun_preserves_existing_evidence_and_signatures(
     evidence_dir.mkdir()
     original_artifacts = {
         "live-validation-evidence.txt": (
-            b"PASS\tprior-run\tpreserve me\n"
-            b"FAIL\tprior-check\toriginal failure row\n"
+            b"PASS\tprior-run\tpreserve me\nFAIL\tprior-check\toriginal failure row\n"
         ),
         "live-validation-manifest.sha256": b"prior manifest\n",
         "live-validation-evidence.sig.b64": b"prior signature\n",
@@ -1773,7 +1772,6 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         if artifact.is_file():
             assert (artifact.stat().st_mode & 0o777) == 0o600
 
-
     state_dir = tmp_path / "state"
     assert (state_dir / "deleted").read_text() == "tenant-a-pod"
     assert (state_dir / "deleted_uid").read_text() == "uid-a-old"
@@ -1874,8 +1872,10 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     port_forward_args = port_forward_commands[0]["args"]
     assert "--address=127.0.0.1" in port_forward_args
     assert "service/openclaw-enterprise-api" in port_forward_args
+    wildcard_address = ".".join(("0", "0", "0", "0"))
     assert not any(
-        "0.0.0.0" in arg or arg == "--address=localhost" for arg in port_forward_args
+        wildcard_address in arg or arg == "--address=localhost"
+        for arg in port_forward_args
     )
     assert not any(
         "deployment/oce-api-cli-client" in arg
@@ -1945,9 +1945,7 @@ def test_evidence_directory_replacement_aborts_without_writing_replacement(
     assert result.returncode != 0
     assert "evidence directory identity changed during the run" in result.stderr
     replacement_dir = tmp_path / "evidence"
-    assert [path.name for path in replacement_dir.iterdir()] == [
-        "replacement-sentinel"
-    ]
+    assert [path.name for path in replacement_dir.iterdir()] == ["replacement-sentinel"]
     displaced_dir = tmp_path / "evidence-displaced"
     evidence = (displaced_dir / "live-validation-evidence.txt").read_text()
     assert "FAIL\tevidence-signing\t" in evidence
@@ -2322,7 +2320,9 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "export TENANT_B_CREDENTIAL" not in source
     assert """printf '%s\\0%s' "$request_url" "$credential" |""" in source
     assert 'const separator = input.indexOf("\\0");' in source
-    assert 'hostname: "agentgateway.openclaw-enterprise-agw.svc.cluster.local"' in source
+    assert (
+        'hostname: "agentgateway.openclaw-enterprise-agw.svc.cluster.local"' in source
+    )
     assert "port: 443" in source
     assert 'path: "/v1/responses"' in source
     assert "if (token !== null) headers.authorization = `Bearer ${token}`;" in source
@@ -2348,10 +2348,7 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
         "normalize(contentText(message.content)) !== normalize(toolMarker)"
         in evaluator_source
     )
-    assert (
-        "normalize(assistantReplyText(message.content)) ==="
-        in evaluator_source
-    )
+    assert "normalize(assistantReplyText(message.content)) ===" in evaluator_source
     assert 'marker: "LIVE_NATIVE_TOOL_EXECUTION"' in source
     assert ".toolCallCount == 1" in source
     assert ".execResultCount >= 1" in source

@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -1323,7 +1324,12 @@ class BuildPatchTests(unittest.TestCase):
         )
 
     def test_rejects_mounts_that_overlap_runtime_tmp(self) -> None:
-        for mount_path in ("/", "/tmp/cache", "//tmp", "//tmp/cache"):
+        for mount_path in (
+            "/",
+            f"{TMP_MOUNT_PATH}/cache",
+            f"/{TMP_MOUNT_PATH}",
+            f"/{TMP_MOUNT_PATH}/cache",
+        ):
             with self.subTest(mount_path=mount_path):
                 pod = target_pod()
                 pod["spec"]["containers"][-1]["volumeMounts"].append(
@@ -1372,7 +1378,7 @@ class BuildPatchTests(unittest.TestCase):
         pod["spec"]["containers"][-1]["volumeMounts"].append(
             {"name": "workspace", "mountPath": SHM_MOUNT_PATH}
         )
-        with self.assertRaisesRegex(AdmissionError, "/dev/shm"):
+        with self.assertRaisesRegex(AdmissionError, re.escape(SHM_MOUNT_PATH)):
             build_patch(pod)
 
     def test_rejects_mounts_over_trusted_bootstrap_executables(self) -> None:

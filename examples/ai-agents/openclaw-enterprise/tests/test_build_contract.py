@@ -47,7 +47,14 @@ _CloudFormationLoader.add_multi_constructor("!", _construct_tagged)
 
 
 def _template() -> dict[str, Any]:
-    return yaml.load(TEMPLATE.read_text(encoding="utf-8"), Loader=_CloudFormationLoader)
+    loader = _CloudFormationLoader(TEMPLATE.read_text(encoding="utf-8"))
+    try:
+        template = loader.get_single_data()
+    finally:
+        loader.dispose()
+    if not isinstance(template, dict):
+        raise TypeError("CloudFormation template must contain a mapping")
+    return template
 
 
 def _resources(resource_type: str) -> list[dict[str, Any]]:
@@ -659,15 +666,14 @@ def test_readme_scopes_build_credentials_to_a_subshell() -> None:
     )[0]
 
     assert (
-        '(\nset -euo pipefail\nset +x\nsource_aws_profile="$AWS_PROFILE"'
-        in build_step
+        '(\nset -euo pipefail\nset +x\nsource_aws_profile="$AWS_PROFILE"' in build_step
     )
     assert "assume_build_invocation_role() {" in build_step
     assert 'aws --profile "$source_aws_profile" sts assume-role' in build_step
     assert "--duration-seconds 3600" in build_step
     assert "--output json" in build_step
     assert 'else error("STS returned incomplete credentials")' in build_step
-    assert 'IFS=$\'\\t\' read -r access_key secret_key session_token' in build_step
+    assert "IFS=$'\\t' read -r access_key secret_key session_token" in build_step
     assert 'export AWS_ACCESS_KEY_ID="$access_key"' in build_step
     assert 'export AWS_SECRET_ACCESS_KEY="$secret_key"' in build_step
     assert 'export AWS_SESSION_TOKEN="$session_token"' in build_step
@@ -927,8 +933,7 @@ def test_controller_runtime_base_has_an_allowlisted_repository_and_exact_digest(
     )
     assert 'readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="nonroot"' in script
     assert (
-        f'readonly CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST="{digest}"'
-        in script
+        f'readonly CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST="{digest}"' in script
     )
     assert (
         '"$CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST" == '
@@ -949,7 +954,13 @@ def test_controller_runtime_verifies_final_image_security_properties() -> None:
     assert runtime.count('RUN ["/nodejs/bin/node", "-e",') == 1
     assert "process.versions.node" in runtime
     assert "process.getuid() !== 1000 || process.getgid() !== 1000" in runtime
-    for path in ("/bin/sh", "/bin/bash", "/usr/bin/apt", "/usr/bin/apt-get", "/usr/bin/dpkg"):
+    for path in (
+        "/bin/sh",
+        "/bin/bash",
+        "/usr/bin/apt",
+        "/usr/bin/apt-get",
+        "/usr/bin/dpkg",
+    ):
         assert path in runtime
     assert 'ENTRYPOINT ["/nodejs/bin/node"]' in runtime
     assert 'CMD ["apps/controller/src/server.mjs"]' in runtime

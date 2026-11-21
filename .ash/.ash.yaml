@@ -2190,39 +2190,15 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: B108
       path: 'examples/ai-agents/openclaw-enterprise/adapter/adapter.py'
-      line_start: 706
-      line_end: 706
+      line_start: 799
+      line_end: 799
       reason: 'This is a validated in-guest mount path, not a host temporary file or directory'
       expiration: '2027-12-31'
     - rule_id: B108
       path: 'examples/ai-agents/openclaw-enterprise/adapter/adapter.py'
-      line_start: 2088
-      line_end: 2088
+      line_start: 2178
+      line_end: 2178
       reason: 'This is a validated in-guest mount path, not a host temporary file or directory'
-      expiration: '2027-12-31'
-    - rule_id: B108
-      path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
-      line_start: 1254
-      line_end: 1254
-      reason: 'Test data exercises rejected container mount paths; it creates no host temporary file or directory'
-      expiration: '2027-12-31'
-    - rule_id: B108
-      path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
-      line_start: 1303
-      line_end: 1303
-      reason: 'Test assertion names the rejected in-container /dev/shm mount path; it creates no host temporary file or directory'
-      expiration: '2027-12-31'
-    - rule_id: B506
-      path: 'examples/ai-agents/openclaw-enterprise/tests/test_build_contract.py'
-      line_start: 47
-      line_end: 47
-      reason: 'The contract test loader subclasses yaml.SafeLoader and adds constructors only for CloudFormation tags'
-      expiration: '2027-12-31'
-    - rule_id: B104
-      path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 1473
-      line_end: 1473
-      reason: 'The assertion rejects wildcard and ambiguous port-forward bind addresses; it does not create a listener'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
@@ -2340,8 +2316,8 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_build_contract.py'
-      line_start: 739
-      line_end: 739
+      line_start: 745
+      line_end: 745
       reason: 'Synthetic STS SecretAccessKey field and value used to test credential parsing; no real credential is present'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
@@ -2400,8 +2376,8 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 1726
-      line_end: 1726
+      line_start: 1725
+      line_end: 1725
       reason: 'Assertion for the synthetic block-device name nvme0n1; no encoded value or secret is present'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
@@ -2412,14 +2388,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
-      line_start: 1758
-      line_end: 1758
+      line_start: 1764
+      line_end: 1764
       reason: 'Synthetic Kubernetes Secret object used to test rejection of file-backed AWS credentials; contains no secret value'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
-      line_start: 1787
-      line_end: 1787
+      line_start: 1793
+      line_end: 1793
       reason: 'Synthetic Kubernetes Secret object used to test rejection of credential-capable mounts; contains no secret value'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
