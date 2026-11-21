@@ -23,7 +23,7 @@ AGENTGATEWAY_IMAGE = (
 )
 OCE_API_DIGEST = "c" * 64
 OCE_API_IMAGE = f"{ECR_REGISTRY}/openclaw-enterprise/api@sha256:{OCE_API_DIGEST}"
-OCE_SOURCE_REVISION = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
+OCE_SOURCE_REVISION = "86c8c12310f691bb21651118ffffd6bfd460e9ff"  # pragma: allowlist secret -- public source revision
 GIT_REVISION = "d" * 40
 
 

@@ -23,7 +23,7 @@ STACK_ARN = (
     "arn:aws:cloudformation:us-west-2:123456789012:"
     f"stack/{STACK_NAME}/00000000-0000-0000-0000-000000000000"
 )
-OCE_REVISION = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
+OCE_REVISION = "86c8c12310f691bb21651118ffffd6bfd460e9ff"  # pragma: allowlist secret -- public source revision
 BUILDER_DIGEST = (
     "sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
 )

@@ -1761,7 +1761,7 @@ class BuildPatchTests(unittest.TestCase):
 
     def test_rejects_file_backed_aws_credentials(self) -> None:
         for volume_source in (
-            {"secret": {"secretName": "aws-credentials"}},
+            {"secret": {"secretName": "aws-credentials"}},  # pragma: allowlist secret -- Kubernetes Secret reference
             {"configMap": {"name": "aws-credentials"}},
             {
                 "projected": {
@@ -1790,7 +1790,7 @@ class BuildPatchTests(unittest.TestCase):
 
     def test_rejects_credential_capable_mounts_outside_approved_paths(self) -> None:
         for volume_source in (
-            {"secret": {"secretName": "tenant-bootstrap"}},
+            {"secret": {"secretName": "tenant-bootstrap"}},  # pragma: allowlist secret -- Kubernetes Secret reference
             {"configMap": {"name": "tenant-bootstrap"}},
             {"projected": {"sources": [{"secret": {"name": "tenant-bootstrap"}}]}},
             {"csi": {"driver": "secrets-store.csi.k8s.io"}},
@@ -1907,7 +1907,7 @@ class BuildPatchTests(unittest.TestCase):
 
     def test_final_validator_rejects_aws_credential_mount_tampering(self) -> None:
         for volume_source in (
-            {"secret": {"secretName": "aws-credentials"}},
+            {"secret": {"secretName": "aws-credentials"}},  # pragma: allowlist secret -- Kubernetes Secret reference
             {
                 "persistentVolumeClaim": {
                     "claimName": "attacker-credentials",

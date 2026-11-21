@@ -36,7 +36,7 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
-  secretName: openclaw-enterprise-nitro-adapter-tls
+  secretName: openclaw-enterprise-nitro-adapter-tls # pragma: allowlist secret -- Kubernetes Secret reference
   dnsNames:
     - openclaw-enterprise-nitro-adapter.openclaw-enterprise-adapter.svc
     - openclaw-enterprise-nitro-adapter.openclaw-enterprise-adapter.svc.cluster.local
@@ -149,7 +149,7 @@ spec:
       volumes:
         - name: tls
           secret:
-            secretName: openclaw-enterprise-nitro-adapter-tls
+            secretName: openclaw-enterprise-nitro-adapter-tls # pragma: allowlist secret -- Kubernetes Secret reference
             defaultMode: 288
 ---
 apiVersion: policy/v1

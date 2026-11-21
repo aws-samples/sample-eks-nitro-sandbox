@@ -1409,7 +1409,7 @@ def test_agentgateway_identity_mismatch_fails_before_any_mutation(
         state["resources"][key]["metadata"]["uid"] = "replacement-uid"
     else:
         state["resources"][key]["metadata"]["annotations"][SETUP_KEY] = (
-            "0123456789abcdef0123456789abcdef"
+            "0123456789abcdef0123456789abcdef"  # pragma: allowlist secret -- test identity
         )
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
 
@@ -1430,7 +1430,7 @@ def test_agentgateway_setup_token_drift_stops_late_deletion(
         "resource": key,
         "section": "annotations",
         "key": SETUP_KEY,
-        "value": "0123456789abcdef0123456789abcdef",
+        "value": "0123456789abcdef0123456789abcdef",  # pragma: allowlist secret -- test placeholder
     }
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
 
@@ -1458,7 +1458,7 @@ def test_pod_identity_namespace_marker_drift_stops_late_deletion(
         "resource": key,
         "section": "labels",
         "key": POD_SETUP_KEY,
-        "value": "fedcba9876543210fedcba9876543210",
+        "value": "fedcba9876543210fedcba9876543210",  # pragma: allowlist secret -- test identity
     }
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
 

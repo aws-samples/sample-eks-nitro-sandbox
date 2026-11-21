@@ -40,7 +40,7 @@ metadata:
 spec:
   isCA: true
   commonName: agentgateway-root
-  secretName: agentgateway-ca
+  secretName: agentgateway-ca # pragma: allowlist secret -- Kubernetes Secret reference
   issuerRef:
     kind: Issuer
     name: agentgateway-selfsigned
@@ -54,7 +54,7 @@ metadata:
     app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
   ca:
-    secretName: agentgateway-ca
+    secretName: agentgateway-ca # pragma: allowlist secret -- Kubernetes Secret reference
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -64,7 +64,7 @@ metadata:
   labels:
     app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
 spec:
-  secretName: agentgateway-tls
+  secretName: agentgateway-tls # pragma: allowlist secret -- Kubernetes Secret reference
   dnsNames:
     - agentgateway.openclaw-enterprise-agw.svc
     - agentgateway.openclaw-enterprise-agw.svc.cluster.local
@@ -245,7 +245,7 @@ spec:
             name: agentgateway-config
         - name: tls
           secret:
-            secretName: agentgateway-tls
+            secretName: agentgateway-tls # pragma: allowlist secret -- Kubernetes Secret reference
             defaultMode: 288
 ---
 apiVersion: policy/v1

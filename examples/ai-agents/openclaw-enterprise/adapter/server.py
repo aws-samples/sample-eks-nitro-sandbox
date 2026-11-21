@@ -547,7 +547,8 @@ def main() -> None:
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    address = os.environ.get("LISTEN_ADDRESS", "0.0.0.0")
+    # The admission webhook must listen on the Pod network interface.
+    address = os.environ.get("LISTEN_ADDRESS", "0.0.0.0")  # nosec B104
     port = int(os.environ.get("PORT", "8443"))
     cert_file = os.environ.get("TLS_CERT_FILE", "/tls/tls.crt")
     key_file = os.environ.get("TLS_KEY_FILE", "/tls/tls.key")

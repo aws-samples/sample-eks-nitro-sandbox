@@ -4,7 +4,7 @@ IFS=$'\n\t'
 umask 077
 
 readonly MANAGED_BY="openclaw-enterprise-sample"
-readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff"
+readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff" # pragma: allowlist secret -- public source revision
 readonly BUILDER_IMAGE_DIGEST="sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
 error_file=""
 scan_dir=""

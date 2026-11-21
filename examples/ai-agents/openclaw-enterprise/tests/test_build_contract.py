@@ -806,7 +806,7 @@ printf '%s\\n' "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY:$AWS_SESSION_TOKEN"
                 {
                     "Credentials": {
                         "AccessKeyId": "access",
-                        "SecretAccessKey": "secret",
+                        "SecretAccessKey": "secret",  # pragma: allowlist secret -- test placeholder
                         "SessionToken": "token",
                     }
                 }

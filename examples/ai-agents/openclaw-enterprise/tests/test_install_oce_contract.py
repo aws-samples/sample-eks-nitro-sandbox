@@ -802,29 +802,29 @@ def test_wrong_aws_account_fails_closed(tmp_path: Path) -> None:
     "bad_url, expected_error",
     [
         (
-            (  # pragma: allowlist secret -- test placeholder
-                "postgresql://app:secret@db.example.test:5432/openclaw"
+            (
+                "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
                 f"?sslmode=require&sslrootcert={DATABASE_CA_PATH}"
             ),
             "must set sslmode=verify-full exactly once",
         ),
         (
-            (  # pragma: allowlist secret -- test placeholder
-                "postgresql://app:secret@db.example.test:5432/openclaw"
+            (
+                "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
                 f"?sslmode=verify-full&sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}"
             ),
             "must not contain duplicate query parameters",
         ),
         (
-            (  # pragma: allowlist secret -- test placeholder
-                "postgresql://app:secret@db.example.test:5432/openclaw"
+            (
+                "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
                 f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}%ZZ"
             ),
             "contains malformed URL escaping",
         ),
         (
-            (  # pragma: allowlist secret -- test placeholder
-                "postgresql://app:secret@not_a_dns_name:5432/openclaw"
+            (
+                "postgresql://app:secret@not_a_dns_name:5432/openclaw"  # pragma: allowlist secret -- test placeholder
                 f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}"
             ),
             "must use a valid DNS hostname",
@@ -1252,7 +1252,7 @@ def test_post_occ_failures_resume_without_reinstalling(
 
 def test_interrupted_remote_read_copies_no_partial_credentials(tmp_path: Path) -> None:
     env, source, kubeconfig, occ = _fake_environment(tmp_path)
-    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"  # pragma: allowlist secret -- test control name
     args = _base_args(tmp_path, source, kubeconfig, occ)
 
     first = run_script(*args, env=env)
@@ -1331,7 +1331,7 @@ def test_recorded_local_credential_hashes_gate_retry(tmp_path: Path) -> None:
 
 def test_resume_rejects_helm_attempt_mismatching_receipt(tmp_path: Path) -> None:
     env, source, kubeconfig, occ = _fake_environment(tmp_path)
-    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"  # pragma: allowlist secret -- test-only fault injection
     args = _base_args(tmp_path, source, kubeconfig, occ)
     assert run_script(*args, env=env).returncode != 0
     env["TEST_HELM_ATTEMPT"] = "attempt-replaced"
@@ -1426,7 +1426,7 @@ def test_precreated_handoff_pod_is_neither_adopted_nor_deleted(
 
 def test_retry_rejects_replaced_handoff_pod_uid(tmp_path: Path) -> None:
     env, source, kubeconfig, occ = _fake_environment(tmp_path)
-    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"  # pragma: allowlist secret -- test-only fault injection
     args = _base_args(tmp_path, source, kubeconfig, occ)
     first = run_script(*args, env=env)
     assert first.returncode != 0
@@ -1465,7 +1465,7 @@ def test_retry_rejects_tampered_handoff_pod(
     value: str,
 ) -> None:
     env, source, kubeconfig, occ = _fake_environment(tmp_path)
-    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"  # pragma: allowlist secret -- test-only fault injection
     args = _base_args(tmp_path, source, kubeconfig, occ)
     first = run_script(*args, env=env)
     assert first.returncode != 0

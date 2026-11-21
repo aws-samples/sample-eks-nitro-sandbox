@@ -192,7 +192,7 @@ export AGENTGATEWAY_POD_IDENTITY_RECEIPT="$PRIVATE_STATE_DIR/agentgateway-pod-id
 export AGENTGATEWAY_IAM_ROLE_NAME='openclaw-enterprise-agentgateway'
 export AGENTGATEWAY_STATE_DIR="$PRIVATE_STATE_DIR/agentgateway"
 export AGENTGATEWAY_RECEIPT="$AGENTGATEWAY_STATE_DIR/lifecycle-receipt.json"
-export OCE_SOURCE_REVISION='86c8c12310f691bb21651118ffffd6bfd460e9ff'
+export OCE_SOURCE_REVISION='86c8c12310f691bb21651118ffffd6bfd460e9ff' # pragma: allowlist secret -- public source revision
 export CERT_MANAGER_VERSION='v1.21.3'
 export YQ_VERSION='v4.54.3'
 

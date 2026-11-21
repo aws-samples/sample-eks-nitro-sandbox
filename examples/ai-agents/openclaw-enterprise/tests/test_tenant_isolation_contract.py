@@ -193,7 +193,7 @@ def test_each_gateway_uses_its_derived_pvc_and_cannot_mount_another(
 ) -> None:
     first = _fixture()
     second = _fixture()
-    _retarget_gateway(second, "b2c3d4e5f6a7")
+    _retarget_gateway(second, "b2c3d4e5f6a7")  # pragma: allowlist secret -- synthetic fixture identity
 
     first_admitted = _admit(first, monkeypatch)
     second_admitted = _admit(second, monkeypatch)
