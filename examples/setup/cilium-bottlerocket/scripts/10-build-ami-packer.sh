@@ -12,7 +12,9 @@
 # security group, the instance profile and the role are gone; then reads the AMI from the
 # Packer manifest and checks the image and its two snapshots. After a failed build, the same run
 # builds again only when one read of each builder part, AMI and snapshot shows it absent
-# (E_RESUME otherwise); the last attempt's files and state keys go to packer.attempt<N>.
+# (E_RESUME otherwise); the last attempt's files and state keys go to packer.attempt<N>. A
+# refusal after the first create and before packer build deletes only the parts that this
+# invocation created and reads them back (E_UNDONE, or E_UNDO_LEFTOVER).
 # Exit 0 done; 1 refused or failed (the state file names what exists; run ./clean.sh); 2 could
 # not determine. Each refusal prints one line: ERROR: E_<TAG>: <text>.
 set -euo pipefail
@@ -285,13 +287,78 @@ s = json.load(open(sys.argv[1]))["Subnets"]
 sys.exit(0 if len(s) == 1 and s[0]["VpcId"] == sys.argv[2] and s[0]["MapPublicIpOnLaunch"] is False else 1)' \
   "$PRIV/subnet.json" "$VPC_ID" || die E_SUBNET "$BUILD_SUBNET_ID is not a private subnet of $VPC_ID"
 
+worst=0
+note() { local r="$1"; [ "$r" -le "$worst" ] || worst="$r"; }
+# gone <kind> <name> <aws args...>: the read shows the resource terminated or absent. A volume
+# can stay "deleting" for a short time after its instance ends, so the read is repeated.
+gone() {
+  local kind="$1" n="$2" rc r=1; shift 2
+  for _ in $(seq 1 "${CB_WAIT_TRIES:-20}"); do
+    rc=0
+    aws "$@" --region "$AWS_REGION" --output json >"$PRIV/gone-$n.json" 2>"$PRIV/gone-$n.err" || rc=$?
+    r=0; "${PM[@]}" gone "$kind" "$rc" "$PRIV/gone-$n.json" "$PRIV/gone-$n.err" >/dev/null || r=$?
+    [ "$r" = 1 ] || break
+    sleep "${CB_SLEEP_SECONDS:-15}"
+  done
+  [ "$r" = 0 ] || "${PM[@]}" gone "$kind" "$rc" "$PRIV/gone-$n.json" "$PRIV/gone-$n.err" || true
+  return "$r"
+}
+
 # ---- the builder security group, role and instance profile -----------------------------------
+# A refusal from the first create to packer build undoes this invocation's own creates: MADE
+# gets each part only after its create call succeeds, and undo_made deletes exactly those, by
+# group ID and by name, reads each back, and stops with E_UNDONE or E_UNDO_LEFTOVER. The state
+# keys stay, so the retry reads the parts absent and builds again. Nothing else is deleted.
+MADE=()
+made_has() { local x; for x in "${MADE[@]}"; do [ "$x" = "$1" ] && return 0; done; return 1; }
+undo_made() {
+  local rc=$? r
+  trap - EXIT
+  if [ "$rc" != 0 ] && [ "${#MADE[@]}" -gt 0 ]; then
+    worst=0
+    if made_has profile-role; then
+      aws iam remove-role-from-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" --role-name "$BUILDER_ROLE_NAME" || note 1
+    fi
+    if made_has profile; then
+      aws iam delete-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" || note 1
+      r=0; gone profile undo-profile iam get-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" || r=$?; note "$r"
+    fi
+    if made_has policy; then
+      aws iam detach-role-policy --role-name "$BUILDER_ROLE_NAME" --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" || note 1
+    fi
+    if made_has role; then
+      aws iam delete-role --role-name "$BUILDER_ROLE_NAME" || note 1
+      r=0; gone role undo-role iam get-role --role-name "$BUILDER_ROLE_NAME" || r=$?; note "$r"
+    fi
+    if made_has sg; then
+      aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$SG_ID" >/dev/null || note 1
+      r=0; gone sg undo-sg ec2 describe-security-groups --group-ids "$SG_ID" || r=$?; note "$r"
+    fi
+    local what=""
+    if made_has sg; then what="$what sg=$SG_ID"; fi
+    if made_has role; then what="$what role=$BUILDER_ROLE_NAME"; fi
+    if made_has profile; then what="$what profile=$BUILDER_PROFILE_NAME"; fi
+    printf 'undo%s result=%s\n' "$what" "$([ "$worst" = 0 ] && echo absent || echo leftover)" | tee -a "$EV"
+    rm -rf -- "$PTMP"
+    case "$worst" in
+      0) printf 'ERROR: E_UNDONE: stopped before packer build; deleted what this attempt created (%s) and read each back absent. Fix the cause above, then run setup.sh again\n' "${what# }" >&2
+         exit "$rc" ;;
+      2) printf 'ERROR: E_UNDO_LEFTOVER: a part this attempt created could not be read back (see above); run ./clean.sh --dry-run\n' >&2
+         exit 2 ;;
+      *) printf 'ERROR: E_UNDO_LEFTOVER: a part this attempt created remains (see above); run ./clean.sh --dry-run\n' >&2
+         exit 1 ;;
+    esac
+  fi
+  rm -rf -- "$PTMP"
+}
+trap undo_made EXIT
 TAGS_SPEC="Tags=[{Key=$OWNER_TAG_KEY,Value=$OWNER_TAG_VALUE},{Key=$RUN_TAG_KEY,Value=$RUN_ID},{Key=Name,Value=$BUILDER_SG_NAME}]"
 SG_ID=$(aws ec2 create-security-group --region "$AWS_REGION" --group-name "$BUILDER_SG_NAME" --vpc-id "$VPC_ID" \
         --description "cilium-bottlerocket builder: no inbound rule, egress TCP 443" \
         --tag-specifications "ResourceType=security-group,$TAGS_SPEC" --query GroupId --output text) \
   || die E_CREATE "create-security-group failed"
 [[ "$SG_ID" =~ ^sg-[0-9a-f]{8,17}$ ]] || die E_CREATE "create-security-group returned no group ID"
+MADE+=(sg)
 state_set BUILDER_SG_ID "$SG_ID"
 aws ec2 revoke-security-group-egress --region "$AWS_REGION" --group-id "$SG_ID" \
   --ip-permissions '[{"IpProtocol":"-1","IpRanges":[{"CidrIp":"0.0.0.0/0"}]}]' >/dev/null || die E_CREATE "could not remove the default egress rule"
@@ -306,13 +373,17 @@ state_set BUILDER_ROLE_NAME "$BUILDER_ROLE_NAME"
 # shellcheck disable=SC2046  # tag_args prints the two Key=,Value= words
 aws iam create-role --role-name "$BUILDER_ROLE_NAME" --assume-role-policy-document "file://$SAMPLE_DIR/packer/builder-trust-policy.json" \
   --description "cilium-bottlerocket builder: Systems Manager only" --tags $(tag_args) >/dev/null || die E_CREATE "create-role failed"
+MADE+=(role)
 aws iam attach-role-policy --role-name "$BUILDER_ROLE_NAME" \
   --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" || die E_CREATE "attach-role-policy failed"
+MADE+=(policy)
 state_set BUILDER_PROFILE_NAME "$BUILDER_PROFILE_NAME"
 # shellcheck disable=SC2046
 aws iam create-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" --tags $(tag_args) >/dev/null || die E_CREATE "create-instance-profile failed"
+MADE+=(profile)
 aws iam add-role-to-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" --role-name "$BUILDER_ROLE_NAME" \
   || die E_CREATE "add-role-to-instance-profile failed"
+MADE+=(profile-role)
 aws iam wait instance-profile-exists --instance-profile-name "$BUILDER_PROFILE_NAME" || could_not E_READ "the instance profile did not appear"
 aws iam get-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" --output json >"$PRIV/profile.json" 2>"$PRIV/profile.err" \
   || could_not E_READ "get-instance-profile failed"
@@ -348,6 +419,8 @@ PY
 state_set PACKER_MANIFEST "$PK/manifest.json"
 env TMPDIR="$PTMP" "$PACKER_BIN" validate -var-file="$PK/vars.pkrvars.json" "$SAMPLE_DIR/packer" >/dev/null \
   || die E_PACKER_VALIDATE "packer validate refused the template"
+# From here, Packer and the gone reads below delete the builder parts, success or failure.
+trap 'rm -rf -- "$PTMP"' EXIT
 log "packer build: amazon-ebssurrogate, communicator none, -on-error=cleanup"
 set +e
 env TMPDIR="$PTMP" "$PACKER_BIN" build -on-error=cleanup -var-file="$PK/vars.pkrvars.json" "$SAMPLE_DIR/packer" 2>&1 \
@@ -357,21 +430,6 @@ set -e
 
 # ---- the builder resources are gone, success or failure --------------------------------------
 worst=0
-note() { local r="$1"; [ "$r" -le "$worst" ] || worst="$r"; }
-# gone <kind> <name> <aws args...>: the read shows the resource terminated or absent. A volume
-# can stay "deleting" for a short time after its instance ends, so the read is repeated.
-gone() {
-  local kind="$1" n="$2" rc r=1; shift 2
-  for _ in $(seq 1 "${CB_WAIT_TRIES:-20}"); do
-    rc=0
-    aws "$@" --region "$AWS_REGION" --output json >"$PRIV/gone-$n.json" 2>"$PRIV/gone-$n.err" || rc=$?
-    r=0; "${PM[@]}" gone "$kind" "$rc" "$PRIV/gone-$n.json" "$PRIV/gone-$n.err" >/dev/null || r=$?
-    [ "$r" = 1 ] || break
-    sleep "${CB_SLEEP_SECONDS:-15}"
-  done
-  [ "$r" = 0 ] || "${PM[@]}" gone "$kind" "$rc" "$PRIV/gone-$n.json" "$PRIV/gone-$n.err" || true
-  return "$r"
-}
 bid=$(state_get BUILDER_INSTANCE_ID)
 if [ -n "$bid" ]; then r=0; gone instance instance ec2 describe-instances --instance-ids "$bid" || r=$?; note "$r"; fi
 r=0; gone instance instances-by-tag ec2 describe-instances --filters "${BUILDER_FILTERS[@]}" || r=$?; note "$r"

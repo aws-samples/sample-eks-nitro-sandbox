@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # packer-stage.sh: the stage driver of packer/bottlerocket.pkr.hcl. Packer's shell-local runs
 # it once per stage. It reaches the builder only through AWS Systems Manager Run Command
-# (AWS-RunShellScript): one command per stage (the upload stage sends one per chunk). For each
-# command it prints the command ID and the final status, and it exits 0 only for Success.
+# (AWS-RunShellScript): one command per stage after bind (bind reads EC2 and waits for Systems
+# Manager; upload sends one per chunk and one to unpack). For each command it prints the
+# command ID and the final status, and it exits 0 only for Success.
 #
 # From the template: CB_STAGE, CB_BUILDER_ID (build.ID), CB_PACKER_RUN_UUID
 # (build.PackerRunUUID), RUN_STATE_DIR (must be this run's). From 10-build-ami-packer.sh:
@@ -99,6 +100,21 @@ for k, tag in (("StandardOutputContent", "  [builder] "), ("StandardErrorContent
   return "$rc"
 }
 
+# record_partition_use <stage rc>: the partition-use and root-fit lines of the build stage
+# (the os-image-size-gib measurement) go to the evidence file. After a Success, a missing
+# ROOT-A line stops the build.
+record_partition_use() {
+  local lines
+  lines=$(python3 -I -c 'import json, sys
+out = json.load(open(sys.argv[1])).get("StandardOutputContent") or ""
+for line in out.splitlines():
+    if line.startswith(("builder: partition-use ", "builder: root-fit ")):
+        print(line[len("builder: "):])' "$PRIV/inv-build.json" 2>/dev/null) || lines=""
+  [ -z "$lines" ] || printf '%s\n' "$lines" | tee -a "$EV"
+  [ "$1" != 0 ] || { grep -q '^partition-use ROOT-A ' <<<"$lines" && grep -q '^root-fit ROOT-A .* ok$' <<<"$lines"; } \
+    || die E_PARTITION_USE "the build stage printed no ROOT-A partition use and root-fit line"
+}
+
 stage_bind() {
   local sg prof subnet out vols v rc=0 ping=""
   [ -z "$(state_get BUILDER_INSTANCE_ID)" ] || die E_BIND_REPEAT "a builder is already bound"
@@ -168,7 +184,7 @@ case "$stage" in
   host-setup) ssm_run host-setup 1600 "CB_WORK_VOLUME_ID=$work_vol bash $OVL/10-host-setup.sh" || exit $? ;;
   fetch-verify) ssm_run fetch-verify 1600 "bash $OVL/20-fetch-verify.sh" || exit $? ;;
   overlay) ssm_run overlay 700 "CB_SANDBOX_SLOTS=$SANDBOX_SLOTS bash $OVL/30-overlay.sh" || exit $? ;;
-  build) ssm_run build 8700 "bash $OVL/40-build.sh" || exit $? ;;
+  build) rc=0; ssm_run build 8700 "bash $OVL/40-build.sh" || rc=$?; record_partition_use "$rc"; [ "$rc" = 0 ] || exit "$rc" ;;
   write-images) ssm_run write-images 1000 "CB_OS_VOLUME_ID=$os_vol CB_DATA_VOLUME_ID=$data_vol bash $OVL/50-write-images.sh" || exit $? ;;
   verify-root) ssm_run verify-root 700 "CB_OS_VOLUME_ID=$os_vol CB_SANDBOX_SLOTS=$SANDBOX_SLOTS bash $OVL/60-verify-root.sh" || exit $? ;;
   release) ssm_run release 180 "CB_OS_VOLUME_ID=$os_vol CB_DATA_VOLUME_ID=$data_vol bash $OVL/70-release.sh" || exit $? ;;

@@ -47,4 +47,13 @@ for k in sorted(d):
     v = d[k]
     print("builder: partition-use %s bytes_used=%s bytes_total=%s percent=%s" % (k, v["bytes_used"], v["bytes_total"], v["percentage_bytes"]))' \
   "$IMG_DIR/artifact-metadata.json" || die "E_BUILD: no partition use in $IMG_DIR/artifact-metadata.json"
+# ROOT-A holds the guest image pair. rpm2img copies the root image into its partition with no
+# size check, so the build stops here when ROOT-A uses more than its partition.
+fit=$(python3 -I -c 'import json, sys
+r = json.load(open(sys.argv[1]))["disk_usage"]["ROOT-A"]
+u, t = int(r["bytes_used"]), int(r["bytes_total"])
+print("used=%d total=%d %s" % (u, t, "ok" if u <= t else "no"))' "$IMG_DIR/artifact-metadata.json") \
+  || die "E_ROOT_FIT: artifact-metadata.json has no ROOT-A bytes_used and bytes_total"
+[ "${fit##* }" = ok ] || die "E_ROOT_FIT: ROOT-A ${fit% *} bytes; the root file system with the guest image pair does not fit os-image-size-gib"
+log "root-fit ROOT-A ${fit% *} ok"
 log "build ok"

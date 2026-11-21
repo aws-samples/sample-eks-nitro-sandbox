@@ -1,6 +1,8 @@
 # The sandbox AMI build. One amazon-ebssurrogate source with communicator "none": Packer never
 # connects to the builder. Each stage is a shell-local provisioner that runs
-# scripts/packer-stage.sh, which sends one AWS Systems Manager Run Command to the builder.
+# scripts/packer-stage.sh. Stage bind runs on the operator machine (EC2 reads and the Systems
+# Manager Online wait) and sends no command. Stage upload sends one AWS Systems Manager Run
+# Command per chunk and one to unpack, and each later stage sends one.
 #
 # The builder is an Amazon Linux 2023 instance in a private subnet of the cluster VPC, with no
 # key pair, no public IP address and a security group with no inbound rule. It writes the
