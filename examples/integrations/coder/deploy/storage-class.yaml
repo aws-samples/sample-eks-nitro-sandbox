@@ -1,0 +1,30 @@
+# The blueprint's own EBS StorageClass, created by scripts/setup.sh only when the
+# cluster has no default class that fits (provisioner ebs.csi.eks.amazonaws.com,
+# type gp3, encrypted, reclaimPolicy Delete). PostgreSQL's claim and every
+# workspace home claim then use it. It is not a default class, it is named for
+# the blueprint, and it carries the blueprint's label so the clean up can tell
+# it is the blueprint's.
+#
+# Setup creates it with `kubectl create` only when it is absent, and never
+# applies over or patches an existing class: a StorageClass is chosen, never
+# changed.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: coder-gp3
+  labels:
+    app.kubernetes.io/part-of: coder
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: eks.amazonaws.com/compute-type
+        values:
+          - auto
+provisioner: ebs.csi.eks.amazonaws.com
+# Named rather than left to the API default: the clean up deletes the claims and
+# reports their EBS volumes gone, which is only true for Delete.
+reclaimPolicy: Delete
+# The volume is created in the Availability Zone of the node the pod lands on.
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  type: gp3
+  encrypted: "true"

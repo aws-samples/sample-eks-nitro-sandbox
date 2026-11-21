@@ -1,0 +1,193 @@
+# Keycloak: the identity provider every Coder user signs in with, admins included.
+#
+# Production mode (`start`, not `start-dev`), served under the path /auth of the
+# distribution: https://<DOMAIN>/auth. TLS ends at CloudFront, and CloudFront
+# reaches the internal ALB over HTTP, so Keycloak listens on plain HTTP 8080
+# behind them (KC_HTTP_ENABLED) while every URL it issues is the https:// URL in
+# KC_HOSTNAME. Health and metrics are on the management port 9000, which the
+# probes use and the Ingress never routes.
+#
+# Realm: Keycloak imports the realm `coder` (deploy/realm.json, with <DOMAIN>
+# filled in by setup.sh and stored in the ConfigMap keycloak-realm) on its first
+# start with --import-realm. The realm holds the OIDC client Coder uses and no
+# users. If the realm already exists, Keycloak skips the import. The realm file
+# holds no credential value. Where the client's credential goes it has the placeholder ${CODER_OIDC_CLIENT_SECRET},
+# which Keycloak resolves from this container's environment during the import.
+#
+# Secrets, all created by scripts/setup.sh from mode-600 files, none in this file:
+#   keycloak-admin      password       Keycloak's bootstrap admin (master realm)
+#   postgres-passwords  keycloak       the keycloak database role's password
+#   coder-oidc          client-secret  the OIDC client secret, shared with coderd
+#
+# setup.sh applies the Service first (label app.kubernetes.io/component:
+# keycloak-service), so the Ingress has a backend before the distribution
+# exists, and the Deployment once the distribution's domain is known.
+#
+# <NAMESPACE> and <DOMAIN> are filled in by scripts/setup.sh at apply time.
+# Never apply this file with the placeholders in place.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/part-of: coder
+    app.kubernetes.io/component: keycloak-server
+spec:
+  # One replica. Keycloak keeps its state in PostgreSQL, so more replicas can be
+  # added later; they find each other through the database (the default
+  # jdbc-ping discovery).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: keycloak
+        app.kubernetes.io/part-of: coder
+      annotations:
+        # EKS Auto Mode does not evict this pod to consolidate nodes: sign-in would stop.
+        karpenter.sh/do-not-disrupt: "true"
+    spec:
+      # Keycloak calls no Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        # The image runs as uid 1000 (keycloak).
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.8.2
+          imagePullPolicy: IfNotPresent
+          args: ["start", "--import-realm"]
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9000
+          env:
+            # Every URL Keycloak issues (issuer, login pages, redirects, admin
+            # console) is built from this full URL, never from request headers.
+            - name: KC_HOSTNAME
+              value: https://<DOMAIN>/auth
+            # The context path matches the path the ALB routes, so /auth/... on
+            # the distribution is /auth/... here, with no rewrite.
+            - name: KC_HTTP_RELATIVE_PATH
+              value: /auth
+            # Edge TLS termination: plain HTTP behind CloudFront and the ALB.
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            # Read the Forwarded header for the request's own scheme. CloudFront
+            # adds `Forwarded: proto=https` to every origin request (replacing
+            # any value a viewer sends), and the ALB passes it through. Keycloak
+            # then sees the request as https, which it needs for two things:
+            # the Secure flag on its cookies and its same-origin check on
+            # browser requests, both of which use the request's scheme rather
+            # than KC_HOSTNAME. X-Forwarded-* is not used: the ALB sets
+            # X-Forwarded-Proto to http, the protocol CloudFront used to reach it.
+            - name: KC_PROXY_HEADERS
+              value: forwarded
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL_HOST
+              value: postgres
+            - name: KC_DB_URL_DATABASE
+              value: keycloak
+            - name: KC_DB_USERNAME
+              value: keycloak
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-passwords
+                  key: keycloak
+            # The master realm's first admin, created on the first start only.
+            # Its password is random (setup.sh, openssl) and is the only way into
+            # the Keycloak admin console at https://<DOMAIN>/auth/admin/.
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: admin
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-admin
+                  key: password
+            # Read only by the realm import, which replaces ${CODER_OIDC_CLIENT_SECRET}
+            # in the realm file with it. The same Secret gives coderd the value.
+            - name: CODER_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: coder-oidc
+                  key: client-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # subPath mounts the one file as a regular file, which is what the
+            # import reads (only regular *.json files in data/import).
+            - name: realm
+              mountPath: /opt/keycloak/data/import/coder-realm.json
+              subPath: coder-realm.json
+              readOnly: true
+          # The management interface inherits KC_HTTP_RELATIVE_PATH, so health is
+          # served at :9000/auth/health/... and not on the routed port.
+          startupProbe:
+            httpGet:
+              path: /auth/health/started
+              port: management
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /auth/health/ready
+              port: management
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /auth/health/live
+              port: management
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: realm
+          configMap:
+            name: keycloak-realm
+---
+# Only the HTTP port. The management port 9000 is not in the Service, so nothing
+# outside the pod (the ALB included) can reach health or metrics.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: <NAMESPACE>
+  labels:
+    app.kubernetes.io/name: keycloak
+    app.kubernetes.io/part-of: coder
+    app.kubernetes.io/component: keycloak-service
+  annotations:
+    # The ALB health check for the Keycloak target group. The Ingress's own
+    # health check path is Coder's /healthz, and an annotation on a Service
+    # takes precedence over the one on the Ingress. The discovery document
+    # answers 200 on the routed port once the realm coder exists.
+    alb.ingress.kubernetes.io/healthcheck-path: /auth/realms/coder/.well-known/openid-configuration
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: keycloak
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
