@@ -114,7 +114,7 @@ def resource_name(kind):
         "ServiceAccount": "serviceaccount",
         "Issuer": "issuer.cert-manager.io",
         "Certificate": "certificate.cert-manager.io",
-        "Secret": "secret",
+        "Secret": "secret",  # pragma: allowlist secret -- Kubernetes resource kind
         "ConfigMap": "configmap",
         "Deployment": "deployment.apps",
         "PodDisruptionBudget": "poddisruptionbudget.policy",

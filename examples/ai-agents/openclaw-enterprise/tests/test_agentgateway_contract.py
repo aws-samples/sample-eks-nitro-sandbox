@@ -77,14 +77,14 @@ def test_cert_manager_certificate_matches_service_dns_and_gateway_tls():
     config = yaml.safe_load(config_map["data"]["config.yaml"])
 
     assert root["spec"]["isCA"] is True
-    assert root["spec"]["secretName"] == "agentgateway-ca"
+    assert root["spec"]["secretName"] == "agentgateway-ca"  # pragma: allowlist secret -- Kubernetes Secret name
     assert ca_issuer["spec"]["ca"]["secretName"] == root["spec"]["secretName"]
     assert certificate["spec"]["issuerRef"]["name"] == ca_issuer["metadata"]["name"]
     assert certificate["spec"]["dnsNames"] == [
         f"agentgateway.{NAMESPACE}.svc",
         f"agentgateway.{NAMESPACE}.svc.cluster.local",
     ]
-    assert certificate["spec"]["secretName"] == "agentgateway-tls"
+    assert certificate["spec"]["secretName"] == "agentgateway-tls"  # pragma: allowlist secret -- Kubernetes Secret name
 
     gateway = config["gateways"]["llm"]
     assert gateway["port"] == 4000
@@ -174,12 +174,13 @@ def test_setup_writes_agentgateway_keys_without_trailing_newlines():
     setup = SETUP.read_text(encoding="utf-8")
     generator = setup[
         setup.index("generate_ed25519_seed() {"):
-        setup.index("sha256_value() {")
+        setup.index("sha256_seed() {")
     ]
 
-    assert "printf '%s' \"${seed}\" >\"${output_file}\"" in generator
+    assert "printf '%s' \"$seed\" >\"$staged\"" in generator
     assert "openssl genpkey -algorithm ED25519" in generator
-    assert "chmod 600 \"${output_file}\"" in generator
+    assert 'chmod 600 "$staged"' in generator
+    assert 'mv -f -- "$staged" "$output_file"' in generator
 
 
 def test_bedrock_model_and_sdk_share_the_runtime_region_source():

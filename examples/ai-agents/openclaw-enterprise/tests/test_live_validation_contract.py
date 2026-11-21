@@ -250,7 +250,7 @@ FAKE_COMMAND = textwrap.dedent(
     elif scenario == "secret_aws_mount":
         pod_a["spec"]["volumes"].append({{
             "name": "aws-credentials",
-            "secret": {{"secretName": "aws-credentials"}},
+            "secret": {{"secretName": "aws-credentials"}},  # pragma: allowlist secret -- Kubernetes Secret fixture
         }})
         pod_a["spec"]["containers"].append({{
             "name": "credential-sidecar",
@@ -1745,7 +1745,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "EVIDENCE\tguest-a-block-devices\tvda" in evidence
     assert "EVIDENCE\tguest-b-block-devices\tvda" in evidence
     assert "EVIDENCE\tordinary-control-root\toverlay overlay" in evidence
-    assert "EVIDENCE\tordinary-control-block-devices\tnvme0n1" in evidence
+    assert "EVIDENCE\tordinary-control-block-devices\tnvme0n1" in evidence  # pragma: allowlist secret -- block-device fixture
     assert "EVIDENCE\tsignature-status\tunsigned;" in evidence
     assert "CLEANUP\tPASS\t" in evidence
     for check in (

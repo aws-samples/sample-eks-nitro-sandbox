@@ -24,7 +24,7 @@ from pathlib import Path
 OWNER_KEY = "app.kubernetes.io/managed-by"
 OWNER = "openclaw-enterprise-blueprint"
 OCE_OWNER = "openclaw-enterprise"
-SOURCE_PIN = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
+SOURCE_PIN = "86c8c12310f691bb21651118ffffd6bfd460e9ff"  # pragma: allowlist secret -- public source revision
 AGW_NAMESPACE = "openclaw-enterprise-agw"
 AGW_SERVICE_ACCOUNT = "agentgateway"
 STORAGE_CLASS = "openclaw-enterprise-gp3"
