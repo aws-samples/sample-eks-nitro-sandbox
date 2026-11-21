@@ -94,6 +94,7 @@ def build(cases):
     # ---- cluster, add-ons, roles, Pod Identity ---------------------------------------------
     s["eks"]["clusters"][CL] = {"name": CL, "status": "ACTIVE", "version": "1.36", "tags": tmap(eks_tag),
                                 "endpoint": "https://FAKE0001.gr7.us-west-2.eks.amazonaws.com",
+                                "identity": {"oidc": {"issuer": "https://oidc.eks.us-west-2.amazonaws.com/id/FAKE0001"}},
                                 "certificateAuthority": {"data": "RkFLRS1DQQ=="},
                                 "roleArn": f"arn:aws:iam::{ACCT}:role/{STACK}-ServiceRole",
                                 "kubernetesNetworkConfig": {"serviceIpv4Cidr": "10.100.0.0/16"},

@@ -26,6 +26,7 @@ State shape (every key optional):
   eks.pod_identity              {association id: {"clusterName", "namespace", "serviceAccount",
                                  "roleArn", "tags"}}
   iam.roles, iam.profiles       as in ubuntu-ami (roles: Trust, Tags, Attached, Inline)
+  iam.oidc_providers            [provider ARN, ...] (list-open-id-connect-providers)
   cloudformation.stacks         {name: {"StackStatus", "Tags"}}
   cloudformation.events         {stack name: [event, ...] oldest first}, written by fake_eksctl.py
 
@@ -762,6 +763,8 @@ def handle_iam(state, op, sub, opts, acct):
         if not p.get("StaysAfterDelete"):
             del profiles[pn]
         return None
+    if op == "list-open-id-connect-providers":
+        return {"OpenIDConnectProviderList": [{"Arn": a} for a in i.get("oidc_providers", [])]}
     raise ApiError("FakeUnsupported", f"iam {op}", "not modelled by fake_aws.py", 97)
 
 

@@ -110,6 +110,7 @@ def create_cluster(state, cfg, opts):
     clusters[name] = {"status": "ACTIVE", "version": cfg.get("metadata", {}).get("version"), "tags": mark,
                       "roleArn": f"arn:aws:iam::{state.get('account', '')}:role/{service_role}",
                       "endpoint": f"https://FAKE{n:04d}.gr7.us-west-2.eks.amazonaws.com",
+                      "identity": {"oidc": {"issuer": f"https://oidc.eks.us-west-2.amazonaws.com/id/FAKE{n:04d}"}},
                       "certificateAuthority": {"data": "RkFLRS1DQQ=="},
                       "kubernetesNetworkConfig": {"serviceIpv4Cidr": "10.100.0.0/16"},
                       "resourcesVpcConfig": {"vpcId": vpc, "subnetIds": subnets,
@@ -240,6 +241,10 @@ def delete_cluster(state, name):
             del objs[n]
     for k in [k for k in state["eks"].get("addons", {}) if k.startswith(name + "/")]:
         del state["eks"]["addons"][k]
+    # eksctl deletes the IAM OIDC provider whose URL is the cluster issuer, when there is one.
+    issuer = str(((clusters[name].get("identity") or {}).get("oidc") or {}).get("issuer", ""))
+    oidc = state.setdefault("iam", {}).setdefault("oidc_providers", [])
+    oidc[:] = [a for a in oidc if not (issuer and a.endswith(":oidc-provider/" + issuer.split("://", 1)[-1]))]
     # EKS deletes the access entries, Fargate profiles and identity provider configs with the cluster.
     for coll, sep in (("access_entries", "|"), ("fargate_profiles", "/"), ("identity_provider_configs", "/")):
         for k in [k for k in state["eks"].get(coll, {}) if k.startswith(name + sep)]:

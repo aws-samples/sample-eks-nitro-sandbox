@@ -486,12 +486,22 @@ echo "== the children that eksctl delete cluster deletes with the cluster ======
 # the run's, and no Service of type LoadBalancer, Ingress or Gateway may be in the cluster.
 # EKS makes two access entries with no tag on every cluster (world_full.py): the creator's
 # (STANDARD, the role of the stub caller) and the node role entry of each managed node group (EC2_LINUX).
+# A node role entry is the run's only when its principal is an exact ARN that clean.sh recorded in
+# NODE_ROLE_ARNS before it deleted that node group (eksctl deletes the role with the node group stack).
 CHILD='eksctl delete cluster would delete it with the cluster, so the cluster is kept$'
-full; clean "$WORK/child-ok.log"
+full; acct="$(world_get 's["account"]')"
+nr() { printf 'arn:aws:iam::%s:role/%s' "$acct" "$1"; }   # nr <role name>: its ARN
+SR=eksctl-cb-offline-test-nodegroup-sandbox-NodeInstanceRole YR=eksctl-cb-offline-test-nodegroup-system-NodeInstanceRole
+REC="NODE_ROLE_ARNS=$(nr $SR),$(nr $YR)"
+# recorded: the state file holds exactly the two node role ARNs, and no node role was read in IAM.
+recorded() { grep -qx -- "$REC" "$RD/state.env" && [[ "$(count_calls aws 'iam get-role' NodeInstanceRole)" == 0 ]]; }
+clean "$WORK/child-ok.log"
 check "ACCEPT the cluster children of a finished run, with the creator and node role access entries that EKS made untagged" 0 "$RC" "$WORK/child-ok.log" '^CLEAN: run r1 .*nothing left behind\.$'
 ! grep -q "$CHILD" "$WORK/child-ok.log" && [[ "$(count_calls aws 'eks list-access-entries')" == 1 && "$(count_calls aws 'eks list-fargate-profiles')" == 1 \
   && "$(count_calls aws 'eks list-identity-provider-configs')" == 1 ]]
 check "  ... it read the access entries, Fargate profiles and identity provider configs once, and found no child that is not the run's" 0 $? "$WORK/child-ok.log"
+recorded && ! alive "'$SR' in s['iam']['roles'] or '$YR' in s['iam']['roles']"
+check "  ... both node roles were recorded in NODE_ROLE_ARNS and went with their node groups; their access entries passed on the record" 0 $? "$WORK/child-ok.log"
 i=0
 while IFS='#' read -r what code pat; do
   [[ -n "$what" ]] || continue
@@ -506,30 +516,73 @@ add-on with no tag#s["eks"]["addons"]["cb-offline-test/vpc-cni"] = {"addonName":
 Fargate profile#s["eks"]["fargate_profiles"]["cb-offline-test/team-a"] = {"tags": {"RunId": "r1"}}#fargate-profile team-a is not this run's;
 identity provider config#s["eks"]["identity_provider_configs"]["cb-offline-test/okta"] = {"tags": {}}#identity provider config okta is not this run's;
 access entry of another principal#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/someone-else"] = {"type": "STANDARD", "tags": {}}#access entry arn:aws:iam::[0-9]+:role/someone-else \(type STANDARD\) is not this run's;
-EC2_LINUX access entry of a live role of someone else#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/someone-else-node"] = {"type": "EC2_LINUX", "tags": {}}; s["iam"]["roles"]["someone-else-node"] = {"Tags": [{"Key": "team", "Value": "someone-else"}]}#access entry arn:aws:iam::[0-9]+:role/someone-else-node \(type EC2_LINUX\) is not this run's;
+EC2_LINUX access entry of a live role of someone else#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/someone-else-node"] = {"type": "EC2_LINUX", "tags": {}}; s["iam"]["roles"]["someone-else-node"] = {"Tags": [{"Key": "team", "Value": "someone-else"}]}#access entry arn:aws:iam::[0-9]+:role/someone-else-node \(type EC2_LINUX, not in the node role record NODE_ROLE_ARNS\) is not this run's;
 creator access entry, cleaned by another caller#s["caller_arn"] = "arn:aws:sts::" + s["account"] + ":assumed-role/another-admin/session"#access entry arn:aws:iam::[0-9]+:role/test \(type STANDARD\) is not this run's;
 eksctl stack of the cluster#s["cloudformation"]["stacks"]["eksctl-cb-offline-test-addon-iamserviceaccount-team-a-app"] = {"StackStatus": "CREATE_COMPLETE", "Tags": [{"Key": "alpha.eksctl.io/cluster-name", "Value": "cb-offline-test"}, {"Key": "team", "Value": "someone-else"}]}#stack eksctl-cb-offline-test-addon-iamserviceaccount-team-a-app is not this run's;
 Service of type LoadBalancer#s["k8s"]["objects"]["services/team-a/web"] = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web", "namespace": "team-a"}, "spec": {"type": "LoadBalancer"}}#Service team-a/web of type LoadBalancer is not this run's;
 Ingress#s["k8s"]["objects"]["ingresses/team-a/web"] = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": "web", "namespace": "team-a"}}#ingres[a-z]*/web is not this run's;
 Gateway#s["k8s"]["objects"]["gateways/team-a/gw"] = {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "Gateway", "metadata": {"name": "gw", "namespace": "team-a"}}#gateway/gw is not this run's;
 CASES
-# A node role entry that EKS kept after its role was deleted (with its node group, by an earlier
-# clean.sh) lets no one in, so it goes with the cluster. A role read that fails keeps the cluster.
-DEAD='s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/gone-node"] = {"type": "EC2_LINUX", "tags": {}}'
-full; world_py "$DEAD"; clean "$WORK/child-dead.log"
-check "ACCEPT an EC2_LINUX access entry whose role IAM no longer has: the cluster goes" 0 "$RC" "$WORK/child-dead.log" '^CLEAN: run r1 .*nothing left behind\.$'
-a="$(first_seq aws 'iam get-role' gone-node)"; b="$(first_seq eksctl 'delete cluster')"
-[[ -n "$a" && -n "$b" && "$a" -lt "$b" ]]
-check "  ... its role was read, and found gone, before eksctl delete cluster" 0 $? "$WORK/child-dead.log"
-full; world_py "$DEAD"; FAKE_FAIL='aws|iam get-role|gone-node|AccessDenied' clean "$WORK/child-dead-unread.log"
-check "REJECT an EC2_LINUX access entry whose role cannot be read: the cluster is kept" 1 "$RC" "$WORK/child-dead-unread.log" \
-  '^CLEAN FAILED: could not read the role gone-node of access entry arn:aws:iam::[0-9]+:role/gone-node; the cluster is kept$'
-[[ "$(count_calls eksctl 'delete cluster')" == 0 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]'
-check "  ... and eksctl delete cluster was never called" 0 $? "$WORK/child-dead-unread.log"
 full; FAKE_FAIL='aws|eks list-access-entries||AccessDeniedException' clean "$WORK/child-unread.log"
 check "REJECT access entries that cannot be listed: the cluster is kept" 1 "$RC" "$WORK/child-unread.log" '^CLEAN FAILED: could not read the access entries of the cluster; the cluster is kept$'
 [[ "$(count_calls eksctl 'delete cluster')" == 0 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]'
 check "  ... and eksctl delete cluster was never called" 0 $? "$WORK/child-unread.log"
+
+echo "== the node role record, and the IAM OIDC provider of the cluster issuer =================="
+# entry <role name>: an untagged EC2_LINUX access entry for that role. gone_groups: both node groups
+# deleted before clean.sh (their roles go with their stacks), as by a clean-up that kept no record.
+# oidc <URL without https://>: an IAM OIDC provider for that URL (eksctl delete cluster deletes the
+# one whose URL is the cluster issuer, https://oidc.eks.us-west-2.amazonaws.com/id/FAKE0001).
+entry() { world_py "s['eks']['access_entries']['cb-offline-test|$(nr "$1")'] = {'type': 'EC2_LINUX', 'tags': {}}"; }
+gone_groups() {
+  local g
+  for g in sandbox system; do run_real "$WORK/pre-$g.log" eksctl delete nodegroup --region us-west-2 --cluster cb-offline-test --name "$g"; done
+  : > "$FAKE_LOG"
+}
+oidc() { world_py "s['iam']['oidc_providers'] = ['arn:aws:iam::' + s['account'] + ':oidc-provider/$1']"; }
+# A recorded node role that is still there at the cascade check (it goes with the cluster stack).
+full; world_py "s['iam']['roles']['$SR']['Stack'] = 'eksctl-cb-offline-test-cluster'"; clean "$WORK/rec-live.log"
+check "ACCEPT the access entry of a recorded node role that is still there: the cluster goes" 0 "$RC" "$WORK/rec-live.log" '^CLEAN: run r1 .*nothing left behind\.$'
+recorded; check "  ... both node roles were recorded in NODE_ROLE_ARNS, and no node role was read in IAM" 0 $? "$WORK/rec-live.log"
+# A second clean.sh after a stop reads the record of the first: the first one deleted the node groups
+# (and so their roles), then kept the cluster for a Gateway. The second needs no IAM read of a node
+# role: one would fail.
+full; world_py 's["k8s"]["objects"]["gateways/team-a/gw"] = {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "Gateway", "metadata": {"name": "gw", "namespace": "team-a"}}'
+clean "$WORK/rec-first.log"; first_rc=$RC
+[[ "$first_rc" == 1 ]] && grep -qx -- "$REC" "$RD/state.env" && ! alive "'cb-offline-test/sandbox' in s['eks']['nodegroups'] or '$SR' in s['iam']['roles']"
+check "the first clean.sh records both node roles, deletes the node groups and their roles, and keeps the cluster for a Gateway" 0 $? "$WORK/rec-first.log"
+world_py 'del s["k8s"]["objects"]["gateways/team-a/gw"]'
+FAKE_FAIL='aws|iam get-role|NodeInstanceRole|AccessDenied' clean "$WORK/rec-second.log"
+check "ACCEPT a second clean.sh with the node roles gone: their access entries pass on the record of the first, and the cluster goes" 0 "$RC" "$WORK/rec-second.log" \
+  '^CLEAN: run r1 .*nothing left behind\.$'
+i=0
+# Each case: <what>#<setup>#<FAKE_FAIL rule>#<what must still be there, a world expression>#<failure line>
+while IFS='#' read -r what setup rule left pat; do
+  [[ -n "$what" ]] || continue
+  i=$((i + 1)); full; eval "$setup"; FAKE_FAIL="$rule" clean "$WORK/rec-$i.log"
+  check "REJECT $what: the cluster is kept" 1 "$RC" "$WORK/rec-$i.log" "^CLEAN FAILED: $pat"
+  k="the cluster is still there"; [[ -z "$left" ]] || k="the cluster and the object of the case are still there"
+  [[ "$(count_calls eksctl 'delete cluster')" == 0 ]] && alive "'cb-offline-test' in s['eks']['clusters'] and (${left:-True})" \
+    && grep -q ' verdict=incomplete$' "$V/verdict.txt"
+  check "  ... eksctl delete cluster was never called, $k, verdict incomplete ($what)" 0 $? "$WORK/rec-$i.log"
+done <<'CASES'
+an EC2_LINUX access entry of the operator role of the run#entry cb-offline-test-cilium-operator###access entry arn:aws:iam::[0-9]+:role/cb-offline-test-cilium-operator \(type EC2_LINUX, not in the node role record NODE_ROLE_ARNS\) is not this run's;
+an EC2_LINUX access entry of the cluster role of the run#entry eksctl-cb-offline-test-cluster-ServiceRole###access entry arn:aws:iam::[0-9]+:role/eksctl-cb-offline-test-cluster-ServiceRole \(type EC2_LINUX, not in the node role record NODE_ROLE_ARNS\) is not this run's;
+an EC2_LINUX access entry of a role that IAM no longer has and the run did not record#entry gone-node###access entry arn:aws:iam::[0-9]+:role/gone-node \(type EC2_LINUX, not in the node role record NODE_ROLE_ARNS\) is not this run's;
+node role entries whose node groups went before with no record#gone_groups###access entry arn:aws:iam::[0-9]+:role/eksctl-cb-offline-test-nodegroup-sandbox-NodeInstanceRole \(type EC2_LINUX; the run has no node role record NODE_ROLE_ARNS\) is not this run's;
+a node role record with an element that is not a role ARN#gone_groups; printf 'NODE_ROLE_ARNS=not-a-role-arn\n' >> "$RD/state.env"###could not read the node role record NODE_ROLE_ARNS in .*/state.env, for access entry arn:aws:iam::[0-9]+:role/eksctl-cb-offline-test-nodegroup-sandbox-NodeInstanceRole; the cluster is kept$
+a node group whose node role ARN the record cannot hold (a comma in the role name)#world_py "s['eks']['nodegroups']['cb-offline-test/sandbox']['nodeRole'] = 'arn:aws:iam::' + s['account'] + ':role/a,b'"##'cb-offline-test/sandbox' in s['eks']['nodegroups']#could not record the node role of node group sandbox in NODE_ROLE_ARNS; it and the cluster are kept$
+an IAM OIDC provider for the cluster issuer#oidc oidc.eks.us-west-2.amazonaws.com/id/FAKE0001##len(s['iam']['oidc_providers']) == 1#IAM OIDC provider arn:aws:iam::[0-9]+:oidc-provider/oidc.eks.us-west-2.amazonaws.com/id/FAKE0001 \(the cluster issuer\) is not this run's;
+an IAM OIDC provider whose URL is the cluster issuer in other letter case#oidc OIDC.EKS.us-west-2.amazonaws.com/id/fake0001##len(s['iam']['oidc_providers']) == 1#IAM OIDC provider arn:aws:iam::[0-9]+:oidc-provider/OIDC.EKS.us-west-2.amazonaws.com/id/fake0001 \(the cluster issuer\) is not this run's;
+IAM OIDC providers that cannot be listed#:#aws|iam list-open-id-connect-providers||AccessDenied##could not read the IAM OIDC providers and the cluster issuer; the cluster is kept$
+an IAM OIDC provider list with an element that is not a provider ARN#world_py "s['iam']['oidc_providers'] = ['not-an-arn']"###could not read the IAM OIDC providers and the cluster issuer; the cluster is kept$
+a cluster with no OIDC issuer in its description#world_py "del s['eks']['clusters']['cb-offline-test']['identity']"###could not read the IAM OIDC providers and the cluster issuer; the cluster is kept$
+CASES
+full; oidc oidc.eks.us-east-1.amazonaws.com/id/OTHER0001; clean "$WORK/oidc-other.log"
+check "ACCEPT an IAM OIDC provider for another issuer: the cluster goes, and the provider stays" 0 "$RC" "$WORK/oidc-other.log" '^CLEAN: run r1 .*nothing left behind\.$'
+a="$(first_seq aws 'iam list-open-id-connect-providers')"; b="$(first_seq eksctl 'delete cluster')"
+[[ -n "$a" && -n "$b" && "$a" -lt "$b" && "$(world_get 's["iam"]["oidc_providers"]')" == *OTHER0001* ]]
+check "  ... the providers were listed before eksctl delete cluster, and the other one is still there" 0 $? "$WORK/oidc-other.log"
 
 echo "== AWS CLI errors: only the error code itself reads as gone ============================"
 # A node group read and the operator role read count as "gone" only for the exact AWS CLI form
@@ -540,9 +593,11 @@ echo "== AWS CLI errors: only the error code itself reads as gone ==============
 full; clean "$WORK/err-ng-count.log"
 k="$(calls aws 'eks describe-nodegroup' '--nodegroup-name sandbox' | awk -v s="$(first_seq eksctl 'delete nodegroup' sandbox)" '$1 < s' | wc -l | tr -d ' ')"
 k=$((k - 1))
-# A sandbox node group that is already gone (deleted as eksctl deletes it): EKS answers exactly
+# A sandbox node group that is already gone (deleted by an earlier clean.sh, which recorded its
+# node role first): EKS answers exactly
 # "An error occurred (ResourceNotFoundException) when calling the DescribeNodegroup operation".
 full; run_real "$WORK/err-ng-pre.log" eksctl delete nodegroup --region us-west-2 --cluster cb-offline-test --name sandbox
+printf 'NODE_ROLE_ARNS=%s\n' "$(nr "$SR")" >> "$RD/state.env"
 : > "$FAKE_LOG"; clean "$WORK/err-ng-gone.log"
 check "ACCEPT a node group read that answers exactly ResourceNotFoundException: read as gone, the clean up goes on" 0 "$RC" "$WORK/err-ng-gone.log" '^CLEAN: run r1 .*nothing left behind\.$'
 grep -q '^An error occurred (ResourceNotFoundException) when calling the DescribeNodegroup operation' "$WORK/err-ng-gone.log" \

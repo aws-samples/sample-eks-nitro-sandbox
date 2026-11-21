@@ -90,9 +90,18 @@ delete_if_ours() {
     *) fail "could not read $kind $ident before the delete" "$(cat "$err")"; return 1 ;;
   esac
 }
-eks_tags_ours() { # eks_tags_ours <describe-args...>: 0 ours, 1 not, 2 unknown
-  local tags; tags="$(aws eks "$@" --region "$AWS_REGION" --output json)" || return 2
+eks_tags_ours() { # eks_tags_ours <describe-args...>: 0 ours, 1 not, 2 unknown; the read stays in eks-read.json
+  local tags; tags="$(aws eks "$@" --region "$AWS_REGION" --output json)" && printf '%s\n' "$tags" >"$OUT/eks-read.json" || return 2
   python3 -c 'import json,sys; d=json.load(sys.stdin); v=list(d.values())[0]; print(json.dumps(v.get("tags", {})))' <<<"$tags" | tags_match
+}
+# record_node_role: add the exact nodeRole ARN of the node group read last (proved the run's) to
+# NODE_ROLE_ARNS in the state file, before the node group goes. A later clean.sh reads it too.
+NODE_ROLE_RX="^arn:aws[a-z-]*:iam::$AWS_ACCOUNT_ID:role/[A-Za-z0-9+=.@_/-]+$"
+record_node_role() {
+  local arn old
+  arn="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["nodegroup"]["nodeRole"])' "$OUT/eks-read.json")" \
+    && [[ "$arn" =~ $NODE_ROLE_RX ]] && old="$(state_get NODE_ROLE_ARNS)" || return 1
+  [[ ",$old," == *",$arn,"* ]] || state_set NODE_ROLE_ARNS "${old:+$old,}$arn"
 }
 # finish_clean: read everything back, write the verdict, exit 0 only when nothing remains.
 finish_clean() {
@@ -171,14 +180,16 @@ if [[ "$state" != NONE ]]; then
     if kc delete runtimeclass isolated-sandbox >/dev/null; then echo "deleted RuntimeClass isolated-sandbox"
     else fail "delete RuntimeClass isolated-sandbox"; fi
   fi
-  # A node group that is not the run's, that cannot be read, or whose delete did not finish
-  # keeps the cluster: eksctl delete cluster would delete it with the cluster.
+  # A node group that is not the run's, that cannot be read, whose node role cannot be recorded,
+  # or whose delete did not finish keeps the cluster: eksctl delete cluster would delete it with the cluster.
   for group in sandbox system; do
     t=0; eks_tags_ours describe-nodegroup --cluster-name "$CLUSTER_NAME" --nodegroup-name "$group" || t=$?
+    ((t != 0)) || record_node_role || t=3
     case "$t" in
       0) eksctl delete nodegroup --region "$AWS_REGION" --cluster "$CLUSTER_NAME" --name "$group" --disable-eviction --wait \
            || { keep_cluster=1; fail "eksctl delete nodegroup $group did not finish, so the cluster is kept"; } ;;
       1) keep_cluster=1; fail "node group $group is not tagged for run $RUN_ID; skipped, so the cluster is kept" ;;
+      3) keep_cluster=1; fail "could not record the node role of node group $group in NODE_ROLE_ARNS; it and the cluster are kept" ;;
       *) if ! aws eks describe-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$group" \
            >/dev/null 2>"$OUT/ng-$group.err" && ! aws_error_is ResourceNotFoundException "$(cat "$OUT/ng-$group.err")"; then
            keep_cluster=1; fail "could not read node group $group, so the cluster is kept" "$(cat "$OUT/ng-$group.err")"
@@ -334,16 +345,15 @@ delete_cluster() {
   done
 }
 # cascade_children: eksctl delete cluster deletes every node group, Fargate profile and eksctl stack
-# of the cluster, and the AWS load balancers of its LoadBalancer Services, Ingresses and Gateways;
-# EKS deletes the add-ons, Pod Identity associations, access entries and identity provider configs
-# with the cluster. Each one must be this run's, and none may be unreadable; else it prints why and
-# returns 1, and the cluster is kept. EKS makes two kinds of access entry with no tag: one for the
-# cluster creator (STANDARD), and one for the node role of each managed node group (EC2_LINUX).
-# The first is the run's when its principal is the role of the caller read at the start of this
-# script; the second when its principal is a node role of the run (read before step 1), or a
-# role that IAM no longer has.
+# of the cluster, the IAM OIDC provider of its issuer (the sample makes none), and the load balancers
+# of its LoadBalancer Services, Ingresses and Gateways; EKS deletes the add-ons, Pod Identity
+# associations, access entries and identity provider configs with it. Each must be this run's and
+# readable, else it prints why and returns 1, and the cluster is kept. EKS makes two access entry
+# kinds with no tag: the creator's (STANDARD), the run's when its principal is the role of the caller
+# read at the start; and one per managed node group (EC2_LINUX), the run's only when its principal
+# is an exact ARN in NODE_ROLE_ARNS (record_node_role), whether that role is live or gone.
 cascade_children() {
-  local bad=0 kind name t list role="" creator="" p ty names n r
+  local bad=0 kind name t list role="" creator="" p ty names n r roles rec=0
   foreign() { bad=1; fail "$1 is not this run's; eksctl delete cluster would delete it with the cluster, so the cluster is kept"; }
   unread() { bad=1; fail "could not read $1; the cluster is kept" "${2:-}"; }
   child() { case "$1" in 0) ;; 1) foreign "$2" ;; *) unread "$2" ;; esac; } # child <eks_tags_ours result> <what>
@@ -380,10 +390,27 @@ cascade_children() {
       child "$r" "identity provider config $n"
     done
   fi
+  # An IAM OIDC provider whose URL is the cluster issuer (compared without case) is not this run's.
+  if ! t="$(aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --query cluster.identity.oidc.issuer \
+    --output text 2>"$OUT/cascade-oidc.err")" || ! aws iam list-open-id-connect-providers --output json \
+    >"$OUT/cascade-oidc.json" 2>>"$OUT/cascade-oidc.err" || ! names="$(python3 -c 'import json, re, sys
+iss = sys.argv[1]
+re.fullmatch(r"https://[^\s/]+/\S+", iss) or sys.exit("malformed cluster issuer: %r" % iss)
+for x in json.load(open(sys.argv[2]))["OpenIDConnectProviderList"]:
+    m = re.fullmatch(r"arn:aws[a-z-]*:iam::[0-9]{12}:oidc-provider/(\S+)", x["Arn"]) or sys.exit("malformed provider: %r" % x)
+    m.group(1).lower() == iss[8:].lower() and print(x["Arn"])' "$t" "$OUT/cascade-oidc.json" 2>>"$OUT/cascade-oidc.err")"; then
+    unread "the IAM OIDC providers and the cluster issuer" "$(cat "$OUT/cascade-oidc.err")"
+  else
+    for n in $names; do foreign "IAM OIDC provider $n (the cluster issuer)"; done
+  fi
   # The access entries. The caller is an assumed role (arn:aws:sts::<account>:assumed-role/<role>/
   # <session>), whose access entry names the role, or an IAM role or user named as it is.
   if [[ "${CALLER_ARN:-}" =~ ^arn:aws:sts::$AWS_ACCOUNT_ID:assumed-role/([^/]+)/ ]]; then role="${BASH_REMATCH[1]}"
   elif [[ "${CALLER_ARN:-}" =~ ^arn:aws:iam::$AWS_ACCOUNT_ID:(role|user)/ ]]; then creator="$CALLER_ARN"; fi
+  # The node role record: rec 0 read, 1 none, 2 unreadable or an element that is not a role ARN.
+  roles="$(state_get NODE_ROLE_ARNS)" || rec=2
+  ((rec)) || [[ -n "$roles" ]] || rec=1
+  ((rec)) || while read -r n; do [[ "$n" =~ $NODE_ROLE_RX ]] || rec=2; done < <(tr ',' '\n' <<<"$roles")
   if ! names="$(eks_list list-access-entries 'accessEntries[]')"; then
     unread "the access entries of the cluster" "$(cat "$OUT/cascade-list-access-entries.err")"
   else
@@ -394,18 +421,13 @@ cascade_children() {
       ty="$(aws eks describe-access-entry --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --principal-arn "$p" \
         --query accessEntry.type --output text 2>/dev/null)" || { unread "access entry $p"; continue; }
       n=""; [[ "$p" =~ ^arn:aws:iam::$AWS_ACCOUNT_ID:role/(.+/)?([^/]+)$ ]] && n="${BASH_REMATCH[2]}"
-      if [[ "$ty" == EC2_LINUX && -n "$n" ]] && ids "$OUT/confirmed.jsonl" iam-role | grep -Fqx -- "$n"; then
-        continue   # the node role entry of a node group of the run
-      fi
-      # EKS keeps a node role entry after its role is gone (eksctl deletes the role with the node
-      # group stack, also in an earlier clean.sh that stopped later). That entry lets no one in: a
-      # role made again with the same name has a new role ID, which the entry does not match.
-      if [[ "$ty" == EC2_LINUX && -n "$n" ]]; then
-        r=0; t="$(aws iam get-role --role-name "$n" 2>&1 >/dev/null)" || r=$?
-        if ((r != 0)); then
-          aws_error_is NoSuchEntity "$t" && continue
-          unread "the role $n of access entry $p" "$t"; continue
-        fi
+      if [[ "$ty" == EC2_LINUX ]]; then   # a node role entry: see the comment of cascade_children
+        case "$rec" in
+          0) [[ ",$roles," == *",$p,"* ]] || foreign "access entry $p (type EC2_LINUX, not in the node role record NODE_ROLE_ARNS)" ;;
+          1) foreign "access entry $p (type EC2_LINUX; the run has no node role record NODE_ROLE_ARNS)" ;;
+          *) unread "the node role record NODE_ROLE_ARNS in $RUN_STATE_FILE, for access entry $p" ;;
+        esac
+        continue
       fi
       if [[ "$ty" == STANDARD && ( ( -n "$role" && "$n" == "$role" ) || ( -n "$creator" && "$p" == "$creator" ) ) ]]; then
         continue   # the creator entry, for the caller of this clean up
