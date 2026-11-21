@@ -14,6 +14,7 @@ GONE = {
     "security-group": "InvalidGroup.NotFound", "network-interface": "InvalidNetworkInterfaceID.NotFound",
     "launch-template": "InvalidLaunchTemplateId.NotFound", "image": "InvalidAMIID.NotFound",
     "snapshot": "InvalidSnapshot.NotFound", "iam-role": "NoSuchEntity", "instance-profile": "NoSuchEntity",
+    "stack": "ValidationError",
 }
 
 
@@ -28,11 +29,22 @@ def describe(kind, ident):
         "launch-template": (["ec2", "describe-launch-templates", "--launch-template-ids", ident], lambda d: d["LaunchTemplates"][0]),
         "image": (["ec2", "describe-images", "--image-ids", ident], lambda d: d["Images"][0]),
         "snapshot": (["ec2", "describe-snapshots", "--snapshot-ids", ident], lambda d: d["Snapshots"][0]),
+            "stack": (["cloudformation", "describe-stacks", "--stack-name", ident], lambda d: d["Stacks"][0]),
         "iam-role": (["iam", "get-role", "--role-name", ident], lambda d: d["Role"]),
         "instance-profile": (["iam", "get-instance-profile", "--instance-profile-name", ident], lambda d: d["InstanceProfile"]),
     }
     require(kind in calls, f"unknown kind {kind}")
     args, pick = calls[kind]
+    if kind == "stack":
+        # CloudFormation answers ValidationError for a missing stack and for other errors too:
+        # only "does not exist" reads as gone.
+        try:
+            doc = aws(*args)
+        except Unknown as err:
+            if "does not exist" in str(err):
+                return False, None, None
+            raise
+        return True, doc["Stacks"][0].get("Tags", []), doc["Stacks"][0]
     doc = aws(*args, allow=(GONE[kind],))
     if doc is None:
         return False, None, None
@@ -44,7 +56,8 @@ def describe(kind, ident):
         raise Unknown(f"{kind} {ident}: unexpected answer") from err
     if kind == "instance" and item["State"]["Name"] == "terminated":
         return False, item.get("Tags", []), item
-    tags = item.get("Tags", [])
+    # EC2 returns the tags of a network interface in TagSet, of every other kind here in Tags.
+    tags = item.get("TagSet", []) if kind == "network-interface" else item.get("Tags", [])
     if kind == "iam-role" and not tags:
         tags = aws("iam", "list-role-tags", "--role-name", ident).get("Tags", [])
     if kind == "instance-profile" and not tags:

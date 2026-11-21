@@ -19,7 +19,7 @@ SAMPLE_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/common.sh
 source "$SAMPLE_DIR/scripts/common.sh"
 
-dry_run=0 keep_ami=0
+dry_run=0 keep_ami=0 keep_cluster=0
 while (($#)); do
   case "$1" in
     --dry-run) dry_run=1 ;;
@@ -114,14 +114,18 @@ if [[ "$state" != NONE ]]; then
     if kc delete runtimeclass isolated-sandbox >/dev/null; then echo "deleted RuntimeClass isolated-sandbox"
     else clean_failed "delete RuntimeClass isolated-sandbox"; fi
   fi
+  # A node group that is not the run's, or that cannot be read, keeps the cluster: eksctl delete
+  # cluster would delete it with the cluster.
   for group in sandbox system; do
     t=0; eks_tags_ours describe-nodegroup --cluster-name "$CLUSTER_NAME" --nodegroup-name "$group" || t=$?
     case "$t" in
       0) eksctl delete nodegroup --region "$AWS_REGION" --cluster "$CLUSTER_NAME" --name "$group" --disable-eviction --wait \
            || clean_failed "eksctl delete nodegroup $group" ;;
-      1) clean_failed "node group $group is not tagged for run $RUN_ID; skipped" ;;
-      *) aws eks describe-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$group" \
-           >/dev/null 2>"$OUT/ng.err" || grep -q ResourceNotFoundException "$OUT/ng.err" || clean_failed "could not read node group $group" ;;
+      1) keep_cluster=1; clean_failed "node group $group is not tagged for run $RUN_ID; skipped, so the cluster is kept" ;;
+      *) if ! aws eks describe-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$group" \
+           >/dev/null 2>"$OUT/ng.err" && ! grep -q ResourceNotFoundException "$OUT/ng.err"; then
+           keep_cluster=1; clean_failed "could not read node group $group, so the cluster is kept"
+         fi ;;
     esac
   done
 fi
@@ -186,9 +190,15 @@ else
 fi
 
 step "5/5 the Pod Identity association and the cluster stacks"
+# delete_stack <name>: delete one CloudFormation stack and wait until it is gone.
+delete_stack() {
+  aws cloudformation delete-stack --region "$AWS_REGION" --stack-name "$1" \
+    && aws cloudformation wait stack-delete-complete --region "$AWS_REGION" --stack-name "$1"
+}
 if ((sg_left)); then
   clean_failed "the cluster and its VPC are kept, because a builder security group remains"
 elif [[ "$state" != NONE ]]; then
+  # An association that is not the run's, or that cannot be read, keeps the cluster too.
   for assoc in $(ids "$OUT/after-2a.jsonl" pod-identity-association); do
     t=0; eks_tags_ours describe-pod-identity-association --cluster-name "$CLUSTER_NAME" --association-id "$assoc" || t=$?
     if ((t == 0)); then
@@ -199,12 +209,21 @@ elif [[ "$state" != NONE ]]; then
         clean_failed "delete Pod Identity association $assoc"
       fi
     else
-      clean_failed "Pod Identity association $assoc is not tagged for run $RUN_ID, or could not be read; skipped"
+      keep_cluster=1
+      clean_failed "Pod Identity association $assoc is not tagged for run $RUN_ID, or could not be read; skipped, so the cluster is kept"
     fi
   done
-  require_sample_cluster
-  eksctl delete cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --disable-nodegroup-eviction --wait \
-    || clean_failed "eksctl delete cluster $CLUSTER_NAME"
+  if ((keep_cluster)); then
+    clean_failed "the cluster $CLUSTER_NAME and its VPC are kept, because a resource in it is not this run's or could not be read"
+  else
+    require_sample_cluster
+    eksctl delete cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --disable-nodegroup-eviction --wait \
+      || clean_failed "eksctl delete cluster $CLUSTER_NAME"
+  fi
+else
+  # The run stopped during eksctl create cluster: the cluster stack (and its VPC) can exist
+  # without the cluster. Delete only that exact stack, after its tags are read again.
+  delete_if_ours stack "eksctl-$CLUSTER_NAME-cluster" delete_stack "eksctl-$CLUSTER_NAME-cluster"
 fi
 r=0; out="$(aws iam get-role --role-name "$OPERATOR_ROLE_NAME" 2>&1)" || r=$?
 if ((r == 0)); then

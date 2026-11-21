@@ -41,6 +41,7 @@ step "1. the dedicated cluster and its CNI"
 check "cluster $CLUSTER_NAME is Kubernetes $KUBERNETES_VERSION and this run's" \
   eq "$(aws eks describe-cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --query cluster.version --output text)" "$KUBERNETES_VERSION"
 addons="$(aws eks list-addons --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --query addons --output text 2>/dev/null)" || addons="<unreadable>"
+addons="${addons//$'\t'/ }"   # the text output separates the names with tabs
 no_cni_addon() { [[ "$addons" != "<unreadable>" ]] || return 2; [[ " $addons " != *" vpc-cni "* && " $addons " != *" kube-proxy "* ]]; }
 check "no vpc-cni and no kube-proxy add-on (add-ons: $addons)" no_cni_addon
 no_cni_ds() { local out; out="$(kc -n kube-system get daemonset aws-node kube-proxy --ignore-not-found -o name)" || return 2; [[ -z "$out" ]]; }
@@ -58,8 +59,9 @@ check "the Cilium agent image is v$CILIUM_VERSION (cilium.lock)" agent_image
 for node in "$SYSTEM_NODE" "$SANDBOX_NODE"; do
   agent="$(kc -n kube-system get pods -l k8s-app=cilium --field-selector "spec.nodeName=$node" -o jsonpath='{.items[0].metadata.name}')"
   save "$OUT/cilium-status-$node.txt" kc -n kube-system exec "$agent" -c cilium-agent -- cilium-dbg status --verbose
+  save "$OUT/cilium-config-$node.txt" kc -n kube-system exec "$agent" -c cilium-agent -- cilium-dbg config --all
   check "cilium status on $node: ENI IPAM, native routing, kube-proxy replacement, Socket LB Hostns-only" \
-    pyc kpr-status "$OUT/cilium-status-$node.txt"
+    pyc kpr-status "$OUT/cilium-status-$node.txt" --config "$OUT/cilium-config-$node.txt"
 done
 
 step "2. the AMIs of the node groups"

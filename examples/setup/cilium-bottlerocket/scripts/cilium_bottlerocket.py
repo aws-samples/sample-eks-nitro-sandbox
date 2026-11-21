@@ -74,7 +74,7 @@ def parser():
     add("check-dm-verity", cb_checks.cmd_check_dm_verity, opt_file)
     add("check-network-isolated", cb_checks.cmd_check_network_isolated, opt_file)
     add("pod-in-eni", cb_checks.cmd_pod_in_eni, (["pod_ip"], {}), opt_file)
-    add("kpr-status", cb_checks.cmd_kpr_status, opt_file)
+    add("kpr-status", cb_checks.cmd_kpr_status, opt_file, (["--config"], {"required": True}))
     add("audit-tags", cb_inventory.cmd_audit_tags, (["--after-build"], {"action": "store_true"}))
     add("tag-sweep", cb_inventory.cmd_tag_sweep)
     add("owned", cb_inventory.cmd_owned)

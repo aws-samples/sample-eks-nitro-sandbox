@@ -402,7 +402,7 @@ probe_capture() {
     >"$d/networkd.txt" 2>"$d/networkd.err" || : >"$d/networkd.txt"
   probe_exec "$p" nsenter -t 1 -n ip -o addr >"$d/host-addr.txt" 2>"$d/host-addr.err" || true
   probe_exec "$p" nsenter -t 1 -n ip route show table all >"$d/host-route.txt" 2>"$d/host-route.err" || true
-  probe_exec "$p" sh -c 'echo "==dm=="; cat /host/sys/block/dm-0/dm/name || exit 1; echo "==cmdline=="; cat /proc/cmdline; echo "==mount=="; grep -E "^[0-9]+ [0-9]+ [0-9:]+ / / " /host/proc/1/mountinfo' \
+  probe_exec "$p" sh -c 'echo "==dm=="; cat /host/sys/block/dm-0/dm/name || exit 1; echo "==dev=="; cat /host/sys/block/dm-0/dev || exit 1; echo "==cmdline=="; cat /proc/cmdline; echo "==mount=="; grep -E "^[0-9]+ [0-9]+ [0-9:]+ / / " /host/proc/1/mountinfo' \
     >"$d/dm-verity.txt" 2>"$d/dm-verity.err" || : >"$d/dm-verity.txt"
 }
 

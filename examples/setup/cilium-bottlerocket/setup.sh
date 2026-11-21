@@ -151,6 +151,7 @@ if should_run cluster; then
   state_set BUILD_SUBNET_ID "$build_subnet"
   addons="$(aws eks list-addons --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --query addons --output text)" \
     || die E_ADDON_READ "could not list the add-ons of $CLUSTER_NAME"
+  addons="${addons//$'\t'/ }"   # the text output separates the names with tabs
   [[ " $addons " != *" vpc-cni "* && " $addons " != *" kube-proxy "* ]] \
     || die E_CNI_PRESENT "cluster $CLUSTER_NAME has the vpc-cni or kube-proxy add-on: $addons"
   ds="$(kc -n kube-system get daemonset aws-node kube-proxy --ignore-not-found -o name)" \
@@ -209,6 +210,11 @@ if should_run system-node; then
   probe_capture "$probe" "$EVIDENCE_DIR/probe-system"
   probe_stop "$probe"
   python3 "$PY" check-btf "$EVIDENCE_DIR/probe-system/btf.txt"
+  # Tag what AWS made for the cluster and the system node group with no tag, then audit every
+  # class, so the run is fully tagged before the AMI build. Stage node-checks does it again for
+  # the sandbox node group.
+  python3 "$PY" tag-sweep
+  python3 "$PY" audit-tags
   echo "The system node $system_node and the Cilium operator are healthy. The AMI build can start."
   finish system-node
 fi

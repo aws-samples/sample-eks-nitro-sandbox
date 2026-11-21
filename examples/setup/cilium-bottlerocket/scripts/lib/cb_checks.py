@@ -63,14 +63,16 @@ def cmd_check_containerd_dump(args):
     """A merged `containerd config dump`. A malformed drop-in makes containerd print an error
     instead of a configuration, which this check refuses like a missing handler."""
     text = read_input(args.file)
-    require(re.search(r"^version = 3$", text, re.M) is not None,
-            "the input is not a containerd version 3 configuration dump (a malformed drop-in, or an error)")
+    # containerd 2.3 on Bottlerocket 1.70.0 reads a version 3 file and dumps it as version 4,
+    # with each table indented (live system node, Phase 1).
+    require(re.search(r"^version = [34]$", text, re.M) is not None,
+            "the input is not a containerd version 3 or 4 configuration dump (a malformed drop-in, or an error)")
     q = r"""['"]?"""
-    table = re.compile(r"^\[plugins\." + q + r"io\.containerd\.cri\.v1\.runtime" + q
+    table = re.compile(r"^\s*\[plugins\." + q + r"io\.containerd\.cri\.v1\.runtime" + q
                        + r"\.containerd\.runtimes\." + q + r"isolated-sandbox" + q + r"\]$", re.M)
     head = table.search(text)
     require(head is not None, "the merged configuration has no isolated-sandbox runtime handler")
-    body = text[head.end():].split("\n[", 1)[0]
+    body = re.split(r"\n\s*\[", text[head.end():], maxsplit=1)[0]
     require(re.search(r"^\s*runtime_type = ['\"]io\.containerd\.nitro-sandbox\.v2['\"]$", body, re.M) is not None,
             "the isolated-sandbox handler does not use runtime_type io.containerd.nitro-sandbox.v2")
     values = re.findall(r"^\s*discard_unpacked_layers = (\S+)$", text, re.M)
@@ -191,23 +193,25 @@ def cmd_check_networkd(args):
 
 
 def cmd_check_dm_verity(args):
-    """Capture: '==dm==' the name of /sys/block/dm-0, '==cmdline==' /proc/cmdline,
-    '==mount==' the mountinfo line of /. The root is the read-only dm-verity device."""
+    """Capture: '==dm==' the name of /sys/block/dm-0, '==dev==' its major:minor, '==cmdline=='
+    /proc/cmdline, '==mount==' the mountinfo line of /. The root is the read-only dm-verity
+    device dm-0. Bottlerocket 1.70.0 names the mount source /dev/root, so the check compares
+    the device number of / with that of dm-0 (live system node, Phase 1)."""
     text = read_input(args.file)
-    parts = dict(re.findall(r"^==(dm|cmdline|mount)==\n(.*?)(?=^==|\Z)", text, re.M | re.S))
-    if set(parts) != {"dm", "cmdline", "mount"}:
-        raise Unknown("the capture has no ==dm==, ==cmdline== and ==mount== sections")
+    parts = dict(re.findall(r"^==(dm|dev|cmdline|mount)==\n(.*?)(?=^==|\Z)", text, re.M | re.S))
+    if set(parts) != {"dm", "dev", "cmdline", "mount"}:
+        raise Unknown("the capture has no ==dm==, ==dev==, ==cmdline== and ==mount== sections")
     require(parts["dm"].strip() == "root", f"dm-0 is {parts['dm'].strip()!r}, not root")
-    require("dm-mod.create=root" in parts["cmdline"] and "verity" in parts["cmdline"],
-            "the kernel command line does not create the root dm-verity device")
+    tokens = parts["cmdline"].replace('"', " ").split()
+    require("root=/dev/dm-0" in tokens and "verity" in tokens and any(t.startswith("dm-mod.create=root,") for t in tokens),
+            "the kernel command line does not create the root dm-verity device dm-0")
     mounts = [line.split() for line in parts["mount"].splitlines() if line.strip()]
     root = [m for m in mounts if len(m) > 5 and m[4] == "/"]
     require(root, "no mount of / in the capture")
     fields = root[0]
-    sep = fields.index("-") if "-" in fields else -1
-    require(sep > 0 and len(fields) > sep + 2 and fields[sep + 2] == "/dev/dm-0", f"/ is not mounted from /dev/dm-0: {fields}")
+    require(fields[2] == parts["dev"].strip(), f"/ is on device {fields[2]}, not dm-0 ({parts['dev'].strip()})")
     require("ro" in fields[5].split(","), f"/ is not read-only: {fields[5]}")
-    print("dm-verity: / is the read-only device mapper root dm-0, created with verity on the kernel command line")
+    print(f"dm-verity: / is the read-only dm-0 'root' (device {fields[2]}), created with verity on the kernel command line")
 
 
 def sections(text):
@@ -259,8 +263,9 @@ KPR_EXPECTED = {"Status": "True", "Socket LB": "Enabled", "Socket LB Coverage": 
 
 
 def cmd_kpr_status(args):
-    """`cilium-dbg status --verbose` of one agent: ENI IPAM, native routing, kube-proxy
-    replacement True, and the socket load balancer for the host namespace only."""
+    """`cilium-dbg status --verbose` (file) and `cilium-dbg config --all` (--config) of one
+    agent: ENI IPAM, native routing, kube-proxy replacement True, and the socket load balancer
+    for the host namespace only."""
     text = read_input(args.file)
     top, details, inside = None, {}, False
     for line in text.splitlines():
@@ -281,9 +286,14 @@ def cmd_kpr_status(args):
         raise Unknown("no KubeProxyReplacement line in the status")
     wrong = [] if top == "True" else [f"KubeProxyReplacement: {top}"]
     wrong += [f"{k}: {details.get(k, '(missing)')}" for k, v in KPR_EXPECTED.items() if details.get(k) != v]
-    if not re.search(r"^IPAM:\s+IPv4:.*\bENI\b|^IPAM:.*eni", text, re.M | re.I):
-        wrong.append("IPAM is not ENI")
     if not re.search(r"^Routing:\s+Network:\s+Native\b", text, re.M):
         wrong.append("routing is not native")
+    # Cilium 1.20.5 prints "IPAM: IPv4: 1 IPAM pool(s) available," in the status, with no mode,
+    # so the mode comes from the agent's own configuration (`cilium-dbg config --all`).
+    config = read_input(args.config)
+    if not re.search(r"^IPAM\s*:\s*eni\s*$", config, re.M):
+        wrong.append("the agent configuration has no 'IPAM : eni'")
+    if not re.search(r"^RoutingMode\s*:\s*native\s*$", config, re.M):
+        wrong.append("the agent configuration has no 'RoutingMode : native'")
     require(not wrong, "; ".join(wrong))
     print(f"cilium status: ENI IPAM, native routing, kube-proxy replacement {top}, socket LB {details['Socket LB Coverage']}")
