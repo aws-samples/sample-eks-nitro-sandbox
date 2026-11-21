@@ -11,7 +11,7 @@ import yaml
 
 from cb_base import (CRI_PROXY_ENDPOINT, LT_ID, NODEGROUP_LABEL, NS_LABEL, OWNER_TAG, SAMPLE,
                      SANDBOX_NODE_LABEL, SANDBOX_TAINT_KEY, Unknown, aws, int_setting, is_ours,
-                     read_input, read_json, require, run_id, setting, state_get, tag_list)
+                     read_input, read_json, require, run_id, setting, state_get, subnet_now, tag_list)
 
 AMI = re.compile(r"^ami-[0-9a-f]{8}(?:[0-9a-f]{9})?$")
 INSTANCE_TYPE = re.compile(r"^[a-z][a-z0-9-]*\.[0-9a-z]+$")
@@ -177,7 +177,7 @@ def cmd_render_nodegroup(args):
 def nodegroup_problems(ng, found):
     """What differs between a node group that EKS has (describe-nodegroup) and the rendered one, including
     the two tags and a node role of this run with exactly the two AWS managed policies."""
-    lt, sizes = found.get("launchTemplate") or {}, found.get("scalingConfig") or {}
+    lt, sizes, subnet = found.get("launchTemplate") or {}, found.get("scalingConfig") or {}, state_get("BUILD_SUBNET_ID")
 
     def taints(items):
         return sorted((t.get("key"), t.get("value"), TAINT_EFFECTS.get(t.get("effect"), t.get("effect"))) for t in items or [])
@@ -192,8 +192,10 @@ def nodegroup_problems(ng, found):
         "taints": (taints(found.get("taints")), taints(ng.get("taints"))),
         "remote access": (found.get("remoteAccess") or None, None),
         # The cluster stage recorded the private subnet of the run VPC in the node zone as BUILD_SUBNET_ID.
-        "subnets": (sorted(found.get("subnets") or []), [state_get("BUILD_SUBNET_ID")]),
+        "subnets": (sorted(found.get("subnets") or []), [subnet]),
     }
+    if compare["subnets"][0] == [subnet]:  # read it now: it can have become public since it was recorded
+        compare[f"subnet {subnet} VPC, zone and MapPublicIpOnLaunch"] = (subnet_now(subnet), (state_get("VPC_ID"), zones()[0], False))
     wrong = [f"{name} {got}, want {want}" for name, (got, want) in compare.items() if got != want]
     if not is_ours(found.get("tags")):
         wrong.insert(0, f"tags {found.get('tags')} are not {OWNER_TAG[0]}={OWNER_TAG[1]} RunId={run_id()}")

@@ -123,6 +123,7 @@ check_max_pods() {
 
 # ---------------------------------------------------------------------------
 step "1/8 preflight: tools, versions, account, Region, quota and names"
+require_cluster_name
 require_tool_versions
 require_region
 python3 "$PY" check-config

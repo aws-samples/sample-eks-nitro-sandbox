@@ -25,6 +25,7 @@ G_NODE="$WORK/node-fixtures"; python3 "$TESTLIB/fixture_node.py" "$G_NODE"
 # $AMI_STUB_BUILD_RC; a build that exits 0 records AMI_BUILD_RESULT=ok unless AMI_STUB_NO_RESULT=1.
 cat > "$WORK/bin/ami-build-stub" <<'STUB'
 #!/bin/bash
+[[ -z "${AMI_STUB_LOG:-}" ]] || printf '%s\n' "$1" >> "$AMI_STUB_LOG"
 case "$1" in
   check-tools) exit "${AMI_STUB_TOOLS_RC:-0}" ;;
   build)
@@ -85,6 +86,14 @@ check "REJECT a sandbox instance type without Nitro Enclaves support (m8i.large)
 world_reset; unset RUN_ID
 FAKE_FAIL='aws|ec2 describe-instance-types||RequestLimitExceeded' setup "$WORK/pre-enclave-read.log" --stop-after preflight
 check "REJECT preflight when the instance type cannot be read" 1 "$RC" "$WORK/pre-enclave-read.log" '^ERROR: E_ENCLAVE_TYPE: could not read'
+# A malformed CLUSTER_NAME stops preflight first: before the Packer tool check, any AWS call
+# (the caller account read among them) and the run folder of reserve_run.
+world_reset; unset RUN_ID; rm -rf "$CB_RUN_DIR/runs" "$CB_RUN_DIR/current-run" "$WORK/ami-stub-name.log"; config_set 'CLUSTER_NAME="Bad_Name"'
+AMI_STUB_LOG="$WORK/ami-stub-name.log" setup "$WORK/pre-name.log" --stop-after preflight
+check "REJECT a CLUSTER_NAME with capitals and an underscore (Bad_Name) in preflight" 1 "$RC" "$WORK/pre-name.log" \
+  "^ERROR: E_NAME: CLUSTER_NAME 'Bad_Name' must be 3 to 32 lowercase letters, digits and hyphens, starting with a letter\$"
+[[ "$(count_calls aws)" == 0 && "$(count_calls aws 'sts get-caller-identity')" == 0 && ! -s "$WORK/ami-stub-name.log" && ! -e "$CB_RUN_DIR/runs" ]]
+check "  ... before any aws call (no sts get-caller-identity), before check-tools, and with no runs/ folder" 0 $? "$WORK/pre-name.log"
 
 echo "== 2/4 cluster ======================================================================"
 stage cluster preflight "$WORK/cl.log"

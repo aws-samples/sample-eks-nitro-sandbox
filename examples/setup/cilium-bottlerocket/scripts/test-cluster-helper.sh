@@ -150,6 +150,21 @@ ng['subnets'] = ['subnet-0fa00000000000003']|subnets \['subnet-0fa00000000000003
 role['Tags'] = [{'Key': 'team', 'Value': 'someone-else'}]|node role eksctl-cb-offline-test-nodegroup-sandbox-NodeInstanceRole is not tagged|REJECT a node group of that name whose node role is not this run's
 role['Attached'].append('arn:aws:iam::aws:policy/AmazonEC2FullAccess')|node role .*: managed policies|REJECT a node group of that name whose node role has a third managed policy
 role['Inline'] = {'extra': {'Version': '2012-10-17'}}|node role .*: inline policies \['extra'\], want none|REJECT a node group of that name whose node role has an inline policy
+[x for x in s['ec2']['subnets'] if x['SubnetId'] == 'subnet-0fa00000000000001'][0]['MapPublicIpOnLaunch'] = True|subnet subnet-0fa00000000000001 VPC, zone and MapPublicIpOnLaunch \('vpc-0fa00000000000001', 'us-west-2b', True\), want \('vpc-0fa00000000000001', 'us-west-2b', False\)|REJECT a node group of that name whose recorded subnet has become public since the cluster stage recorded it
+[x for x in s['ec2']['subnets'] if x['SubnetId'] == 'subnet-0fa00000000000001'][0]['VpcId'] = 'vpc-0fa00000000000999'|subnet subnet-0fa00000000000001 VPC, zone and MapPublicIpOnLaunch \('vpc-0fa00000000000999', 'us-west-2b', False\), want \('vpc-0fa00000000000001', 'us-west-2b', False\)|REJECT a node group of that name whose recorded subnet is now in another VPC than the run VPC
+[x for x in s['ec2']['subnets'] if x['SubnetId'] == 'subnet-0fa00000000000001'][0]['AvailabilityZone'] = 'us-west-2c'|subnet subnet-0fa00000000000001 VPC, zone and MapPublicIpOnLaunch \('vpc-0fa00000000000001', 'us-west-2c', False\), want \('vpc-0fa00000000000001', 'us-west-2b', False\)|REJECT a node group of that name whose recorded subnet is in another zone than the node zone
+CASES
+# The current read of the recorded subnet, when it fails or answers without the three fields.
+while IFS=';' read -r fail code rx why; do
+  [[ -n "$why" ]] || continue
+  ng_world; world_py "$code"
+  FAKE_FAIL="$fail" h "$WORK/rng-sn.log" render-nodegroup sandbox
+  check "$why" 2 "$RC" "$WORK/rng-sn.log" "^ERROR: E_RENDER_NODEGROUP_UNKNOWN: could not check: $rx\$"
+  grep -qv '^ERROR: E_RENDER_NODEGROUP_UNKNOWN: ' "$WORK/rng-sn.log"; check "  ... and it prints nothing else" 1 $? "$WORK/rng-sn.log"
+  [[ ! -e "$RD/nodegroups-sandbox.yaml" ]]; check "  ... and no node group config is written for eksctl" 0 $? "$WORK/rng-sn.log"
+done <<'CASES'
+aws|ec2 describe-subnets||RequestLimitExceeded;pass;aws ec2 describe-subnets failed: .*RequestLimitExceeded.*;REJECT render-nodegroup when the read of the recorded subnet fails, as could not check
+;del [x for x in s['ec2']['subnets'] if x['SubnetId'] == 'subnet-0fa00000000000001'][0]['AvailabilityZone'];describe-subnets subnet-0fa00000000000001 did not answer that one subnet with its VPC, zone and MapPublicIpOnLaunch;REJECT render-nodegroup when the read of the recorded subnet has no AvailabilityZone, as could not check
 CASES
 sed -i '/^SANDBOX_LAUNCH_TEMPLATE_ID=/d' "$RD/state.env"
 h "$WORK/rng-nolt.log" render-nodegroup sandbox

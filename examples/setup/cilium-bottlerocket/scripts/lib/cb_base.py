@@ -110,6 +110,17 @@ def aws(*args, allow=()):
         raise Unknown(f"aws {' '.join(args[:2])} returned no JSON") from err
 
 
+def subnet_now(subnet):
+    """(VpcId, AvailabilityZone, MapPublicIpOnLaunch) of one subnet, from a current describe-subnets
+    read. An answer that is not exactly that subnet with those three fields is Unknown."""
+    found = aws("ec2", "describe-subnets", "--subnet-ids", subnet).get("Subnets")
+    item = found[0] if isinstance(found, list) and len(found) == 1 and isinstance(found[0], dict) else {}
+    shape = (item.get("VpcId"), item.get("AvailabilityZone"), item.get("MapPublicIpOnLaunch"))
+    if item.get("SubnetId") != subnet or not (isinstance(shape[0], str) and isinstance(shape[1], str) and isinstance(shape[2], bool)):
+        raise Unknown(f"describe-subnets {subnet} did not answer that one subnet with its VPC, zone and MapPublicIpOnLaunch")
+    return shape
+
+
 def state_get(key):
     """The last value of a key in the run state file, or '' when absent."""
     path = Path(setting("RUN_STATE_FILE"))

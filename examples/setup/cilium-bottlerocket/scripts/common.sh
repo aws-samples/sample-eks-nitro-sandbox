@@ -185,11 +185,16 @@ require_name() {
   ((${#name} <= max)) || die E_NAME_LIMIT "$kind name '$name' is ${#name} characters; the limit is $max. Use a shorter CLUSTER_NAME."
   [[ "$name" =~ $rx ]] || die E_NAME_LIMIT "$kind name '$name' has characters that the API refuses (allowed: $rx)"
 }
+# require_cluster_name: the one rule for CLUSTER_NAME (E_NAME). setup.sh calls it first in
+# preflight, before any tool check, AWS call or run folder; derive_names calls it for every script.
+require_cluster_name() {
+  [[ "$CLUSTER_NAME" =~ ^[a-z][a-z0-9-]{2,31}$ ]] \
+    || die E_NAME "CLUSTER_NAME '$CLUSTER_NAME' must be 3 to 32 lowercase letters, digits and hyphens, starting with a letter"
+}
 # derive_names: every per-run name, from CLUSTER_NAME and RUN_ID, checked against the API limits.
 # The AMI lane, check-names and clean.sh use these names; none derives its own.
 derive_names() {
-  [[ "$CLUSTER_NAME" =~ ^[a-z][a-z0-9-]{2,31}$ ]] \
-    || die E_NAME "CLUSTER_NAME '$CLUSTER_NAME' must be 3 to 32 lowercase letters, digits and hyphens, starting with a letter"
+  require_cluster_name
   valid_run_id "${RUN_ID:-}" || die E_RUN_ID "derive_names: no valid RUN_ID"
   OPERATOR_ROLE_NAME="$CLUSTER_NAME-cilium-operator"
   SYSTEM_LT_NAME="$CLUSTER_NAME-$RUN_ID-system"
