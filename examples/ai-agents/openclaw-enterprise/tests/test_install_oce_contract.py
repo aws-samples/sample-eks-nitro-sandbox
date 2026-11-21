@@ -16,10 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "install-oce.sh"
 POSTGRES = ROOT / "deploy" / "oce-validation-postgres.yaml"
 README = ROOT / "README.md"
-PIN = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
+PIN = "86c8c12310f691bb21651118ffffd6bfd460e9ff"  # pragma: allowlist secret -- public source revision
 DIGEST = "a" * 64
 VALIDATION_POSTGRES_DIGEST = (
-    "86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"
+    "86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"  # pragma: allowlist secret -- public image digest
 )
 DATABASE_CA_PATH = "/etc/openclaw/database-ca/ca.pem"
 MODEL_PROVIDER_BASE_URL = (
@@ -97,6 +97,8 @@ def test_static_install_contract_is_pinned_and_closed() -> None:
     assert "pinned OCE revision requires Helm 3" in text
     assert "require_validation_postgres_version" in text
     assert "pinned OCE revision requires PostgreSQL 17 or later" in text
+    assert "require_validation_postgres_role_contract" in text
+    assert "role contract does not match pinned OCE requirements" in text
     assert "kube context endpoint does not match EKS cluster" in text
     assert "refusing to adopt existing" in text
     assert 'VALIDATION_CLUSTER_TAG_KEY="Environment"' in text
@@ -130,7 +132,20 @@ def test_validation_postgres_is_explicitly_disposable_and_owned() -> None:
     deployment = documents[0]
     pod_spec = deployment["spec"]["template"]["spec"]
     assert pod_spec["automountServiceAccountToken"] is False
-    assert "__OCE_VALIDATION_POSTGRES_IMAGE__" == pod_spec["containers"][0]["image"]
+    postgres = pod_spec["containers"][0]
+    assert "__OCE_VALIDATION_POSTGRES_IMAGE__" == postgres["image"]
+    assert {
+        "name": "bootstrap",
+        "mountPath": "/docker-entrypoint-initdb.d",
+        "readOnly": True,
+    } in postgres["volumeMounts"]
+    bootstrap = next(
+        volume for volume in pod_spec["volumes"] if volume["name"] == "bootstrap"
+    )
+    assert bootstrap["secret"]["secretName"] == "oce-validation-only-postgres"  # pragma: allowlist secret -- Kubernetes Secret name
+    assert bootstrap["secret"]["items"] == [
+        {"key": "init.sql", "path": "10-openclaw-roles.sql"}
+    ]
     assert pod_spec["volumes"][0]["emptyDir"]["sizeLimit"] == "2Gi"
     assert "persistentVolumeClaim" not in POSTGRES.read_text()
 
@@ -252,11 +267,11 @@ def _external_args(
     migration_url: str | None = None,
 ) -> list[str]:
     default_app_url = (
-        "postgresql://oce_app:app-secret@db.example.test:5432/openclaw"
+        "postgresql://oce_app:app-secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
         f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}"
     )
     default_migration_url = (
-        "postgresql://oce_migrator:migration-secret@db.example.test:5432/openclaw"
+        "postgresql://oce_migrator:migration-secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
         f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}"
     )
     app_url_file = tmp_path / "application-url"
@@ -423,6 +438,8 @@ case "$*" in
   *"jsonpath={.metadata.labels.app"*) printf 'openclaw-enterprise-blueprint' ;;
   *" exec deployment/oce-validation-only-postgres "*"SHOW server_version_num"*)
     printf '%s\n' "${TEST_POSTGRES_VERSION:-180006}" ;;
+  *" exec deployment/oce-validation-only-postgres "*"FROM pg_roles"*)
+    printf '%s\n' "${TEST_POSTGRES_ROLE_CONTRACT:-t}" ;;
   *"jsonpath={.items[*].status.podIP}"*) printf '10.2.3.4' ;;
   *" apply "*) : ;;
   *" rollout status "*) : ;;
@@ -478,6 +495,24 @@ def test_old_validation_postgres_fails_before_oce_install(tmp_path: Path) -> Non
     assert not (tmp_path / "state" / "receipt").exists()
 
 
+def test_invalid_validation_database_roles_fail_before_oce_install(
+    tmp_path: Path,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_POSTGRES_ROLE_CONTRACT"] = "f"
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert (
+        "validation PostgreSQL role contract does not match pinned OCE requirements"
+        in result.stderr
+    )
+    calls = (tmp_path / "calls.log").read_text()
+    assert "FROM pg_roles" in calls
+    assert "occ installation install" not in calls
+    assert not (tmp_path / "state" / "receipt").exists()
+
+
 def test_wrong_aws_account_fails_closed(tmp_path: Path) -> None:
     env, source, kubeconfig, occ = _fake_environment(tmp_path)
     env["TEST_ACCOUNT"] = "999999999999"
@@ -491,22 +526,22 @@ def test_wrong_aws_account_fails_closed(tmp_path: Path) -> None:
     "bad_url, expected_error",
     [
         (
-            "postgresql://app:secret@db.example.test:5432/openclaw"
+            "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
             f"?sslmode=require&sslrootcert={DATABASE_CA_PATH}",
             "must set sslmode=verify-full exactly once",
         ),
         (
-            "postgresql://app:secret@db.example.test:5432/openclaw"
+            "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
             f"?sslmode=verify-full&sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}",
             "must not contain duplicate query parameters",
         ),
         (
-            "postgresql://app:secret@db.example.test:5432/openclaw"
+            "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
             f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}%ZZ",
             "contains malformed URL escaping",
         ),
         (
-            "postgresql://app:secret@not_a_dns_name:5432/openclaw"
+            "postgresql://app:secret@not_a_dns_name:5432/openclaw"  # pragma: allowlist secret -- test placeholder
             f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}",
             "must use a valid DNS hostname",
         ),
@@ -637,10 +672,27 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
     for path in (
         state / "auth-secret",
         state / "validation-postgres-password",
+        state / "validation-postgres-migration-password",
+        state / "validation-postgres-app-password",
         state / "database-application-url",
         state / "database-migration-url",
     ):
         assert not path.read_bytes().endswith(b"\n")
+    app_url = (state / "database-application-url").read_text()
+    migration_url = (state / "database-migration-url").read_text()
+    assert app_url.startswith("postgresql://occ_app:")
+    assert migration_url.startswith("postgresql://occ_migrator:")
+    assert app_url != migration_url
+    validation_secret = yaml.safe_load(
+        (state / "validation-postgres-secret.yaml").read_text()
+    )
+    init_sql = base64.b64decode(validation_secret["data"]["init.sql"]).decode()
+    assert "CREATE ROLE occ_migrator LOGIN PASSWORD " in init_sql
+    assert "CREATE ROLE occ_app LOGIN PASSWORD " in init_sql
+    assert "GRANT CREATE ON DATABASE openclaw TO occ_migrator;" in init_sql
+    assert "CREATE SCHEMA occ AUTHORIZATION occ_migrator;" in init_sql
+    assert "CREATE SCHEMA drizzle AUTHORIZATION occ_migrator;" in init_sql
+    assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC;" in init_sql
     system_secrets = {
         document["metadata"]["name"]: document
         for document in yaml.safe_load_all((state / "system-secrets.yaml").read_text())
@@ -665,6 +717,7 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
     ):
         assert status in helm_list.split()
     assert "eks list-tags-for-resource" in calls
+    assert "FROM pg_roles" in calls
     assert "occ installation install" in calls
     for expected in (
         f"--kubeconfig {kubeconfig}",

@@ -799,7 +799,8 @@ done < <(
 
 This optional database is a single validation-only PostgreSQL 18.6 pod with
 `emptyDir` storage. Its data disappears when the pod or system namespace is
-removed. The installer rejects PostgreSQL versions earlier than 17 before it
+removed. The installer creates separate least-privilege application and
+migration roles, then checks the PostgreSQL version and role contract before it
 dispatches the OCE installation.
 
 For an external database, omit the two validation flags and provide protected

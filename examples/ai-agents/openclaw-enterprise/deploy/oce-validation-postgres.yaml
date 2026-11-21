@@ -86,6 +86,9 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            - name: bootstrap
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
             - name: run
               mountPath: /var/run/postgresql
             - name: tmp
@@ -94,6 +97,13 @@ spec:
         - name: data
           emptyDir:
             sizeLimit: 2Gi
+        - name: bootstrap
+          secret:
+            secretName: oce-validation-only-postgres
+            defaultMode: 0440
+            items:
+              - key: init.sql
+                path: 10-openclaw-roles.sql
         - name: run
           emptyDir: {}
         - name: tmp

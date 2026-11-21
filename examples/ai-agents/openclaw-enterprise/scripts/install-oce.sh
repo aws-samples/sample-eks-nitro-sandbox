@@ -3,7 +3,7 @@ set -euo pipefail
 IFS=$'\n\t'
 umask 077
 
-readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff"
+readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff" # pragma: allowlist secret -- public source revision
 readonly OCE_MODULE="github.com/openclaw/openclaw-enterprise"
 readonly OWNER_LABEL="openclaw-enterprise-blueprint"
 readonly VALIDATION_POSTGRES_TOKEN="__OCE_VALIDATION_POSTGRES_IMAGE__"
@@ -12,7 +12,7 @@ readonly VALIDATION_CLUSTER_TAG_VALUE="validation"
 readonly VALIDATION_POSTGRES_MIN_SERVER_VERSION_NUM=170000
 readonly MODEL_PROVIDER_PROTOCOL="openai-responses"
 readonly MODEL_PROVIDER_BASE_URL="https://agentgateway.openclaw-enterprise-agw.svc.cluster.local/v1"
-readonly DATABASE_CA_SECRET="oce-sample-database-ca"
+readonly DATABASE_CA_SECRET="oce-sample-database-ca" # pragma: allowlist secret -- Kubernetes Secret name
 readonly DATABASE_CA_KEY="ca.pem"
 readonly DATABASE_CA_MOUNT_PATH="/etc/openclaw/database-ca"
 readonly DATABASE_CA_PATH="$DATABASE_CA_MOUNT_PATH/$DATABASE_CA_KEY"
@@ -178,6 +178,38 @@ require_validation_postgres_version() {
     die "validation PostgreSQL returned an invalid server version."
   ((version_num >= VALIDATION_POSTGRES_MIN_SERVER_VERSION_NUM)) ||
     die "pinned OCE revision requires PostgreSQL 17 or later; validation database reported $version_num."
+}
+
+require_validation_postgres_role_contract() {
+  local target_namespace=$1 role_contract
+  role_contract=$(
+    "${KUBE[@]}" --namespace "$target_namespace" exec \
+      deployment/oce-validation-only-postgres -- \
+      psql -U oce_validation -d openclaw -Atc "
+SELECT (
+  (
+    SELECT count(*) = 2
+      AND bool_and(NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolbypassrls)
+    FROM pg_roles
+    WHERE rolname IN ('occ_migrator', 'occ_app')
+  )
+  AND has_database_privilege('occ_migrator', current_database(), 'CREATE')
+  AND NOT has_database_privilege('occ_app', current_database(), 'CREATE')
+  AND (
+    SELECT pg_get_userbyid(nspowner) = 'occ_migrator'
+    FROM pg_namespace
+    WHERE nspname = 'occ'
+  )
+  AND (
+    SELECT pg_get_userbyid(nspowner) = 'occ_migrator'
+    FROM pg_namespace
+    WHERE nspname = 'drizzle'
+  )
+  AND NOT has_schema_privilege('occ_app', 'public', 'CREATE')
+)::text;"
+  ) || die "could not verify validation PostgreSQL role contract."
+  [[ "$role_contract" == t ]] ||
+    die "validation PostgreSQL role contract does not match pinned OCE requirements."
 }
 
 base64_one_line() {
@@ -548,20 +580,46 @@ validation_manifest="$state_dir/oce-validation-postgres.yaml"
 if [[ "$validation_postgres" == true ]]; then
   printf 'WARNING: using disposable validation-only PostgreSQL with emptyDir storage.\n' >&2
   validation_password="$state_dir/validation-postgres-password"
+  validation_migration_password="$state_dir/validation-postgres-migration-password"
+  validation_app_password="$state_dir/validation-postgres-app-password"
   if [[ ! -e "$validation_password" ]]; then
     generated_password=$(openssl rand -hex 24)
     write_private_text "$validation_password" "$generated_password"
   fi
+  if [[ ! -e "$validation_migration_password" ]]; then
+    generated_password=$(openssl rand -hex 24)
+    write_private_text "$validation_migration_password" "$generated_password"
+  fi
+  if [[ ! -e "$validation_app_password" ]]; then
+    generated_password=$(openssl rand -hex 24)
+    write_private_text "$validation_app_password" "$generated_password"
+  fi
   normalize_hex_secret \
     "generated validation PostgreSQL password" "$validation_password" 48
-  password=$(<"$validation_password")
+  normalize_hex_secret \
+    "generated validation PostgreSQL migration password" \
+    "$validation_migration_password" 48
+  normalize_hex_secret \
+    "generated validation PostgreSQL application password" \
+    "$validation_app_password" 48
+  migration_password=$(<"$validation_migration_password")
+  app_password=$(<"$validation_app_password")
   write_private_text "$database_app_url_value" \
-    "postgresql://oce_validation:${password}@oce-validation-only-postgres:5432/openclaw?sslmode=disable"
+    "postgresql://occ_app:${app_password}@oce-validation-only-postgres:5432/openclaw?sslmode=disable" # pragma: allowlist secret -- generated validation credential
   write_private_text "$database_migration_url_value" \
-    "postgresql://oce_validation:${password}@oce-validation-only-postgres:5432/openclaw?sslmode=disable"
+    "postgresql://occ_migrator:${migration_password}@oce-validation-only-postgres:5432/openclaw?sslmode=disable" # pragma: allowlist secret -- generated validation credential
 
   validation_secret="$state_dir/validation-postgres-secret.yaml"
+  validation_init_sql="$state_dir/validation-postgres-init.sql"
+  write_private "$validation_init_sql" printf '%s\n' \
+"CREATE ROLE occ_migrator LOGIN PASSWORD '$migration_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+CREATE ROLE occ_app LOGIN PASSWORD '$app_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+GRANT CREATE ON DATABASE openclaw TO occ_migrator;
+CREATE SCHEMA occ AUTHORIZATION occ_migrator;
+CREATE SCHEMA drizzle AUTHORIZATION occ_migrator;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
   validation_password_b64=$(base64_one_line "$validation_password")
+  validation_init_sql_b64=$(base64_one_line "$validation_init_sql")
   write_private "$validation_secret" printf '%s\n' \
 "apiVersion: v1
 kind: Secret
@@ -575,7 +633,8 @@ metadata:
     openclaw.dev/validation-only: \"true\"
 type: Opaque
 data:
-  password: $validation_password_b64"
+  password: $validation_password_b64
+  init.sql: $validation_init_sql_b64"
   apply_owned_resource secret oce-validation-only-postgres "$validation_secret"
 
   script_root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
@@ -594,6 +653,7 @@ data:
   "${KUBE[@]}" --namespace "$namespace" rollout status \
     deployment/oce-validation-only-postgres --timeout=120s
   require_validation_postgres_version "$namespace"
+  require_validation_postgres_role_contract "$namespace"
   database_pod_ips=$("${KUBE[@]}" --namespace "$namespace" get pods \
     -l 'app.kubernetes.io/name=oce-validation-only-postgres,app.kubernetes.io/instance=validation-only' \
     -o 'jsonpath={.items[*].status.podIP}')
