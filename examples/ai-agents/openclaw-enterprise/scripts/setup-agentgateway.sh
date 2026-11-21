@@ -62,7 +62,18 @@ CHECKOUT="$(cd -- "$SCRIPT_DIR/../../../.." && pwd -P)"
 MANIFEST="$SCRIPT_DIR/../deploy/agentgateway.yaml"
 [[ -f "$MANIFEST" && ! -L "$MANIFEST" ]] || die "AgentGateway manifest is unsafe."
 
-mode() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+file_mode() {
+  local value
+  if value="$(stat -c '%a' "$1" 2>/dev/null)" &&
+    [[ "$value" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$value"
+  elif value="$(stat -f '%Lp' "$1" 2>/dev/null)" &&
+    [[ "$value" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$value"
+  else
+    die "could not inspect permissions for $1."
+  fi
+}
 private_file_write() {
   python3 -I - "$1" "$2" "$3" <<'PY'
 import os, stat, sys
@@ -108,7 +119,8 @@ if [[ ! -e "$STATE_DIR_INPUT" ]]; then mkdir -m 700 -- "$STATE_DIR_INPUT"; fi
 [[ -d "$STATE_DIR_INPUT" && ! -L "$STATE_DIR_INPUT" && -O "$STATE_DIR_INPUT" ]] ||
   die "state directory must be an owned, non-symlink directory."
 STATE_DIR="$(cd -- "$STATE_DIR_INPUT" && pwd -P)"
-[[ "$(mode "$STATE_DIR")" == 700 ]] || die "state directory must have mode 0700."
+[[ "$(file_mode "$STATE_DIR")" == 700 ]] ||
+  die "state directory must have mode 0700."
 case "$STATE_DIR" in "$CHECKOUT"|"$CHECKOUT"/*) die "state directory must be outside the checkout." ;; esac
 RECEIPT="$(cd -- "$(dirname -- "$RECEIPT_INPUT")" && pwd -P)/$(basename -- "$RECEIPT_INPUT")"
 [[ "$RECEIPT" == "$RECEIPT_INPUT" && "$RECEIPT" == "$STATE_DIR/"* ]] ||
@@ -134,7 +146,7 @@ else
 fi
 if ! mkdir -m 700 -- "$LOCK_DIR" 2>/dev/null; then
   [[ -d "$LOCK_DIR" && ! -L "$LOCK_DIR" && -O "$LOCK_DIR" &&
-    "$(mode "$LOCK_DIR")" == 700 ]] || die "setup lock is unsafe."
+    "$(file_mode "$LOCK_DIR")" == 700 ]] || die "setup lock is unsafe."
   [[ -f "$LOCK_DIR/pid" && ! -L "$LOCK_DIR/pid" ]] ||
     die "setup lock is incomplete; verify no setup is running, then remove the lock directory manually."
   private_file_check "$LOCK_DIR/pid" ||
@@ -159,7 +171,7 @@ RECOVERY=false PRESERVE=false CLEANING=false RECEIPT_PRESENT=false
 MODE="" PHASE="" SETUP_ID="" RECOVERY_ATTEMPT=false RECOVERED_COMMIT=false
 if [[ -e "$JOURNAL" ]]; then
   [[ -d "$JOURNAL" && ! -L "$JOURNAL" && -O "$JOURNAL" &&
-    "$(mode "$JOURNAL")" == 700 ]] || die "mutation journal is unsafe."
+    "$(file_mode "$JOURNAL")" == 700 ]] || die "mutation journal is unsafe."
   if [[ -s "$JOURNAL/journal-mode" && -s "$JOURNAL/journal-phase" ]]; then
     RECOVERY=true
   else
@@ -216,7 +228,7 @@ PY
 }
 use_snapshot() {
   [[ -f "$JOURNAL/kubeconfig" && ! -L "$JOURNAL/kubeconfig" &&
-    "$(mode "$JOURNAL/kubeconfig")" == 600 ]] || die "saved kubeconfig is unsafe."
+    "$(file_mode "$JOURNAL/kubeconfig")" == 600 ]] || die "saved kubeconfig is unsafe."
   KUBECTL=(kubectl --kubeconfig "$JOURNAL/kubeconfig" --context "$KUBE_CONTEXT" --request-timeout=20s)
   "${KUBECTL[@]}" get --raw=/readyz >/dev/null || die "could not reach kube context."
 }
