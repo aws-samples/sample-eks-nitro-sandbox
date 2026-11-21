@@ -13,9 +13,10 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/setup/cilium-bottlerocket
 ```
 
-For this blueprint, you also need these tools on your machine. `setup.sh` examines the
-version of each tool before it creates a resource. When a tool is not available or has a
-different version, `setup.sh` stops with an error message that names the tool.
+For this blueprint, you also need these tools on your machine. `setup.sh` examines each
+tool before it creates a resource. When a tool is not available, `setup.sh` stops with an
+error message that names the tool. It also stops when a tool has a version that is not in
+the list.
 
 - [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) v2.
 - [eksctl](https://eksctl.io/installation/) 0.230.0 or later.
@@ -34,12 +35,14 @@ The AWS account must have these items:
   scripts do not read or show the credential values. The [IAM matrix](#iam-matrix) gives
   the actions of each principal.
 - Quota for one more VPC, internet gateway, NAT gateway and Elastic IP address in
-  `us-west-2`. `setup.sh` examines this quota before it creates a resource.
+  `us-west-2`. `setup.sh` examines this quota before it creates a resource. For the NAT
+  gateway, it compares all the NAT gateways in the Region with the quota for one zone.
+  Because of this, the check can stop a run when the zone has quota.
 - EC2 capacity for one `m8i.4xlarge` builder and two `m8i.xlarge` nodes. The sandbox node
   uses Nitro Enclaves.
 
-One run costs about USD 2 at list prices. The blueprint creates every resource that costs
-money, and [Cost](#cost) gives the details.
+One run with the default settings and no pause costs about USD 2 at list prices. The
+blueprint creates every resource that costs money, and [Cost](#cost) gives the details.
 
 ## Overview
 
@@ -56,19 +59,20 @@ stock Bottlerocket AMI runs the system pods. One sandbox node runs the AMI from 
 - **Cilium is the only CNI.** The cluster has no `aws-node` and no `kube-proxy`. The Cilium
   operator and CoreDNS run on the system node.
 - **Packer builds the sandbox AMI with no SSH access.** The `amazon-ebssurrogate` builder
-  uses `communicator = "none"`. AWS Systems Manager Run Command runs each build stage on a
+  uses `communicator = "none"`. AWS Systems Manager Run Command runs the build stages on a
   builder in a private subnet of the cluster VPC.
 - **A Bottlerocket variant holds the runtime.** The variant `aws-k8s-1.36-nitro-sandbox` is a
-  copy of `aws-k8s-1.36` with one added package, `nitro-sandbox`.
+  copy of `aws-k8s-1.36` with one added package, `nitro-sandbox`. The variant also has a
+  larger OS image and one more kernel parameter.
 - **The sandbox pod gets normal pod networking.** The pod gets a VPC IP address from an ENI
   of its node, and a CiliumEndpoint. The pod connects to another pod, to a ClusterIP Service
   and to the cluster DNS.
 - **The workload runs in its own guest.** A pod with `runtimeClassName: isolated-sandbox`
   runs in its own Nitro sandbox. Its containers run in a lightweight VM with its own kernel.
   An ordinary pod on the same node uses the node kernel.
-- **Only the Cilium operator gets AWS permissions.** Its EKS Pod Identity role allows only
-  the EC2 actions that Cilium lists for ENI mode. The workload pods get no AWS permissions.
-  Neither node role has the EC2 permissions of Cilium.
+- **Among the pods, only the Cilium operator gets AWS permissions.** Its EKS Pod Identity
+  role allows only the EC2 actions that Cilium lists for ENI mode. The workload pods get no
+  AWS permissions. Neither node role has the EC2 permissions of Cilium.
 
 *Figure 1: Cilium on Bottlerocket nodes. Packer builds the sandbox AMI in the cluster VPC.
 The sandbox node runs this AMI beside a system node on the stock Bottlerocket AMI.*
@@ -99,16 +103,16 @@ This folder uses these releases:
 Lock files hold the pins. [`packer/tools.lock`](packer/tools.lock) holds the versions and the
 digests of the build tools. [`packages/sources.lock`](packages/sources.lock) holds the
 Bottlerocket source and the runtime inputs, each with its digest.
-[`cilium.lock`](cilium.lock) holds the Cilium version. The scripts and this page read the
-Cilium version from `cilium.lock` only.
+[`cilium.lock`](cilium.lock) holds the Cilium version. The scripts read the Cilium version
+from `cilium.lock` only. The Cilium version on this page is the value in `cilium.lock`.
 
 The files:
 
 | File | What it is |
 |---|---|
-| [`config.env.example`](config.env.example) | The settings, with placeholders only. Copy it to `config.local.env`, which git ignores. |
+| [`config.env.example`](config.env.example) | The settings, with placeholders and shared defaults only. Copy it to `config.local.env`, which git ignores. |
 | [`setup.sh`](setup.sh) | Creates the cluster, installs Cilium, builds the AMI, adds the node groups and examines each node |
-| [`test.sh`](test.sh) | Examines the nodes, the pod network and the guest boundary |
+| [`test.sh`](test.sh) | Examines the nodes, the pod network and the guest boundary. It starts probe pods and filler pods, and deletes each one by its exact name. |
 | [`clean.sh`](clean.sh) | Lists and deletes the resources of one run, and examines each resource again after the deletes |
 | [`cilium.lock`](cilium.lock) | The Cilium chart and version |
 | [`cilium-values.yaml`](cilium-values.yaml) | The Helm values of Cilium |
@@ -117,6 +121,7 @@ The files:
 | [`eksctl/nodegroups.yaml`](eksctl/nodegroups.yaml) | The system node group and the sandbox node group |
 | [`packer/bottlerocket.pkr.hcl`](packer/bottlerocket.pkr.hcl) | The Packer template: one `amazon-ebssurrogate` source and one `shell-local` provisioner for each build stage |
 | [`packer/variables.pkr.hcl`](packer/variables.pkr.hcl) | The Packer variables |
+| [`packer/builder-trust-policy.json`](packer/builder-trust-policy.json) | The trust policy of the builder role. Only `ec2.amazonaws.com` can assume the role. |
 | [`packer/tools.lock`](packer/tools.lock) | The versions and digests of Packer, the plugin, Twoliter and the Rust tools |
 | [`variant/`](variant/) | The variant `aws-k8s-1.36-nitro-sandbox` and the `nitro-sandbox` package, which the build adds to the Bottlerocket clone |
 | [`variant/register-variant.py`](variant/register-variant.py) | Makes the variant from `aws-k8s-1.36` in the clone, and stops when an edit does not apply |
@@ -124,7 +129,7 @@ The files:
 | [`packages/nitro-sandboxes-runtime-v1.pub`](packages/nitro-sandboxes-runtime-v1.pub) | The public key that verifies the signature of the runtime release |
 | [`packages/lib/runtime_verify.py`](packages/lib/runtime_verify.py) | Verifies the SHA-256 of each input and the signature of the runtime release |
 | [`scripts/10-build-ami-packer.sh`](scripts/10-build-ami-packer.sh) | Verifies the build tools (`check-tools`) and builds the AMI with Packer (`build`) |
-| [`scripts/packer-stage.sh`](scripts/packer-stage.sh) | Sends one Systems Manager Run Command for each build stage |
+| [`scripts/packer-stage.sh`](scripts/packer-stage.sh) | The stage driver. It sends the Systems Manager Run Commands of each build stage to the builder. |
 | [`scripts/builder/`](scripts/builder/) | The stage scripts that run on the builder |
 | [`scripts/common.sh`](scripts/common.sh) | The shared settings, version pins, guards and helpers of the scripts |
 | [`scripts/lib/`](scripts/lib/) | The Python helpers that write the eksctl files and the launch templates, do the checks, read AWS and read the Packer manifest |
@@ -135,6 +140,7 @@ The files:
 | [`deploy/pod-server.yaml`](deploy/pod-server.yaml) | The HTTP server pod on the system node |
 | [`deploy/service.yaml`](deploy/service.yaml) | The ClusterIP Service of the server pod |
 | [`deploy/probe/node-probe.yaml`](deploy/probe/node-probe.yaml) | The privileged probe pod that reads the node for the node checks |
+| [`deploy/probe/filler-pod.yaml`](deploy/probe/filler-pod.yaml) | The ordinary filler pod that `test.sh` starts on the sandbox node for the networkd check |
 
 The output blocks on this page come from one fresh run in `us-west-2`. Before that run, no
 resource of the blueprint was present. The block below gives the commit and the run ID of
@@ -149,6 +155,7 @@ with placeholders and shared defaults only. Copy it to `config.local.env`, which
 Then set your account ID in the copy. Here is the part of `config.env.example` that you must
 change:
 
+<!-- provisional excerpt: config.env.example. Refresh it from the frozen commit. -->
 ```bash
 # The account and the Region of the new cluster. The scripts stop when the caller is in a
 # different account. The sample is tested in us-west-2 only.
@@ -169,11 +176,18 @@ file. `setup.sh` stops when the caller account is not equal to `AWS_ACCOUNT_ID`.
 The `preflight` stage examines the tools, the Region, the account, the quota and the
 blueprint names. It also runs `scripts/10-build-ami-packer.sh check-tools`, which verifies
 Packer and the plugin against the signed HashiCorp checksums. The signature must come from
-the key with the full fingerprint `HASHICORP_KEY_FPR`. `setup.sh` creates no resource until
-all of these checks pass.
+the key with the full fingerprint `HASHICORP_KEY_FPR`. The stage also examines these items:
+
+- The sandbox instance type supports Nitro Enclaves.
+- The stock Bottlerocket AMI for the system node. When `SYSTEM_AMI_ID` is empty, `setup.sh`
+  reads the AMI ID from the public SSM parameter of Bottlerocket. Then it writes the ID into
+  `config.local.env`, so each later run uses the same AMI.
+
+`setup.sh` creates no resource until all of these checks pass.
 
 Here is the part of `packer/tools.lock` that pins Packer, the plugin and the HashiCorp key:
 
+<!-- provisional excerpt: packer/tools.lock. Refresh it from the frozen commit. -->
 ```text
 PACKER_VERSION=1.16.2
 PACKER_ZIP_SHA256_LINUX_AMD64=abbfe0cf74985084112659b53e3565f264f70a20914c3b7c4f789f54f61c2414
@@ -201,16 +215,26 @@ TODO: output from the fresh run
 
 Each run has a run ID. `setup.sh` keeps the state of the run in
 `tmp/cilium-bottlerocket/run/runs/<RUN_ID>/` in the repository. Each stage writes the IDs
-of the resources that it creates to `state.env` in that folder. The next stages read their
-inputs from this file.
+that the next stages and `clean.sh` need to `state.env` in that folder. The scripts find
+the other resources by their names, their tags or the resources that hold them.
 
-Every AWS resource of the run has the tags `ManagedBy=cilium-bottlerocket-sample` and
-`RunId=<RUN_ID>`. To stop after one stage, give `--stop-after <stage>`. To continue an
-interrupted run, give its run ID:
+Every AWS resource of the run gets the tags `ManagedBy=cilium-bottlerocket-sample` and
+`RunId=<RUN_ID>`. AWS creates some resources with no tag, for example the main route table
+of the VPC. `setup.sh` adds the two tags to these resources. Two exceptions apply:
+
+- The network interface of the builder has no tag. EC2 deletes it with the builder.
+- An AMI from an earlier run keeps the `RunId` tag of that run, as Step 6 shows.
+
+To stop after one stage, give `--stop-after <stage>`. To continue an interrupted run, give
+its run ID:
 
 ```bash
 RUN_ID=<RUN_ID> ./setup.sh
 ```
+
+A continued run starts after the last stage that the run finished. If you give
+`--stop-after` with `RUN_ID`, the stage must come after that last stage. Otherwise,
+`setup.sh` stops with `E_USAGE` before it runs a stage.
 
 The same folder holds the kubeconfig of the cluster, with the context `cb-<RUN_ID>`.
 `setup.sh` does not change your default kubeconfig. To use `kubectl` yourself, set
@@ -228,6 +252,7 @@ work of both. The blueprint never changes the CNI of a cluster that it did not c
 
 Here is the part of `eksctl/cluster.yaml` that matters:
 
+<!-- provisional excerpt: eksctl/cluster.yaml. Refresh it from the frozen commit. -->
 ```yaml
 autoModeConfig:
   enabled: false
@@ -268,6 +293,7 @@ collection is on. It has no `ec2:UnassignPrivateIpAddresses`, because the releas
 IP addresses is off. It has no `ec2:DescribeInstances`, because the configuration uses no
 instance tag filter. This is the policy document, from `eksctl/pod-identity.yaml`:
 
+<!-- provisional excerpt: eksctl/pod-identity.yaml. Refresh it from the frozen commit. -->
 ```yaml
 iam:
   podIdentityAssociations:
@@ -329,8 +355,10 @@ the sandbox pod. The Cilium on Ubuntu nodes blueprint explains why a sandbox pod
 value.
 
 Here is the part of `cilium-values.yaml` that matters, without its comments. `setup.sh` gives
-three more values on the command line: the cluster name, the API server host and the `RunId` tag of the ENIs.
+three more values on the command line: the cluster name, the API server host and the `RunId`
+tag of the ENIs.
 
+<!-- provisional excerpt: cilium-values.yaml (comments removed). Refresh it from the frozen commit. -->
 ```yaml
 eni:
   enabled: true
@@ -349,13 +377,30 @@ operator:
     eks.amazonaws.com/nodegroup: system
 ```
 
-In the `system-node` stage, `setup.sh` adds the system node group. The system node uses the
-stock `aws-k8s-1.36` AMI of Bottlerocket v1.70.0. When `SYSTEM_AMI_ID` is empty, `setup.sh`
-reads the AMI ID from the public SSM parameter of Bottlerocket. Then it writes the ID into
-`config.local.env`, so each later run uses the same AMI. The launch template gives the node
-settings in TOML user data, with IMDSv2 required and a hop limit of 1. Here is the function
-in `scripts/lib/cb_render.py` that writes the user data of both node groups:
+Apart from the tags, the values of this blueprint have one difference from the values of the
+Cilium on Ubuntu nodes blueprint. They remove the `sysctlfix` init container of Cilium.
+Here is that part of `cilium-values.yaml`, with its comment:
 
+<!-- provisional excerpt: cilium-values.yaml. Refresh it from the frozen commit. -->
+```yaml
+# No sysctlfix init container. It writes a file into /etc/sysctl.d on the host. On Bottlerocket,
+# SELinux denies that write (an AVC denial for "cilium-sysctlfi", control_t on etc_t), so the
+# container has no effect, and its denial would stop the boot-wide SELinux audit of the sandbox
+# node. This is the only Bottlerocket-specific difference from the values of ../cilium-ubuntu.
+sysctlfix:
+  enabled: false
+```
+
+The `preflight` checks stop the run when `cilium-values.yaml` does not set
+`sysctlfix.enabled: false`. [Good to know](#good-to-know) gives the reason.
+
+In the `system-node` stage, `setup.sh` adds the system node group. The system node uses the
+stock `aws-k8s-1.36` AMI of Bottlerocket v1.70.0, with the AMI ID that the `preflight` stage
+recorded. The launch template gives the node settings in TOML user data, with IMDSv2
+required and a hop limit of 1. Here is the function in `scripts/lib/cb_render.py` that
+writes the user data of both node groups:
+
+<!-- provisional excerpt: scripts/lib/cb_render.py, function user_data. Refresh it from the frozen commit. -->
 ```python
 def user_data(group, info):
     max_pods = int_setting("SANDBOX_SLOTS" if group == "sandbox" else "SYSTEM_MAX_PODS", 1, 250)
@@ -378,6 +423,8 @@ Bottlerocket needs an explicit `max-pods` with a CNI other than the Amazon VPC C
 `SYSTEM_MAX_PODS` gives the value for the system node.
 
 Before the AMI build starts, `setup.sh` examines the system node and the Cilium operator.
+Then it tags the resources that AWS created for the cluster and the system node group with
+no tag. It also examines the tags of each resource class of the run.
 
 ```text
 TODO: output from the fresh run
@@ -398,6 +445,7 @@ a hop limit of 1.
 Here is the part of `packer/bottlerocket.pkr.hcl` that sets the network and the access of
 the builder:
 
+<!-- provisional excerpt: packer/bottlerocket.pkr.hcl, builder network and access. Refresh it from the frozen commit. -->
 ```hcl
   subnet_id                   = var.subnet_id
   associate_public_ip_address = false
@@ -425,10 +473,13 @@ The builder role has only the `AmazonSSMManagedInstanceCore` policy, and only
 and the security group before Packer starts. It deletes them after Packer stops.
 
 Each Packer `shell-local` stage runs `scripts/packer-stage.sh` on the operator machine. The
-stage driver sends one AWS Systems Manager Run Command to the builder. It waits for the
-command to stop, and it continues only when the status is `Success`. Here is the first stage,
-from `packer/bottlerocket.pkr.hcl`:
+`bind` stage runs on the operator machine only. For each later stage except `upload`, the
+stage driver sends one AWS Systems Manager Run Command to the builder. The `upload` stage
+sends one command for each part of the upload, and one more command to unpack the parts.
+The stage driver waits for each command to stop, and it continues only when the status is
+`Success`. Here is the first stage, from `packer/bottlerocket.pkr.hcl`:
 
+<!-- provisional excerpt: packer/bottlerocket.pkr.hcl, first shell-local stage. Refresh it from the frozen commit. -->
 ```hcl
   provisioner "shell-local" {
     inline  = ["exec bash '${var.stage_driver}'"]
@@ -448,8 +499,8 @@ The stages run in this sequence:
 | `overlay` | Builder | Adds the variant and the `nitro-sandbox` package to the clone, and writes `SANDBOX_SLOTS` as `pcie_slots` into `nitro-sandbox.toml` |
 | `build` | Builder | Builds the variant with Twoliter |
 | `write-images` | Builder | Writes the OS image and the data image to two attached EBS volumes, then reads them back |
-| `verify-root` | Builder | Verifies the partition bounds, mounts the root partition read-only and verifies the SHA-256 of both guest files |
-| `release` | Builder | Unmounts the volumes and writes all data to them |
+| `verify-root` | Builder | Verifies the partition bounds and mounts the root partition read-only. Then it verifies the SHA-256 of each file that `packages/sources.lock` installs, which includes the guest image pair. It also examines `pcie_slots` in `nitro-sandbox.toml` and the containerd drop-in. |
+| `release` | Builder | Writes all cached data to the disks. Then it examines that the OS volume and the data volume are not mounted, and flushes their buffers. |
 
 Before the build uses a downloaded file, it compares the SHA-256 of the file with the lock
 file. For the runtime archive, it also verifies the ECDSA signature of the downloaded
@@ -463,7 +514,7 @@ TODO: output from the fresh run
 ```
 
 The output shows the key pair, the public IP address and the inbound rule count of the
-builder. It also shows the command ID and the status of each stage.
+builder. It also shows the command ID and the status of each Run Command.
 
 The build clones `bottlerocket` at `v1.70.0`, as the Amazon EKS User Guide page
 [*Build a custom Bottlerocket AMI variant for Amazon EKS*](https://docs.aws.amazon.com/eks/latest/userguide/bottlerocket-custom-variant.html)
@@ -501,10 +552,15 @@ and SELinux policy stay unchanged. The package contains these files:
 - A `modules-load.d` file that loads the `tun` module. The shim makes one TAP device for
   each sandbox.
 
+The package installs the release binaries with no change. The package spec stops the strip
+step of the Bottlerocket SDK, so the `verify-root` stage can compare each installed file
+with `packages/sources.lock`.
+
 Here is the containerd drop-in, `variant/packages/nitro-sandbox/50-nitro-sandbox.toml`,
 without its first comment lines. The containerd configuration of Bottlerocket imports
 `/etc/containerd/config.d/*.toml`:
 
+<!-- provisional excerpt: variant/packages/nitro-sandbox/50-nitro-sandbox.toml. Refresh it from the frozen commit. -->
 ```toml
 [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.isolated-sandbox]
 runtime_type = "io.containerd.nitro-sandbox.v2"
@@ -528,6 +584,7 @@ Here is the systemd-networkd unit,
 `variant/packages/nitro-sandbox/00-nitro-sandbox-eni-unmanaged.network`, without its
 comments:
 
+<!-- provisional excerpt: variant/packages/nitro-sandbox/00-nitro-sandbox-eni-unmanaged.network. Refresh it from the frozen commit. -->
 ```ini
 [Match]
 Name=eth[1-9]*
@@ -548,6 +605,7 @@ give the pins of the build.
 
 Here are the two volumes of the builder that Packer omits, from `packer/bottlerocket.pkr.hcl`:
 
+<!-- provisional excerpt: packer/bottlerocket.pkr.hcl, omitted builder volumes. Refresh it from the frozen commit. -->
 ```hcl
   # The builder root: omitted from the AMI.
   launch_block_device_mappings {
@@ -569,6 +627,7 @@ Here are the two volumes of the builder that Packer omits, from `packer/bottlero
 
 Here are the root device and the registration values, from the same file:
 
+<!-- provisional excerpt: packer/bottlerocket.pkr.hcl, root device and registration. Refresh it from the frozen commit. -->
 ```hcl
   ami_root_device {
     source_device_name    = "/dev/xvdf"
@@ -620,6 +679,31 @@ be `terminated`. A lookup that fails stops the run.
 TODO: output from the fresh run
 ```
 
+**Build again after a failed AMI build.** The build script runs Packer with
+`-on-error=cleanup`. After a failed build, Packer terminates the builder, and EC2 deletes
+its volumes. The build script then deletes the builder security group, the instance profile
+and the role. `setup.sh` stops with `E_AMI_BUILD`, and the cluster and the system node stay.
+The error message tells you to run `./clean.sh`, which deletes the full run. To keep the
+cluster, build again in the same run:
+
+```bash
+RUN_ID=<RUN_ID> ./setup.sh
+```
+
+The `ami` stage builds again only when each part of the last attempt is absent. The stage
+reads the builder instance, its volumes, the security group, the instance profile and the
+role. It also reads the AMIs and the snapshots of the run, by tag and by name. When a part
+is present or a read fails, the stage stops with `E_RESUME` and changes nothing. In that
+case, run `./clean.sh --dry-run` to see the part. When all parts are absent, the stage moves
+the files of the last attempt to `packer.attempt<N>/` in the run folder, and it deletes nothing.
+
+**Use an AMI from an earlier run.** To skip the build, set `REUSE_SANDBOX_AMI_ID` in
+`config.local.env` to an AMI that an earlier run of this blueprint built. The `ami` stage
+then creates no builder. The AMI must have the tag `ManagedBy=cilium-bottlerocket-sample`
+and a `SandboxSlots` tag equal to `SANDBOX_SLOTS`, and it must pass the AMI checks. The AMI keeps the `RunId`
+tag of the earlier run. Because of this, `clean.sh` of the new run does not delete the AMI
+or its snapshots.
+
 **Step 7: Add the sandbox node and examine it.** In the `sandbox-node` stage, `setup.sh`
 adds the sandbox node group with exactly one node. The launch template enables Nitro
 Enclaves. The TOML user data sets `settings.kubernetes.container-runtime-endpoint` to
@@ -631,6 +715,7 @@ the sandbox node, and `pcie_slots` in `nitro-sandbox.toml` of the AMI. The AMI a
 snapshots record the value in the `SandboxSlots` tag. A difference between these values
 stops the run. Here is the value in `config.env.example`:
 
+<!-- provisional excerpt: config.env.example, SANDBOX_SLOTS. Refresh it from the frozen commit. -->
 ```bash
 # The sandbox slot count. This one value sets max-pods on the sandbox node and pcie_slots in the
 # runtime configuration of the AMI. The AMI records it in its SandboxSlots tag. setup.sh stops
@@ -641,6 +726,7 @@ SANDBOX_SLOTS="58"
 Here is the part of `launch_template_data` in `scripts/lib/cb_render.py` that enables Nitro
 Enclaves on the sandbox node:
 
+<!-- provisional excerpt: scripts/lib/cb_render.py, function launch_template_data. Refresh it from the frozen commit. -->
 ```python
     if group == "sandbox":
         data["EnclaveOptions"] = {"Enabled": True}
@@ -655,10 +741,11 @@ on the node. `setup.sh` deletes the probe pod by its exact name. These are the c
 - The kernel command line has `nitro_enclaves.mempool=95%-1G`, and the kernel log shows the
   `nitro_enclaves` memory reservation.
 - The kubelet runtime endpoint is `unix:///run/nitro-sandbox/cri-proxy.sock`.
-- The merged containerd configuration contains the `isolated-sandbox` handler.
+- The merged containerd configuration contains the `isolated-sandbox` handler and
+  `discard_unpacked_layers = false`.
 - The allocatable `eks.amazonaws.com/nitro-sandbox` value is more than 0.
-- `pcie_slots` in `nitro-sandbox.toml` on the node is equal to the allocatable pods of the
-  node.
+- The allocatable pods of the node and `pcie_slots` in `nitro-sandbox.toml` on the node are
+  both equal to `SANDBOX_SLOTS`.
 - SELinux is in enforcing mode.
 - dm-verity verifies the root file system.
 
@@ -667,8 +754,8 @@ TODO: output from the fresh run
 ```
 
 Each line must show the expected value. An absent value or a wrong value stops the run.
-Then `setup.sh` tags the resources that AWS created for the cluster with no tag. It also
-examines the tags of each resource class of the run.
+Then `setup.sh` again tags the resources that AWS created for the cluster and the node
+groups with no tag. It also examines the tags of each resource class of the run again.
 
 SELinux stays in enforcing mode on the sandbox node. The blueprint makes no policy change
 and no mode change. The Bottlerocket SELinux policy gives the label `runtime_exec_t` to
@@ -686,26 +773,45 @@ TODO: output from the fresh run
 The output shows the SELinux mode, the domain of the shim and the CRI proxy, and the audit
 result.
 
-`test.sh` also shows that systemd-networkd does not manage the Cilium ENIs.
+`test.sh` also shows that systemd-networkd does not manage the Cilium ENIs. Cilium gives
+pods the secondary IP addresses of `eth0` first. A second ENI, `eth1`, comes only when the
+node needs more addresses. Because of this, `test.sh` does these steps:
+
+1. It starts ordinary filler pods on the sandbox node, one at a time, with exact names
+   `cb-filler-<n>-<RUN_ID>`. It stops when the CiliumNode of the sandbox node lists a second
+   ENI. It starts 16 filler pods at most, and never more than the free pod slots of the node.
+2. It reads the link state of each interface in systemd-networkd. Each `eth1` and later
+   interface must be `unmanaged`.
+3. It deletes each filler pod by its exact name.
+
+When no second ENI comes, the check fails with `E_NETWORKD_ENI`. The filler pods set no CPU
+or memory requests or limits.
 
 ```text
 TODO: output from the fresh run
 ```
 
-The output shows that each Cilium ENI, its addresses and its routes are the same as Cilium
-set them.
+The output shows the number of filler pods and the ENIs of the node. It also shows that
+systemd-networkd lists each Cilium ENI as `unmanaged`, so networkd does not change the
+addresses or the routes that Cilium sets.
 
-`setup.sh` also compares the sandbox node with the system node.
+To compare the sandbox node with the system node, list the nodes:
+
+```bash
+kubectl --context cb-<RUN_ID> get nodes -o wide
+```
 
 ```text
 TODO: output from the fresh run
 ```
 
-The output shows the kernel version and the containerd version of the two nodes.
+The `OS-IMAGE`, `KERNEL-VERSION` and `CONTAINER-RUNTIME` columns show the Bottlerocket
+release, the kernel version and the containerd version of each node.
 
 **Step 8: Run the pods and the tests.** In the `workloads` stage, `setup.sh` creates the
-`isolated-sandbox` RuntimeClass when it is absent. It creates the namespace
-`cilium-bottlerocket-demo` with the label of the blueprint. Then it applies the pods and the
+`isolated-sandbox` RuntimeClass when it is absent. The `system-node` stage creates the
+namespace `cilium-bottlerocket-demo` with the label of the blueprint, for the probe pod. The
+`workloads` stage examines that label again. Then `setup.sh` applies the pods and the
 ClusterIP Service from `deploy/`. The pods are:
 
 - `cb-sandbox`, a sandbox pod with `runtimeClassName: isolated-sandbox`.
@@ -720,6 +826,7 @@ The pods set no CPU or memory requests or limits.
 Here is the part of `deploy/pod-sandbox.yaml` that matters. The RuntimeClass selects the
 sandbox node, and the toleration lets the pod use the tainted node:
 
+<!-- provisional excerpt: deploy/pod-sandbox.yaml. Refresh it from the frozen commit. -->
 ```yaml
 spec:
   runtimeClassName: isolated-sandbox
@@ -732,6 +839,7 @@ spec:
 
 Here is the part of `deploy/pod-sandbox-network-isolated.yaml` that removes the network:
 
+<!-- provisional excerpt: deploy/pod-sandbox-network-isolated.yaml. Refresh it from the frozen commit. -->
 ```yaml
   annotations:
     sandbox.amazonaws.com/network-isolated: "true"
@@ -741,6 +849,7 @@ spec:
 
 Here is `deploy/service.yaml`, without its comments:
 
+<!-- provisional excerpt: deploy/service.yaml (comments removed). Refresh it from the frozen commit. -->
 ```yaml
 apiVersion: v1
 kind: Service
@@ -785,6 +894,20 @@ The output has these results:
   node.
 - The network-isolated sandbox pod has only loopback. It has no route, and a DNS lookup
   fails.
+- The system node runs the stock Bottlerocket AMI that `setup.sh` recorded. The sandbox node
+  runs the sandbox AMI of the run.
+- With the valid containerd drop-in, `containerd config dump` on the sandbox node shows the
+  `isolated-sandbox` handler. With no drop-in and with a malformed drop-in, the node check
+  refuses the result. `test.sh` makes each case in its own folder under `/run/cb-probe` on
+  the node, and removes that folder after the case.
+- The only Pod Identity association is `kube-system/cilium-operator`. The workload pods have
+  no AWS credential variable.
+- Each Service of the cluster is a ClusterIP Service. The cluster has no Ingress, no
+  NetworkPolicy, no CiliumNetworkPolicy and no CiliumClusterwideNetworkPolicy.
+- Each resource of the run has the `ManagedBy` and `RunId` tags.
+
+A check that `test.sh` cannot complete counts as a failure. `test.sh` exits with a non-zero
+code when a check does not pass.
 
 ## IAM matrix
 
@@ -795,33 +918,48 @@ the cleaner are your own short-lived credentials. For least privilege, give thes
 only the actions in their rows. In the table, `<CLUSTER_NAME>` and `<RUN_ID>` are the values
 of your run.
 
-<!-- docs lane: provisional matrix (plan review R8). The builder instance and Cilium operator rows come from interface-ami.md (ami-v3) and eksctl/pod-identity.yaml. Every row stays provisional until lanes/iam-actions-ami.md and lanes/iam-actions-cluster.md exist and the live run confirms the calls. -->
+A row for "The account" holds actions that take no resource, for example the EC2 describe
+actions. Some rows name a tag to identify the resources of the run. The scripts read the
+`ManagedBy` and `RunId` tags of a resource again before they change or delete it.
+
+<!-- provisional matrix (plan review R8). Sources: lanes/iam-actions-cluster.md (sections 1, 2 and 4, with the section 6 CloudTrail corrections of the Phase 1 run) and lanes/iam-actions-ami.md (sections 1 to 3 and fix 2). Not yet confirmed: the IAM rows (IAM events are in us-east-1, not read), the Packer and SSM caller rows (no CloudTrail comparison of a build yet), and the cleaner rows (clean.sh not run yet). Rebuild every row from the fresh run. -->
 
 | Principal | Resource | Actions |
 |---|---|---|
-| Cluster creator | The account | `sts:GetCallerIdentity`, `servicequotas:GetServiceQuota`, `ec2:DescribeVpcs`, `ec2:DescribeInternetGateways`, `ec2:DescribeNatGateways`, `ec2:DescribeAddresses`, `ec2:DescribeInstanceTypes` |
-| Cluster creator | The public SSM parameter of the Bottlerocket `aws-k8s-1.36` v1.70.0 AMI, and that AMI | `ssm:GetParameter`, `ec2:DescribeImages` |
-| Cluster creator | The CloudFormation stacks `eksctl-<CLUSTER_NAME>-*` | `cloudformation:CreateStack`, `cloudformation:DescribeStacks`, `cloudformation:DescribeStackEvents`, `cloudformation:ListStacks` |
-| Cluster creator | The VPC, subnets, gateways, Elastic IP address, route tables and security groups in the eksctl stacks | The EC2 create, describe and tag actions that CloudFormation calls for these resources |
-| Cluster creator | The cluster `<CLUSTER_NAME>`, its add-ons, node groups and Pod Identity association | `eks:CreateCluster`, `eks:DescribeCluster`, `eks:CreateAddon`, `eks:DescribeAddon`, `eks:CreateNodegroup`, `eks:DescribeNodegroup`, `eks:ListNodegroups`, `eks:CreatePodIdentityAssociation`, `eks:TagResource` |
-| Cluster creator | The cluster role, the node roles and the role `<CLUSTER_NAME>-cilium-operator` | `iam:CreateRole`, `iam:GetRole`, `iam:TagRole`, `iam:AttachRolePolicy`, `iam:PutRolePolicy`, `iam:PassRole` |
-| Cluster creator | The launch templates `<CLUSTER_NAME>-<RUN_ID>-system` and `<CLUSTER_NAME>-<RUN_ID>-sandbox` | `ec2:CreateLaunchTemplate`, `ec2:DescribeLaunchTemplates`, `ec2:DescribeLaunchTemplateVersions`, `ec2:CreateTags` |
-| Packer and SSM caller | The account | `sts:GetCallerIdentity` |
-| Packer and SSM caller | The public SSM parameter of the Amazon Linux 2023 AMI, and that AMI | `ssm:GetParameter`, `ec2:DescribeImages` |
-| Packer and SSM caller | The build subnet in the cluster VPC | `ec2:DescribeSubnets` |
-| Packer and SSM caller | The builder security group in the cluster VPC | `ec2:CreateSecurityGroup`, `ec2:RevokeSecurityGroupEgress`, `ec2:AuthorizeSecurityGroupEgress`, `ec2:DescribeSecurityGroups`, `ec2:DeleteSecurityGroup`, `ec2:CreateTags` |
-| Packer and SSM caller | The builder role and the builder instance profile of the run | `iam:CreateRole`, `iam:AttachRolePolicy`, `iam:CreateInstanceProfile`, `iam:AddRoleToInstanceProfile`, `iam:TagRole`, `iam:TagInstanceProfile`, `iam:GetRole`, `iam:GetInstanceProfile`, `iam:PassRole`, `iam:RemoveRoleFromInstanceProfile`, `iam:DeleteInstanceProfile`, `iam:DetachRolePolicy`, `iam:DeleteRole` |
-| Packer and SSM caller | The builder instance and its four volumes | `ec2:RunInstances`, `ec2:CreateTags`, `ec2:DescribeInstances`, `ec2:DescribeInstanceStatus`, `ec2:DescribeVolumes`, `ec2:StopInstances`, `ec2:TerminateInstances` |
-| Packer and SSM caller | The AMI and its two snapshots | `ec2:CreateSnapshot`, `ec2:DescribeSnapshots`, `ec2:RegisterImage`, `ec2:DescribeImages`, `ec2:DescribeImageAttribute`, `ec2:CreateTags` |
-| Packer and SSM caller | The document `AWS-RunShellScript` and the builder instance | `ssm:SendCommand`, `ssm:GetCommandInvocation`, `ssm:DescribeInstanceInformation` |
-| Builder instance | The builder role of the run | Only the AWS managed policy `AmazonSSMManagedInstanceCore` |
-| Cilium operator | The ENIs in the cluster VPC | Only the actions in the policy document of Step 4 |
-| Cleaner | The resources with the tags `ManagedBy=cilium-bottlerocket-sample` and `RunId` | The EC2, EKS, IAM and CloudFormation describe actions for each resource type |
-| Cleaner | The node groups, the Pod Identity association and the cluster | `eks:DeleteNodegroup`, `eks:DeletePodIdentityAssociation`, `eks:DeleteCluster` |
-| Cleaner | The tagged ENIs, builder instances, volumes and launch templates | `ec2:DeleteNetworkInterface`, `ec2:TerminateInstances`, `ec2:DeleteVolume`, `ec2:DeleteLaunchTemplate` |
-| Cleaner | The tagged AMI and snapshots | `ec2:DeregisterImage`, `ec2:DeleteSnapshot` |
-| Cleaner | The eksctl stacks and the resources in them | `cloudformation:DeleteStack`, and the EC2 and IAM delete actions that CloudFormation calls for these resources |
-| Cleaner | The builder security group, the instance profiles and the roles of the run | `ec2:DeleteSecurityGroup`, `iam:RemoveRoleFromInstanceProfile`, `iam:DeleteInstanceProfile`, `iam:DetachRolePolicy`, `iam:DeleteRolePolicy`, `iam:DeleteRole` |
+| Cluster creator | The account, and the four VPC and EC2 quotas that `setup.sh` reads | `sts:GetCallerIdentity`, `servicequotas:GetServiceQuota`, `autoscaling:DescribeAutoScalingGroups`, `ec2:DescribeAvailabilityZones`, `ec2:DescribeVpcs`, `ec2:DescribeVpcAttribute`, `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`, `ec2:DescribeNetworkAcls`, `ec2:DescribeInternetGateways`, `ec2:DescribeNatGateways`, `ec2:DescribeAddresses`, `ec2:DescribeSecurityGroups`, `ec2:DescribeSecurityGroupRules`, `ec2:DescribeNetworkInterfaces`, `ec2:DescribeVpcEndpoints`, `ec2:DescribeInstances`, `ec2:DescribeVolumes`, `ec2:DescribeInstanceTypes`, `ec2:DescribeImages`, `ec2:DescribeImageAttribute`, `ec2:DescribeSnapshots`, `ec2:DescribeLaunchTemplates`, `ec2:DescribeLaunchTemplateVersions` |
+| Cluster creator | The public SSM parameter of the Bottlerocket `aws-k8s-1.36` v1.70.0 AMI | `ssm:GetParameter` |
+| Cluster creator | The CloudFormation stacks `eksctl-<CLUSTER_NAME>-*` | `cloudformation:CreateStack`, `cloudformation:DescribeStacks`, `cloudformation:DescribeStackResources`, `cloudformation:GetTemplate`, `cloudformation:ListStacks` |
+| Cluster creator | The VPC, subnets, internet gateway, route tables, Elastic IP address, NAT gateway and security groups that CloudFormation creates in the eksctl stacks | `ec2:CreateVpc`, `ec2:ModifyVpcAttribute`, `ec2:CreateSubnet`, `ec2:ModifySubnetAttribute`, `ec2:CreateInternetGateway`, `ec2:AttachInternetGateway`, `ec2:CreateRouteTable`, `ec2:CreateRoute`, `ec2:AssociateRouteTable`, `ec2:AllocateAddress`, `ec2:CreateNatGateway`, `ec2:CreateSecurityGroup`, `ec2:AuthorizeSecurityGroupIngress`, `ec2:CreateTags` |
+| Cluster creator | The cluster `<CLUSTER_NAME>`, its add-ons, its node groups and its Pod Identity association | `eks:CreateCluster`, `eks:DescribeCluster`, `eks:DescribeClusterVersions`, `eks:CreateAddon`, `eks:DescribeAddon`, `eks:DescribeAddonVersions`, `eks:ListAddons`, `eks:CreateNodegroup`, `eks:DescribeNodegroup`, `eks:ListNodegroups`, `eks:CreatePodIdentityAssociation`, `eks:DescribePodIdentityAssociation`, `eks:ListPodIdentityAssociations` |
+| Cluster creator | The Kubernetes API of the cluster | Cluster administrator, through the access entry that EKS creates for the creator of the cluster. The scripts call no access entry action. |
+| Cluster creator | The cluster role and the node roles `eksctl-<CLUSTER_NAME>-*`, and the role `<CLUSTER_NAME>-cilium-operator` | `iam:CreateRole`, `iam:TagRole`, `iam:AttachRolePolicy`, `iam:PutRolePolicy`, `iam:GetRole`, `iam:GetRolePolicy`, `iam:ListAttachedRolePolicies`, `iam:ListRolePolicies`, `iam:ListRoleTags`, and `iam:PassRole` of the cluster role and the node roles to `eks.amazonaws.com` |
+| Cluster creator | The service-linked roles of EKS, EKS node groups and Auto Scaling, only when the account does not have them | `iam:CreateServiceLinkedRole` |
+| Cluster creator | The builder role and the builder instance profile `<CLUSTER_NAME>-<RUN_ID>-builder`, which must not exist before the run | `iam:GetRole`, `iam:ListRoleTags`, `iam:GetInstanceProfile`, `iam:ListInstanceProfileTags` |
+| Cluster creator | The launch templates `<CLUSTER_NAME>-<RUN_ID>-system` and `<CLUSTER_NAME>-<RUN_ID>-sandbox` | `ec2:CreateLaunchTemplate`, `ec2:CreateTags`, and `ec2:RunInstances` as a dry run only, with which eksctl examines each launch template |
+| Cluster creator | The main route table, the network ACL, and the default and cluster security groups of the run VPC, which have no tag | `ec2:CreateTags` |
+| Cluster creator | The ENIs of the control plane and the NAT gateway, and the launch template copies of the node groups, which have no tag | `ec2:CreateTags` |
+| Cluster creator | The Auto Scaling groups of the two node groups | `autoscaling:CreateOrUpdateTags` |
+| Cluster creator | The instance profiles that EKS creates for the node groups | `iam:ListInstanceProfileTags`, `iam:TagInstanceProfile` |
+| Packer and SSM caller | The account | `sts:GetCallerIdentity`, `ec2:DescribeRegions`, `ec2:DescribeSubnets`, `ec2:DescribeSecurityGroups`, `ec2:DescribeInstances`, `ec2:DescribeVolumes`, `ec2:DescribeImages`, `ec2:DescribeImageAttribute`, `ec2:DescribeSnapshots`, `ssm:GetCommandInvocation`, `ssm:DescribeInstanceInformation` |
+| Packer and SSM caller | The public SSM parameter of the Amazon Linux 2023 AMI | `ssm:GetParameter` |
+| Packer and SSM caller | The builder security group in the cluster VPC | `ec2:CreateSecurityGroup`, `ec2:RevokeSecurityGroupEgress`, `ec2:AuthorizeSecurityGroupEgress`, `ec2:DeleteSecurityGroup`, `ec2:CreateTags` |
+| Packer and SSM caller | The builder role and the builder instance profile `<CLUSTER_NAME>-<RUN_ID>-builder` | `iam:CreateRole`, `iam:TagRole`, `iam:GetRole`, `iam:DeleteRole`, `iam:AttachRolePolicy` and `iam:DetachRolePolicy` of `AmazonSSMManagedInstanceCore` only, `iam:CreateInstanceProfile`, `iam:TagInstanceProfile`, `iam:GetInstanceProfile`, `iam:AddRoleToInstanceProfile`, `iam:RemoveRoleFromInstanceProfile`, `iam:DeleteInstanceProfile`, and `iam:PassRole` of the builder role to `ec2.amazonaws.com` |
+| Packer and SSM caller | The builder instance, its four volumes and its network interface, in the build subnet with the builder security group and the Amazon Linux 2023 AMI | `ec2:RunInstances`, `ec2:CreateTags`, `ec2:StopInstances`, `ec2:ModifyInstanceAttribute`, `ec2:TerminateInstances` |
+| Packer and SSM caller | The AMI and its two snapshots | `ec2:CreateSnapshot`, `ec2:RegisterImage`, `ec2:ModifyImageAttribute`, `ec2:CreateTags`. After a failed build only: `ec2:DeregisterImage`, `ec2:DeleteSnapshot`, `ec2:DeleteVolume`. |
+| Packer and SSM caller | The document `AWS-RunShellScript`, and the builder instance with the tag `ManagedBy=cilium-bottlerocket-sample` | `ssm:SendCommand` |
+| Builder instance | The builder role of the run, which only `ec2.amazonaws.com` can assume | Only the AWS managed policy `AmazonSSMManagedInstanceCore`. The stage scripts on the builder call no AWS API. |
+| Cilium operator | The ENIs in the cluster VPC, through the role `<CLUSTER_NAME>-cilium-operator`, which only `pods.eks.amazonaws.com` can assume | Only the 13 actions in the policy document of Step 4 |
+| Cleaner | The account | `sts:GetCallerIdentity`, `autoscaling:DescribeAutoScalingGroups`, and the EC2 describe actions of the cluster creator |
+| Cleaner | The instance profiles that EKS creates for the node groups | `iam:ListInstanceProfileTags` |
+| Cleaner | The Kubernetes API of the cluster | Delete the namespace `cilium-bottlerocket-demo` and the RuntimeClass `isolated-sandbox`, only when each has the label of the blueprint |
+| Cleaner | The cluster `<CLUSTER_NAME>`, its node groups, its add-ons, its access entries and its Pod Identity association | `eks:DescribeCluster`, `eks:ListNodegroups`, `eks:DescribeNodegroup`, `eks:DeleteNodegroup`, `eks:ListAddons`, `eks:DescribeAddon`, `eks:DeleteAddon`, `eks:ListAccessEntries`, `eks:DeleteAccessEntry`, `eks:ListPodIdentityAssociations`, `eks:DescribePodIdentityAssociation`, `eks:DeletePodIdentityAssociation`, `eks:DeleteCluster` |
+| Cleaner | The ENIs that Cilium created, the builder instances, their volumes and the builder security group, each with the tag `RunId=<RUN_ID>` | `ec2:DeleteNetworkInterface`, `ec2:TerminateInstances`, `ec2:DeleteVolume`, `ec2:DeleteSecurityGroup` |
+| Cleaner | The launch templates of the run | `ec2:DeleteLaunchTemplate` |
+| Cleaner | The AMI and its snapshots, each with the tag `RunId=<RUN_ID>` | `ec2:DeregisterImage`, `ec2:DeleteSnapshot` |
+| Cleaner | The CloudFormation stacks `eksctl-<CLUSTER_NAME>-*` | `cloudformation:DescribeStacks`, `cloudformation:ListStacks`, `cloudformation:DescribeStackEvents`, `cloudformation:DeleteStack` |
+| Cleaner | The VPC objects that CloudFormation deletes with the eksctl stacks | `ec2:DeleteNatGateway`, `ec2:DisassociateAddress`, `ec2:ReleaseAddress`, `ec2:DetachInternetGateway`, `ec2:DeleteInternetGateway`, `ec2:DeleteRoute`, `ec2:DisassociateRouteTable`, `ec2:DeleteRouteTable`, `ec2:DeleteSubnet`, `ec2:RevokeSecurityGroupIngress`, `ec2:RevokeSecurityGroupEgress`, `ec2:DeleteSecurityGroup`, `ec2:DeleteVpc` |
+| Cleaner | The builder role, the role `<CLUSTER_NAME>-cilium-operator` and the roles `eksctl-<CLUSTER_NAME>-*` | `iam:GetRole`, `iam:ListRoleTags`, `iam:ListAttachedRolePolicies`, `iam:ListRolePolicies`, `iam:DetachRolePolicy`, `iam:DeleteRolePolicy`, `iam:DeleteRole` |
+| Cleaner | The builder instance profile `<CLUSTER_NAME>-<RUN_ID>-builder` | `iam:GetInstanceProfile`, `iam:ListInstanceProfileTags`, `iam:RemoveRoleFromInstanceProfile`, `iam:DeleteInstanceProfile` |
 
 The node roles are not principals of the blueprint. Each node role has only
 `AmazonEKSWorkerNodePolicy` and `AmazonEC2ContainerRegistryPullOnly`.
@@ -831,6 +969,22 @@ The node roles are not principals of the blueprint. Each node role has only
 - **The firmware does not enforce Secure Boot.** dm-verity verifies the root file system,
   but Secure Boot and dm-verity are different mechanisms. To enforce Secure Boot, the AMI
   needs the UEFI variable data from the build, and one Packer pass cannot include it.
+- **The AMI is not a FIPS image.** The variant enables no FIPS image feature of Bottlerocket.
+  The release binaries of the shim and Firecracker use aws-lc-rs with no FIPS build. Because
+  of this, the build of the `nitro-sandbox` package does not run the FIPS check of the
+  Bottlerocket SDK.
+- **Cilium runs with no `sysctlfix` init container.** This init container writes a file into
+  `/etc/sysctl.d` on the node. On Bottlerocket, SELinux denies this write, so the init
+  container has no effect. With the init container, the SELinux audit of the sandbox node
+  finds an AVC denial and stops the run. Because of this, `cilium-values.yaml` sets
+  `sysctlfix.enabled: false`.
+- **The Kubernetes API server endpoint of the cluster is public.** This is the default of
+  eksctl, and the Cilium on Ubuntu nodes blueprint uses the same setting. IAM authenticates
+  each caller, and Kubernetes RBAC controls what the caller can do. The Amazon EKS User
+  Guide,
+  [*Cluster API server endpoint*](https://docs.aws.amazon.com/eks/latest/userguide/cluster-endpoint.html),
+  tells how to limit or remove the public access. The workloads of this blueprint use only
+  ClusterIP Services, so no workload has a public endpoint.
 - **This blueprint does not restrict where the networked pods can connect.** The sandbox pod
   and the ordinary pods connect to the same destinations as any pod on the cluster. The
   network-isolated sandbox pod has no network: only `lo` has an address, it has no route, and
@@ -848,7 +1002,8 @@ The node roles are not principals of the blueprint. Each node role has only
 
 ## Cost
 
-One run costs about USD 2 at list prices. This value is an estimate:
+One run with the default settings and no pause costs about USD 2 at list prices. This value
+is an estimate:
 
 - The `m8i.4xlarge` builder runs for about 1 hour.
 - The cluster runs for about 2 hours. It has the EKS control plane, two `m8i.xlarge` nodes,
@@ -861,13 +1016,16 @@ The fresh run took this time and cost this amount:
 TODO: output from the fresh run
 ```
 
-Some resources continue to cost money after a failed build or a failed setup. Run
-`./clean.sh` immediately after a failure.
+Some resources continue to cost money after a failed build or a failed setup. After a
+failure, run `./clean.sh` immediately. After a failed AMI build, you can also build again in
+the same run, as Step 6 shows.
 
-- After a failed build: the builder instance and its four EBS volumes, if Packer did not
+- After a failed build: the cluster and the system node, until you build again or run
+  `./clean.sh`. Also, the builder instance and its four EBS volumes, if Packer did not
   terminate the instance. Also, the snapshots and the AMI, if Packer made them.
 - After a failed setup: the EKS control plane, the NAT gateway, the public IPv4 address, the
-  node instances and their EBS volumes.
+  node instances and their EBS volumes. When the setup fails after the `ami` stage, also the
+  AMI and its two snapshots.
 - With `--keep-ami`: the AMI snapshots, until you delete them.
 
 ## Clean-up
@@ -880,7 +1038,8 @@ export AWS_PROFILE=<your-profile>
 
 `clean.sh` acts on the run that `setup.sh` started last. To select a different run, give
 `--run-id <RUN_ID>`. First, list the resources of the run. The dry run lists only resources
-with the tags of the blueprint and the run, and it changes nothing.
+with the tags of the blueprint and the run. It changes no AWS resource and no Kubernetes
+object. It writes only local files in the run folder.
 
 ```bash
 ./clean.sh --dry-run
@@ -911,9 +1070,15 @@ TODO: output from the fresh run
 5. The Pod Identity association and the cluster stacks, with the VPC, the NAT gateway, the
    Elastic IP address and the roles.
 
-Before each delete, `clean.sh` reads the ownership tags of the resource again. It deletes
-only a resource with the tags `ManagedBy=cilium-bottlerocket-sample` and the `RunId` of the
-run. After the deletes, it examines each resource again. When a resource remains or a lookup
+Before each delete of an AWS resource, `clean.sh` reads the ownership tags of the resource
+again. It deletes only a resource with the tags `ManagedBy=cilium-bottlerocket-sample` and
+the `RunId` of the run. For the namespace and the RuntimeClass, it reads the label of the
+blueprint again. When `clean.sh` deletes a node group or the cluster, eksctl also deletes
+the resources that the node group or the cluster holds. `clean.sh` keeps the cluster when a
+node group or the Pod Identity association is not a resource of the run. It also keeps the
+cluster when it cannot read one of them.
+
+After the deletes, `clean.sh` examines each resource again. When a resource remains or a lookup
 fails, `clean.sh` exits with a non-zero code. After an interrupted run, `clean.sh` finds the
 resources of the run through their tags and the state file, and deletes them.
 
