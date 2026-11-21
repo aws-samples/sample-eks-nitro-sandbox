@@ -2306,9 +2306,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/README.md'
-      line_start: 160
-      line_end: 160
-      reason: 'Public pinned upstream OCE Git commit, not a credential'
+      reason: 'Public pinned upstream OCE Git commit and documented SHA-256 image digests, not credentials'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/scripts/manage-image-build-stack.sh'
@@ -2360,8 +2358,8 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_cleanup_contract.py'
-      line_start: 120
-      line_end: 120
+      line_start: 133
+      line_end: 133
       reason: 'Test mapping names the Kubernetes Secret resource type; it contains no credential value'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
@@ -2390,20 +2388,20 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 20
-      line_end: 20
+      line_start: 19
+      line_end: 19
       reason: 'Public pinned upstream OCE Git commit used as a live-validation contract fixture, not a credential'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 237
-      line_end: 237
+      line_start: 252
+      line_end: 252
       reason: 'Synthetic Kubernetes Secret volume used to test fail-closed credential-source rejection; it contains no secret value'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 1623
-      line_end: 1623
+      line_start: 1726
+      line_end: 1726
       reason: 'Assertion for the synthetic block-device name nvme0n1; no encoded value or secret is present'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
@@ -2414,14 +2412,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
-      line_start: 1591
-      line_end: 1591
+      line_start: 1758
+      line_end: 1758
       reason: 'Synthetic Kubernetes Secret object used to test rejection of file-backed AWS credentials; contains no secret value'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
-      line_start: 1620
-      line_end: 1620
+      line_start: 1787
+      line_end: 1787
       reason: 'Synthetic Kubernetes Secret object used to test rejection of credential-capable mounts; contains no secret value'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
