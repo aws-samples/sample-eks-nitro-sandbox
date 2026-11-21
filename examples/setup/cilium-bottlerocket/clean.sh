@@ -110,7 +110,7 @@ finish_clean() {
     done <"$OUT/after.jsonl"
   fi
   # Each ID the state file names: gone, or reported (also when it lost its tags).
-  for pair in instance:BUILDER_INSTANCE_ID volume:BUILDER_VOLUME_IDS security-group:BUILDER_SG_ID \
+  for pair in instance:BUILDER_INSTANCE_ID volume:BUILDER_VOLUME_IDS security-group:BUILDER_SG_ID network-interface:BUILDER_ENI_IDS \
     launch-template:SYSTEM_LAUNCH_TEMPLATE_ID launch-template:SANDBOX_LAUNCH_TEMPLATE_ID \
     iam-role:BUILDER_ROLE_NAME instance-profile:BUILDER_PROFILE_NAME iam-role:OPERATOR_ROLE_NAME \
     image:SANDBOX_AMI_ID snapshot:SANDBOX_AMI_SNAPSHOT_IDS; do
@@ -180,8 +180,8 @@ if [[ "$state" != NONE ]]; then
            || { keep_cluster=1; fail "eksctl delete nodegroup $group did not finish, so the cluster is kept"; } ;;
       1) keep_cluster=1; fail "node group $group is not tagged for run $RUN_ID; skipped, so the cluster is kept" ;;
       *) if ! aws eks describe-nodegroup --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --nodegroup-name "$group" \
-           >/dev/null 2>"$OUT/ng-$group.err" && ! grep -q ResourceNotFoundException "$OUT/ng-$group.err"; then
-           keep_cluster=1; fail "could not read node group $group, so the cluster is kept"
+           >/dev/null 2>"$OUT/ng-$group.err" && ! aws_error_is ResourceNotFoundException "$(cat "$OUT/ng-$group.err")"; then
+           keep_cluster=1; fail "could not read node group $group, so the cluster is kept" "$(cat "$OUT/ng-$group.err")"
          fi ;;
     esac
   done
@@ -205,6 +205,11 @@ done
 inventory "$OUT/after-2a.jsonl" || { fail "could not list the resources after the builder instances; no further delete" "$(cat "$OUT/after-2a.jsonl.err")"; finish_clean; }
 for v in $(candidates "$OUT/after-2a.jsonl" builder-volume BUILDER_VOLUME_IDS); do
   delete_if_ours volume "$v" aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v"
+done
+# A builder ENI that is left after its instance went (detached, available), found by its tags or
+# by BUILDER_ENI_IDS: deleted like an available Cilium ENI, after its tags are read again.
+for eni in $(ids "$OUT/after-2a.jsonl" builder-eni status=available); do
+  delete_if_ours network-interface "$eni" aws ec2 delete-network-interface --region "$AWS_REGION" --network-interface-id "$eni"
 done
 for sg in $(candidates "$OUT/after-2a.jsonl" builder-security-group BUILDER_SG_ID); do
   delete_if_ours security-group "$sg" aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$sg"
@@ -233,6 +238,16 @@ sg_left=0 left_why=""
 for sg in $(state_ids BUILDER_SG_ID); do
   r=0; python3 "$PY" recheck security-group "$sg" >/dev/null 2>"$OUT/sg-left-$sg.err" || r=$?
   ((r == 3)) || { sg_left=1 left_why="a builder security group remains"; fail "builder security group $sg is still there (or could not be read); the cluster is kept"; }
+done
+# Each builder ENI that the inventory found (by tags, by BUILDER_ENI_IDS of this or an earlier
+# build attempt, or on a builder), whatever its tags, and each one the state file names.
+for eni in $({ python3 -c 'import json, sys
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    if r["class"] == "builder-eni":
+        print(r["id"])' "$OUT/after-2a.jsonl"; state_ids BUILDER_ENI_IDS; } | awk '!seen[$0]++'); do
+  r=0; python3 "$PY" recheck network-interface "$eni" >/dev/null 2>"$OUT/eni-left-$eni.err" || r=$?
+  ((r == 3)) || { sg_left=1 left_why="a builder ENI remains"; fail "builder ENI $eni is still there (or could not be read); the cluster is kept" "$(cat "$OUT/eni-left-$eni.err")"; }
 done
 if ((sg_left == 0)) && [[ -n "$(state_get BUILDER_INSTANCE_ID)" ]]; then
   r=0; python3 "$PY" builder-gone >"$OUT/builder-gone.txt" 2>&1 || r=$?
@@ -318,10 +333,118 @@ delete_cluster() {
     fi
   done
 }
+# cascade_children: eksctl delete cluster deletes every node group, Fargate profile and eksctl stack
+# of the cluster, and the AWS load balancers of its LoadBalancer Services, Ingresses and Gateways;
+# EKS deletes the add-ons, Pod Identity associations, access entries and identity provider configs
+# with the cluster. Each one must be this run's, and none may be unreadable; else it prints why and
+# returns 1, and the cluster is kept. EKS makes two kinds of access entry with no tag: one for the
+# cluster creator (STANDARD), and one for the node role of each managed node group (EC2_LINUX).
+# The first is the run's when its principal is the role of the caller read at the start of this
+# script; the second when its principal is a node role of the run (read before step 1), or a
+# role that IAM no longer has.
+cascade_children() {
+  local bad=0 kind name t list role="" creator="" p ty names n r
+  foreign() { bad=1; fail "$1 is not this run's; eksctl delete cluster would delete it with the cluster, so the cluster is kept"; }
+  unread() { bad=1; fail "could not read $1; the cluster is kept" "${2:-}"; }
+  child() { case "$1" in 0) ;; 1) foreign "$2" ;; *) unread "$2" ;; esac; } # child <eks_tags_ours result> <what>
+  eks_list() { # eks_list <list call> <query>: the names, one per line; non-zero when the read fails
+    aws eks "$1" --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --query "$2" --output text 2>"$OUT/cascade-$1.err" \
+      | tr '\t' '\n' | sed '/^None$/d; /^$/d'
+    return "${PIPESTATUS[0]}"
+  }
+  for kind in nodegroup:list-nodegroups:nodegroups addon:list-addons:addons \
+    fargate-profile:list-fargate-profiles:fargateProfileNames \
+    pod-identity-association:list-pod-identity-associations:associations[].associationId; do
+    IFS=: read -r name t list <<<"$kind"
+    [[ "$list" == *"[]."* ]] || list="${list}[]"
+    if ! names="$(eks_list "$t" "$list")"; then unread "the ${name}s of the cluster" "$(cat "$OUT/cascade-$t.err")"; continue; fi
+    for n in $names; do
+      r=0
+      case "$name" in
+        nodegroup) eks_tags_ours describe-nodegroup --cluster-name "$CLUSTER_NAME" --nodegroup-name "$n" || r=$? ;;
+        addon) eks_tags_ours describe-addon --cluster-name "$CLUSTER_NAME" --addon-name "$n" || r=$? ;;
+        fargate-profile) eks_tags_ours describe-fargate-profile --cluster-name "$CLUSTER_NAME" --fargate-profile-name "$n" || r=$? ;;
+        *) eks_tags_ours describe-pod-identity-association --cluster-name "$CLUSTER_NAME" --association-id "$n" || r=$? ;;
+      esac
+      child "$r" "$name $n"
+    done
+  done
+  if ! names="$(eks_list list-identity-provider-configs 'identityProviderConfigs[].name')"; then
+    unread "the identity provider configs of the cluster" "$(cat "$OUT/cascade-list-identity-provider-configs.err")"
+  else
+    for n in $names; do
+      r=0
+      t="$(aws eks describe-identity-provider-config --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" \
+        --identity-provider-config "type=oidc,name=$n" --query identityProviderConfig.oidc.tags --output json)" || r=2
+      ((r != 0)) || tags_match <<<"$t" || r=$?
+      child "$r" "identity provider config $n"
+    done
+  fi
+  # The access entries. The caller is an assumed role (arn:aws:sts::<account>:assumed-role/<role>/
+  # <session>), whose access entry names the role, or an IAM role or user named as it is.
+  if [[ "${CALLER_ARN:-}" =~ ^arn:aws:sts::$AWS_ACCOUNT_ID:assumed-role/([^/]+)/ ]]; then role="${BASH_REMATCH[1]}"
+  elif [[ "${CALLER_ARN:-}" =~ ^arn:aws:iam::$AWS_ACCOUNT_ID:(role|user)/ ]]; then creator="$CALLER_ARN"; fi
+  if ! names="$(eks_list list-access-entries 'accessEntries[]')"; then
+    unread "the access entries of the cluster" "$(cat "$OUT/cascade-list-access-entries.err")"
+  else
+    for p in $names; do
+      r=0; eks_tags_ours describe-access-entry --cluster-name "$CLUSTER_NAME" --principal-arn "$p" || r=$?
+      ((r == 0)) && continue
+      ((r == 1)) || { unread "access entry $p"; continue; }
+      ty="$(aws eks describe-access-entry --region "$AWS_REGION" --cluster-name "$CLUSTER_NAME" --principal-arn "$p" \
+        --query accessEntry.type --output text 2>/dev/null)" || { unread "access entry $p"; continue; }
+      n=""; [[ "$p" =~ ^arn:aws:iam::$AWS_ACCOUNT_ID:role/(.+/)?([^/]+)$ ]] && n="${BASH_REMATCH[2]}"
+      if [[ "$ty" == EC2_LINUX && -n "$n" ]] && ids "$OUT/confirmed.jsonl" iam-role | grep -Fqx -- "$n"; then
+        continue   # the node role entry of a node group of the run
+      fi
+      # EKS keeps a node role entry after its role is gone (eksctl deletes the role with the node
+      # group stack, also in an earlier clean.sh that stopped later). That entry lets no one in: a
+      # role made again with the same name has a new role ID, which the entry does not match.
+      if [[ "$ty" == EC2_LINUX && -n "$n" ]]; then
+        r=0; t="$(aws iam get-role --role-name "$n" 2>&1 >/dev/null)" || r=$?
+        if ((r != 0)); then
+          aws_error_is NoSuchEntity "$t" && continue
+          unread "the role $n of access entry $p" "$t"; continue
+        fi
+      fi
+      if [[ "$ty" == STANDARD && ( ( -n "$role" && "$n" == "$role" ) || ( -n "$creator" && "$p" == "$creator" ) ) ]]; then
+        continue   # the creator entry, for the caller of this clean up
+      fi
+      foreign "access entry $p (type $ty)"
+    done
+  fi
+  # The eksctl stacks of the cluster (inventory after step 2) that are not the run's.
+  for n in $(python3 -c 'import json, sys
+for line in open(sys.argv[1]):
+    r = json.loads(line)
+    if r["class"] == "cfn-stack" and not r["ours"]:
+        print(r["id"])' "$OUT/after-2a.jsonl"); do
+    foreign "stack $n"
+  done
+  # Kubernetes objects whose AWS load balancers eksctl deletes. The sample makes none.
+  if ! kc get services -A -o json >"$OUT/cascade-services.json" 2>"$OUT/cascade-services.err" \
+    || ! t="$(python3 -c 'import json, sys
+for s in json.load(open(sys.argv[1]))["items"]:
+    if (s.get("spec") or {}).get("type") == "LoadBalancer":
+        print(s["metadata"].get("namespace", "") + "/" + s["metadata"]["name"])' "$OUT/cascade-services.json" 2>>"$OUT/cascade-services.err")"; then
+    unread "the Services of the cluster" "$(cat "$OUT/cascade-services.err")"
+  else
+    for n in $t; do foreign "Service $n of type LoadBalancer"; done
+  fi
+  for kind in ingresses.networking.k8s.io gateways.gateway.networking.k8s.io; do
+    if t="$(kc get "$kind" -A -o name 2>"$OUT/cascade-$kind.err")"; then
+      for n in $t; do foreign "$n"; done
+    elif ! grep -qx "error: the server doesn't have a resource type \"${kind%%.*}\"" "$OUT/cascade-$kind.err"; then
+      unread "the $kind of the cluster" "$(cat "$OUT/cascade-$kind.err")"
+    fi
+  done
+  ((bad == 0))
+}
 if ((sg_left)); then
   keep_cluster=1
   fail "the cluster and its VPC are kept, because $left_why"
 elif [[ "$state" != NONE ]]; then
+  cascade_children || keep_cluster=1
   # An association that is not the run's, or that cannot be read, keeps the cluster too.
   for assoc in $(ids "$OUT/after-2a.jsonl" pod-identity-association); do
     t=0; eks_tags_ours describe-pod-identity-association --cluster-name "$CLUSTER_NAME" --association-id "$assoc" || t=$?
@@ -357,7 +480,7 @@ if [[ "$(cluster_state)" == NONE ]]; then
   r=0; out="$(aws iam get-role --role-name "$OPERATOR_ROLE_NAME" 2>&1)" || r=$?
   if ((r == 0)); then
     delete_if_ours iam-role "$OPERATOR_ROLE_NAME" delete_role "$OPERATOR_ROLE_NAME"
-  elif ! grep -q NoSuchEntity <<<"$out"; then
+  elif ! aws_error_is NoSuchEntity "$out"; then
     printf '%s\n' "$out" >"$OUT/oprole-read.err"
     fail "could not read role $OPERATOR_ROLE_NAME" "$out"
   fi

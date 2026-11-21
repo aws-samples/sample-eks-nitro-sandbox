@@ -49,7 +49,8 @@ def build(cases):
         "instances", "volumes", "images", "snapshots", "security_groups", "launch_templates", "network_interfaces",
         "vpcs", "subnets", "nat_gateways", "addresses", "internet_gateways", "key_pairs", "route_tables",
         "network_acls", "vpc_endpoints")},
-         "eks": {"clusters": {}, "nodegroups": {}, "addons": {}, "pod_identity": {}},
+         "eks": {"clusters": {}, "nodegroups": {}, "addons": {}, "pod_identity": {}, "access_entries": {},
+                 "fargate_profiles": {}, "identity_provider_configs": {}},
          "iam": {"roles": {}, "profiles": {}}, "cloudformation": {"stacks": {}}, "autoscaling": {"groups": {}},
          "k8s": {"objects": {}, "answers": [], "exec": []}, "helm": {"releases": {}}, "ssm": {"parameters": {}},
          "packer": {}}
@@ -100,6 +101,8 @@ def build(cases):
                                                        "subnetIds": [x["SubnetId"] for x in e["subnets"]]}}
     for a in ("coredns", "eks-pod-identity-agent"):
         s["eks"]["addons"][f"{CL}/{a}"] = {"addonName": a, "status": "ACTIVE", "tags": tmap()}
+    # EKS makes the access entry of the cluster creator (the stub caller, role "test"), with no tag.
+    s["eks"]["access_entries"][f"{CL}|arn:aws:iam::{ACCT}:role/test"] = {"type": "STANDARD", "tags": {}}
     roles = s["iam"]["roles"]
     roles[f"{STACK}-ServiceRole"] = {"Tags": tags(eks_tag), "Attached": [], "Inline": {}, "Stack": STACK}
     roles[f"{CL}-cilium-operator"] = {"Tags": tags(), "Attached": [], "Inline": {"cilium-eni": {"Version": "2012-10-17"}},
@@ -126,6 +129,8 @@ def build(cases):
         s["eks"]["nodegroups"][f"{CL}/{g}"] = {"status": "ACTIVE", "tags": tmap(eks_tag), "nodeRole": f"arn:aws:iam::{ACCT}:role/{role}",
                                                "resources": {"autoScalingGroups": [{"name": asg}]},
                                                "launchTemplate": {"id": lt_ids[g], "version": "1"}}
+        # EKS makes an access entry for the node role of each managed node group, with no tag.
+        s["eks"]["access_entries"][f"{CL}|arn:aws:iam::{ACCT}:role/{role}"] = {"type": "EC2_LINUX", "tags": {}}
         prof = f"eks-{g}-profile"
         s["iam"]["profiles"][prof] = {"Roles": [role], "Tags": tags(), "Stack": ngstack}
         iid = f"i-0fa0000000000000{n}"
@@ -207,7 +212,7 @@ def build(cases):
         # eksctl made the cluster stack and its VPC objects, then the run stopped: no control plane,
         # no node, no Cilium ENI, no launch template, no AMI.
         del s["eks"]["clusters"][CL]
-        for k in ("nodegroups", "addons", "pod_identity"):
+        for k in ("nodegroups", "addons", "pod_identity", "access_entries"):
             s["eks"][k].clear()
         s["autoscaling"]["groups"].clear()
         s["k8s"]["objects"].clear()

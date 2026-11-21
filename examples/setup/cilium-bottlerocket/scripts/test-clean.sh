@@ -434,4 +434,131 @@ FAKE_FAIL='eksctl|delete cluster||Timeout||1' clean "$WORK/busy-stale.log"
 check "REJECT a retry that fails before a new stack delete (no new ControlPlane event): no further retry" 1 "$RC" "$WORK/busy-stale.log" '^CLEAN FAILED: eksctl delete cluster cb-offline-test$'
 [[ "$(count_calls eksctl 'delete cluster')" == 2 && "$(grep -c "$RETRY" "$WORK/busy-stale.log")" == 1 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]'
 check "  ... two eksctl delete cluster calls and one CLEAN RETRY line: the old refusal is not retried again" 0 $? "$WORK/busy-stale.log"
+
+echo "== a builder ENI that is left after its instance ======================================="
+# The builder ENI carries the tags of the run (Packer run_tags), and the AMI build records its ID
+# in BUILDER_ENI_IDS. One that is left detached after the builder went must be found without the
+# instance, deleted like an available Cilium ENI, and covered by the read-back.
+BENI=eni-0fb00000000000009
+LEFT='s["ec2"]["network_interfaces"].append({"NetworkInterfaceId": "eni-0fb00000000000009", "VpcId": "vpc-0fa00000000000001", "Status": "available", "TagSet": [{"Key": "ManagedBy", "Value": "cilium-bottlerocket-sample"}, {"Key": "RunId", "Value": "r1"}, {"Key": "Name", "Value": "cb-offline-test-r1-builder"}]})'
+left_eni() { world_py "$LEFT${1:+
+$1}"; [[ "${2:-}" == no-state ]] || printf 'BUILDER_ENI_IDS=%s\n' "$BENI" >> "$RD/state.env"; }
+eni_alive() { alive "any(x['NetworkInterfaceId'] == '$BENI' for x in s['ec2']['network_interfaces'])"; }
+full; left_eni; clean "$WORK/beni-dry.log" --dry-run
+check "ACCEPT --dry-run with a detached builder ENI left: the list names it as a builder ENI of the run" 0 "$RC" "$WORK/beni-dry.log" "^  builder-eni +$BENI\$"
+full; left_eni; clean "$WORK/beni.log"
+check "ACCEPT the clean up of a run with a detached builder ENI left: it is deleted, and nothing is left" 0 "$RC" "$WORK/beni.log" '^CLEAN: run r1 .*nothing left behind\.$'
+grep -qx "deleted network-interface $BENI" "$WORK/beni.log" && ! eni_alive && grep -q ' failures=0 verdict=clean$' "$V/verdict.txt"
+check "  ... deleted after its tags were read again; it is gone from the world; verdict clean" 0 $? "$WORK/beni.log"
+full; left_eni "" no-state; clean "$WORK/beni-tag.log"
+check "ACCEPT a detached builder ENI that only its tags name (no BUILDER_ENI_IDS in the state): deleted" 0 "$RC" "$WORK/beni-tag.log" "^deleted network-interface $BENI\$"
+full; left_eni 's["ec2"]["network_interfaces"][-1]["StaysAfterDelete"] = True'; clean "$WORK/beni-stays.log"
+check "REJECT a builder ENI that is still there after its delete: the cluster and its VPC are kept" 1 "$RC" "$WORK/beni-stays.log" \
+  'the cluster and its VPC are kept, because a builder ENI remains'
+grep -q "^CLEAN FAILED: still there (BUILDER_ENI_IDS): network-interface $BENI\$" "$WORK/beni-stays.log" \
+  && [[ "$(count_calls eksctl 'delete cluster')" == 0 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]'
+check "  ... the read-back names it by its state key, and eksctl delete cluster was never called" 0 $? "$WORK/beni-stays.log"
+full; left_eni 's["ec2"]["network_interfaces"][-1]["StaysAfterDelete"] = True' no-state; clean "$WORK/beni-tag-stays.log"
+check "REJECT a builder ENI that only its tags name and that is still there after its delete: the cluster is kept" 1 "$RC" "$WORK/beni-tag-stays.log" \
+  'the cluster and its VPC are kept, because a builder ENI remains'
+grep -q "^CLEAN FAILED: still there: {\"class\": \"builder-eni\", \"id\": \"$BENI\", \"ours\": true" "$WORK/beni-tag-stays.log"
+check "  ... the read-back finds it again by its tags" 0 $? "$WORK/beni-tag-stays.log"
+# An earlier build attempt: a retry of the AMI build moves BUILDER_ENI_IDS to packer.attempt<N>/state-cleared.env.
+cleared() { mkdir -p "$RD/packer.attempt1"; printf 'BUILDER_ENI_IDS=%s\n' "$BENI" > "$RD/packer.attempt1/state-cleared.env"; }
+full; cleared; clean "$WORK/beni-cleared-gone.log"
+check "ACCEPT a builder ENI of an earlier build attempt (state-cleared.env) that EC2 no longer has: read by its ID as gone" 0 "$RC" "$WORK/beni-cleared-gone.log" '^CLEAN: run r1 .*nothing left behind\.$'
+[[ "$(count_calls aws 'ec2 describe-network-interfaces' "--network-interface-ids $BENI")" -ge 2 ]]
+check "  ... its ID was read in the inventory before the deletes and in the read-back" 0 $? "$WORK/beni-cleared-gone.log"
+full; cleared; left_eni 's["ec2"]["network_interfaces"][-1]["TagSet"] = []' no-state; clean "$WORK/beni-cleared.log"
+check "REJECT a builder ENI with no tags that only state-cleared.env names: not deleted, and the cluster is kept" 1 "$RC" "$WORK/beni-cleared.log" \
+  "builder ENI $BENI is still there \(or could not be read\); the cluster is kept"
+eni_alive && grep -q "^CLEAN FAILED: still there: {\"class\": \"builder-eni\", \"id\": \"$BENI\", \"ours\": false" "$WORK/beni-cleared.log"
+check "  ... the ENI is not deleted, and the read-back finds it by the ID of the earlier attempt" 0 $? "$WORK/beni-cleared.log"
+full; left_eni 's["ec2"]["network_interfaces"][-1]["TagSet"] = []'; clean "$WORK/beni-untagged.log"
+check "REJECT a state-named builder ENI that lost its tags: not deleted, and the cluster is kept" 1 "$RC" "$WORK/beni-untagged.log" \
+  "builder ENI $BENI is still there \(or could not be read\); the cluster is kept"
+eni_alive && grep -q "^CLEAN FAILED: left over without the tags of run r1 (BUILDER_ENI_IDS): network-interface $BENI\$" "$WORK/beni-untagged.log"
+check "  ... the ENI is not deleted, and the read-back reports it left over without the tags of the run" 0 $? "$WORK/beni-untagged.log"
+
+echo "== the children that eksctl delete cluster deletes with the cluster ===================="
+# Before the cluster delete, every node group, add-on, Fargate profile, Pod Identity association
+# (all namespaces), identity provider config, access entry and eksctl stack of the cluster must be
+# the run's, and no Service of type LoadBalancer, Ingress or Gateway may be in the cluster.
+# EKS makes two access entries with no tag on every cluster (world_full.py): the creator's
+# (STANDARD, the role of the stub caller) and the node role entry of each managed node group (EC2_LINUX).
+CHILD='eksctl delete cluster would delete it with the cluster, so the cluster is kept$'
+full; clean "$WORK/child-ok.log"
+check "ACCEPT the cluster children of a finished run, with the creator and node role access entries that EKS made untagged" 0 "$RC" "$WORK/child-ok.log" '^CLEAN: run r1 .*nothing left behind\.$'
+! grep -q "$CHILD" "$WORK/child-ok.log" && [[ "$(count_calls aws 'eks list-access-entries')" == 1 && "$(count_calls aws 'eks list-fargate-profiles')" == 1 \
+  && "$(count_calls aws 'eks list-identity-provider-configs')" == 1 ]]
+check "  ... it read the access entries, Fargate profiles and identity provider configs once, and found no child that is not the run's" 0 $? "$WORK/child-ok.log"
+i=0
+while IFS='#' read -r what code pat; do
+  [[ -n "$what" ]] || continue
+  i=$((i + 1)); full; world_py "$code"; clean "$WORK/child-$i.log"
+  check "REJECT an extra $what that is not the run's: the cluster is kept" 1 "$RC" "$WORK/child-$i.log" "^CLEAN FAILED: $pat"
+  [[ "$(count_calls eksctl 'delete cluster')" == 0 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]' && grep -q ' verdict=incomplete$' "$V/verdict.txt"
+  check "  ... eksctl delete cluster was never called, the cluster is still there, verdict incomplete ($what)" 0 $? "$WORK/child-$i.log"
+done <<'CASES'
+node group (tag team=someone-else)#s["eks"]["nodegroups"]["cb-offline-test/extra"] = {"status": "ACTIVE", "tags": {"team": "someone-else"}, "nodeRole": "arn:aws:iam::" + s["account"] + ":role/someone-else-node", "resources": {"autoScalingGroups": []}}#nodegroup extra is not this run's; eksctl delete cluster would delete it with the cluster, so the cluster is kept$
+Pod Identity association in another namespace#s["eks"]["pod_identity"]["a-fake000000000009"] = {"clusterName": "cb-offline-test", "namespace": "team-a", "serviceAccount": "app", "tags": {}, "roleArn": "arn:aws:iam::" + s["account"] + ":role/team-a-app"}#pod-identity-association a-fake000000000009 is not this run's;
+add-on with no tag#s["eks"]["addons"]["cb-offline-test/vpc-cni"] = {"addonName": "vpc-cni", "status": "ACTIVE", "tags": {}}#addon vpc-cni is not this run's;
+Fargate profile#s["eks"]["fargate_profiles"]["cb-offline-test/team-a"] = {"tags": {"RunId": "r1"}}#fargate-profile team-a is not this run's;
+identity provider config#s["eks"]["identity_provider_configs"]["cb-offline-test/okta"] = {"tags": {}}#identity provider config okta is not this run's;
+access entry of another principal#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/someone-else"] = {"type": "STANDARD", "tags": {}}#access entry arn:aws:iam::[0-9]+:role/someone-else \(type STANDARD\) is not this run's;
+EC2_LINUX access entry of a live role of someone else#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/someone-else-node"] = {"type": "EC2_LINUX", "tags": {}}; s["iam"]["roles"]["someone-else-node"] = {"Tags": [{"Key": "team", "Value": "someone-else"}]}#access entry arn:aws:iam::[0-9]+:role/someone-else-node \(type EC2_LINUX\) is not this run's;
+creator access entry, cleaned by another caller#s["caller_arn"] = "arn:aws:sts::" + s["account"] + ":assumed-role/another-admin/session"#access entry arn:aws:iam::[0-9]+:role/test \(type STANDARD\) is not this run's;
+eksctl stack of the cluster#s["cloudformation"]["stacks"]["eksctl-cb-offline-test-addon-iamserviceaccount-team-a-app"] = {"StackStatus": "CREATE_COMPLETE", "Tags": [{"Key": "alpha.eksctl.io/cluster-name", "Value": "cb-offline-test"}, {"Key": "team", "Value": "someone-else"}]}#stack eksctl-cb-offline-test-addon-iamserviceaccount-team-a-app is not this run's;
+Service of type LoadBalancer#s["k8s"]["objects"]["services/team-a/web"] = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web", "namespace": "team-a"}, "spec": {"type": "LoadBalancer"}}#Service team-a/web of type LoadBalancer is not this run's;
+Ingress#s["k8s"]["objects"]["ingresses/team-a/web"] = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": "web", "namespace": "team-a"}}#ingres[a-z]*/web is not this run's;
+Gateway#s["k8s"]["objects"]["gateways/team-a/gw"] = {"apiVersion": "gateway.networking.k8s.io/v1", "kind": "Gateway", "metadata": {"name": "gw", "namespace": "team-a"}}#gateway/gw is not this run's;
+CASES
+# A node role entry that EKS kept after its role was deleted (with its node group, by an earlier
+# clean.sh) lets no one in, so it goes with the cluster. A role read that fails keeps the cluster.
+DEAD='s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/gone-node"] = {"type": "EC2_LINUX", "tags": {}}'
+full; world_py "$DEAD"; clean "$WORK/child-dead.log"
+check "ACCEPT an EC2_LINUX access entry whose role IAM no longer has: the cluster goes" 0 "$RC" "$WORK/child-dead.log" '^CLEAN: run r1 .*nothing left behind\.$'
+a="$(first_seq aws 'iam get-role' gone-node)"; b="$(first_seq eksctl 'delete cluster')"
+[[ -n "$a" && -n "$b" && "$a" -lt "$b" ]]
+check "  ... its role was read, and found gone, before eksctl delete cluster" 0 $? "$WORK/child-dead.log"
+full; world_py "$DEAD"; FAKE_FAIL='aws|iam get-role|gone-node|AccessDenied' clean "$WORK/child-dead-unread.log"
+check "REJECT an EC2_LINUX access entry whose role cannot be read: the cluster is kept" 1 "$RC" "$WORK/child-dead-unread.log" \
+  '^CLEAN FAILED: could not read the role gone-node of access entry arn:aws:iam::[0-9]+:role/gone-node; the cluster is kept$'
+[[ "$(count_calls eksctl 'delete cluster')" == 0 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]'
+check "  ... and eksctl delete cluster was never called" 0 $? "$WORK/child-dead-unread.log"
+full; FAKE_FAIL='aws|eks list-access-entries||AccessDeniedException' clean "$WORK/child-unread.log"
+check "REJECT access entries that cannot be listed: the cluster is kept" 1 "$RC" "$WORK/child-unread.log" '^CLEAN FAILED: could not read the access entries of the cluster; the cluster is kept$'
+[[ "$(count_calls eksctl 'delete cluster')" == 0 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]'
+check "  ... and eksctl delete cluster was never called" 0 $? "$WORK/child-unread.log"
+
+echo "== AWS CLI errors: only the error code itself reads as gone ============================"
+# A node group read and the operator role read count as "gone" only for the exact AWS CLI form
+# "An error occurred (<code>) when calling the <Operation> operation". Another error whose
+# message names the code is a read that failed.
+# The inventory reads the node group first; the two reads of step 1 (the tag read and the read that
+# tells "gone" from "could not read") are the last two before eksctl deletes the sandbox node group.
+full; clean "$WORK/err-ng-count.log"
+k="$(calls aws 'eks describe-nodegroup' '--nodegroup-name sandbox' | awk -v s="$(first_seq eksctl 'delete nodegroup' sandbox)" '$1 < s' | wc -l | tr -d ' ')"
+k=$((k - 1))
+# A sandbox node group that is already gone (deleted as eksctl deletes it): EKS answers exactly
+# "An error occurred (ResourceNotFoundException) when calling the DescribeNodegroup operation".
+full; run_real "$WORK/err-ng-pre.log" eksctl delete nodegroup --region us-west-2 --cluster cb-offline-test --name sandbox
+: > "$FAKE_LOG"; clean "$WORK/err-ng-gone.log"
+check "ACCEPT a node group read that answers exactly ResourceNotFoundException: read as gone, the clean up goes on" 0 "$RC" "$WORK/err-ng-gone.log" '^CLEAN: run r1 .*nothing left behind\.$'
+grep -q '^An error occurred (ResourceNotFoundException) when calling the DescribeNodegroup operation' "$WORK/err-ng-gone.log" \
+  && ! grep -q 'could not read node group sandbox' "$WORK/err-ng-gone.log" && [[ "$(count_calls eksctl 'delete nodegroup' sandbox)" == 0 ]]
+check "  ... the read answered the exact form, no delete of the sandbox node group, no read failure" 0 $? "$WORK/err-ng-gone.log"
+full; FAKE_FAIL="aws|eks describe-nodegroup|--nodegroup-name sandbox|AccessDeniedException) when calling the DescribeNodegroup operation: not a ResourceNotFoundException (|2|$k" clean "$WORK/err-ng.log"
+check "REJECT a node group read whose other error names ResourceNotFoundException in its message: the cluster is kept" 1 "$RC" "$WORK/err-ng.log" \
+  '^CLEAN FAILED: could not read node group sandbox, so the cluster is kept$'
+[[ "$(count_calls eksctl 'delete cluster')" == 0 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]'
+check "  ... and eksctl delete cluster was never called" 0 $? "$WORK/err-ng.log"
+ROLE=cb-offline-test-cilium-operator
+full; clean "$WORK/err-role-count.log"
+k="$(calls aws 'iam get-role' "$ROLE" | awk -v s="$(first_seq eksctl 'delete cluster')" '$1 < s' | wc -l | tr -d ' ')"
+full
+FAKE_FAIL="aws|iam get-role|$ROLE|ServiceFailure) when calling the GetRole operation: not a NoSuchEntity (|1|$k" clean "$WORK/err-role.log"
+check "REJECT an operator role read after the cluster delete whose other error names NoSuchEntity in its message" 1 "$RC" "$WORK/err-role.log" \
+  "^CLEAN FAILED: could not read role $ROLE\$"
+grep -q ' verdict=incomplete$' "$V/verdict.txt"; check "  ... verdict incomplete" 0 $? "$V/verdict.txt"
 finish

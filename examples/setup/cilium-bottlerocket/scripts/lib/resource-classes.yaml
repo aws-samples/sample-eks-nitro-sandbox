@@ -14,6 +14,7 @@
 #                lt       the TagSpecifications of the launch template (instance, volume, ENI)
 #                cilium   eni.eniTags in cilium-values.yaml plus --set eni.eniTags.RunId
 #                packer   run_tags, run_volume_tags, tags or snapshot_tags of the Packer template
+#                         (run_tags also tag the network interface of the builder instance)
 #                sweep    AWS makes it with no tag; setup.sh stage node-checks runs tag-sweep,
 #                         which tags exactly the members that it finds by one exact relation
 #   readback   the call that reads the tags back
@@ -54,7 +55,7 @@ classes:
   - {class: builder-instance-profile, made_by: AMI lane 10-build-ami-packer.sh, tags: spec, readback: iam list-instance-profile-tags, state: BUILDER_PROFILE_NAME, discover: builder_profile, absent: "iam get-instance-profile (NoSuchEntity)", transient: true}
   - {class: builder-instance, made_by: Packer, tags: packer, readback: ec2 describe-instances, state: BUILDER_INSTANCE_ID, discover: builder_instances, absent: "ec2 describe-instances (terminated)", transient: true}
   - {class: builder-volume, made_by: Packer, tags: packer, readback: ec2 describe-volumes, state: BUILDER_VOLUME_IDS, discover: builder_volumes, absent: "ec2 describe-volumes (InvalidVolume.NotFound)", transient: true}
-  - {class: builder-eni, made_by: EC2 with the builder instance, tags: none, readback: ec2 describe-network-interfaces, state: "-", discover: builder_enis, absent: "goes with the builder instance", transient: true}
+  - {class: builder-eni, made_by: Packer with the builder instance, tags: packer, readback: ec2 describe-network-interfaces, state: BUILDER_ENI_IDS, discover: builder_enis, absent: "ec2 describe-network-interfaces (InvalidNetworkInterfaceID.NotFound)", transient: true}
   - {class: ami, made_by: Packer, tags: packer, readback: ec2 describe-images, state: SANDBOX_AMI_ID, discover: images, absent: "ec2 describe-images (empty)"}
   - {class: ami-snapshot, made_by: Packer, tags: packer, readback: ec2 describe-snapshots, state: SANDBOX_AMI_SNAPSHOT_IDS, discover: snapshots, absent: "ec2 describe-snapshots (InvalidSnapshot.NotFound)"}
 # The VPC resource types that the audit reads by vpc-id. Each one must belong to a class above.

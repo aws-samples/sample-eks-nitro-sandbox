@@ -5,6 +5,7 @@ Every discovery is a read. A failed read is Unknown (exit 2), never "nothing fou
 """
 
 import json
+from pathlib import Path
 
 import yaml
 
@@ -302,9 +303,46 @@ def d_builder_volumes():
     return [item(k, v.get("Tags"), state=v["State"]) for k, v in sorted(found.items())]
 
 
+def cleared_builder_eni_ids():
+    """BUILDER_ENI_IDS of the earlier attempts of the AMI build: a retry moves the builder keys of
+    the failed attempt to packer.attempt<N>/state-cleared.env in the run folder."""
+    out = []
+    for f in sorted(Path(setting("RUN_STATE_FILE")).parent.glob("packer.attempt*/state-cleared.env")):
+        try:
+            lines = f.read_text().splitlines()
+        except OSError as err:
+            raise Unknown(f"could not read {f}: {err}") from err
+        out += [x for line in lines if line.startswith("BUILDER_ENI_IDS=") for x in line.split("=", 1)[1].split(",") if x]
+    return out
+
+
 def d_builder_enis():
-    ids = {i["InstanceId"] for i in builder_instance_docs()}
-    return [item(e["NetworkInterfaceId"], e.get("TagSet")) for e in all_enis() if e.get("Attachment", {}).get("InstanceId") in ids]
+    """The builder ENIs, also after they left the builder instance: (1) each ENI attached to a builder
+    instance; (2) each ENI with ManagedBy and RunId of the run that no other ENI class claims (not a
+    Cilium ENI, not an ENI of a node, of the control plane or of the NAT gateway); (3) each ID in
+    BUILDER_ENI_IDS of the state file or of an earlier build attempt that EC2 still has, whatever
+    its tags."""
+    found = {}
+    if state_get("VPC_ID"):
+        ids = {i["InstanceId"] for i in builder_instance_docs()}
+        found.update({e["NetworkInterfaceId"]: e for e in all_enis() if e.get("Attachment", {}).get("InstanceId") in ids})
+        others = {f["id"] for f in d_control_plane_enis() + d_nat_enis() + d_cilium_enis()}
+        nodes = {i["InstanceId"] for i in node_instance_docs()}
+    else:
+        others, nodes = set(), set()
+    for e in enis(tagged()):
+        t = tag_map(e.get("TagSet", [])) or {}
+        if (e["NetworkInterfaceId"] in others or t.get("io.cilium/cilium-managed") or t.get("eks:nodegroup-name")
+                or e.get("Attachment", {}).get("InstanceId") in nodes or e.get("RequesterManaged")):
+            continue
+        found.setdefault(e["NetworkInterfaceId"], e)
+    named = [x for x in state_get("BUILDER_ENI_IDS").split(",") + cleared_builder_eni_ids() if x and x not in found]
+    for ident in dict.fromkeys(named):
+        doc = aws("ec2", "describe-network-interfaces", "--network-interface-ids", ident,
+                  allow=("InvalidNetworkInterfaceID.NotFound",))
+        for e in (doc or {}).get("NetworkInterfaces", []):
+            found[e["NetworkInterfaceId"]] = e
+    return [item(k, e.get("TagSet"), status=e.get("Status")) for k, e in sorted(found.items())]
 
 
 def d_images():
@@ -320,7 +358,7 @@ def d_snapshots():
 VPC_SCOPED = {"vpc", "subnets", "route_tables", "main_route_table", "network_acls", "internet_gateways",
               "nat_gateways", "elastic_ips", "stack_security_groups", "default_security_group",
               "cluster_security_group", "control_plane_enis", "nat_enis", "cilium_enis", "node_instances",
-              "node_volumes", "node_enis", "node_instance_profiles", "builder_enis", "lt_copies", "asgs"}
+              "node_volumes", "node_enis", "node_instance_profiles", "lt_copies", "asgs"}
 
 
 def discover(name):
@@ -399,8 +437,12 @@ def cmd_tag_sweep(_):
         if c["tags"] != SWEEP:
             continue
         for f in discover(c["discover"]):
+            # Each ownership key is absent or already has this run's value: a sweep never moves a
+            # resource from another owner or another run to this run.
             other = f["tags"].get(OWNER_TAG[0])
             require(other in (None, OWNER_TAG[1]), f"{c['class']} {f['id']} carries {OWNER_TAG[0]}={other}; nothing tagged")
+            other_run = f["tags"].get("RunId")
+            require(other_run in (None, run_id()), f"{c['class']} {f['id']} carries RunId={other_run}, not {run_id()}; nothing tagged")
             if not is_ours(f["tags"]):
                 plan.append((c["class"], f["id"]))
     for cls_name, ident in plan:

@@ -240,6 +240,10 @@ def delete_cluster(state, name):
             del objs[n]
     for k in [k for k in state["eks"].get("addons", {}) if k.startswith(name + "/")]:
         del state["eks"]["addons"][k]
+    # EKS deletes the access entries, Fargate profiles and identity provider configs with the cluster.
+    for coll, sep in (("access_entries", "|"), ("fargate_profiles", "/"), ("identity_provider_configs", "/")):
+        for k in [k for k in state["eks"].get(coll, {}) if k.startswith(name + sep)]:
+            del state["eks"][coll][k]
     del clusters[name]
     for s in [s for s in stacks if s.startswith(prefix)]:
         stacks[s]["StackStatus"] = "DELETE_COMPLETE"

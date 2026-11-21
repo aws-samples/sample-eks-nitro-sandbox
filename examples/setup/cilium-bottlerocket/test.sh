@@ -30,21 +30,31 @@ SANDBOX_NODE="$(state_need SANDBOX_NODE)" || exit 1
 probe="$(probe_name sandbox)"
 fillers=()
 dropin_started=no
-# dropin_cleanup: remove the scratch folder of each drop-in case on the node (through the probe).
+# dropin_cleanup: remove the scratch folder of each drop-in case on the node (through the probe),
+# and show that none is left. Non-zero when the removal or the check fails.
 dropin_cleanup() {
-  probe_exec "$probe" rm -rf /host-run-probe/valid /host-run-probe/missing /host-run-probe/malformed >/dev/null \
-    || warn "could not remove the drop-in case folders under /run/cb-probe on $SANDBOX_NODE"
+  probe_exec "$probe" sh -c 'rm -rf /host-run-probe/valid /host-run-probe/missing /host-run-probe/malformed &&
+    ! test -e /host-run-probe/valid && ! test -e /host-run-probe/missing && ! test -e /host-run-probe/malformed' >/dev/null \
+    && dropin_started=no
 }
 # On any exit, also an interrupt: the drop-in case folders, then the filler pods and the probe
-# pod, each by exact name. After a normal end, step 7 has already deleted the pods.
+# pod, each by exact name. After a normal end, step 7 has already removed them as checks, and
+# this tries again only for what is left. A removal that fails here also makes the exit code
+# non-zero, so a helper object that stays is never a passing run.
 test_cleanup() {
-  local f
-  if [[ "$dropin_started" == yes && " ${CB_PROBES[*]-} " == *" $probe "* ]]; then dropin_cleanup; fi
+  local rc=$? f bad=0
+  if [[ "$dropin_started" == yes && " ${CB_PROBES[*]-} " == *" $probe "* ]]; then
+    dropin_cleanup || { bad=1; warn "could not remove the drop-in case folders under /run/cb-probe on $SANDBOX_NODE"; }
+  fi
   for f in ${fillers[@]+"${fillers[@]}"}; do
     kc -n "$NAMESPACE" delete pod "$f" --ignore-not-found --wait=false >/dev/null \
-      || warn "could not delete the filler pod $f; delete it with: kubectl -n $NAMESPACE delete pod $f"
+      || { bad=1; warn "could not delete the filler pod $f; delete it with: kubectl -n $NAMESPACE delete pod $f"; }
   done
-  probe_cleanup
+  probe_cleanup || bad=1
+  if ((bad)); then
+    warn "test.sh could not remove every helper object of run $RUN_ID (see above)"
+    ((rc != 0)) || exit 1
+  fi
 }
 trap test_cleanup EXIT
 trap 'exit 130' INT
@@ -169,7 +179,8 @@ dropin_case() { # dropin_case <valid|missing|malformed>
 }
 dropin_started=yes
 for c in valid missing malformed; do save "$OUT/containerd-dump-$c.toml" dropin_case "$c"; done
-dropin_cleanup   # a case that stopped part way leaves its folder; remove all three again
+# A case that stopped part way leaves its folder: remove all three again, as a check.
+check "the drop-in case folders are removed from /run/cb-probe on the sandbox node" dropin_cleanup
 # expect_refusal <tag> <case> <zero|nonzero> <text the dump must have, or ""> <error of the node check>:
 # one negative case fails in the expected way only: containerd exits as expected, its output has
 # the expected text, and check-containerd-dump refuses the dump (exit 1) with the expected error.
@@ -328,11 +339,19 @@ check "the addresses, routes and rules of each ENI after eth0 are the same in ca
   pyc check-eni-stable --before "$A/eni.txt" --after "$B/eni.txt"
 check "no SELinux denial on the sandbox node from its boot to the end of test.sh (fails closed)" \
   pyc selinux-audit "$B/kernel.log" "$B/journal.log"
-kept=()
-for f in ${fillers[@]+"${fillers[@]}"}; do
-  kc -n "$NS" delete pod "$f" --ignore-not-found --wait=false >/dev/null || kept+=("$f")
-done
-fillers=(${kept[@]+"${kept[@]}"})   # the exit trap tries again for any that is left
-probe_stop "$probe" || warn "could not delete the probe pod $probe; the exit trap tries again"
+# fillers_gone: delete each filler pod by its exact name, then wait until none of them is listed.
+# The ones that are left stay in fillers, and the exit trap tries again.
+fillers_absent() { local out; out="$(kc -n "$NS" get pod "${fillers[@]}" --ignore-not-found -o name)" && [[ -z "$out" ]]; }
+fillers_gone() {
+  local f kept=()
+  for f in ${fillers[@]+"${fillers[@]}"}; do
+    kc -n "$NS" delete pod "$f" --ignore-not-found --wait=false >/dev/null || kept+=("$f")
+  done
+  ((${#kept[@]} == 0)) || { fillers=("${kept[@]}"); return 1; }
+  ((${#fillers[@]} == 0)) || wait_until "${CB_WAIT_TRIES:-30}" "the filler pods to go" fillers_absent || return 1
+  fillers=()
+}
+check "each filler pod is deleted by its exact name, and none is left" fillers_gone
+check "the probe pod $probe is deleted by its exact name, and it is gone" probe_stop "$probe"
 
 demo_summary "the Cilium on Bottlerocket sample (run $RUN_ID)"

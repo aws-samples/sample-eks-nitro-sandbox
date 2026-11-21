@@ -592,6 +592,38 @@ def handle_eks(state, op, sub, opts):
         if op == "delete-pod-identity-association" and not a.get("StaysAfterDelete"):
             del pia[aid]
         return {"association": dict(visible(a, False), associationId=aid)}
+    # The other children that EKS deletes with the cluster (eks.access_entries keyed
+    # "<cluster>|<principal ARN>", eks.fargate_profiles and eks.identity_provider_configs keyed
+    # "<cluster>/<name>"). A read for a cluster that does not exist is ResourceNotFoundException.
+    if op in ("list-access-entries", "describe-access-entry", "list-fargate-profiles", "describe-fargate-profile",
+              "list-identity-provider-configs", "describe-identity-provider-config") and cl not in clusters:
+        raise ApiError("ResourceNotFoundException", op, f"No cluster found for name: {cl}.")
+    entries = k.setdefault("access_entries", {})
+    if op == "list-access-entries":
+        return {"accessEntries": sorted(x.split("|", 1)[1] for x in entries if x.split("|", 1)[0] == cl)}
+    if op == "describe-access-entry":
+        e = entries.get(f"{cl}|{one(opts, 'principal-arn')}")
+        if not e:
+            raise ApiError("ResourceNotFoundException", op, f"The specified principalArn could not be found: {one(opts, 'principal-arn')}")
+        return {"accessEntry": dict(visible(e, False), clusterName=cl, principalArn=one(opts, "principal-arn"))}
+    fps = k.setdefault("fargate_profiles", {})
+    if op == "list-fargate-profiles":
+        return {"fargateProfileNames": sorted(x.split("/", 1)[1] for x in fps if x.split("/", 1)[0] == cl)}
+    if op == "describe-fargate-profile":
+        fp = fps.get(f"{cl}/{one(opts, 'fargate-profile-name')}")
+        if not fp:
+            raise ApiError("ResourceNotFoundException", op, f"No Fargate Profile found with name: {one(opts, 'fargate-profile-name')}.")
+        return {"fargateProfile": dict(visible(fp, False), fargateProfileName=one(opts, "fargate-profile-name"), clusterName=cl)}
+    idps = k.setdefault("identity_provider_configs", {})
+    if op == "list-identity-provider-configs":
+        return {"identityProviderConfigs": [{"type": "oidc", "name": x.split("/", 1)[1]} for x in sorted(idps)
+                                            if x.split("/", 1)[0] == cl]}
+    if op == "describe-identity-provider-config":
+        ref = dict(p.split("=", 1) for p in one(opts, "identity-provider-config", "").split(",") if "=" in p)
+        idp = idps.get(f"{cl}/{ref.get('name', '')}")
+        if not idp or ref.get("type") != "oidc":
+            raise ApiError("ResourceNotFoundException", op, f"identity provider config {ref} not found")
+        return {"identityProviderConfig": {"oidc": dict(visible(idp, False), identityProviderConfigName=ref["name"], clusterName=cl)}}
     if op == "wait":
         if sub == "cluster-active" or sub == "nodegroup-active":
             return None

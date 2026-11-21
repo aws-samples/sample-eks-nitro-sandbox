@@ -3,7 +3,9 @@
 # delete it by its exact name. It reads the node: the kernel log, BTF, the merged containerd
 # configuration, the shim configuration, the SELinux mode and the SELinux domain of each
 # process. Bottlerocket has no shell on the host, so the probe runs host binaries with
-# chroot /host <binary>. The cluster is the dedicated cluster of the sample.
+# chroot /host <binary>. The cluster is the dedicated cluster of the sample. It needs the host
+# access below (privileged, the host PID namespace, the host root read-only and one scratch
+# folder), but no Kubernetes API access, so it mounts no service account token.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -16,6 +18,7 @@ spec:
   nodeName: ${NODE_NAME}
   hostPID: true
   restartPolicy: Never
+  automountServiceAccountToken: false
   tolerations:
     - operator: Exists
   containers:

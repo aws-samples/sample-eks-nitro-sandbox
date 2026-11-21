@@ -158,6 +158,8 @@ require_caller_account() {
     || die E_ACCOUNT "no AWS credentials: aws sts get-caller-identity failed"
   read -r account arn <<<"$out"
   echo "Caller: $arn"
+  # shellcheck disable=SC2034 # clean.sh reads it: the creator access entry of the cluster
+  CALLER_ARN="$arn"
   [[ "$account" == "$AWS_ACCOUNT_ID" ]] || die E_ACCOUNT "the caller is in account $account, not AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID; refusing"
 }
 require_account() { require_caller_account; }
@@ -330,6 +332,15 @@ require_kube_context() {
   [[ -n "$server" && "$server" == "$endpoint" ]] \
     || die E_KUBE_CONTEXT "the kubeconfig $KUBECONFIG does not hold context $KUBE_CONTEXT for $endpoint (got '${server:-none}')"
 }
+# aws_error_is <code> <output>: 0 when the output of a failed AWS CLI call is the error <code> in
+# the CLI's own form, "An error occurred (<code>) when calling the <Operation> operation" at the
+# start of a line (AWS CLI v2 can put "aws: [ERROR]: " before it), and it names no other error
+# code. A code that only appears in a message, or any other output, is not that error.
+aws_error_is() {
+  local codes
+  codes="$(sed -nE 's/^(aws: \[ERROR\]: )?An error occurred \(([A-Za-z0-9.]+)\) when calling the [A-Za-z0-9_-]+ operation.*/\2/p' <<<"$2" | sort -u)"
+  [[ -n "$1" && "$codes" == "$1" ]]
+}
 # cluster_state: the EKS cluster status, or NONE when it does not exist. Any other read
 # failure stops the script, so a clean up never reads a failure as "already gone".
 cluster_state() {
@@ -338,7 +349,7 @@ cluster_state() {
     --query cluster.status --output text 2>&1)" || rc=$?
   if ((rc == 0)); then
     printf '%s\n' "$out"
-  elif grep -Eq '^(aws: \[ERROR\]: )?An error occurred \(ResourceNotFoundException\)' <<<"$out"; then
+  elif aws_error_is ResourceNotFoundException "$out"; then
     printf 'NONE\n'
   else
     die E_CLUSTER_READ "could not read cluster $CLUSTER_NAME: $out"
@@ -390,11 +401,12 @@ probe_stop() {
 }
 # probe_cleanup: the exit trap of setup.sh and test.sh. It deletes each probe pod that the script
 # started and did not delete, by exact name, so that a failure leaves none behind.
-probe_cleanup() {
-  local p
+probe_cleanup() { # non-zero when a probe pod could not be deleted
+  local p bad=0
   for p in ${CB_PROBES[@]+"${CB_PROBES[@]}"}; do
-    probe_stop "$p" || warn "could not delete the probe pod $p; delete it with: kubectl -n $NAMESPACE delete pod $p"
+    probe_stop "$p" || { bad=1; warn "could not delete the probe pod $p; delete it with: kubectl -n $NAMESPACE delete pod $p"; }
   done
+  ((bad == 0))
 }
 # probe_capture <probe> <out-dir>: the host evidence of one node, one file per item. Each
 # command runs on its own, so an unreadable item is an empty file, which the checks read as
