@@ -2322,7 +2322,7 @@ global_settings:
     # process launches the code must make (argument lists, no shell, tools on PATH), and one exec in a test fixture.
     - rule_id: CKV2_K8S_6
       path: 'examples/setup/cilium-bottlerocket/deploy/pod-sandbox.yaml'
-      reason: 'By design the sample ships no network policy (AGENTS.md, Security rules): check-manifests refuses one in deploy/ (cb_render.py:282) and test.sh proves none exists (test.sh:325-326)'
+      reason: 'By design the sample ships no network policy (AGENTS.md, Security rules): check-manifests refuses one in deploy/ (cb_render.py:240) and test.sh proves none exists (test.sh:325-326)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/setup/cilium-bottlerocket/deploy/pod-sandbox-network-isolated.yaml'
@@ -2330,7 +2330,7 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/setup/cilium-bottlerocket/deploy/pod-ordinary.yaml'
-      reason: 'Comparison pods: they stay as the sandbox pod is, and by design the sample ships no network policy (AGENTS.md, Security rules; cb_render.py:282; test.sh:325-326)'
+      reason: 'Comparison pods: they stay as the sandbox pod is, and by design the sample ships no network policy (AGENTS.md, Security rules; cb_render.py:240; test.sh:325-326)'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/setup/cilium-bottlerocket/deploy/pod-server.yaml'

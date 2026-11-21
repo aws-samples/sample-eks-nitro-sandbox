@@ -10,9 +10,8 @@ from pathlib import Path
 import yaml
 
 from cb_base import (CRI_PROXY_ENDPOINT, LT_ID, NODEGROUP_LABEL, NS_LABEL, OWNER_TAG, SAMPLE,
-                     SANDBOX_NODE_LABEL, SANDBOX_TAINT_KEY, Reject, Unknown, aws, int_setting,
-                     is_ours, read_input, read_json, require, run_id, sample_tags, setting, state_get,
-                     tag_list)
+                     SANDBOX_NODE_LABEL, SANDBOX_TAINT_KEY, Unknown, aws, int_setting, is_ours,
+                     read_input, read_json, require, run_id, setting, state_get, tag_list)
 
 AMI = re.compile(r"^ami-[0-9a-f]{8}(?:[0-9a-f]{9})?$")
 INSTANCE_TYPE = re.compile(r"^[a-z][a-z0-9-]*\.[0-9a-z]+$")
@@ -65,9 +64,7 @@ def zones():
 
 
 def cmd_check_config(_):
-    require(re.fullmatch(r"[a-z][a-z0-9-]{2,31}", setting("CLUSTER_NAME")) is not None,
-            f"CLUSTER_NAME '{setting('CLUSTER_NAME')}' must be 3 to 32 lowercase letters, digits and hyphens")
-    zones()
+    zones()  # derive_names (common.sh) checks CLUSTER_NAME, E_NAME, before setup.sh reserves the run
     for name in ("SYSTEM_INSTANCE_TYPE", "SANDBOX_INSTANCE_TYPE", "BUILD_INSTANCE_TYPE"):
         require(INSTANCE_TYPE.fullmatch(setting(name)) is not None, f"{name}={setting(name)} is not an instance type")
     int_setting("SANDBOX_SLOTS", 1, 250)
@@ -78,7 +75,7 @@ def cmd_check_config(_):
     for name in ("SYSTEM_AMI_ID", "REUSE_SANDBOX_AMI_ID"):
         value = setting(name, required=False)
         require(not value or AMI.fullmatch(value) is not None, f"{name}={value} is not an AMI ID")
-    print("config: names, zones, instance types, slot count and volume sizes are valid")
+    print("config: zones, instance types, AMI IDs, slot count and volume sizes are valid")
 
 
 def dig(values, path):
@@ -96,7 +93,6 @@ def cmd_check_cilium_values(args):
         values = yaml.safe_load(text)
     except yaml.YAMLError as err:
         raise Unknown(f"{path} is not YAML") from err
-    require(isinstance(values, dict), f"{path} is not a map")
     wrong = [f"{'.'.join(p)}={dig(values, p)!r} (want {v!r})" for p, v in CILIUM_EXPECTED.items()
              if dig(values, p) != v]
     require(not wrong, f"{path}: " + "; ".join(wrong))
@@ -107,23 +103,15 @@ def cmd_check_cilium_values(args):
 
 
 def fill(obj, values):
-    """Fill ${NAME} in every string. A string that is only ${NAME} takes the value's type."""
+    """Fill ${NAME} in every string. A string that is only ${NAME} takes the value's type. A name
+    with no value is a KeyError, which main_wrapper reports as could not check (exit 2)."""
     if isinstance(obj, dict):
         return {k: fill(v, values) for k, v in obj.items()}
     if isinstance(obj, list):
         return [fill(v, values) for v in obj]
     if isinstance(obj, str):
         whole = re.fullmatch(r"\$\{([A-Z_]+)\}", obj)
-        if whole:
-            if whole.group(1) not in values:
-                raise Unknown(f"no value for ${{{whole.group(1)}}}")
-            return values[whole.group(1)]
-
-        def one(match):
-            if match.group(1) not in values:
-                raise Unknown(f"no value for ${{{match.group(1)}}}")
-            return str(values[match.group(1)])
-        return re.sub(r"\$\{([A-Z_]+)\}", one, obj)
+        return values[whole.group(1)] if whole else re.sub(r"\$\{([A-Z_]+)\}", lambda m: str(values[m.group(1)]), obj)
     return obj
 
 
@@ -145,13 +133,10 @@ def write_rendered(name, doc):
 
 
 def cmd_render_cluster(_):
-    doc = fill(load_template("eksctl/cluster.yaml"), {**base_values(), "AVAILABILITY_ZONES": zones()})
-    names = [a["name"] for a in doc.get("addons", [])]
-    require(doc["metadata"]["version"] == "1.36", "the cluster must be Kubernetes 1.36")
-    require(doc.get("addonsConfig", {}).get("disableDefaultAddons") is True, "default add-ons must be off")
-    require(not {"vpc-cni", "kube-proxy"} & set(names), f"the cluster must not have vpc-cni or kube-proxy: {names}")
-    require(doc["metadata"]["tags"] == sample_tags(), "the cluster tags must be ManagedBy and RunId")
-    write_rendered("cluster.yaml", doc)
+    # The rendered values are pinned by test-cluster-helper.sh; setup.sh checks the live cluster
+    # for vpc-cni, kube-proxy and aws-node (E_CNI_PRESENT), and audit-tags checks its tags.
+    write_rendered("cluster.yaml", fill(load_template("eksctl/cluster.yaml"),
+                                        {**base_values(), "AVAILABILITY_ZONES": zones()}))
 
 
 def policy_actions(document):
@@ -164,14 +149,9 @@ def policy_actions(document):
 
 
 def cmd_render_pod_identity(_):
-    doc = fill(load_template("eksctl/pod-identity.yaml"),
-               {**base_values(), "OPERATOR_ROLE_NAME": setting("OPERATOR_ROLE_NAME")})
-    assocs = doc["iam"]["podIdentityAssociations"]
-    require(len(assocs) == 1 and assocs[0]["serviceAccountName"] == "cilium-operator"
-            and assocs[0]["namespace"] == "kube-system", "exactly one association, for kube-system/cilium-operator")
-    actions = policy_actions(assocs[0]["permissionPolicy"])
-    require(actions == OPERATOR_ACTIONS, f"operator actions differ from the Cilium list: {sorted(actions ^ OPERATOR_ACTIONS)}")
-    write_rendered("pod-identity.yaml", doc)
+    # check-operator-role checks the live association and the actions of its role, before Cilium.
+    write_rendered("pod-identity.yaml", fill(load_template("eksctl/pod-identity.yaml"),
+                                             {**base_values(), "OPERATOR_ROLE_NAME": setting("OPERATOR_ROLE_NAME")}))
 
 
 def cmd_render_nodegroup(args):
@@ -181,12 +161,7 @@ def cmd_render_nodegroup(args):
     doc = load_template("eksctl/nodegroups.yaml")
     doc["managedNodeGroups"] = [g for g in doc["managedNodeGroups"] if g["name"] == group]
     doc = fill(doc, {**base_values(), "NODE_ZONE": zones()[0], f"{group.upper()}_LAUNCH_TEMPLATE_ID": lt})
-    require(len(doc["managedNodeGroups"]) == 1, f"nodegroups.yaml has no single group {group}")
     ng = doc["managedNodeGroups"][0]
-    require((ng["minSize"], ng["maxSize"], ng["desiredCapacity"]) == (1, 1, 1), f"{group} must be exactly one node")
-    policies = set(ng["iam"]["attachPolicyARNs"])
-    require(policies == NODE_POLICY_ARNS, f"{group} node role policies must be {sorted(NODE_POLICY_ARNS)}, got {sorted(policies)}")
-    require(ng["tags"] == sample_tags(), f"{group} tags must be ManagedBy and RunId")
     # A node group of that name that EKS already has is used only when it is this run's and as
     # rendered; setup.sh renders before ensure_nodegroup, so a mismatch stops before any change.
     found = aws("eks", "describe-nodegroup", "--cluster-name", setting("CLUSTER_NAME"), "--nodegroup-name", group,
@@ -200,40 +175,28 @@ def cmd_render_nodegroup(args):
 
 
 def nodegroup_problems(ng, found):
-    """What differs between a node group that EKS has (describe-nodegroup) and the managed node
-    group rendered from eksctl/nodegroups.yaml: the two tags, the launch template and its
-    version, the sizes, the labels and taints, private subnets of the run's VPC in the node zone,
-    no remote access, and a node role of this run with exactly the two AWS managed policies."""
-    wrong = []
+    """What differs between a node group that EKS has (describe-nodegroup) and the rendered one, including
+    the two tags and a node role of this run with exactly the two AWS managed policies."""
+    lt, sizes = found.get("launchTemplate") or {}, found.get("scalingConfig") or {}
+
+    def taints(items):
+        return sorted((t.get("key"), t.get("value"), TAINT_EFFECTS.get(t.get("effect"), t.get("effect"))) for t in items or [])
+    compare = {  # the field: (what EKS has, what the rendered node group fixes)
+        "launch template and version": ((lt.get("id"), str(lt.get("version"))),
+                                        (ng["launchTemplate"]["id"], str(ng["launchTemplate"]["version"]))),
+        "min, max and desired size": ((sizes.get("minSize"), sizes.get("maxSize"), sizes.get("desiredSize")),
+                                      (ng["minSize"], ng["maxSize"], ng["desiredCapacity"])),
+        # eksctl adds labels to a managed node group whose Kubernetes label key has the prefix it owns, alpha.eksctl.io.
+        "labels": ({k: v for k, v in (found.get("labels") or {}).items() if k.partition("/")[:2] != ("alpha.eksctl.io", "/")},
+                   ng.get("labels") or {}),
+        "taints": (taints(found.get("taints")), taints(ng.get("taints"))),
+        "remote access": (found.get("remoteAccess") or None, None),
+        # The cluster stage recorded the private subnet of the run VPC in the node zone as BUILD_SUBNET_ID.
+        "subnets": (sorted(found.get("subnets") or []), [state_get("BUILD_SUBNET_ID")]),
+    }
+    wrong = [f"{name} {got}, want {want}" for name, (got, want) in compare.items() if got != want]
     if not is_ours(found.get("tags")):
-        wrong.append(f"tags {found.get('tags')} are not {OWNER_TAG[0]}={OWNER_TAG[1]} RunId={run_id()}")
-    lt, want_lt = found.get("launchTemplate") or {}, ng["launchTemplate"]
-    if (lt.get("id"), str(lt.get("version"))) != (want_lt["id"], str(want_lt["version"])):
-        wrong.append(f"launch template {lt.get('id')} version {lt.get('version')}, "
-                     f"want {want_lt['id']} version {want_lt['version']}")
-    sizes = found.get("scalingConfig") or {}
-    want_sizes = {"minSize": ng["minSize"], "maxSize": ng["maxSize"], "desiredSize": ng["desiredCapacity"]}
-    if {k: sizes.get(k) for k in want_sizes} != want_sizes:
-        wrong.append(f"sizes {sizes}, want {want_sizes}")
-    labels, want_labels = found.get("labels") or {}, ng.get("labels") or {}
-    # eksctl adds its own alpha.eksctl.io/ labels to a managed node group.
-    if {k: v for k, v in labels.items() if not k.startswith("alpha.eksctl.io/")} != want_labels:
-        wrong.append(f"labels {labels}, want {want_labels}")
-    taints = sorted((t.get("key"), t.get("value"), TAINT_EFFECTS.get(t.get("effect"), t.get("effect")))
-                    for t in found.get("taints") or [])
-    want_taints = sorted((t["key"], t["value"], TAINT_EFFECTS.get(t["effect"], t["effect"])) for t in ng.get("taints") or [])
-    if taints != want_taints:
-        wrong.append(f"taints {taints}, want {want_taints}")
-    if found.get("remoteAccess"):
-        wrong.append(f"remote access is set: {found['remoteAccess']}")
-    subnets = found.get("subnets") or []
-    if not subnets:
-        wrong.append("no subnets")
-    else:
-        zone, vpc = zones()[0], state_get("VPC_ID")
-        for subnet in aws("ec2", "describe-subnets", "--subnet-ids", *subnets).get("Subnets", []):
-            if (subnet.get("VpcId"), subnet.get("AvailabilityZone"), subnet.get("MapPublicIpOnLaunch")) != (vpc, zone, False):
-                wrong.append(f"subnet {subnet.get('SubnetId')} is not a private subnet of {vpc or 'the run VPC'} in {zone}")
+        wrong.insert(0, f"tags {found.get('tags')} are not {OWNER_TAG[0]}={OWNER_TAG[1]} RunId={run_id()}")
     role = (found.get("nodeRole") or "").rsplit("/", 1)[-1]
     if not role:
         return wrong + ["no node role"]
@@ -248,16 +211,11 @@ def role_tags(role):
 
 
 def node_role_problems(role):
-    """What is wrong with a node role: its managed policies must be exactly the two AWS managed
-    policy ARNs of eksctl/nodegroups.yaml, and it must have no inline policy."""
+    """A node role must have exactly the two AWS managed policy ARNs of eksctl/nodegroups.yaml and no inline policy."""
     arns = {p.get("PolicyArn") for p in aws("iam", "list-attached-role-policies", "--role-name", role).get("AttachedPolicies", [])}
     inline = aws("iam", "list-role-policies", "--role-name", role).get("PolicyNames", [])
-    wrong = []
-    if arns != NODE_POLICY_ARNS:
-        wrong.append(f"managed policies {sorted(arns)}, want exactly {sorted(NODE_POLICY_ARNS)}")
-    if inline:
-        wrong.append(f"inline policies {inline}, want none")
-    return wrong
+    return ([f"managed policies {sorted(arns)}, want exactly {sorted(NODE_POLICY_ARNS)}"] if arns != NODE_POLICY_ARNS else []) \
+        + ([f"inline policies {inline}, want none"] if inline else [])
 
 
 def cmd_render_probe(args):
@@ -346,13 +304,10 @@ def positive(section, name, key):
 
 
 def derived_max_pods(info):
-    """(max-pods, ENI formula, ceiling, vCPUs) of one describe-instance-types entry. The ENI
-    formula of the Amazon EKS AMIs is ENIs x (IPv4 per ENI - 1) + 2. The ceiling is the one of the
-    Amazon EKS max-pods calculator: Amazon EKS User Guide, "Choose an optimal Amazon EC2 node
-    instance type", section "How maxPods is determined"
-    (https://docs.aws.amazon.com/eks/latest/userguide/choosing-instance-type.html#max-pods-precedence),
-    110 for less than 30 vCPUs and 250 for more. The guide does not place exactly 30 vCPUs; the
-    sample gives it 250. m8i.xlarge (4 vCPUs, 4 ENIs, 30 IPv4 each): formula 118, ceiling 110."""
+    """(max-pods, ENI formula, ceiling, vCPUs) of one describe-instance-types entry. The ENI formula of the Amazon
+    EKS AMIs is ENIs x (IPv4 per ENI - 1) + 2. The ceiling of the EKS max-pods calculator is 110 below 30 vCPUs and
+    250 above; the sample gives exactly 30 vCPUs 250. m8i.xlarge (4 vCPUs, 4 ENIs, 30 IPv4 each): 118, ceiling 110.
+    https://docs.aws.amazon.com/eks/latest/userguide/choosing-instance-type.html#max-pods-precedence"""
     net = info.get("NetworkInfo")
     if not isinstance(net, dict):
         raise Unknown("the instance type has no NetworkInfo")
@@ -364,8 +319,7 @@ def derived_max_pods(info):
 
 
 def cmd_derive_max_pods(args):
-    """Print '<max-pods> <ENI formula> <ceiling> <vCPUs>' of an instance type, all from one
-    ec2 describe-instance-types read."""
+    """Print '<max-pods> <ENI formula> <ceiling> <vCPUs>' of an instance type from one describe-instance-types read."""
     require(INSTANCE_TYPE.fullmatch(args.instance_type) is not None, f"{args.instance_type!r} is not an instance type")
     types = aws("ec2", "describe-instance-types", "--instance-types", args.instance_type).get("InstanceTypes") or []
     if len(types) != 1:
@@ -374,8 +328,7 @@ def cmd_derive_max_pods(args):
 
 
 def max_pods(group):
-    """The max-pods of a node group, as setup.sh derived and recorded it (MAX_PODS_SYSTEM or
-    MAX_PODS_SANDBOX in the run state)."""
+    """The max-pods of a node group as setup.sh derived it (MAX_PODS_SYSTEM or MAX_PODS_SANDBOX in the run state)."""
     value = state_get(f"MAX_PODS_{group.upper()}")
     if not re.fullmatch(r"[1-9][0-9]{0,3}", value):
         raise Unknown(f"the run state has no derived MAX_PODS_{group.upper()} (got {value!r}); run setup.sh")
@@ -399,29 +352,6 @@ def user_data(group, info):
     return "\n".join(lines) + "\n"
 
 
-def parse_toml(text):
-    """The small TOML subset that user_data writes: tables, quoted or bare keys, strings,
-    integers and arrays of strings. Anything else is malformed."""
-    doc, table = {}, None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        head = re.fullmatch(r"\[([a-z0-9.-]+)\]", line)
-        if head:
-            table = doc.setdefault(head.group(1), {})
-            continue
-        pair = re.fullmatch(r'("(?:[^"\\]|\\.)*"|[A-Za-z0-9_-]+)\s*=\s*(.+)', line)
-        if not pair or table is None:
-            raise Reject(f"user data line is not valid TOML here: {raw!r}")
-        key = json.loads(pair.group(1)) if pair.group(1).startswith('"') else pair.group(1)
-        try:
-            table[key] = json.loads(pair.group(2))
-        except ValueError as err:
-            raise Reject(f"user data value is not valid: {raw!r}") from err
-    return doc
-
-
 def cluster_info():
     cluster = aws("eks", "describe-cluster", "--name", setting("CLUSTER_NAME"))["cluster"]
     require(is_ours(cluster.get("tags", {})), f"cluster {cluster['name']} is not this run's")
@@ -432,10 +362,8 @@ def cluster_info():
 
 
 def launch_template_data(group, info):
-    ami = state_get("SYSTEM_AMI_ID" if group == "system" else "SANDBOX_AMI_ID")
-    require(AMI.fullmatch(ami) is not None, f"the state file has no {group} AMI ID")
-    data = {
-        "ImageId": ami,
+    data = {  # setup.sh checked the AMI before it recorded it (check-system-ami; describe-images, check-density)
+        "ImageId": state_get("SYSTEM_AMI_ID" if group == "system" else "SANDBOX_AMI_ID"),
         "InstanceType": setting("SANDBOX_INSTANCE_TYPE" if group == "sandbox" else "SYSTEM_INSTANCE_TYPE"),
         "UserData": base64.b64encode(user_data(group, info).encode()).decode(),
         "MetadataOptions": {"HttpEndpoint": "enabled", "HttpTokens": "required", "HttpPutResponseHopLimit": 1},
@@ -449,34 +377,10 @@ def launch_template_data(group, info):
     return data
 
 
-def user_data_problems(group, data):
-    """What is wrong with launch template data for this group."""
-    wrong = []
-    meta = data.get("MetadataOptions", {})
-    if meta.get("HttpTokens") != "required" or meta.get("HttpPutResponseHopLimit") != 1:
-        wrong.append(f"IMDS must be v2 required with hop limit 1, got {meta}")
-    enclave = data.get("EnclaveOptions", {}).get("Enabled") is True
-    if enclave != (group == "sandbox"):
-        wrong.append(f"Nitro Enclaves enabled={enclave} on the {group} node")
-    try:
-        doc = parse_toml(base64.b64decode(data.get("UserData", ""), validate=True).decode())
-    except (ValueError, UnicodeDecodeError):
-        return wrong + ["the user data is not base64 TOML"]
-    kube = doc.get("settings.kubernetes", {})
-    labels = doc.get("settings.kubernetes.node-labels", {})
-    want_pods = max_pods(group)
-    if kube.get("cluster-name") != setting("CLUSTER_NAME"):
-        wrong.append(f"cluster-name is {kube.get('cluster-name')!r}")
-    if kube.get("max-pods") != want_pods:
-        wrong.append(f"max-pods is {kube.get('max-pods')!r}, want {want_pods}")
-    endpoint = kube.get("container-runtime-endpoint")
-    if endpoint != (CRI_PROXY_ENDPOINT if group == "sandbox" else None):
-        wrong.append(f"container-runtime-endpoint is {endpoint!r} on the {group} node")
-    if labels != node_labels(group):
-        wrong.append(f"node-labels are {labels}, want {node_labels(group)}")
-    if "settings.boot" in doc or "settings.kernel" in doc:
-        wrong.append("the user data sets boot or kernel settings; the mempool parameter is build-time only")
-    return wrong
+def lt_mismatch(data, have):
+    """The keys of a launch template readback with another value than the rendered data, and the keys
+    that the sample does not set (a key pair, network interfaces, security groups, an instance profile)."""
+    return sorted(k for k in data if have.get(k) != data[k]), sorted(k for k in have if k not in data)
 
 
 def cmd_launch_template(args):
@@ -492,10 +396,7 @@ def cmd_launch_template(args):
         require(is_ours(lt.get("Tags", [])), f"launch template {name} exists and is not this run's")
         have = aws("ec2", "describe-launch-template-versions", "--launch-template-id", lt["LaunchTemplateId"],
                    "--versions", "1")["LaunchTemplateVersions"][0]["LaunchTemplateData"]
-        # The whole readback must be the rendered data: also a field that the sample does not set
-        # (a key pair, network interfaces, security groups, an instance profile) stops the reuse.
-        diff = sorted(k for k in data if have.get(k) != data[k])
-        extra = sorted(k for k in have if k not in data)
+        diff, extra = lt_mismatch(data, have)  # the whole readback must be the rendered data
         require(not diff and not extra, f"launch template {name} exists with other values: {diff}, "
                 f"and fields the sample does not set: {extra}; run ./clean.sh")
         lt_id = lt["LaunchTemplateId"]
@@ -504,19 +405,20 @@ def cmd_launch_template(args):
         lt_id = aws("ec2", "create-launch-template", "--launch-template-name", name,
                     "--launch-template-data", json.dumps(data),
                     "--tag-specifications", json.dumps([spec]))["LaunchTemplate"]["LaunchTemplateId"]
-    require(LT_ID.fullmatch(lt_id) is not None, f"launch template ID {lt_id!r} is malformed")
-    print(lt_id)
+    print(lt_id)  # setup.sh checks the printed ID (^lt-[0-9a-f]{17}$) before it records it
 
 
 def cmd_check_user_data(args):
+    """The launch template readback is the data that launch-template rendered (lt-<group>.json of the run)."""
     doc = read_json(args.file)
     try:
-        data = doc["LaunchTemplateVersions"][0]["LaunchTemplateData"]
+        have = doc["LaunchTemplateVersions"][0]["LaunchTemplateData"]
     except (KeyError, IndexError, TypeError) as err:
         raise Unknown("the input is not describe-launch-template-versions output") from err
-    wrong = user_data_problems(args.group, data)
-    require(not wrong, f"{args.group} launch template: " + "; ".join(wrong))
-    print(f"{args.group} launch template: IMDSv2 hop limit 1, TOML settings as rendered")
+    diff, extra = lt_mismatch(read_json(str(run_dir() / f"lt-{args.group}.json")), have)
+    require(not diff and not extra, f"{args.group} launch template is not the rendered data: other values {diff}, "
+            f"fields the sample does not set {extra}")
+    print(f"{args.group} launch template: the rendered data (IMDSv2 hop limit 1, TOML settings)")
 
 
 def cmd_runtimeclass(_):
@@ -577,9 +479,8 @@ def cmd_check_operator_role(_):
 
 
 def trust_problems(document):
-    """What is wrong with the trust policy of the operator role: one statement that allows the
-    EKS Pod Identity service principal sts:AssumeRole and sts:TagSession, and nothing more (no
-    other principal, action, condition or statement)."""
+    """What is wrong with the operator role trust: one statement that allows the EKS Pod Identity principal
+    sts:AssumeRole and sts:TagSession, and nothing more (no other principal, action, condition or statement)."""
     if isinstance(document, str):  # IAM sends the document URL-encoded; the AWS CLI decodes it
         try:
             document = json.loads(urllib.parse.unquote(document))
@@ -589,17 +490,12 @@ def trust_problems(document):
     statements = [statements] if isinstance(statements, dict) else statements
     if not isinstance(statements, list) or len(statements) != 1 or not isinstance(statements[0], dict):
         return [f"the trust policy must have exactly one statement, got {statements!r}"]
-    st, wrong = statements[0], []
-    if set(st) - {"Sid", "Effect", "Principal", "Action"}:
-        wrong.append(f"the statement also has {sorted(set(st) - {'Sid', 'Effect', 'Principal', 'Action'})}")
-    if st.get("Effect") != "Allow":
-        wrong.append(f"Effect is {st.get('Effect')!r}")
-    principal = st.get("Principal")
-    service = principal.get("Service") if isinstance(principal, dict) and set(principal) == {"Service"} else None
-    if (service if isinstance(service, list) else [service]) != [POD_IDENTITY_PRINCIPAL]:
-        wrong.append(f"Principal is {principal!r}, want only Service {POD_IDENTITY_PRINCIPAL}")
-    action = st.get("Action")
-    actions = {action} if isinstance(action, str) else set(action) if isinstance(action, list) else None
-    if actions != POD_IDENTITY_ACTIONS:
-        wrong.append(f"Action is {action!r}, want {sorted(POD_IDENTITY_ACTIONS)}")
-    return wrong
+
+    def as_set(value):  # a policy element is a string or a list of strings
+        return {value} if isinstance(value, str) else set(value) if isinstance(value, list) else value
+    st = {k: v for k, v in statements[0].items() if k != "Sid"}
+    principal = st.get("Principal") if isinstance(st.get("Principal"), dict) else {}
+    got = (sorted(st), st.get("Effect"), {k: as_set(v) for k, v in principal.items()}, as_set(st.get("Action")))
+    want = (["Action", "Effect", "Principal"], "Allow", {"Service": {POD_IDENTITY_PRINCIPAL}}, POD_IDENTITY_ACTIONS)
+    return [] if got == want else [f"the statement is {statements[0]!r}, want only Effect Allow, Principal Service "
+                                   f"{POD_IDENTITY_PRINCIPAL} and Action {sorted(POD_IDENTITY_ACTIONS)}"]

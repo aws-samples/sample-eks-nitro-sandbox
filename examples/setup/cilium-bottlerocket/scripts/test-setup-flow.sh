@@ -166,7 +166,7 @@ done <<'CASES'
 a['tags'] = {}|Pod Identity association a-[a-z0-9]+ is not tagged ManagedBy=cilium-bottlerocket-sample RunId=|REJECT the cilium stage when the association of kube-system/cilium-operator has no tags
 a['tags']['RunId'] = 'r2'|Pod Identity association a-[a-z0-9]+ is not tagged ManagedBy=cilium-bottlerocket-sample RunId=|REJECT the cilium stage when the association of kube-system/cilium-operator is of run r2
 r['Tags'] = []|operator role cb-offline-test-cilium-operator is not tagged ManagedBy=cilium-bottlerocket-sample RunId=|REJECT the cilium stage when the operator role has no tags
-st['Principal'] = {'Service': ['pods.eks.amazonaws.com', 'ec2.amazonaws.com']}|operator role cb-offline-test-cilium-operator trust: Principal is |REJECT the cilium stage when EC2 can assume the operator role too
+st['Principal'] = {'Service': ['pods.eks.amazonaws.com', 'ec2.amazonaws.com']}|operator role cb-offline-test-cilium-operator trust: the statement is .*'ec2\.amazonaws\.com'.*, want only Effect Allow|REJECT the cilium stage when EC2 can assume the operator role too
 CASES
 restore cluster
 world_py 's["eks"]["pod_identity"]["a-other00000000001"] = {"clusterName": "cb-offline-test", "namespace": "kube-system", "serviceAccount": "cilium-operator", "tags": {}, "roleArn": "arn:aws:iam::111122223333:role/someone-else"}
@@ -365,9 +365,9 @@ while IFS='|' read -r code rx why; do
 done <<'CASES'
 ng['tags'] = {'team': 'someone-else'}|tags \{'team': 'someone-else'\} are not ManagedBy=cilium-bottlerocket-sample RunId=|with another owner's tags
 ng['tags']['RunId'] = 'r2'|tags .*'RunId': 'r2'.* are not ManagedBy=cilium-bottlerocket-sample RunId=|of another run (RunId r2)
-ng['launchTemplate']['id'] = 'lt-0fa00000000000999'|launch template lt-0fa00000000000999 version 1, want lt-[0-9a-f]+ version 1|on another launch template
-ng['launchTemplate']['version'] = '2'|launch template lt-[0-9a-f]+ version 2, want lt-[0-9a-f]+ version 1|on version 2 of the run's launch template
-ng['scalingConfig']['desiredSize'] = 2|sizes|with two nodes
+ng['launchTemplate']['id'] = 'lt-0fa00000000000999'|launch template and version \('lt-0fa00000000000999', '1'\), want \('lt-[0-9a-f]+', '1'\)|on another launch template
+ng['launchTemplate']['version'] = '2'|launch template and version \('lt-[0-9a-f]+', '2'\), want \('lt-[0-9a-f]+', '1'\)|on version 2 of the run's launch template
+ng['scalingConfig']['desiredSize'] = 2|min, max and desired size \(1, 1, 2\), want \(1, 1, 1\)|with two nodes
 CASES
 sysnode_world
 FAKE_FAIL='aws|eks describe-nodegroup|system|ServiceUnavailableException' setup "$WORK/ng-render-read.log" --stop-after system-node

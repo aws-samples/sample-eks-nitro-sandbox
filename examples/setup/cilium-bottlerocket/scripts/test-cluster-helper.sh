@@ -36,7 +36,7 @@ acc() { entry "scripts/cilium_bottlerocket.py:$1"; cover accept "$2" "${2}_UNKNO
 echo "== 1/5 config, Cilium values, manifests =============================================="
 full
 h "$WORK/cfg.log" check-config
-check "ACCEPT the config: names, zones, instance types, slot count and volume sizes" 0 "$RC" "$WORK/cfg.log" '^config: '
+check "ACCEPT the config: zones, instance types, AMI IDs, slot count and volume sizes" 0 "$RC" "$WORK/cfg.log" '^config: '
 acc check-config E_CONFIG
 for kv in 'SANDBOX_INSTANCE_TYPE="m8i xlarge"' 'AVAILABILITY_ZONES="us-west-2b us-west-2b"' 'AVAILABILITY_ZONES="us-west-2b us-east-1a"' \
   'SYSTEM_DATA_VOLUME_GIB="10"' 'SYSTEM_AMI_ID="ami-123"' 'SANDBOX_SLOTS="251"'; do
@@ -80,28 +80,35 @@ check "REJECT a deploy folder with no manifest, as could not check" 2 "$RC" "$WO
 
 echo "== 2/5 rendered eksctl objects, the probe, the RuntimeClass, the DaemonSet ============="
 full
+# render-cluster and render-pod-identity only fill the tracked templates; the values are pinned here.
+# The live checks: E_CNI_PRESENT (setup.sh), audit-tags, and check-operator-role for the Pod Identity
+# association and its EC2 actions (section 4/5).
 h "$WORK/rc.log" render-cluster
-check "ACCEPT render-cluster: Kubernetes 1.36, no default add-ons, no vpc-cni or kube-proxy, the sample tags" 0 "$RC" "$WORK/rc.log"
-acc render-cluster E_RENDER_CLUSTER
-tree addon; python3 -c 'import sys; p = sys.argv[1]; t = open(p).read(); open(p, "w").write(t.replace("addons:\n", "addons:\n  - name: vpc-cni\n", 1))' "$T/eksctl/cluster.yaml"
-h "$WORK/rc-bad.log" "SAMPLE=$T" render-cluster
-check "REJECT a cluster template with the vpc-cni add-on" 1 "$RC" "$WORK/rc-bad.log" '^ERROR: E_RENDER_CLUSTER: '
+check "ACCEPT render-cluster: the cluster config for eksctl is written" 0 "$RC" "$WORK/rc.log"
+entry "scripts/cilium_bottlerocket.py:render-cluster"; cover accept E_RENDER_CLUSTER_UNKNOWN
+python3 -c 'import sys, yaml; d = yaml.safe_load(open(sys.argv[1])); names = {a["name"] for a in d.get("addons", [])}
+sys.exit(not (d["metadata"]["version"] == "1.36" and d["addonsConfig"]["disableDefaultAddons"] is True and not {"vpc-cni", "kube-proxy"} & names
+              and d["metadata"]["tags"] == {"ManagedBy": "cilium-bottlerocket-sample", "RunId": "r1"}))' "$RD/cluster.yaml" > "$WORK/rc-pin.log" 2>&1
+check "  ... and it is Kubernetes 1.36 with the default add-ons off, no vpc-cni or kube-proxy add-on, the sample tags" 0 $? "$WORK/rc-pin.log"
 h "$WORK/rpi.log" render-pod-identity
-check "ACCEPT render-pod-identity: one association, kube-system/cilium-operator, exactly the Cilium EC2 actions" 0 "$RC" "$WORK/rpi.log"
-acc render-pod-identity E_RENDER_POD_IDENTITY
-tree pia; python3 -c 'import sys; p = sys.argv[1]; t = open(p).read(); assert "ec2:CreateTags" in t; open(p, "w").write(t.replace("ec2:CreateTags", "ec2:CreateTags\n              - ec2:DetachNetworkInterface", 1))' "$T/eksctl/pod-identity.yaml"
-h "$WORK/rpi-bad.log" "SAMPLE=$T" render-pod-identity
-check "REJECT an operator policy with an action outside the Cilium list (ec2:DetachNetworkInterface)" 1 "$RC" "$WORK/rpi-bad.log" '^ERROR: E_RENDER_POD_IDENTITY: '
+check "ACCEPT render-pod-identity: the Pod Identity config for eksctl is written" 0 "$RC" "$WORK/rpi.log"
+entry "scripts/cilium_bottlerocket.py:render-pod-identity"; cover accept E_RENDER_POD_IDENTITY_UNKNOWN
 world_py 'del s["eks"]["nodegroups"]["cb-offline-test/sandbox"]'
 h "$WORK/rng.log" render-nodegroup sandbox
-check "ACCEPT render-nodegroup sandbox with no node group of that name: exactly one node, the two node policies, the sample tags" 0 "$RC" "$WORK/rng.log"
+check "ACCEPT render-nodegroup sandbox with no node group of that name" 0 "$RC" "$WORK/rng.log"
 acc render-nodegroup E_RENDER_NODEGROUP
+python3 -c 'import sys, yaml; g = yaml.safe_load(open(sys.argv[1]))["managedNodeGroups"][0]
+sys.exit(not ((g["minSize"], g["maxSize"], g["desiredCapacity"]) == (1, 1, 1) and g["tags"] == {"ManagedBy": "cilium-bottlerocket-sample", "RunId": "r1"}
+              and sorted(g["iam"]["attachPolicyARNs"]) == ["arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly",
+                                                           "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"]))' "$RD/nodegroups-sandbox.yaml" > "$WORK/rng-pin.log" 2>&1
+check "  ... and it is exactly one node, the two AWS managed node policies, the sample tags" 0 $? "$WORK/rng-pin.log"
 # A node group of that name that EKS already has: setup.sh uses it only when it is this run's
 # and as rendered. ng_world: the full world, its sandbox node group as EKS describes the one that
 # eksctl made from the rendered config (zone us-west-2b, the first private subnet), and its node
-# role with the two AWS managed policies.
+# role with the two AWS managed policies. The cluster stage records that subnet as BUILD_SUBNET_ID.
 ng_world() {
   full
+  printf 'BUILD_SUBNET_ID=subnet-0fa00000000000001\n' >> "$RD/state.env"
   world_py 'ng = s["eks"]["nodegroups"]["cb-offline-test/sandbox"]
 ng.update(scalingConfig={"minSize": 1, "maxSize": 1, "desiredSize": 1}, subnets=["subnet-0fa00000000000001"],
           labels={"sandbox.eks-nitro-sandbox.amazonaws.com/dedicated": "true", "alpha.eksctl.io/cluster-name": "cb-offline-test"},
@@ -114,7 +121,7 @@ s["iam"]["roles"][ng["nodeRole"].rsplit("/", 1)[1]]["Attached"] = [
 }
 ng_world
 h "$WORK/rng-ng.log" render-nodegroup sandbox
-check "ACCEPT render-nodegroup sandbox with a node group of that name that is this run's and as rendered" 0 "$RC" "$WORK/rng-ng.log" '^node group sandbox: exists, this run.s and as rendered$'
+check "ACCEPT render-nodegroup sandbox with a node group of that name that is this run's and as rendered (its alpha.eksctl.io/cluster-name label is eksctl's and left out)" 0 "$RC" "$WORK/rng-ng.log" '^node group sandbox: exists, this run.s and as rendered$'
 while IFS='|' read -r code rx why; do
   [[ -n "$code" ]] || continue
   ng_world; world_py "ng = s['eks']['nodegroups']['cb-offline-test/sandbox']; role = s['iam']['roles'][ng['nodeRole'].rsplit('/', 1)[1]]
@@ -125,13 +132,15 @@ $code"
 done <<'CASES'
 ng['tags'] = {'team': 'someone-else'}|tags \{'team': 'someone-else'\} are not ManagedBy=cilium-bottlerocket-sample RunId=r1|REJECT a node group of that name with another owner's tags
 ng['tags']['RunId'] = 'r2'|tags .*'RunId': 'r2'.* are not ManagedBy=cilium-bottlerocket-sample RunId=r1|REJECT a node group of that name of run r2
-ng['launchTemplate']['id'] = 'lt-0fa00000000000202'|launch template lt-0fa00000000000202 version 1, want lt-0fa00000000000002 version 1|REJECT a node group of that name on another launch template
-ng['launchTemplate']['version'] = '2'|launch template lt-0fa00000000000002 version 2, want lt-0fa00000000000002 version 1|REJECT a node group of that name on version 2 of the run's launch template
-ng['scalingConfig']['maxSize'] = 3|sizes \{[^}]*'maxSize': 3[^}]*\}, want \{'minSize': 1, 'maxSize': 1, 'desiredSize': 1\}|REJECT a node group of that name that can grow to 3 nodes
+ng['launchTemplate']['id'] = 'lt-0fa00000000000202'|launch template and version \('lt-0fa00000000000202', '1'\), want \('lt-0fa00000000000002', '1'\)|REJECT a node group of that name on another launch template
+ng['launchTemplate']['version'] = '2'|launch template and version \('lt-0fa00000000000002', '2'\), want \('lt-0fa00000000000002', '1'\)|REJECT a node group of that name on version 2 of the run's launch template
+ng['scalingConfig']['maxSize'] = 3|min, max and desired size \(1, 3, 1\), want \(1, 1, 1\)|REJECT a node group of that name that can grow to 3 nodes
 ng['labels'].pop('sandbox.eks-nitro-sandbox.amazonaws.com/dedicated')|labels|REJECT a node group of that name without the sandbox label
+ng['labels']['alpha.eksctl.io.example/x'] = 'y'|labels \{[^}]*'alpha\.eksctl\.io\.example/x': 'y'[^}]*\}, want|REJECT a node group of that name with a label under alpha.eksctl.io.example/ (not the prefix eksctl owns)
+ng['labels']['xalpha.eksctl.io/x'] = 'y'|labels \{[^}]*'xalpha\.eksctl\.io/x': 'y'[^}]*\}, want|REJECT a node group of that name with a label under xalpha.eksctl.io/ (not the prefix eksctl owns)
 ng['taints'] = []|taints \[\], want|REJECT a node group of that name without the sandbox taint
-ng['remoteAccess'] = {'ec2SshKey': 'someone-elses-key'}|remote access is set|REJECT a node group of that name with SSH remote access
-ng['subnets'] = ['subnet-0fa00000000000003']|subnet subnet-0fa00000000000003 is not a private subnet of vpc-0fa00000000000001 in us-west-2b|REJECT a node group of that name in a public subnet
+ng['remoteAccess'] = {'ec2SshKey': 'someone-elses-key'}|remote access \{'ec2SshKey': 'someone-elses-key'\}, want None|REJECT a node group of that name with SSH remote access
+ng['subnets'] = ['subnet-0fa00000000000003']|subnets \['subnet-0fa00000000000003'\], want \['subnet-0fa00000000000001'\]|REJECT a node group of that name in a public subnet
 role['Tags'] = [{'Key': 'team', 'Value': 'someone-else'}]|node role eksctl-cb-offline-test-nodegroup-sandbox-NodeInstanceRole is not tagged|REJECT a node group of that name whose node role is not this run's
 role['Attached'].append('arn:aws:iam::aws:policy/AmazonEC2FullAccess')|node role .*: managed policies|REJECT a node group of that name whose node role has a third managed policy
 role['Inline'] = {'extra': {'Version': '2012-10-17'}}|node role .*: inline policies \['extra'\], want none|REJECT a node group of that name whose node role has an inline policy
@@ -145,6 +154,8 @@ check "ACCEPT render-probe for cb-probe-sandbox-r1 on a node" 0 "$RC" "$WORK/rp.
 acc render-probe E_RENDER_PROBE
 h "$WORK/rp-bad.log" render-probe --name helper-pod --node ip-10-0-1-10.us-west-2.compute.internal
 check "REJECT a probe name that is not cb-probe-<group>-<run ID> (deleted by exact name later)" 1 "$RC" "$WORK/rp-bad.log" '^ERROR: E_RENDER_PROBE: '
+h "$WORK/rp-node.log" render-probe --name cb-probe-sandbox-r1 --node 'ip_10_0_1_10'
+check "REJECT a probe node name that is not a node name" 1 "$RC" "$WORK/rp-node.log" '^ERROR: E_RENDER_PROBE: node name ip_10_0_1_10 is not valid'
 for n in 40 1; do
   h "$WORK/rf-$n.log" render-filler --name "cb-filler-$n-r1" --node ip-10-0-2-20.us-west-2.compute.internal
   check "ACCEPT render-filler for cb-filler-$n-r1 on the sandbox node (test.sh starts at most 40)" 0 "$RC" "$WORK/rf-$n.log" "name: cb-filler-$n-r1\$"
@@ -180,13 +191,23 @@ full; world_py 's["ec2"]["launch_templates"] = [t for t in s["ec2"]["launch_temp
 h "$WORK/lt.log" launch-template sandbox
 check "ACCEPT launch-template sandbox: created with the sample tags, its ID printed" 0 "$RC" "$WORK/lt.log" '^lt-[0-9a-f]{17}$'
 acc launch-template E_LAUNCH_TEMPLATE
+python3 -c 'import base64, json, re, sys; d = json.load(open(sys.argv[1])); u = base64.b64decode(d["UserData"]).decode()
+sys.exit(not (d["MetadataOptions"] == {"HttpEndpoint": "enabled", "HttpTokens": "required", "HttpPutResponseHopLimit": 1} and d["EnclaveOptions"] == {"Enabled": True}
+              and "container-runtime-endpoint = \"unix:///run/nitro-sandbox/cri-proxy.sock\"" in u.splitlines() and re.search(r"^\[settings\.(boot|kernel)", u, re.M) is None))' \
+  "$RD/lt-sandbox.json" > "$WORK/lt-pin.log" 2>&1
+check "  ... and its data is IMDSv2 with hop limit 1, Nitro Enclaves on, the CRI proxy endpoint in the TOML user data, no boot or kernel settings" 0 $? "$WORK/lt-pin.log"
 python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); json.dump({"LaunchTemplateVersions": [{"LaunchTemplateData": d}]}, open(sys.argv[2], "w"))' "$RD/lt-sandbox.json" "$WORK/ltv.json"
 h "$WORK/ud.log" check-user-data sandbox "$WORK/ltv.json"
-check "ACCEPT the sandbox user data as rendered: IMDSv2 hop limit 1, the TOML settings" 0 "$RC" "$WORK/ud.log" '^sandbox launch template: IMDSv2 hop limit 1'
+check "ACCEPT the sandbox launch template readback that is the rendered data: IMDSv2 hop limit 1, the TOML settings" 0 "$RC" "$WORK/ud.log" '^sandbox launch template: the rendered data \(IMDSv2 hop limit 1, TOML settings\)$'
 acc check-user-data E_USER_DATA
 python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["LaunchTemplateVersions"][0]["LaunchTemplateData"]["MetadataOptions"]["HttpPutResponseHopLimit"] = 2; json.dump(d, open(sys.argv[2], "w"))' "$WORK/ltv.json" "$WORK/ltv-hop.json"
 h "$WORK/ud-hop.log" check-user-data sandbox "$WORK/ltv-hop.json"
-check "REJECT sandbox user data with metadata hop limit 2" 1 "$RC" "$WORK/ud-hop.log" '^ERROR: E_USER_DATA: '
+check "REJECT sandbox user data with metadata hop limit 2" 1 "$RC" "$WORK/ud-hop.log" \
+  "^ERROR: E_USER_DATA: sandbox launch template is not the rendered data: other values \['MetadataOptions'\], fields the sample does not set \[\]\$"
+python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); d["LaunchTemplateVersions"][0]["LaunchTemplateData"]["KeyName"] = "someone-elses-key"; json.dump(d, open(sys.argv[2], "w"))' "$WORK/ltv.json" "$WORK/ltv-key.json"
+h "$WORK/ud-key.log" check-user-data sandbox "$WORK/ltv-key.json"
+check "REJECT a sandbox launch template readback with a KeyName (an SSH key pair) that the sample does not set" 1 "$RC" "$WORK/ud-key.log" \
+  "^ERROR: E_USER_DATA: sandbox launch template is not the rendered data: other values \[\], fields the sample does not set \['KeyName'\]\$"
 printf '{"LaunchTemplates": []}\n' > "$WORK/ltv-bad.json"
 h "$WORK/ud-shape.log" check-user-data sandbox "$WORK/ltv-bad.json"
 check "REJECT an input that is not describe-launch-template-versions output, as could not check" 2 "$RC" "$WORK/ud-shape.log" '^ERROR: E_USER_DATA_UNKNOWN: '
@@ -194,6 +215,10 @@ full
 world_py 's["ec2"]["launch_templates"] = [dict(t, Tags=[{"Key": "team", "Value": "someone-else"}]) if t["LaunchTemplateName"] == "cb-offline-test-r1-sandbox" else t for t in s["ec2"]["launch_templates"]]'
 h "$WORK/lt-foreign.log" launch-template sandbox
 check "REJECT an existing launch template of the same name that is not this run's" 1 "$RC" "$WORK/lt-foreign.log" '^ERROR: E_LAUNCH_TEMPLATE: launch template cb-offline-test-r1-sandbox exists and is not this run'
+full; world_py 's["eks"]["clusters"]["cb-offline-test"]["tags"]["RunId"] = "r2"'
+h "$WORK/lt-cluster.log" launch-template sandbox
+check "REJECT launch-template when the cluster of that name is of run r2 (its endpoint and CA would go into the user data)" 1 "$RC" "$WORK/lt-cluster.log" \
+  "^ERROR: E_LAUNCH_TEMPLATE: cluster cb-offline-test is not this run's\$"
 # A launch template of that name that is this run's is reused only when its whole readback is the
 # rendered data: a changed value, or a field that the sample does not set, stops the reuse.
 full; world_py 's["ec2"]["launch_templates"] = [t for t in s["ec2"]["launch_templates"] if not t["LaunchTemplateName"].startswith("cb-offline-test-r1-")]'
@@ -224,13 +249,11 @@ h "$WORK/lt-mp.log" launch-template sandbox
 python3 -c 'import base64, json, re, sys; d = json.load(open(sys.argv[1])); print("\n".join(re.findall(r"^max-pods = .*$", base64.b64decode(d["UserData"]).decode(), re.M)))' "$RD/lt-sandbox.json" > "$WORK/lt-mp.txt" 2>&1
 [[ "$RC" == 0 && "$(cat "$WORK/lt-mp.txt")" == 'max-pods = 110' ]]
 check "ACCEPT the sandbox user data max-pods: the derived 110 of the run state, not SANDBOX_SLOTS 20" 0 $? "$WORK/lt-mp.txt"
-python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); json.dump({"LaunchTemplateVersions": [{"LaunchTemplateData": d}]}, open(sys.argv[2], "w"))' "$RD/lt-sandbox.json" "$WORK/ltv-mp.json"
-sed -i 's/^MAX_PODS_SANDBOX=.*/MAX_PODS_SANDBOX=58/' "$RD/state.env"
+python3 -c 'import base64, json, sys; d = json.load(open(sys.argv[1])); u = base64.b64decode(d["UserData"]).decode().replace("max-pods = 110", "max-pods = 58")
+d["UserData"] = base64.b64encode(u.encode()).decode(); json.dump({"LaunchTemplateVersions": [{"LaunchTemplateData": d}]}, open(sys.argv[2], "w"))' "$RD/lt-sandbox.json" "$WORK/ltv-mp.json"
 h "$WORK/ud-mp.log" check-user-data sandbox "$WORK/ltv-mp.json"
-check "REJECT sandbox user data whose max-pods (110) is not the run's derived value (58)" 1 "$RC" "$WORK/ud-mp.log" '^ERROR: E_USER_DATA: .*max-pods is 110, want 58'
-sed -i '/^MAX_PODS_SANDBOX=/d' "$RD/state.env"
-h "$WORK/ud-nomp.log" check-user-data sandbox "$WORK/ltv-mp.json"
-check "REJECT check-user-data when the run state has no derived MAX_PODS_SANDBOX, as could not check" 2 "$RC" "$WORK/ud-nomp.log" '^ERROR: E_USER_DATA_UNKNOWN: could not check: the run state has no derived MAX_PODS_SANDBOX'
+check "REJECT a sandbox launch template readback whose user data max-pods (58) is not the rendered 110" 1 "$RC" "$WORK/ud-mp.log" \
+  "^ERROR: E_USER_DATA: sandbox launch template is not the rendered data: other values \['UserData'\], fields the sample does not set \[\]\$"
 full; world_py 's["ec2"]["launch_templates"] = [t for t in s["ec2"]["launch_templates"] if not t["LaunchTemplateName"].startswith("cb-offline-test-r1-")]'
 sed -i '/^MAX_PODS_SANDBOX=/d' "$RD/state.env"
 h "$WORK/lt-nomp.log" launch-template sandbox
@@ -412,12 +435,17 @@ a['tags'] = {}|Pod Identity association a-fake[0-9]+ is not tagged ManagedBy=cil
 a['tags'] = {'ManagedBy': 'cilium-bottlerocket-sample', 'RunId': 'r2'}|Pod Identity association a-fake[0-9]+ is not tagged ManagedBy=cilium-bottlerocket-sample RunId=r1|REJECT a Pod Identity association of run r2
 r['Tags'] = []|operator role cb-offline-test-cilium-operator is not tagged ManagedBy=cilium-bottlerocket-sample RunId=r1$|REJECT an operator role with no tags
 r['Tags'] = [{'Key': 'ManagedBy', 'Value': 'cilium-bottlerocket-sample'}, {'Key': 'RunId', 'Value': 'r2'}]|operator role cb-offline-test-cilium-operator is not tagged ManagedBy=cilium-bottlerocket-sample RunId=r1$|REJECT an operator role of run r2
-st['Principal'] = {'Service': ['pods.eks.amazonaws.com', 'ec2.amazonaws.com']}|operator role cb-offline-test-cilium-operator trust: Principal is .*want only Service pods\.eks\.amazonaws\.com$|REJECT an operator role that EC2 can assume too (a second service principal)
-st['Principal'] = {'Service': 'pods.eks.amazonaws.com', 'AWS': f"arn:aws:iam::{s['account']}:root"}|operator role cb-offline-test-cilium-operator trust: Principal is .*want only Service pods\.eks\.amazonaws\.com$|REJECT an operator role that the account root can assume too (an AWS principal)
-st['Action'] = ['sts:AssumeRole', 'sts:TagSession', 'sts:AssumeRoleWithWebIdentity']|operator role cb-offline-test-cilium-operator trust: Action is .*want \['sts:AssumeRole', 'sts:TagSession'\]$|REJECT an operator role trust with a third STS action
+st['Principal'] = {'Service': ['pods.eks.amazonaws.com', 'ec2.amazonaws.com']}|operator role cb-offline-test-cilium-operator trust: the statement is .*'ec2\.amazonaws\.com'.*, want only Effect Allow, Principal Service pods\.eks\.amazonaws\.com and Action \['sts:AssumeRole', 'sts:TagSession'\]$|REJECT an operator role that EC2 can assume too (a second service principal)
+st['Principal'] = {'Service': 'pods.eks.amazonaws.com', 'AWS': f"arn:aws:iam::{s['account']}:root"}|operator role cb-offline-test-cilium-operator trust: the statement is .*'AWS': 'arn:aws:iam::[0-9]+:root'.*, want only Effect Allow|REJECT an operator role that the account root can assume too (an AWS principal)
+st['Action'] = ['sts:AssumeRole', 'sts:TagSession', 'sts:AssumeRoleWithWebIdentity']|operator role cb-offline-test-cilium-operator trust: the statement is .*'sts:AssumeRoleWithWebIdentity'.*, want only Effect Allow|REJECT an operator role trust with a third STS action
+st['Effect'] = 'Deny'|operator role cb-offline-test-cilium-operator trust: the statement is .*'Effect': 'Deny'.*, want only Effect Allow|REJECT an operator role trust whose statement denies
 r['Trust']['Statement'].append(dict(st, Principal={'Service': 'lambda.amazonaws.com'}))|operator role cb-offline-test-cilium-operator trust: the trust policy must have exactly one statement|REJECT an operator role trust with a second statement
-st['Condition'] = {'StringEquals': {'aws:SourceAccount': s['account']}}|operator role cb-offline-test-cilium-operator trust: the statement also has \['Condition'\]$|REJECT an operator role trust that differs from the EKS Pod Identity trust by a condition
+st['Condition'] = {'StringEquals': {'aws:SourceAccount': s['account']}}|operator role cb-offline-test-cilium-operator trust: the statement is .*'Condition'.*, want only Effect Allow|REJECT an operator role trust that differs from the EKS Pod Identity trust by a condition
 r['Trust'] = {}|operator role cb-offline-test-cilium-operator trust: the trust policy must have exactly one statement|REJECT an operator role with no trust statement
+r['Inline']['inline']['Statement'][0]['Action'].append('ec2:DetachNetworkInterface')|operator role actions differ: \['ec2:DetachNetworkInterface'\]$|REJECT an operator role with an EC2 action outside the Cilium list (ec2:DetachNetworkInterface)
+r['Inline']['inline']['Statement'][0]['Effect'] = 'Deny'|unexpected policy statement$|REJECT an operator role whose inline policy has a Deny statement
+s['eks']['pod_identity']['a-fake000000000099'] = dict(a)|expected one association for kube-system/cilium-operator, found 2$|REJECT two Pod Identity associations for kube-system/cilium-operator (test.sh runs this check with no count of its own)
+a['roleArn'] = a['roleArn'].rsplit('/', 1)[0] + '/someone-elses-role'|the association uses role someone-elses-role, not cb-offline-test-cilium-operator$|REJECT a Pod Identity association that uses another role
 CASES
 # Each node role: exactly the two AWS managed policies by ARN, no inline policy. A policy of the
 # account with the same name as an AWS managed one is not that policy.
@@ -476,7 +504,7 @@ echo "== 6/6 every other subcommand fails closed when its input cannot be read =
 full
 entry "scripts/cilium_bottlerocket.py:check-config"
 run_real "$WORK/cfg-env.log" env -u CLUSTER_NAME python3 "$HELPER" check-config
-check "REJECT check-config run without the config (common.sh not sourced), as could not check" 2 "$RC" "$WORK/cfg-env.log" '^ERROR: E_CONFIG_UNKNOWN: .*CLUSTER_NAME is not set'
+check "REJECT check-config run without the config (common.sh not sourced), as could not check" 2 "$RC" "$WORK/cfg-env.log" '^ERROR: E_CONFIG_UNKNOWN: .*AVAILABILITY_ZONES is not set'
 # A tracked template that is missing from the tree.
 while IFS='|' read -r sub file args; do
   [[ -n "$sub" ]] || continue
