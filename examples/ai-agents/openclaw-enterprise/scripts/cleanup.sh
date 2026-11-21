@@ -1128,6 +1128,7 @@ record_exact() {
 readonly -a system_resources=(
   secret/oce-validation-only-postgres deployment.apps/oce-validation-only-postgres
   service/oce-validation-only-postgres
+  networkpolicy.networking.k8s.io/oce-eks-cluster-dns
   secret/oce-sample-installation-startup secret/oce-sample-database
   secret/oce-sample-database-ca secret/oce-sample-auth
   job.batch/oce-sample-bootstrap-volume-prep persistentvolumeclaim/oce-sample-bootstrap-output
@@ -1140,6 +1141,7 @@ readonly -a cluster_resources=(
 )
 readonly -a tenant_resources=(
   configmap/agentgateway-ca
+  networkpolicy.networking.k8s.io/oce-private-service-egress
 )
 readonly -a tenant_role_bindings=(
   rolebinding.rbac.authorization.k8s.io/openclaw-enterprise-worker
@@ -1156,6 +1158,7 @@ readonly -a release_resources=(
 )
 readonly -a receipt_bound_resources=(
   "namespace/$system_namespace"
+  "networkpolicy.networking.k8s.io/oce-eks-cluster-dns"
   "namespace/openclaw-enterprise-adapter"
   "namespace/$AGW_NAMESPACE"
   "${cluster_resources[@]}"
@@ -1241,7 +1244,12 @@ if [[ -n "$system_record" ]]; then
     die "namespace/$system_namespace does not carry the exact $OWNER_KEY=$OWNER ownership label."
   verify_namespace_descendants "$system_namespace"
   for resource in "${system_resources[@]}"; do
-    record_owned "$resource" "$system_namespace" "$OWNER"
+    expected_uid=""
+    if [[ "$resource" == \
+      "networkpolicy.networking.k8s.io/oce-eks-cluster-dns" ]]; then
+      expected_uid=$(required_receipt_uid "$resource")
+    fi
+    record_owned "$resource" "$system_namespace" "$OWNER" "$expected_uid"
   done
   legacy_record=$(resource_record deployment.apps/oce-api-cli-client "$system_namespace")
   if [[ -n "$legacy_record" ]]; then

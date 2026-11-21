@@ -7,6 +7,7 @@ readonly OCE_OWNER_LABEL_VALUE="openclaw-enterprise"
 readonly AGW_NAMESPACE="openclaw-enterprise-agw"
 readonly -a TENANT_RESOURCES=(
   "configmap/agentgateway-ca"
+  "networkpolicy.networking.k8s.io/oce-private-service-egress"
 )
 
 die() {
@@ -14,13 +15,14 @@ die() {
   exit 1
 }
 
-if [[ $# -ne 2 ]]; then
-  echo "Usage: $0 <kube-context> <oce-tenant-namespace>" >&2
+if [[ $# -ne 3 ]]; then
+  echo "Usage: $0 <kube-context> <oce-tenant-namespace> <cluster-dns-ipv4/32>" >&2
   exit 2
 fi
 
 readonly KUBE_CONTEXT="$1"
 readonly TENANT_NAMESPACE="$2"
+readonly CLUSTER_DNS_CIDR="$3"
 
 if [[ ! "${TENANT_NAMESPACE}" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
    (( ${#TENANT_NAMESPACE} > 63 )); then
@@ -28,10 +30,23 @@ if [[ ! "${TENANT_NAMESPACE}" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
   exit 2
 fi
 
-for command in kubectl jq base64 cmp mktemp; do
+for command in kubectl jq base64 cmp mktemp python3; do
   command -v "${command}" >/dev/null 2>&1 ||
     die "${command} is required."
 done
+
+python3 -I -c '
+import ipaddress
+import sys
+
+try:
+    network = ipaddress.ip_network(sys.argv[1], strict=True)
+except ValueError:
+    raise SystemExit(1)
+if network.version != 4 or network.prefixlen != 32:
+    raise SystemExit(1)
+' "${CLUSTER_DNS_CIDR}" ||
+  die "cluster DNS address must be an exact IPv4 /32."
 
 context_name="$(
   kubectl config get-contexts "${KUBE_CONTEXT}" --no-headers --output=name
@@ -41,6 +56,24 @@ context_name="$(
 readonly -a KUBECTL=(kubectl --context "${KUBE_CONTEXT}")
 "${KUBECTL[@]}" get --raw=/readyz >/dev/null ||
   die "could not reach kube context ${KUBE_CONTEXT}."
+
+agentgateway_service_ip="$(
+  "${KUBECTL[@]}" get service agentgateway \
+    --namespace "${AGW_NAMESPACE}" --output=jsonpath='{.spec.clusterIP}'
+)" || die "could not read the private AgentGateway Service address."
+python3 -I -c '
+import ipaddress
+import sys
+
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+if address.version != 4:
+    raise SystemExit(1)
+' "${agentgateway_service_ip}" ||
+  die "AgentGateway Service address must be an IPv4 address."
+readonly AGENTGATEWAY_SERVICE_CIDR="${agentgateway_service_ip}/32"
 
 resource_record() {
   local resource="$1"
@@ -143,4 +176,53 @@ if [[ "${ca_config_map_exists}" == false ]]; then
     die "created ConfigMap agentgateway-ca could not be verified."
 fi
 
-echo "Configured the Nitro Pod Security profile and private AgentGateway trust for ${TENANT_NAMESPACE}."
+jq -n \
+  --arg namespace "${TENANT_NAMESPACE}" \
+  --arg owner "${OWNER_LABEL_VALUE}" \
+  --arg cluster_dns_cidr "${CLUSTER_DNS_CIDR}" \
+  --arg agentgateway_service_cidr "${AGENTGATEWAY_SERVICE_CIDR}" \
+  '{
+    apiVersion: "networking.k8s.io/v1",
+    kind: "NetworkPolicy",
+    metadata: {
+      name: "oce-private-service-egress",
+      namespace: $namespace,
+      labels: {
+        "app.kubernetes.io/managed-by": $owner
+      }
+    },
+    spec: {
+      podSelector: {
+        matchLabels: {
+          "app.kubernetes.io/managed-by": "openclaw-enterprise",
+          "openclaw.dev/workload-role": "gateway",
+          "openclaw.dev/network-profile": "broad-egress-v1"
+        }
+      },
+      policyTypes: ["Egress"],
+      egress: [
+        {
+          to: [{ipBlock: {cidr: $cluster_dns_cidr}}],
+          ports: [
+            {protocol: "UDP", port: 53},
+            {protocol: "TCP", port: 53}
+          ]
+        },
+        {
+          to: [{ipBlock: {cidr: $agentgateway_service_cidr}}],
+          ports: [{protocol: "TCP", port: 443}]
+        }
+      ]
+    }
+  }' |
+  "${KUBECTL[@]}" apply \
+    --server-side \
+    --field-manager="${OWNER_LABEL_VALUE}" \
+    --filename -
+owned_resource_exists \
+  "networkpolicy.networking.k8s.io/oce-private-service-egress" \
+  "${TENANT_NAMESPACE}" \
+  "${OWNER_LABEL_VALUE}" ||
+  die "created NetworkPolicy oce-private-service-egress could not be verified."
+
+echo "Configured the Nitro Pod Security profile, private AgentGateway trust, and exact private Service routes for ${TENANT_NAMESPACE}."

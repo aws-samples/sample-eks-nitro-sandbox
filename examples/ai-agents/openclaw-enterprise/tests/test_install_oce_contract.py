@@ -33,6 +33,7 @@ RECEIPT_RESOURCE_KEYS = {
     "namespace/openclaw-system",
     "namespace/openclaw-enterprise-adapter",
     "namespace/openclaw-enterprise-agw",
+    "networkpolicy.networking.k8s.io/oce-eks-cluster-dns",
     "storageclass.storage.k8s.io/gp3",
     "validatingadmissionpolicies.admissionregistration.k8s.io/"
     "protect-openclaw-enterprise-namespace-label",
@@ -365,6 +366,8 @@ case "$*" in
   *"sts get-caller-identity"*) printf '%s\\n' "${{TEST_ACCOUNT:-{account}}}" ;;
   *"cluster.arn"*) printf 'arn:aws:eks:ap-southeast-2:123456789012:cluster/oce-test\\n' ;;
   *"cluster.status"*) printf 'ACTIVE\\n' ;;
+  *"cluster.kubernetesNetworkConfig.serviceIpv4Cidr"*)
+    printf '%s\\n' "${{TEST_SERVICE_IPV4_CIDR:-10.100.0.0/16}}" ;;
   *"eks list-tags-for-resource"*)
     printf '%s\\n' "$TEST_CLUSTER_TAGS" ;;
   *"cluster.endpoint"*) printf 'https://eks.example.test\\n' ;;
@@ -440,6 +443,8 @@ case "$*" in
     printf '%s\n' "${TEST_POSTGRES_VERSION:-180006}" ;;
   *" exec deployment/oce-validation-only-postgres "*"FROM pg_roles"*)
     printf '%s\n' "${TEST_POSTGRES_ROLE_CONTRACT:-true}" ;;
+  *"get service oce-validation-only-postgres"*"jsonpath={.spec.clusterIP}"*)
+    printf '10.100.169.63' ;;
   *"jsonpath={.items[*].status.podIP}"*) printf '10.2.3.4' ;;
   *" apply "*) : ;;
   *" rollout status "*) : ;;
@@ -663,7 +668,42 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
     }
     assert "gatewayRouting:\n  enabled: false" in values
     assert "agentNativeAdmin:\n  enabled: false" in values
-    assert "10.2.3.4/32" in values
+    assert "10.100.169.63/32" in values
+    assert "10.2.3.4/32" not in values
+    assert (state / "cluster-dns-cidr").read_text() == "10.100.0.10/32"
+    dns_policy = yaml.safe_load(
+        (state / "eks-cluster-dns-network-policy.yaml").read_text()
+    )
+    assert dns_policy["metadata"] == {
+        "name": "oce-eks-cluster-dns",
+        "namespace": "openclaw-system",
+        "labels": {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise-blueprint",
+            "app.kubernetes.io/part-of": "openclaw-enterprise-blueprint",
+        },
+    }
+    assert dns_policy["spec"]["podSelector"]["matchLabels"] == {
+        "app.kubernetes.io/name": "openclaw-enterprise",
+        "app.kubernetes.io/instance": "oce",
+    }
+    assert dns_policy["spec"]["podSelector"]["matchExpressions"] == [
+        {
+            "key": "app.kubernetes.io/component",
+            "operator": "In",
+            "values": ["api", "worker", "initialization"],
+        }
+    ]
+    assert dns_policy["spec"]["policyTypes"] == ["Egress"]
+    assert dns_policy["spec"]["egress"] == [
+        {
+            "to": [{"ipBlock": {"cidr": "10.100.0.10/32"}}],
+            "ports": [
+                {"protocol": "UDP", "port": 53},
+                {"protocol": "TCP", "port": 53},
+            ],
+        }
+    ]
+    assert "0.0.0.0/0" not in (state / "eks-cluster-dns-network-policy.yaml").read_text()
     assert "gatewayClients:" in installation
     assert "gatewayRouting:" not in installation
     assert "includeDefaults: false" in installation
@@ -739,6 +779,26 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
         (state / "receipt" / "resources.json").stat().st_mode
     ) == 0o600
     assert (state / "install.complete").is_file()
+
+
+@pytest.mark.parametrize(
+    "service_cidr",
+    ["not-a-cidr", "fd00::/108", "10.100.0.0/30"],
+)
+def test_invalid_service_cidr_fails_before_cluster_mutation(
+    tmp_path: Path,
+    service_cidr: str,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_SERVICE_IPV4_CIDR"] = service_cidr
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "EKS cluster service IPv4 CIDR" in result.stderr
+    calls = (tmp_path / "calls.log").read_text()
+    assert " apply " not in calls
+    assert "occ installation install" not in calls
 
 
 def test_readme_targets_cert_manager_at_the_explicit_context() -> None:

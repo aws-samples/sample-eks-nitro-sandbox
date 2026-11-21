@@ -237,7 +237,7 @@ def test_each_gateway_uses_its_derived_pvc_and_cannot_mount_another(
         adapter.build_patch(foreign_claim)
 
 
-def test_sample_does_not_ship_or_enable_network_policy() -> None:
+def test_sample_adds_only_required_service_connectivity_network_policies() -> None:
     manifests = [
         document
         for path in (SAMPLE / "deploy").glob("*.yaml")
@@ -252,8 +252,13 @@ def test_sample_does_not_ship_or_enable_network_policy() -> None:
 
     assert not any(document.get("kind") == "NetworkPolicy" for document in manifests)
     assert "enable-network-policy-controller" not in scripts
+    assert "oce-eks-cluster-dns" in scripts
+    assert "oce-private-service-egress" in scripts
     assert "../../isolation/network-policy/README.md" in sample
-    assert "It makes no network-isolation claim." in sample
+    assert (
+        "It does not provide general tenant network isolation."
+        in " ".join(sample.split())
+    )
 
 
 def test_central_gateway_has_separate_tenant_slots_and_one_bedrock_identity() -> None:

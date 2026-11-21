@@ -74,6 +74,7 @@ RECEIPT_BOUND_RESOURCES = {
     f"namespace/{SYSTEM_NAMESPACE}",
     "namespace/openclaw-enterprise-adapter",
     "namespace/openclaw-enterprise-agw",
+    "networkpolicy.networking.k8s.io/oce-eks-cluster-dns",
     *CLUSTER_RESOURCES,
     *RELEASE_RESOURCES,
     f"storageclass.storage.k8s.io/{STORAGE_CLASS}",
@@ -511,6 +512,11 @@ def _base_state(*, include_sample: bool = True) -> dict[str, Any]:
     if include_sample:
         _add_resource(resources, f"namespace/{SYSTEM_NAMESPACE}")
         _add_resource(resources, "secret/oce-sample-auth", SYSTEM_NAMESPACE)
+        _add_resource(
+            resources,
+            "networkpolicy.networking.k8s.io/oce-eks-cluster-dns",
+            SYSTEM_NAMESPACE,
+        )
         _add_resource(resources, "namespace/openclaw-enterprise-adapter")
         _add_resource(resources, "namespace/openclaw-enterprise-agw")
         _add_resource(
@@ -520,6 +526,11 @@ def _base_state(*, include_sample: bool = True) -> dict[str, Any]:
         )
     _add_resource(resources, "namespace/tenant-a", owner=OCE_OWNER)
     _add_resource(resources, "configmap/agentgateway-ca", "tenant-a")
+    _add_resource(
+        resources,
+        "networkpolicy.networking.k8s.io/oce-private-service-egress",
+        "tenant-a",
+    )
     for name in TENANT_ROLE_BINDINGS:
         if name == "openclaw-enterprise-worker":
             role_name = f"{RELEASE}-openclaw-tenant-worker"
@@ -1030,6 +1041,7 @@ def test_freeze_cleanup_retries_with_fresh_resource_version_and_fails_closed(
     "resource",
     [
         f"namespace/{SYSTEM_NAMESPACE}",
+        "networkpolicy.networking.k8s.io/oce-eks-cluster-dns",
         (
             "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
             "openclaw-enterprise-nitro-adapter"

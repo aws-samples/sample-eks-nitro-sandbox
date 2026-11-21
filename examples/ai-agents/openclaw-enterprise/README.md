@@ -95,7 +95,7 @@ The blueprint layers these controls:
 |---|---|---|
 | Compute | The fail-closed admission chain verifies the OCE controller lineage and expected pod shape, then sets `runtimeClassName: isolated-sandbox`. Each admitted runtime gets its own Nitro sandbox VM, kernel, and memory boundary. | The OCE control plane and EKS cluster remain shared. |
 | Storage | The adapter derives the expected PVC from the gateway identity and rejects another claim. Each runtime mounts its own persistent volume. | The OCE database is shared and is outside the runtime storage boundary. |
-| Network | The blueprint leaves pod networking at the cluster default so runtimes can reach the private AgentGateway. It makes no network-isolation claim. | Add network controls separately. The pinned OCE revision needs upstream support for private model services before its generated egress policies can be enforced with this topology. |
+| Network | The blueprint adds exact outbound rules from OCE gateway pods to the EKS DNS address and private AgentGateway Service address. These rules provide only the private service connectivity this topology needs. | The cluster network remains shared. Add tenant network isolation separately. Native OCE support for private model services would remove the operator-owned AgentGateway rule. |
 | AWS identity | Tenant runtimes receive no EKS Pod Identity association, IRSA annotation, common AWS credential variables, or unapproved credential-capable mounts. | AgentGateway alone has a shared IAM role for the configured Bedrock model. |
 | OCE authorization | Each validator identity receives `read` permission on only its own OCE namespace and agent. The live test requires same-tenant success and cross-tenant HTTP `403` responses. | A compromised OCE control plane or copied bearer key is outside this boundary. |
 
@@ -143,7 +143,7 @@ when your threat model requires those stronger boundaries.
 | [`scripts/setup-storage-class.sh`](scripts/setup-storage-class.sh) | Create or verify the blueprint-owned EKS Auto Mode StorageClass. |
 | [`scripts/setup-agentgateway-pod-identity.sh`](scripts/setup-agentgateway-pod-identity.sh) | Create or verify AgentGateway's IAM role, Bedrock policy, and Pod Identity association. |
 | [`scripts/install-oce.sh`](scripts/install-oce.sh) | Install the exact OCE revision in a terminal-managed topology. |
-| [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Add private AgentGateway CA trust to one OCE tenant namespace. |
+| [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Add private AgentGateway CA trust and exact private service egress to one OCE tenant namespace. |
 | [`scripts/validate-live.sh`](scripts/validate-live.sh) | Run the destructive two-tenant validation. |
 | [`scripts/lib/evaluate-native-tool-history.mjs`](scripts/lib/evaluate-native-tool-history.mjs) | Evaluate native OpenClaw tool-call history for live validation. |
 | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove resources only after ownership checks pass. |
@@ -967,7 +967,9 @@ kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
   --serviceaccount openclaw-system:openclaw-enterprise-api
 
 "$SAMPLE_DIR/scripts/configure-tenant-model-gateway.sh" \
-  "$KUBE_CONTEXT" "$TENANT_NAMESPACE"
+  "$KUBE_CONTEXT" \
+  "$TENANT_NAMESPACE" \
+  "$(<"$OCE_STATE_DIR/cluster-dns-cidr")"
 ```
 
 Set the tenant-specific key path and create the namespace-owned model Secret:
@@ -1381,11 +1383,12 @@ TODO: output from the fresh run
   different revision needs a new compatibility review and live validation.
   Harness credentials may select only `ANTHROPIC_API_KEY`,
   `OCE_MODEL_API_KEY`, or `OPENAI_API_KEY`.
-- The blueprint does not enable Kubernetes NetworkPolicy. Add network controls
-  with the [dedicated network-policy sample](../../isolation/network-policy/README.md).
-  The pinned OCE revision's generated egress policy excludes private service
-  addresses; track [OCE issue #4254](https://github.com/openclaw/openclaw-enterprise/issues/4254)
-  before enforcing it with the private AgentGateway.
+- The blueprint adds only the exact EKS DNS and private AgentGateway Service
+  routes required by OCE gateway pods. It does not provide general tenant
+  network isolation. Add that boundary with the
+  [dedicated network-policy sample](../../isolation/network-policy/README.md).
+  [OCE issue #4254](https://github.com/openclaw/openclaw-enterprise/issues/4254)
+  tracks native support for private model service egress.
 - The validation procedure is destructive to tenant A's runtime pod. Use
   retained validation tenants.
 - The blueprint does not validate human SSO, sustained load, high

@@ -127,6 +127,30 @@ if network.prefixlen == 0:
     die "$flag is invalid."
 }
 
+derive_eks_cluster_dns_cidr() {
+  local service_cidr=$1
+  python3 -I -c '
+import ipaddress
+import sys
+
+try:
+    network = ipaddress.ip_network(sys.argv[1], strict=True)
+except ValueError:
+    sys.stderr.write(
+        "install-oce: EKS cluster service IPv4 CIDR is invalid.\n"
+    )
+    raise SystemExit(1)
+if network.version != 4 or network.num_addresses <= 10:
+    sys.stderr.write(
+        "install-oce: EKS cluster service IPv4 CIDR must contain the "
+        "cluster DNS service address.\n"
+    )
+    raise SystemExit(1)
+print(f"{network.network_address + 10}/32")
+' "$service_cidr" ||
+    die "could not derive the EKS cluster DNS service address."
+}
+
 require_private_file() {
   local flag=$1 path=$2 mode
   [[ -f "$path" && ! -L "$path" && -r "$path" ]] ||
@@ -490,6 +514,11 @@ cluster_status=$(aws eks describe-cluster --region "$aws_region" \
   --name "$eks_cluster_name" --query cluster.status --output text)
 [[ "$cluster_status" == "ACTIVE" ]] ||
   die "EKS cluster $eks_cluster_name is not ACTIVE (status: $cluster_status)."
+cluster_service_ipv4_cidr=$(aws eks describe-cluster --region "$aws_region" \
+  --name "$eks_cluster_name" \
+  --query cluster.kubernetesNetworkConfig.serviceIpv4Cidr --output text)
+cluster_dns_cidr=$(derive_eks_cluster_dns_cidr "$cluster_service_ipv4_cidr")
+write_private_text "$state_dir/cluster-dns-cidr" "$cluster_dns_cidr"
 if [[ "$validation_postgres" == true ]]; then
   cluster_tags=$(aws eks list-tags-for-resource --region "$aws_region" \
     --resource-arn "$cluster_arn" --query tags --output json)
@@ -568,6 +597,42 @@ elif kubectl_error_is_not_found "$namespace_get"; then
 else
   die "could not inspect namespace/$namespace: $namespace_get"
 fi
+
+cluster_dns_policy="$state_dir/eks-cluster-dns-network-policy.yaml"
+write_private "$cluster_dns_policy" printf '%s\n' \
+"apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: oce-eks-cluster-dns
+  namespace: $namespace
+  labels:
+    app.kubernetes.io/managed-by: $OWNER_LABEL
+    app.kubernetes.io/part-of: $OWNER_LABEL
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: $release
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - api
+          - worker
+          - initialization
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: $cluster_dns_cidr
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53"
+apply_owned_resource \
+  networkpolicy.networking.k8s.io oce-eks-cluster-dns "$cluster_dns_policy"
 
 auth_secret_value="$state_dir/auth-secret"
 if [[ ! -e "$auth_secret_value" ]]; then
@@ -654,13 +719,11 @@ data:
     deployment/oce-validation-only-postgres --timeout=120s
   require_validation_postgres_version "$namespace"
   require_validation_postgres_role_contract "$namespace"
-  database_pod_ips=$("${KUBE[@]}" --namespace "$namespace" get pods \
-    -l 'app.kubernetes.io/name=oce-validation-only-postgres,app.kubernetes.io/instance=validation-only' \
-    -o 'jsonpath={.items[*].status.podIP}')
-  [[ "$database_pod_ips" != *" "* && -n "$database_pod_ips" ]] ||
-    die "validation PostgreSQL must have exactly one Pod IP."
-  require_ipv4_cidr "validation PostgreSQL Pod IP" "$database_pod_ips/32" true
-  database_cidrs=("$database_pod_ips/32")
+  database_service_ip=$("${KUBE[@]}" --namespace "$namespace" get \
+    service oce-validation-only-postgres -o 'jsonpath={.spec.clusterIP}')
+  require_ipv4_cidr \
+    "validation PostgreSQL Service IP" "$database_service_ip/32" true
+  database_cidrs=("$database_service_ip/32")
 fi
 
 if [[ "$validation_postgres" != true ]]; then
@@ -971,9 +1034,13 @@ chmod 600 "$rendered"
 declare -a receipt_resource_guards=()
 record_receipt_resource() {
   local resource=$1 expected_owner=$2 expected_instance=$3
+  local target_namespace=${4:-}
   local expected_name=${resource##*/}
   local record name owner instance uid extra
-  record=$("${KUBE[@]}" get "$resource" \
+  local -a get_command=("${KUBE[@]}")
+  [[ -z "$target_namespace" ]] || get_command+=(--namespace "$target_namespace")
+  get_command+=(get "$resource")
+  record=$("${get_command[@]}" \
     -o 'jsonpath={.metadata.name}{"|"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"|"}{.metadata.labels.app\.kubernetes\.io/instance}{"|"}{.metadata.uid}{"\n"}') ||
     die "could not bind $resource to the installation receipt."
   IFS='|' read -r name owner instance uid extra <<<"$record"
@@ -1004,6 +1071,9 @@ readonly -a release_resources=(
 
 record_receipt_resource "namespace/$namespace" "$OWNER_LABEL" ""
 record_receipt_resource namespace/openclaw-enterprise-agw "$OWNER_LABEL" ""
+record_receipt_resource \
+  networkpolicy.networking.k8s.io/oce-eks-cluster-dns \
+  "$OWNER_LABEL" "" "$namespace"
 record_receipt_resource \
   "storageclass.storage.k8s.io/$runtime_storage_class" "$OWNER_LABEL" ""
 for resource in "${adapter_resources[@]}"; do
