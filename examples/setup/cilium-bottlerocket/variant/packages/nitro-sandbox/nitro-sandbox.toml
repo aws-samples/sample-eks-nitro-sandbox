@@ -1,8 +1,9 @@
 # Nitro Sandbox shim configuration (/etc/containerd/nitro-sandbox.toml), from the Amazon EKS
 # User Guide page "Create and update a Nitro Sandbox AMI". The guest image is on the
 # read-only root; the shim's per-sandbox data is on /var. pcie_slots is the sandbox slot
-# count: scripts/builder/30-overlay.sh writes SANDBOX_SLOTS here before the build, and
-# setup.sh gives the same value to kubelet as max-pods.
+# count: scripts/builder/30-overlay.sh writes SANDBOX_SLOTS here before the build. Each
+# sandbox pod takes one slot. max-pods is a separate limit that setup.sh derives from the
+# instance type.
 kernel_path     = "/usr/share/nitro-sandbox/latest.eif"
 kubeconfig_path = "/etc/kubernetes/kubelet/kubeconfig"
 format_overlay  = true
