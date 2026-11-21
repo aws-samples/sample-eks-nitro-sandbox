@@ -86,9 +86,13 @@ nodegroup_status() {
 nodegroup_active() { [[ "$(nodegroup_status "$1")" == ACTIVE ]]; }
 # ensure_nodegroup <group>: create the node group only when EKS has none of that name, and wait
 # for one that is CREATING or UPDATING. Any other status (CREATE_FAILED, DEGRADED, DELETING,
-# DELETE_FAILED) stops the run: setup.sh never creates over a failed node group.
+# DELETE_FAILED) stops the run: setup.sh never creates over a failed node group. First,
+# render-nodegroup renders the group, and refuses a node group of that name that EKS already has
+# unless it is this run's and as rendered (tags, launch template and version, sizes, labels,
+# taints, subnets, node role), so a node group that is not stops the run before any change.
 ensure_nodegroup() {
   local status
+  python3 "$PY" render-nodegroup "$1" >/dev/null
   status="$(nodegroup_status "$1")"
   if [[ "$status" == NONE ]]; then
     eksctl create nodegroup -f "$RUN_STATE_DIR/nodegroups-$1.yaml" \
@@ -267,9 +271,12 @@ if should_run cilium; then
     --namespace kube-system --service-account cilium-operator --query 'associations[].associationId' --output text)" \
     || die E_POD_IDENTITY "could not list the Pod Identity associations of $CLUSTER_NAME"
   [[ "$assoc" =~ ^a-[a-z0-9]+$ ]] || die E_POD_IDENTITY "expected one Pod Identity association for kube-system/cilium-operator, got '$assoc'"
+  # Before the run records the association or installs Cilium: the association and its role
+  # carry ManagedBy and this run's RunId, the role trusts only EKS Pod Identity, and it has
+  # exactly the Cilium EC2 actions. An association that someone else made stops here.
+  python3 "$PY" check-operator-role
   state_set POD_IDENTITY_ASSOCIATION_ID "$assoc"
   state_set OPERATOR_ROLE_NAME "$OPERATOR_ROLE_NAME"
-  python3 "$PY" check-operator-role
   endpoint="$(state_need CLUSTER_ENDPOINT)"
   hc upgrade --install cilium "$CILIUM_CHART" --version "$CILIUM_VERSION" --namespace kube-system \
     -f "$SAMPLE_DIR/cilium-values.yaml" --set "cluster.name=$CLUSTER_NAME" \
@@ -288,7 +295,6 @@ if should_run system-node; then
   aws ec2 describe-launch-template-versions --region "$AWS_REGION" --launch-template-id "$lt" --versions 1 \
     --output json >"$RUN_STATE_DIR/lt-system-v1.json" || die E_LAUNCH_TEMPLATE "could not read version 1 of $lt"
   python3 "$PY" check-user-data system "$RUN_STATE_DIR/lt-system-v1.json"
-  python3 "$PY" render-nodegroup system >/dev/null
   ensure_nodegroup system
   wait_until "$TRIES" "a system node" has_nodes system \
     || die E_NODE_COUNT "no system node registered"
@@ -358,7 +364,6 @@ if should_run sandbox-node; then
     --output json >"$RUN_STATE_DIR/lt-sandbox-v1.json" || die E_LAUNCH_TEMPLATE "could not read version 1 of $lt"
   python3 "$PY" check-user-data sandbox "$RUN_STATE_DIR/lt-sandbox-v1.json"
   check_max_pods sandbox --launch-template "$RUN_STATE_DIR/lt-sandbox-v1.json"
-  python3 "$PY" render-nodegroup sandbox >/dev/null
   ensure_nodegroup sandbox
   wait_until "$TRIES" "a sandbox node" has_nodes sandbox \
     || die E_NODE_COUNT "no sandbox node registered"

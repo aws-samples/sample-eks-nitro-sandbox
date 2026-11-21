@@ -4,6 +4,7 @@ Every lookup that fails is Unknown (exit 2), never "absent". A resource counts a
 run's only when it carries ManagedBy=cilium-bottlerocket-sample and RunId=<run ID>.
 """
 
+import re
 import sys
 
 from cb_base import (AMI_ID, OWNER_TAG, SYSTEM_AMI_NAME, Unknown, aws, int_setting, is_ours,
@@ -116,8 +117,13 @@ def cmd_check_sandbox_ami(args):
         wrong.append(f"block devices {sorted(mappings)} must be /dev/xvda and /dev/xvdb, gp3, from snapshots")
     if tags.get(OWNER_TAG[0]) != OWNER_TAG[1]:
         wrong.append(f"tag {OWNER_TAG[0]}={tags.get(OWNER_TAG[0])!r}")
-    if not args.reuse and tags.get("RunId") != run_id():
-        wrong.append(f"tag RunId={tags.get('RunId')!r}")
+    # The run the AMI and both snapshots belong to: this run, or with --reuse an earlier run,
+    # named by one RunId of the form run_id() accepts.
+    ami_run = tags.get("RunId")
+    if not args.reuse and ami_run != run_id():
+        wrong.append(f"tag RunId={ami_run!r}")
+    if args.reuse and (not isinstance(ami_run, str) or re.fullmatch(r"[a-z0-9]{1,20}", ami_run) is None):
+        wrong.append(f"tag RunId={ami_run!r} is not the run ID of an earlier run")
     if tags.get("SandboxSlots") != str(int_setting("SANDBOX_SLOTS", 1, 250)):
         wrong.append(f"tag SandboxSlots={tags.get('SandboxSlots')!r}, config SANDBOX_SLOTS={setting('SANDBOX_SLOTS')}")
     uefi = read_json(args.uefi) if args.uefi else aws("ec2", "describe-image-attribute", "--image-id", ami, "--attribute", "uefiData")
@@ -134,6 +140,8 @@ def cmd_check_sandbox_ami(args):
         stags = tag_map(snap.get("Tags", [])) or {}
         if stags.get(OWNER_TAG[0]) != OWNER_TAG[1] or (not args.reuse and stags.get("RunId") != run_id()):
             wrong.append(f"snapshot {snap.get('SnapshotId')} lacks the sample tags")
+        elif args.reuse and stags.get("RunId") != ami_run:
+            wrong.append(f"snapshot {snap.get('SnapshotId')} has RunId={stags.get('RunId')!r}, the AMI RunId={ami_run!r}")
         # On both paths, also with --reuse: each snapshot carries the density of the AMI.
         if stags.get("SandboxSlots") != slots:
             wrong.append(f"snapshot {snap.get('SnapshotId')} has SandboxSlots={stags.get('SandboxSlots')!r}, config SANDBOX_SLOTS={slots}")

@@ -140,6 +140,34 @@ stage cilium cluster "$WORK/ci.log"
 check "ACCEPT the cilium stage: exactly one Pod Identity association, the operator role, Cilium installed" 0 "$RC" "$WORK/ci.log" '^Stopped after stage cilium\.'
 cover accept E_POD_IDENTITY
 snap cilium
+# An association of kube-system/cilium-operator that is already there is adopted only when it and
+# its role carry the run's tags and the role trusts only EKS Pod Identity. adopt_world <python>:
+# the stage resumes after cluster with the association and role of the stage above, changed by
+# <python> (a = the association, r = the role, st = its trust statement), and nothing recorded.
+adopt_world() {
+  restore cilium; rewind cluster; sed -i '/^POD_IDENTITY_ASSOCIATION_ID=/d' "$RD/state.env"
+  world_py "a = list(s['eks']['pod_identity'].values())[0]; r = s['iam']['roles']['cb-offline-test-cilium-operator']
+st = r['Trust']['Statement'][0]
+$1"
+}
+adopt_world 'pass'
+setup "$WORK/ci-adopt.log" --stop-after cilium
+check "ACCEPT the cilium stage with this run's association and role already there" 0 "$RC" "$WORK/ci-adopt.log" '^Stopped after stage cilium\.'
+[[ "$(count_calls eksctl 'create podidentityassociation')" == 0 ]] && grep -q '^POD_IDENTITY_ASSOCIATION_ID=a-' "$RD/state.env"
+check "  ... adopted: no second eksctl create podidentityassociation, the association recorded" 0 $? "$WORK/ci-adopt.log"
+while IFS='|' read -r code rx why; do
+  [[ -n "$code" ]] || continue
+  adopt_world "$code"
+  setup "$WORK/ci-adopt-bad.log" --stop-after cilium
+  check "$why" 1 "$RC" "$WORK/ci-adopt-bad.log" "^ERROR: E_OPERATOR_ROLE: $rx"
+  ! grep -q '^POD_IDENTITY_ASSOCIATION_ID=' "$RD/state.env" && [[ "$(count_calls helm)" == 0 ]]
+  check "  ... before the association is recorded and before any helm call" 0 $? "$WORK/ci-adopt-bad.log"
+done <<'CASES'
+a['tags'] = {}|Pod Identity association a-[a-z0-9]+ is not tagged ManagedBy=cilium-bottlerocket-sample RunId=|REJECT the cilium stage when the association of kube-system/cilium-operator has no tags
+a['tags']['RunId'] = 'r2'|Pod Identity association a-[a-z0-9]+ is not tagged ManagedBy=cilium-bottlerocket-sample RunId=|REJECT the cilium stage when the association of kube-system/cilium-operator is of run r2
+r['Tags'] = []|operator role cb-offline-test-cilium-operator is not tagged ManagedBy=cilium-bottlerocket-sample RunId=|REJECT the cilium stage when the operator role has no tags
+st['Principal'] = {'Service': ['pods.eks.amazonaws.com', 'ec2.amazonaws.com']}|operator role cb-offline-test-cilium-operator trust: Principal is |REJECT the cilium stage when EC2 can assume the operator role too
+CASES
 restore cluster
 world_py 's["eks"]["pod_identity"]["a-other00000000001"] = {"clusterName": "cb-offline-test", "namespace": "kube-system", "serviceAccount": "cilium-operator", "tags": {}, "roleArn": "arn:aws:iam::111122223333:role/someone-else"}
 s["eks"]["pod_identity"]["a-other00000000002"] = dict(s["eks"]["pod_identity"]["a-other00000000001"])'
@@ -321,8 +349,32 @@ done
 ngw 'ng["status"] = "CREATING"'
 setup "$WORK/ng-stuck.log" --stop-after system-node
 check "REJECT a system node group that stays CREATING" 1 "$RC" "$WORK/ng-stuck.log" '^ERROR: E_NODEGROUP_STATE: node group system did not become ACTIVE \(status CREATING\)$'
+# A node group of that name is used only when it is this run's and as rendered: render-nodegroup
+# reads it first, and a node group that is not stops the stage before any change in the cluster.
+# cluster_changes: the calls of the case that change the cluster.
+cluster_changes() {
+  calls | grep -c -E '^[0-9]+ (eksctl |helm |kubectl (create|apply|delete|patch|label|annotate)|aws eks (create|delete|tag|untag|update-nodegroup))' || true
+}
+while IFS='|' read -r code rx why; do
+  [[ -n "$code" ]] || continue
+  ngw "ng['status'] = 'ACTIVE'; $code"
+  setup "$WORK/ng-reuse.log" --stop-after system-node
+  check "REJECT an ACTIVE system node group $why" 1 "$RC" "$WORK/ng-reuse.log" \
+    "^ERROR: E_RENDER_NODEGROUP: node group system exists and is not the one this run renders: .*$rx"
+  [[ "$(cluster_changes)" == 0 ]]; check "  ... before any change in the cluster: no eksctl, helm or kubectl change" 0 $? "$WORK/ng-reuse.log"
+done <<'CASES'
+ng['tags'] = {'team': 'someone-else'}|tags \{'team': 'someone-else'\} are not ManagedBy=cilium-bottlerocket-sample RunId=|with another owner's tags
+ng['tags']['RunId'] = 'r2'|tags .*'RunId': 'r2'.* are not ManagedBy=cilium-bottlerocket-sample RunId=|of another run (RunId r2)
+ng['launchTemplate']['id'] = 'lt-0fa00000000000999'|launch template lt-0fa00000000000999 version 1, want lt-[0-9a-f]+ version 1|on another launch template
+ng['launchTemplate']['version'] = '2'|launch template lt-[0-9a-f]+ version 2, want lt-[0-9a-f]+ version 1|on version 2 of the run's launch template
+ng['scalingConfig']['desiredSize'] = 2|sizes|with two nodes
+CASES
 sysnode_world
-FAKE_FAIL='aws|eks describe-nodegroup|system|ServiceUnavailableException' setup "$WORK/ng-read.log" --stop-after system-node
+FAKE_FAIL='aws|eks describe-nodegroup|system|ServiceUnavailableException' setup "$WORK/ng-render-read.log" --stop-after system-node
+check "REJECT the system-node stage when render-nodegroup cannot read the node group, as could not check" 2 "$RC" "$WORK/ng-render-read.log" '^ERROR: E_RENDER_NODEGROUP_UNKNOWN: '
+[[ "$(count_calls eksctl 'create nodegroup')" == 0 ]]; check "  ... and eksctl create nodegroup did not run" 0 $? "$WORK/ng-render-read.log"
+sysnode_world
+FAKE_FAIL='aws|eks describe-nodegroup|system|ServiceUnavailableException||1' setup "$WORK/ng-read.log" --stop-after system-node
 check "REJECT a node group read that fails with another error than ResourceNotFoundException" 1 "$RC" "$WORK/ng-read.log" '^ERROR: E_NODEGROUP_READ: could not read node group system of cb-offline-test: '
 [[ "$(count_calls eksctl 'create nodegroup')" == 0 ]]; check "  ... and eksctl create nodegroup did not run" 0 $? "$WORK/ng-read.log"
 sysnode_world

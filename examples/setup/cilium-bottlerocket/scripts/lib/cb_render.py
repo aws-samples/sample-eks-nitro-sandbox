@@ -4,6 +4,7 @@ import base64
 import ipaddress
 import json
 import re
+import urllib.parse
 from pathlib import Path
 
 import yaml
@@ -22,7 +23,16 @@ OPERATOR_ACTIONS = {
     "ec2:CreateNetworkInterface", "ec2:AttachNetworkInterface", "ec2:ModifyNetworkInterfaceAttribute",
     "ec2:AssignPrivateIpAddresses", "ec2:DeleteNetworkInterface", "ec2:CreateTags",
 }
-NODE_POLICIES = {"AmazonEKSWorkerNodePolicy", "AmazonEC2ContainerRegistryPullOnly"}
+# The managed policies of each node role (eksctl/nodegroups.yaml), by ARN: a policy of the account
+# can carry the same name with other permissions.
+NODE_POLICY_ARNS = {"arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+                    "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"}
+# The trust of the operator role: the EKS Pod Identity principal and the two STS actions it needs
+# (Amazon EKS User Guide, "Create IAM role with trust policy required by EKS Pod Identity").
+POD_IDENTITY_PRINCIPAL = "pods.eks.amazonaws.com"
+POD_IDENTITY_ACTIONS = {"sts:AssumeRole", "sts:TagSession"}
+# EKS writes a taint effect as NO_SCHEDULE; eksctl/nodegroups.yaml as NoSchedule.
+TAINT_EFFECTS = {"NoSchedule": "NO_SCHEDULE", "PreferNoSchedule": "PREFER_NO_SCHEDULE", "NoExecute": "NO_EXECUTE"}
 CILIUM_EXPECTED = {
     ("eni", "enabled"): True, ("ipam", "mode"): "eni", ("routingMode",): "native",
     ("kubeProxyReplacement",): True, ("k8sServicePort",): 443,
@@ -174,10 +184,80 @@ def cmd_render_nodegroup(args):
     require(len(doc["managedNodeGroups"]) == 1, f"nodegroups.yaml has no single group {group}")
     ng = doc["managedNodeGroups"][0]
     require((ng["minSize"], ng["maxSize"], ng["desiredCapacity"]) == (1, 1, 1), f"{group} must be exactly one node")
-    policies = {p.rsplit("/", 1)[1] for p in ng["iam"]["attachPolicyARNs"]}
-    require(policies == NODE_POLICIES, f"{group} node role policies must be {sorted(NODE_POLICIES)}, got {sorted(policies)}")
+    policies = set(ng["iam"]["attachPolicyARNs"])
+    require(policies == NODE_POLICY_ARNS, f"{group} node role policies must be {sorted(NODE_POLICY_ARNS)}, got {sorted(policies)}")
     require(ng["tags"] == sample_tags(), f"{group} tags must be ManagedBy and RunId")
+    # A node group of that name that EKS already has is used only when it is this run's and as
+    # rendered; setup.sh renders before ensure_nodegroup, so a mismatch stops before any change.
+    found = aws("eks", "describe-nodegroup", "--cluster-name", setting("CLUSTER_NAME"), "--nodegroup-name", group,
+                allow=("ResourceNotFoundException",))
+    if found is not None:
+        wrong = nodegroup_problems(ng, found.get("nodegroup") or {})
+        require(not wrong, f"node group {group} exists and is not the one this run renders: " + "; ".join(wrong)
+                + "; run ./clean.sh --dry-run")
+        print(f"node group {group}: exists, this run's and as rendered")
     write_rendered(f"nodegroups-{group}.yaml", doc)
+
+
+def nodegroup_problems(ng, found):
+    """What differs between a node group that EKS has (describe-nodegroup) and the managed node
+    group rendered from eksctl/nodegroups.yaml: the two tags, the launch template and its
+    version, the sizes, the labels and taints, private subnets of the run's VPC in the node zone,
+    no remote access, and a node role of this run with exactly the two AWS managed policies."""
+    wrong = []
+    if not is_ours(found.get("tags")):
+        wrong.append(f"tags {found.get('tags')} are not {OWNER_TAG[0]}={OWNER_TAG[1]} RunId={run_id()}")
+    lt, want_lt = found.get("launchTemplate") or {}, ng["launchTemplate"]
+    if (lt.get("id"), str(lt.get("version"))) != (want_lt["id"], str(want_lt["version"])):
+        wrong.append(f"launch template {lt.get('id')} version {lt.get('version')}, "
+                     f"want {want_lt['id']} version {want_lt['version']}")
+    sizes = found.get("scalingConfig") or {}
+    want_sizes = {"minSize": ng["minSize"], "maxSize": ng["maxSize"], "desiredSize": ng["desiredCapacity"]}
+    if {k: sizes.get(k) for k in want_sizes} != want_sizes:
+        wrong.append(f"sizes {sizes}, want {want_sizes}")
+    labels, want_labels = found.get("labels") or {}, ng.get("labels") or {}
+    # eksctl adds its own alpha.eksctl.io/ labels to a managed node group.
+    if {k: v for k, v in labels.items() if not k.startswith("alpha.eksctl.io/")} != want_labels:
+        wrong.append(f"labels {labels}, want {want_labels}")
+    taints = sorted((t.get("key"), t.get("value"), TAINT_EFFECTS.get(t.get("effect"), t.get("effect")))
+                    for t in found.get("taints") or [])
+    want_taints = sorted((t["key"], t["value"], TAINT_EFFECTS.get(t["effect"], t["effect"])) for t in ng.get("taints") or [])
+    if taints != want_taints:
+        wrong.append(f"taints {taints}, want {want_taints}")
+    if found.get("remoteAccess"):
+        wrong.append(f"remote access is set: {found['remoteAccess']}")
+    subnets = found.get("subnets") or []
+    if not subnets:
+        wrong.append("no subnets")
+    else:
+        zone, vpc = zones()[0], state_get("VPC_ID")
+        for subnet in aws("ec2", "describe-subnets", "--subnet-ids", *subnets).get("Subnets", []):
+            if (subnet.get("VpcId"), subnet.get("AvailabilityZone"), subnet.get("MapPublicIpOnLaunch")) != (vpc, zone, False):
+                wrong.append(f"subnet {subnet.get('SubnetId')} is not a private subnet of {vpc or 'the run VPC'} in {zone}")
+    role = (found.get("nodeRole") or "").rsplit("/", 1)[-1]
+    if not role:
+        return wrong + ["no node role"]
+    if not is_ours(role_tags(role)):
+        wrong.append(f"node role {role} is not tagged {OWNER_TAG[0]}={OWNER_TAG[1]} RunId={run_id()}")
+    return wrong + [f"node role {role}: {w}" for w in node_role_problems(role)]
+
+
+def role_tags(role):
+    """The tags of an IAM role (list-role-tags)."""
+    return aws("iam", "list-role-tags", "--role-name", role).get("Tags", [])
+
+
+def node_role_problems(role):
+    """What is wrong with a node role: its managed policies must be exactly the two AWS managed
+    policy ARNs of eksctl/nodegroups.yaml, and it must have no inline policy."""
+    arns = {p.get("PolicyArn") for p in aws("iam", "list-attached-role-policies", "--role-name", role).get("AttachedPolicies", [])}
+    inline = aws("iam", "list-role-policies", "--role-name", role).get("PolicyNames", [])
+    wrong = []
+    if arns != NODE_POLICY_ARNS:
+        wrong.append(f"managed policies {sorted(arns)}, want exactly {sorted(NODE_POLICY_ARNS)}")
+    if inline:
+        wrong.append(f"inline policies {inline}, want none")
+    return wrong
 
 
 def cmd_render_probe(args):
@@ -412,8 +492,12 @@ def cmd_launch_template(args):
         require(is_ours(lt.get("Tags", [])), f"launch template {name} exists and is not this run's")
         have = aws("ec2", "describe-launch-template-versions", "--launch-template-id", lt["LaunchTemplateId"],
                    "--versions", "1")["LaunchTemplateVersions"][0]["LaunchTemplateData"]
-        diff = [k for k in data if have.get(k) != data[k]]
-        require(not diff, f"launch template {name} exists with other values: {diff}; run ./clean.sh")
+        # The whole readback must be the rendered data: also a field that the sample does not set
+        # (a key pair, network interfaces, security groups, an instance profile) stops the reuse.
+        diff = sorted(k for k in data if have.get(k) != data[k])
+        extra = sorted(k for k in have if k not in data)
+        require(not diff and not extra, f"launch template {name} exists with other values: {diff}, "
+                f"and fields the sample does not set: {extra}; run ./clean.sh")
         lt_id = lt["LaunchTemplateId"]
     else:
         spec = {"ResourceType": "launch-template", "Tags": tag_list()}
@@ -465,21 +549,57 @@ def cmd_check_operator_role(_):
     assocs = aws("eks", "list-pod-identity-associations", "--cluster-name", cluster, "--namespace",
                  "kube-system", "--service-account", "cilium-operator").get("associations", [])
     require(len(assocs) == 1, f"expected one association for kube-system/cilium-operator, found {len(assocs)}")
-    assoc = aws("eks", "describe-pod-identity-association", "--cluster-name", cluster,
-                "--association-id", assocs[0]["associationId"])["association"]
+    aid = assocs[0]["associationId"]
+    assoc = aws("eks", "describe-pod-identity-association", "--cluster-name", cluster, "--association-id", aid)["association"]
+    want_tags = f"{OWNER_TAG[0]}={OWNER_TAG[1]} RunId={run_id()}"
+    require(is_ours(assoc.get("tags")), f"Pod Identity association {aid} is not tagged {want_tags}: {assoc.get('tags')}")
     role = assoc["roleArn"].rsplit("/", 1)[1]
     require(role == setting("OPERATOR_ROLE_NAME"), f"the association uses role {role}, not {setting('OPERATOR_ROLE_NAME')}")
+    require(is_ours(role_tags(role)), f"operator role {role} is not tagged {want_tags}")
+    trust = aws("iam", "get-role", "--role-name", role)["Role"].get("AssumeRolePolicyDocument")
+    wrong = trust_problems(trust)
+    require(not wrong, f"operator role {role} trust: " + "; ".join(wrong))
     attached = aws("iam", "list-attached-role-policies", "--role-name", role).get("AttachedPolicies", [])
     require(not attached, f"operator role {role} has managed policies: {[p['PolicyName'] for p in attached]}")
     actions = set()
     for name in aws("iam", "list-role-policies", "--role-name", role).get("PolicyNames", []):
         actions |= policy_actions(aws("iam", "get-role-policy", "--role-name", role, "--policy-name", name)["PolicyDocument"])
     require(actions == OPERATOR_ACTIONS, f"operator role actions differ: {sorted(actions ^ OPERATOR_ACTIONS)}")
-    print(f"operator role {role}: exactly the {len(actions)} EC2 actions of the Cilium list")
+    print(f"operator role {role}: association and role tagged for run {run_id()}, EKS Pod Identity trust only, "
+          f"exactly the {len(actions)} EC2 actions of the Cilium list")
     for group in aws("eks", "list-nodegroups", "--cluster-name", cluster).get("nodegroups", []):
         node_role = aws("eks", "describe-nodegroup", "--cluster-name", cluster,
                         "--nodegroup-name", group)["nodegroup"]["nodeRole"].rsplit("/", 1)[1]
-        names = {p["PolicyName"] for p in aws("iam", "list-attached-role-policies", "--role-name", node_role).get("AttachedPolicies", [])}
-        inline = aws("iam", "list-role-policies", "--role-name", node_role).get("PolicyNames", [])
-        require(names == NODE_POLICIES and not inline, f"node role {node_role} ({group}) has {sorted(names)} and inline {inline}")
-        print(f"node role {node_role} ({group}): {', '.join(sorted(names))}, no Cilium EC2 action")
+        wrong = node_role_problems(node_role)
+        require(not wrong, f"node role {node_role} ({group}): " + "; ".join(wrong))
+        names = sorted(arn.rsplit("/", 1)[1] for arn in NODE_POLICY_ARNS)
+        print(f"node role {node_role} ({group}): {', '.join(names)} (AWS managed), no inline policy, no Cilium EC2 action")
+
+
+def trust_problems(document):
+    """What is wrong with the trust policy of the operator role: one statement that allows the
+    EKS Pod Identity service principal sts:AssumeRole and sts:TagSession, and nothing more (no
+    other principal, action, condition or statement)."""
+    if isinstance(document, str):  # IAM sends the document URL-encoded; the AWS CLI decodes it
+        try:
+            document = json.loads(urllib.parse.unquote(document))
+        except ValueError as err:
+            raise Unknown("the trust policy is not JSON") from err
+    statements = document.get("Statement") if isinstance(document, dict) else None
+    statements = [statements] if isinstance(statements, dict) else statements
+    if not isinstance(statements, list) or len(statements) != 1 or not isinstance(statements[0], dict):
+        return [f"the trust policy must have exactly one statement, got {statements!r}"]
+    st, wrong = statements[0], []
+    if set(st) - {"Sid", "Effect", "Principal", "Action"}:
+        wrong.append(f"the statement also has {sorted(set(st) - {'Sid', 'Effect', 'Principal', 'Action'})}")
+    if st.get("Effect") != "Allow":
+        wrong.append(f"Effect is {st.get('Effect')!r}")
+    principal = st.get("Principal")
+    service = principal.get("Service") if isinstance(principal, dict) and set(principal) == {"Service"} else None
+    if (service if isinstance(service, list) else [service]) != [POD_IDENTITY_PRINCIPAL]:
+        wrong.append(f"Principal is {principal!r}, want only Service {POD_IDENTITY_PRINCIPAL}")
+    action = st.get("Action")
+    actions = {action} if isinstance(action, str) else set(action) if isinstance(action, list) else None
+    if actions != POD_IDENTITY_ACTIONS:
+        wrong.append(f"Action is {action!r}, want {sorted(POD_IDENTITY_ACTIONS)}")
+    return wrong

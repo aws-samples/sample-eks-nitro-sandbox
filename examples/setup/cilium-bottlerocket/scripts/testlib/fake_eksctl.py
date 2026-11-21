@@ -136,9 +136,21 @@ def create_nodegroups(state, cfg):
         state.setdefault("iam", {}).setdefault("roles", {}).setdefault(role, {
             "Tags": taglist(tags), "Attached": list((ng.get("iam") or {}).get("attachPolicyARNs") or []),
             "Inline": {}, "Stack": ngstack})
+        # The subnets of the node group, as eksctl picks them: in its zones, private with
+        # privateNetworking, of the cluster's VPC.
+        vpc = ((state["eks"].get("clusters", {}).get(name) or {}).get("resourcesVpcConfig") or {}).get("vpcId")
+        subnets = [x["SubnetId"] for x in ec2(state, "subnets") if x.get("VpcId") == vpc
+                   and x.get("AvailabilityZone") in (ng.get("availabilityZones") or [])
+                   and x.get("MapPublicIpOnLaunch") is not bool(ng.get("privateNetworking"))]
         ngs[key] = {"status": "ACTIVE", "tags": tags, "labels": ng.get("labels") or {},
                     "nodeRole": f"arn:aws:iam::{state.get('account', '')}:role/{role}",
-                    "taints": ng.get("taints") or [], "scalingConfig": {"desiredSize": ng.get("desiredCapacity")},
+                    # EKS writes the taint effect as NO_SCHEDULE, PREFER_NO_SCHEDULE or NO_EXECUTE.
+                    "taints": [dict(t, effect={"NoSchedule": "NO_SCHEDULE", "PreferNoSchedule": "PREFER_NO_SCHEDULE",
+                                               "NoExecute": "NO_EXECUTE"}.get(t.get("effect"), t.get("effect")))
+                               for t in ng.get("taints") or []],
+                    "scalingConfig": {"minSize": ng.get("minSize"), "maxSize": ng.get("maxSize"),
+                                      "desiredSize": ng.get("desiredCapacity")},
+                    "subnets": subnets,
                     "launchTemplate": ng.get("launchTemplate") or {}, "amiType": ng.get("amiFamily", "CUSTOM")}
         state.setdefault("cloudformation", {}).setdefault("stacks", {})[f"eksctl-{name}-nodegroup-{ng['name']}"] = {
             "StackStatus": "CREATE_COMPLETE", "Tags": taglist(dict(tags, **{"alpha.eksctl.io/cluster-name": name}))}
@@ -151,7 +163,10 @@ def create_pia(state, cfg, acct):
     roles = state.setdefault("iam", {}).setdefault("roles", {})
     for a in (cfg.get("iam") or {}).get("podIdentityAssociations", []):
         rn = a.get("roleName") or f"eksctl-{name}-podidentityrole-{a['serviceAccountName']}"
-        roles.setdefault(rn, {"Trust": {}, "Tags": taglist(dict(cfg["metadata"].get("tags") or {}, **(a.get("tags") or {}))),
+        # The trust policy that eksctl gives the role: the EKS Pod Identity service principal.
+        trust = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "pods.eks.amazonaws.com"},
+                                                         "Action": ["sts:AssumeRole", "sts:TagSession"]}]}
+        roles.setdefault(rn, {"Trust": trust, "Tags": taglist(dict(cfg["metadata"].get("tags") or {}, **(a.get("tags") or {}))),
                               "Attached": list(a.get("permissionPolicyARNs") or []),
                               "Inline": {"inline": a["permissionPolicy"]} if a.get("permissionPolicy") else {},
                               "MadeByEksctl": True})

@@ -92,9 +92,50 @@ acc render-pod-identity E_RENDER_POD_IDENTITY
 tree pia; python3 -c 'import sys; p = sys.argv[1]; t = open(p).read(); assert "ec2:CreateTags" in t; open(p, "w").write(t.replace("ec2:CreateTags", "ec2:CreateTags\n              - ec2:DetachNetworkInterface", 1))' "$T/eksctl/pod-identity.yaml"
 h "$WORK/rpi-bad.log" "SAMPLE=$T" render-pod-identity
 check "REJECT an operator policy with an action outside the Cilium list (ec2:DetachNetworkInterface)" 1 "$RC" "$WORK/rpi-bad.log" '^ERROR: E_RENDER_POD_IDENTITY: '
+world_py 'del s["eks"]["nodegroups"]["cb-offline-test/sandbox"]'
 h "$WORK/rng.log" render-nodegroup sandbox
-check "ACCEPT render-nodegroup sandbox: exactly one node, the two node policies, the sample tags" 0 "$RC" "$WORK/rng.log"
+check "ACCEPT render-nodegroup sandbox with no node group of that name: exactly one node, the two node policies, the sample tags" 0 "$RC" "$WORK/rng.log"
 acc render-nodegroup E_RENDER_NODEGROUP
+# A node group of that name that EKS already has: setup.sh uses it only when it is this run's
+# and as rendered. ng_world: the full world, its sandbox node group as EKS describes the one that
+# eksctl made from the rendered config (zone us-west-2b, the first private subnet), and its node
+# role with the two AWS managed policies.
+ng_world() {
+  full
+  world_py 'ng = s["eks"]["nodegroups"]["cb-offline-test/sandbox"]
+ng.update(scalingConfig={"minSize": 1, "maxSize": 1, "desiredSize": 1}, subnets=["subnet-0fa00000000000001"],
+          labels={"sandbox.eks-nitro-sandbox.amazonaws.com/dedicated": "true", "alpha.eksctl.io/cluster-name": "cb-offline-test"},
+          taints=[{"key": "sandbox.eks-nitro-sandbox.amazonaws.com/dedicated", "value": "true", "effect": "NO_SCHEDULE"}])
+ng["launchTemplate"]["name"] = "cb-offline-test-r1-sandbox"
+for x in s["ec2"]["subnets"]:
+    x["AvailabilityZone"] = "us-west-2b"
+s["iam"]["roles"][ng["nodeRole"].rsplit("/", 1)[1]]["Attached"] = [
+    "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy", "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"]'
+}
+ng_world
+h "$WORK/rng-ng.log" render-nodegroup sandbox
+check "ACCEPT render-nodegroup sandbox with a node group of that name that is this run's and as rendered" 0 "$RC" "$WORK/rng-ng.log" '^node group sandbox: exists, this run.s and as rendered$'
+while IFS='|' read -r code rx why; do
+  [[ -n "$code" ]] || continue
+  ng_world; world_py "ng = s['eks']['nodegroups']['cb-offline-test/sandbox']; role = s['iam']['roles'][ng['nodeRole'].rsplit('/', 1)[1]]
+$code"
+  h "$WORK/rng-bad.log" render-nodegroup sandbox
+  check "$why" 1 "$RC" "$WORK/rng-bad.log" "^ERROR: E_RENDER_NODEGROUP: node group sandbox exists and is not the one this run renders: .*$rx"
+  [[ ! -e "$RD/nodegroups-sandbox.yaml" ]]; check "  ... and no node group config is written for eksctl" 0 $? "$WORK/rng-bad.log"
+done <<'CASES'
+ng['tags'] = {'team': 'someone-else'}|tags \{'team': 'someone-else'\} are not ManagedBy=cilium-bottlerocket-sample RunId=r1|REJECT a node group of that name with another owner's tags
+ng['tags']['RunId'] = 'r2'|tags .*'RunId': 'r2'.* are not ManagedBy=cilium-bottlerocket-sample RunId=r1|REJECT a node group of that name of run r2
+ng['launchTemplate']['id'] = 'lt-0fa00000000000202'|launch template lt-0fa00000000000202 version 1, want lt-0fa00000000000002 version 1|REJECT a node group of that name on another launch template
+ng['launchTemplate']['version'] = '2'|launch template lt-0fa00000000000002 version 2, want lt-0fa00000000000002 version 1|REJECT a node group of that name on version 2 of the run's launch template
+ng['scalingConfig']['maxSize'] = 3|sizes \{[^}]*'maxSize': 3[^}]*\}, want \{'minSize': 1, 'maxSize': 1, 'desiredSize': 1\}|REJECT a node group of that name that can grow to 3 nodes
+ng['labels'].pop('sandbox.eks-nitro-sandbox.amazonaws.com/dedicated')|labels|REJECT a node group of that name without the sandbox label
+ng['taints'] = []|taints \[\], want|REJECT a node group of that name without the sandbox taint
+ng['remoteAccess'] = {'ec2SshKey': 'someone-elses-key'}|remote access is set|REJECT a node group of that name with SSH remote access
+ng['subnets'] = ['subnet-0fa00000000000003']|subnet subnet-0fa00000000000003 is not a private subnet of vpc-0fa00000000000001 in us-west-2b|REJECT a node group of that name in a public subnet
+role['Tags'] = [{'Key': 'team', 'Value': 'someone-else'}]|node role eksctl-cb-offline-test-nodegroup-sandbox-NodeInstanceRole is not tagged|REJECT a node group of that name whose node role is not this run's
+role['Attached'].append('arn:aws:iam::aws:policy/AmazonEC2FullAccess')|node role .*: managed policies|REJECT a node group of that name whose node role has a third managed policy
+role['Inline'] = {'extra': {'Version': '2012-10-17'}}|node role .*: inline policies \['extra'\], want none|REJECT a node group of that name whose node role has an inline policy
+CASES
 sed -i '/^SANDBOX_LAUNCH_TEMPLATE_ID=/d' "$RD/state.env"
 h "$WORK/rng-nolt.log" render-nodegroup sandbox
 check "REJECT render-nodegroup with no sandbox launch template in the state file" 1 "$RC" "$WORK/rng-nolt.log" '^ERROR: E_RENDER_NODEGROUP: '
@@ -153,6 +194,28 @@ full
 world_py 's["ec2"]["launch_templates"] = [dict(t, Tags=[{"Key": "team", "Value": "someone-else"}]) if t["LaunchTemplateName"] == "cb-offline-test-r1-sandbox" else t for t in s["ec2"]["launch_templates"]]'
 h "$WORK/lt-foreign.log" launch-template sandbox
 check "REJECT an existing launch template of the same name that is not this run's" 1 "$RC" "$WORK/lt-foreign.log" '^ERROR: E_LAUNCH_TEMPLATE: launch template cb-offline-test-r1-sandbox exists and is not this run'
+# A launch template of that name that is this run's is reused only when its whole readback is the
+# rendered data: a changed value, or a field that the sample does not set, stops the reuse.
+full; world_py 's["ec2"]["launch_templates"] = [t for t in s["ec2"]["launch_templates"] if not t["LaunchTemplateName"].startswith("cb-offline-test-r1-")]'
+h "$WORK/lt-made.log" launch-template sandbox
+cp "$FAKE_STATE" "$WORK/lt-made.json"
+h "$WORK/lt-again.log" launch-template sandbox
+[[ "$RC" == 0 && "$(tail -n1 "$WORK/lt-again.log")" == "$(tail -n1 "$WORK/lt-made.log")" && "$(count_calls aws 'ec2 create-launch-template')" == 1 ]]
+check "ACCEPT the run's launch template with the rendered data again: reused, the same ID, no second create" 0 $? "$WORK/lt-again.log"
+while IFS='|' read -r code rx why; do
+  [[ -n "$code" ]] || continue
+  cp "$WORK/lt-made.json" "$FAKE_STATE"
+  world_py "d = [t for t in s['ec2']['launch_templates'] if t['LaunchTemplateName'] == 'cb-offline-test-r1-sandbox'][0]['LaunchTemplateData']
+$code"
+  h "$WORK/lt-extra.log" launch-template sandbox
+  check "$why" 1 "$RC" "$WORK/lt-extra.log" "^ERROR: E_LAUNCH_TEMPLATE: launch template cb-offline-test-r1-sandbox exists with other values: $rx; run \./clean\.sh$"
+done <<'CASES'
+d['KeyName'] = 'unexpected-ssh-key'|\[\], and fields the sample does not set: \['KeyName'\]|REJECT the run's launch template with the rendered data plus a KeyName (an SSH key pair)
+d['NetworkInterfaces'] = [{'DeviceIndex': 0, 'AssociatePublicIpAddress': True}]|\[\], and fields the sample does not set: \['NetworkInterfaces'\]|REJECT the run's launch template with the rendered data plus a network interface with a public IPv4 address
+d['SecurityGroupIds'] = ['sg-0fd00000000000999']|\[\], and fields the sample does not set: \['SecurityGroupIds'\]|REJECT the run's launch template with the rendered data plus security groups
+d['IamInstanceProfile'] = {'Name': 'someone-elses-profile'}|\[\], and fields the sample does not set: \['IamInstanceProfile'\]|REJECT the run's launch template with the rendered data plus an instance profile
+d['ImageId'] = 'ami-0fb00000000000999'|\['ImageId'\], and fields the sample does not set: \[\]|REJECT the run's launch template with another AMI
+CASES
 # max-pods of the user data is the value that setup.sh derived and recorded in the run state
 # (MAX_PODS_SANDBOX), never SANDBOX_SLOTS: the slot count of the fixture config is set to 20 here.
 full; world_py 's["ec2"]["launch_templates"] = [t for t in s["ec2"]["launch_templates"] if not t["LaunchTemplateName"].startswith("cb-offline-test-r1-")]'
@@ -246,8 +309,23 @@ python3 "$TESTLIB/fixture_aws_json.py" mutate "$WORK/aj/uefi.json" "$WORK/aj/uef
 h "$WORK/sba-uefi.log" check-sandbox-ami --images "$WORK/aj/images.json" --uefi "$WORK/aj/uefi-data.json" --snapshots "$WORK/aj/snapshots.json"
 check "REJECT a sandbox AMI with UEFI variable data" 1 "$RC" "$WORK/sba-uefi.log" '^ERROR: E_SANDBOX_AMI: .*UEFI'
 python3 "$TESTLIB/fixture_aws_json.py" mutate "$WORK/aj/images.json" "$WORK/aj/images-r2.json" 'd["Images"][0]["Tags"][1]["Value"] = "r2"'
-h "$WORK/sba-reuse.log" check-sandbox-ami --reuse --images "$WORK/aj/images-r2.json" --uefi "$WORK/aj/uefi.json" --snapshots "$WORK/aj/snapshots.json"
-check "ACCEPT REUSE_SANDBOX_AMI_ID: an AMI of another run of the sample with the same SandboxSlots (--reuse)" 0 "$RC" "$WORK/sba-reuse.log" '^sandbox AMI '
+# With --reuse the AMI may be an earlier run's, but the AMI and both snapshots carry one RunId.
+python3 "$TESTLIB/fixture_aws_json.py" mutate "$WORK/aj/snapshots.json" "$WORK/aj/snapshots-r2.json" \
+  '[t.update(Value="r2") for x in d["Snapshots"] for t in x["Tags"] if t["Key"] == "RunId"]'
+h "$WORK/sba-reuse.log" check-sandbox-ami --reuse --images "$WORK/aj/images-r2.json" --uefi "$WORK/aj/uefi.json" --snapshots "$WORK/aj/snapshots-r2.json"
+check "ACCEPT REUSE_SANDBOX_AMI_ID: an AMI of run r2 with the same SandboxSlots, both snapshots of run r2 too (--reuse)" 0 "$RC" "$WORK/sba-reuse.log" '^sandbox AMI '
+while IFS='|' read -r img snap rx why; do
+  [[ -n "$img" ]] || continue
+  python3 "$TESTLIB/fixture_aws_json.py" mutate "$WORK/aj/images.json" "$WORK/aj/images-run.json" "$img"
+  python3 "$TESTLIB/fixture_aws_json.py" mutate "$WORK/aj/snapshots.json" "$WORK/aj/snapshots-run.json" "$snap"
+  h "$WORK/sba-run.log" check-sandbox-ami --reuse --images "$WORK/aj/images-run.json" --uefi "$WORK/aj/uefi.json" --snapshots "$WORK/aj/snapshots-run.json"
+  check "$why" 1 "$RC" "$WORK/sba-run.log" "^ERROR: E_SANDBOX_AMI: sandbox AMI ami-0fb00000000000001: .*$rx"
+done <<'CASES'
+d["Images"][0]["Tags"] = [t for t in d["Images"][0]["Tags"] if t["Key"] != "RunId"]|[x.update(Tags=[t for t in x["Tags"] if t["Key"] != "RunId"]) for x in d["Snapshots"]]|tag RunId=None is not the run ID of an earlier run|REJECT --reuse: an AMI and snapshots with no RunId tag
+d["Images"][0]["Tags"][1]["Value"] = ""|[t.update(Value="") for x in d["Snapshots"] for t in x["Tags"] if t["Key"] == "RunId"]|tag RunId='' is not the run ID of an earlier run|REJECT --reuse: an AMI and snapshots with an empty RunId
+d["Images"][0]["Tags"][1]["Value"] = "r2"|[t.update(Value="r3") for t in d["Snapshots"][1]["Tags"] if t["Key"] == "RunId"]|snapshot snap-0fb00000000000002 has RunId='r3', the AMI RunId='r2'|REJECT --reuse: an AMI of run r2 whose data snapshot is of run r3
+d["Images"][0]["Tags"][1]["Value"] = "r2"|[d["Snapshots"][0].update(Tags=[t for t in d["Snapshots"][0]["Tags"] if t["Key"] != "RunId"])]|snapshot snap-0fb00000000000001 has RunId=None, the AMI RunId='r2'|REJECT --reuse: an AMI of run r2 whose root snapshot has no RunId
+CASES
 h "$WORK/sba-r2.log" check-sandbox-ami --images "$WORK/aj/images-r2.json" --uefi "$WORK/aj/uefi.json" --snapshots "$WORK/aj/snapshots.json"
 check "REJECT, without --reuse, an AMI whose RunId is another run's" 1 "$RC" "$WORK/sba-r2.log" '^ERROR: E_SANDBOX_AMI: .*RunId'
 # Each snapshot carries SandboxSlots equal to the config, with and without
@@ -258,6 +336,7 @@ python3 "$TESTLIB/fixture_aws_json.py" mutate "$WORK/aj/snapshots.json" "$WORK/a
   '[t.update(Value="57") for t in d["Snapshots"][1]["Tags"] if t["Key"] == "SandboxSlots"]'
 for reuse in "" --reuse; do
   imgs="$WORK/aj/images.json"; [[ -z "$reuse" ]] || imgs="$WORK/aj/images-r2.json"
+  [[ -z "$reuse" ]] || sed -i 's/"Value": "r1"/"Value": "r2"/g' "$WORK/aj/snap-noslots.json" "$WORK/aj/snap-57.json"
   # shellcheck disable=SC2086 # reuse is empty or one flag
   h "$WORK/sba-snoslots.log" check-sandbox-ami $reuse --images "$imgs" --uefi "$WORK/aj/uefi.json" --snapshots "$WORK/aj/snap-noslots.json"
   check "REJECT ${reuse:-(no --reuse)}: a data snapshot with no SandboxSlots tag" 1 "$RC" "$WORK/sba-snoslots.log" \
@@ -312,11 +391,53 @@ full; world_py 's["eks"]["pod_identity"] = {}; s["eks"]["nodegroups"] = {}; del 
 h "$WORK/rpi2.log" render-pod-identity
 cloud_guard "$PATH"; eksctl create podidentityassociation -f "$RD/pod-identity.yaml" > "$WORK/pia-create.log" 2>&1
 h "$WORK/or.log" check-operator-role
-check "ACCEPT the operator role: one association, no managed policy, exactly the Cilium EC2 actions" 0 "$RC" "$WORK/or.log" '^operator role cb-offline-test-cilium-operator: exactly the 13 EC2 actions'
+check "ACCEPT the operator role: the association and role tagged for the run, the EKS Pod Identity trust, no managed policy, exactly the Cilium EC2 actions" 0 "$RC" "$WORK/or.log" \
+  '^operator role cb-offline-test-cilium-operator: association and role tagged for run r1, EKS Pod Identity trust only, exactly the 13 EC2 actions'
 acc check-operator-role E_OPERATOR_ROLE
+cp "$FAKE_STATE" "$WORK/or-made.json"
 world_py 's["iam"]["roles"]["cb-offline-test-cilium-operator"]["Attached"].append("arn:aws:iam::aws:policy/AmazonEC2FullAccess")'
 h "$WORK/or-bad.log" check-operator-role
 check "REJECT an operator role with a managed policy attached" 1 "$RC" "$WORK/or-bad.log" '^ERROR: E_OPERATOR_ROLE: '
+# The association and its role must be this run's, and the role must trust only EKS Pod Identity
+# with the two STS actions it needs, before setup.sh records the association or installs Cilium.
+while IFS='|' read -r code rx why; do
+  [[ -n "$code" ]] || continue
+  cp "$WORK/or-made.json" "$FAKE_STATE"
+  world_py "a = list(s['eks']['pod_identity'].values())[0]; r = s['iam']['roles']['cb-offline-test-cilium-operator']; st = r['Trust']['Statement'][0]
+$code"
+  h "$WORK/or-adopt.log" check-operator-role
+  check "$why" 1 "$RC" "$WORK/or-adopt.log" "^ERROR: E_OPERATOR_ROLE: $rx"
+done <<'CASES'
+a['tags'] = {}|Pod Identity association a-fake[0-9]+ is not tagged ManagedBy=cilium-bottlerocket-sample RunId=r1: \{\}$|REJECT a Pod Identity association with no tags
+a['tags'] = {'ManagedBy': 'cilium-bottlerocket-sample', 'RunId': 'r2'}|Pod Identity association a-fake[0-9]+ is not tagged ManagedBy=cilium-bottlerocket-sample RunId=r1|REJECT a Pod Identity association of run r2
+r['Tags'] = []|operator role cb-offline-test-cilium-operator is not tagged ManagedBy=cilium-bottlerocket-sample RunId=r1$|REJECT an operator role with no tags
+r['Tags'] = [{'Key': 'ManagedBy', 'Value': 'cilium-bottlerocket-sample'}, {'Key': 'RunId', 'Value': 'r2'}]|operator role cb-offline-test-cilium-operator is not tagged ManagedBy=cilium-bottlerocket-sample RunId=r1$|REJECT an operator role of run r2
+st['Principal'] = {'Service': ['pods.eks.amazonaws.com', 'ec2.amazonaws.com']}|operator role cb-offline-test-cilium-operator trust: Principal is .*want only Service pods\.eks\.amazonaws\.com$|REJECT an operator role that EC2 can assume too (a second service principal)
+st['Principal'] = {'Service': 'pods.eks.amazonaws.com', 'AWS': f"arn:aws:iam::{s['account']}:root"}|operator role cb-offline-test-cilium-operator trust: Principal is .*want only Service pods\.eks\.amazonaws\.com$|REJECT an operator role that the account root can assume too (an AWS principal)
+st['Action'] = ['sts:AssumeRole', 'sts:TagSession', 'sts:AssumeRoleWithWebIdentity']|operator role cb-offline-test-cilium-operator trust: Action is .*want \['sts:AssumeRole', 'sts:TagSession'\]$|REJECT an operator role trust with a third STS action
+r['Trust']['Statement'].append(dict(st, Principal={'Service': 'lambda.amazonaws.com'}))|operator role cb-offline-test-cilium-operator trust: the trust policy must have exactly one statement|REJECT an operator role trust with a second statement
+st['Condition'] = {'StringEquals': {'aws:SourceAccount': s['account']}}|operator role cb-offline-test-cilium-operator trust: the statement also has \['Condition'\]$|REJECT an operator role trust that differs from the EKS Pod Identity trust by a condition
+r['Trust'] = {}|operator role cb-offline-test-cilium-operator trust: the trust policy must have exactly one statement|REJECT an operator role with no trust statement
+CASES
+# Each node role: exactly the two AWS managed policies by ARN, no inline policy. A policy of the
+# account with the same name as an AWS managed one is not that policy.
+ngrole() { # ngrole <python list of policy ARNs, a = the account>: one node group whose role has them
+  cp "$WORK/or-made.json" "$FAKE_STATE"
+  world_py "a = s['account']; s['iam']['roles']['cb-ng-role'] = {'Tags': [], 'Attached': $1, 'Inline': {}}
+s['eks']['nodegroups']['cb-offline-test/system'] = {'status': 'ACTIVE', 'nodeRole': f'arn:aws:iam::{a}:role/cb-ng-role'}"
+}
+ngrole '["arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy", "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"]'
+h "$WORK/or-node.log" check-operator-role
+check "ACCEPT a node role with exactly the two AWS managed policies and no inline policy" 0 "$RC" "$WORK/or-node.log" \
+  '^node role cb-ng-role \(system\): AmazonEC2ContainerRegistryPullOnly, AmazonEKSWorkerNodePolicy \(AWS managed\), no inline policy, no Cilium EC2 action$'
+ngrole '[f"arn:aws:iam::{a}:policy/AmazonEKSWorkerNodePolicy", f"arn:aws:iam::{a}:policy/AmazonEC2ContainerRegistryPullOnly"]'
+h "$WORK/or-node-local.log" check-operator-role
+check "REJECT a node role whose two policies have the AWS managed names but are policies of the account" 1 "$RC" "$WORK/or-node-local.log" \
+  '^ERROR: E_OPERATOR_ROLE: node role cb-ng-role \(system\): managed policies \[.arn:aws:iam::[0-9]+:policy/AmazonEC2ContainerRegistryPullOnly., .arn:aws:iam::[0-9]+:policy/AmazonEKSWorkerNodePolicy.\], want exactly'
+ngrole '["arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy", "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"]'
+world_py 's["iam"]["roles"]["cb-ng-role"]["Inline"] = {"extra": {"Version": "2012-10-17"}}'
+h "$WORK/or-node-inline.log" check-operator-role
+check "REJECT a node role with an inline policy" 1 "$RC" "$WORK/or-node-inline.log" '^ERROR: E_OPERATOR_ROLE: node role cb-ng-role \(system\): inline policies \[.extra.\], want none$'
 
 echo "== 5/5 the tag audit and the tag sweep ======================================="
 full
@@ -383,6 +504,8 @@ while IFS=';' read -r sub fail why; do
 done <<'CASES'
 launch-template sandbox;aws|ec2 describe-launch-templates||RequestLimitExceeded;the launch template read
 check-operator-role;aws|eks list-pod-identity-associations||ServerException;the Pod Identity association list
+check-operator-role;aws|iam get-role||ServiceFailure;the operator role read
+render-nodegroup sandbox;aws|eks describe-nodegroup||ServerException;the node group read
 quota;aws|service-quotas get-service-quota||ServiceException;the Service Quotas read
 check-names;aws|iam get-role||ServiceFailure;the IAM role read
 CASES
