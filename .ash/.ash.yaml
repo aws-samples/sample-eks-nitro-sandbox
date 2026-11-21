@@ -2376,7 +2376,7 @@ global_settings:
       path: 'examples/setup/cilium-bottlerocket/scripts/lib/cb_base.py'
       line_start: 93
       line_end: 93
-      reason: 'run() takes an argument list and no shell; its callers pass aws and kubectl with fixed subcommands, the pinned kubeconfig and context, and checked names (cb_base.py:90-96)'
+      reason: 'run() takes an argument list and no shell; its one caller, aws(), passes the aws CLI with fixed subcommands, the Region setting and checked names (cb_base.py:90-96)'
       expiration: '2027-12-31'
     - rule_id: B404
       path: 'examples/setup/cilium-bottlerocket/variant/register-variant.py'

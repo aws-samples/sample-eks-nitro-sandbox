@@ -2,8 +2,8 @@
 parsers of the ENI captures.
 
 Exit codes of every check: 0 accept, 1 reject, 2 could not check. Each refusal prints one
-line on stderr that starts with "ERROR: ". The helpers call the aws and kubectl CLIs by bare
-name through PATH, so the offline tests can put stub commands first on PATH.
+line on stderr that starts with "ERROR: ". The helpers call the aws CLI by bare name through
+PATH, so the offline tests can put a stub command first on PATH.
 """
 
 import ipaddress
@@ -110,21 +110,6 @@ def aws(*args, allow=()):
         raise Unknown(f"aws {' '.join(args[:2])} returned no JSON") from err
 
 
-def kubectl(*args):
-    """kubectl with the pinned kubeconfig and context."""
-    return run(["kubectl", "--kubeconfig", setting("KUBECONFIG"), "--context", setting("KUBE_CONTEXT"), *args])
-
-
-def kube_json(*args):
-    rc, out, err = kubectl(*args, "-o", "json")
-    if rc != 0:
-        raise Unknown(f"kubectl {' '.join(args)} failed: {err.strip()}")
-    try:
-        return json.loads(out)
-    except ValueError as err:
-        raise Unknown(f"kubectl {' '.join(args)} returned no JSON") from err
-
-
 def state_get(key):
     """The last value of a key in the run state file, or '' when absent."""
     path = Path(setting("RUN_STATE_FILE"))
@@ -155,22 +140,6 @@ def read_json(path=None):
         return json.loads(read_input(path))
     except ValueError as err:
         raise Unknown(f"the input {path or '<stdin>'} is not JSON") from err
-
-
-def substitute(text, values):
-    """Fill ${NAME} placeholders, outside comments. Every placeholder must have a value."""
-    def one(match):
-        name = match.group(1)
-        if name not in values:
-            raise Unknown(f"no value for ${{{name}}}")
-        return str(values[name])
-    out = []
-    for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith("#"):
-            out.append(line)
-        else:
-            out.append(re.sub(r"\$\{([A-Z_]+)\}", one, line))
-    return "".join(out)
 
 
 def check_tag(command):

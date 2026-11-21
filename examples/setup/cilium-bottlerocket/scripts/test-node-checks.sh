@@ -243,4 +243,16 @@ kpr-status|cilium-status.txt|t.replace("Network: Native", "Network: Tunnel [vxla
 kpr-status|cilium-config.txt|t.replace(": eni", ": cluster-pool")|1|E_KPR_STATUS|REJECT an agent with cluster-pool IPAM|@D@/cilium-status.txt --config @D@/cilium-config.txt
 kpr-status|cilium-status.txt|"Error: unable to reach the agent\n"|2|E_KPR_STATUS_UNKNOWN|REJECT a status capture with no KubeProxyReplacement line, as could not check|@D@/cilium-status.txt --config @D@/cilium-config.txt
 CASES
+# The networkd and CiliumNode parsers that check-eni-capture uses (networkd_states and
+# ciliumnode_enis of cb_base.py). Each case prints only its ERROR line.
+while IFS='|' read -r file code msg why; do
+  [[ -n "$file" ]] || continue
+  case_nc check-eni-capture "$file" "$code" 2 "E_ENI_CAPTURE_UNKNOWN~could not check: $msg\$" "$why" \
+    "--capture @D@/eni-a.txt --networkd @D@/networkd-a.txt --ciliumnode @D@/ciliumnode-a.json"
+  grep -qv '^ERROR: E_ENI_CAPTURE_UNKNOWN: ' "$WORK/c$n.log"; check "  ... and it prints nothing else" 1 $? "$WORK/c$n.log"
+done <<'CASES'
+networkd-a.txt|t.replace("==links==\n", "")|the capture has no ==links== and ==states== sections|REJECT a networkd capture without its ==links== section, as could not check
+networkd-a.txt|t.replace("2: eth0: <UP>\n6: eth1: <UP>\n", "")|no interface in the ip -o link capture|REJECT a networkd capture whose ==links== section lists no interface, as could not check
+ciliumnode-a.json|t.replace('"enis"', '"noenis"')|the CiliumNode has no status\.eni\.enis|REJECT a CiliumNode with no status.eni.enis, as could not check
+CASES
 finish

@@ -567,4 +567,37 @@ entry "scripts/cilium_bottlerocket.py:check-sandbox-ami"
 python3 "$TESTLIB/fixture_aws_json.py" good "$WORK/aj2"
 h "$WORK/sba-nj.log" check-sandbox-ami --images "$WORK/notjson.json" --uefi "$WORK/aj2/uefi.json" --snapshots "$WORK/aj2/snapshots.json"
 check "REJECT check-sandbox-ami of an images input that is not JSON, as could not check" 2 "$RC" "$WORK/sba-nj.log" '^ERROR: E_SANDBOX_AMI_UNKNOWN: '
+# The CLI and state readers (cb_base.py run, aws and state_get; cb_aws.py describe). Each case
+# puts its own aws stub first on PATH or makes the state file unreadable, then restores it.
+# other_lines <log> <tag>: exit 0 when the log has a line other than the "ERROR: <tag>: " line.
+other_lines() { grep -qv "^ERROR: $2: " "$1"; }
+full; printf '#!/bin/sh\n' > "$WORK/bin/aws"; chmod 0644 "$WORK/bin/aws"
+h "$WORK/cli-noexec.log" derive-max-pods m8i.xlarge
+check "REJECT derive-max-pods when the aws CLI cannot start (not executable), as could not check" 2 "$RC" "$WORK/cli-noexec.log" \
+  '^ERROR: E_DERIVE_MAX_PODS_UNKNOWN: could not check: could not run aws: \[Errno 13\] Permission denied'
+other_lines "$WORK/cli-noexec.log" E_DERIVE_MAX_PODS_UNKNOWN; check "  ... and it prints nothing else" 1 $? "$WORK/cli-noexec.log"
+printf '#!/bin/sh\necho "<html>Service Unavailable</html>"\n' > "$WORK/bin/aws"; chmod 0755 "$WORK/bin/aws"
+h "$WORK/cli-nojson.log" derive-max-pods m8i.xlarge
+check "REJECT derive-max-pods when the aws CLI exits 0 with output that is not JSON, as could not check" 2 "$RC" "$WORK/cli-nojson.log" \
+  '^ERROR: E_DERIVE_MAX_PODS_UNKNOWN: could not check: aws ec2 describe-instance-types returned no JSON$'
+other_lines "$WORK/cli-nojson.log" E_DERIVE_MAX_PODS_UNKNOWN; check "  ... and it prints nothing else" 1 $? "$WORK/cli-nojson.log"
+# A describe answer with none of the keys of its kind. For an image an empty Images list reads
+# as gone; an answer without Images is not that, so it is unknown.
+printf '#!/bin/sh\necho "{\\"Unexpected\\": []}"\n' > "$WORK/bin/aws"; chmod 0755 "$WORK/bin/aws"
+h "$WORK/cli-answer.log" recheck image ami-0fa00000000000001
+check "REJECT recheck of an image whose describe answer has no Images key (not the empty list of a gone image), as could not check" 2 "$RC" "$WORK/cli-answer.log" \
+  '^ERROR: E_RECHECK_UNKNOWN: could not check: image ami-0fa00000000000001: unexpected answer$'
+other_lines "$WORK/cli-answer.log" E_RECHECK_UNKNOWN; check "  ... and it prints nothing else" 1 $? "$WORK/cli-answer.log"
+stub_install aws fake_aws.py
+# Mode 0000 stops a reader only when the suite does not run as root.
+if ((EUID == 0)); then
+  not_run "the unreadable state file case" "the suite runs as root, which can read a file of mode 0000"
+else
+  full; chmod 0000 "$RD/state.env"
+  h "$WORK/state-unreadable.log" render-nodegroup sandbox
+  check "REJECT render-nodegroup when the run state file cannot be read, as could not check" 2 "$RC" "$WORK/state-unreadable.log" \
+    '^ERROR: E_RENDER_NODEGROUP_UNKNOWN: could not check: could not read .*/state\.env: \[Errno 13\] Permission denied'
+  other_lines "$WORK/state-unreadable.log" E_RENDER_NODEGROUP_UNKNOWN; check "  ... and it prints nothing else" 1 $? "$WORK/state-unreadable.log"
+  chmod 0600 "$RD/state.env"
+fi
 finish
