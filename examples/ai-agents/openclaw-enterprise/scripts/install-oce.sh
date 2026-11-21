@@ -9,6 +9,7 @@ readonly OWNER_LABEL="openclaw-enterprise-blueprint"
 readonly VALIDATION_POSTGRES_TOKEN="__OCE_VALIDATION_POSTGRES_IMAGE__"
 readonly VALIDATION_CLUSTER_TAG_KEY="Environment"
 readonly VALIDATION_CLUSTER_TAG_VALUE="validation"
+readonly VALIDATION_POSTGRES_MIN_SERVER_VERSION_NUM=170000
 readonly MODEL_PROVIDER_PROTOCOL="openai-responses"
 readonly MODEL_PROVIDER_BASE_URL="https://agentgateway.openclaw-enterprise-agw.svc.cluster.local/v1"
 readonly DATABASE_CA_SECRET="oce-sample-database-ca"
@@ -48,7 +49,9 @@ usage() {
     '--validation-postgres creates a disposable, single-Pod PostgreSQL database with' \
     'emptyDir storage. The EKS cluster must have the exact tag key Environment with' \
     'value validation (value matching is case-insensitive). Production-tagged clusters' \
-    'are rejected. This mode is only for installation validation, never production.' \
+    'are rejected. The image must run PostgreSQL 17 or later; the README pins the' \
+    'OCE-qualified PostgreSQL 18.6 baseline. This mode is only for installation' \
+    'validation, never production.' \
     '' \
     'External database URL files must use a DNS hostname, sslmode=verify-full, and' \
     "sslrootcert=$DATABASE_CA_PATH. --database-ca-file must contain only trusted PEM" \
@@ -162,6 +165,19 @@ require_validation_cluster_tags() {
   python3 "$INPUT_VALIDATOR" validation-cluster-tags \
     "$tags_json" "$VALIDATION_CLUSTER_TAG_KEY" "$VALIDATION_CLUSTER_TAG_VALUE" ||
     die "EKS cluster is not explicitly tagged for validation."
+}
+
+require_validation_postgres_version() {
+  local target_namespace=$1 version_num
+  version_num=$(
+    "${KUBE[@]}" --namespace "$target_namespace" exec \
+      deployment/oce-validation-only-postgres -- \
+      psql -U oce_validation -d openclaw -Atc 'SHOW server_version_num'
+  ) || die "could not determine validation PostgreSQL server version."
+  [[ "$version_num" =~ ^[0-9]+$ ]] ||
+    die "validation PostgreSQL returned an invalid server version."
+  ((version_num >= VALIDATION_POSTGRES_MIN_SERVER_VERSION_NUM)) ||
+    die "pinned OCE revision requires PostgreSQL 17 or later; validation database reported $version_num."
 }
 
 base64_one_line() {
@@ -577,6 +593,7 @@ data:
     --server-side --field-manager="$OWNER_LABEL" -f "$validation_manifest" >/dev/null
   "${KUBE[@]}" --namespace "$namespace" rollout status \
     deployment/oce-validation-only-postgres --timeout=120s
+  require_validation_postgres_version "$namespace"
   database_pod_ips=$("${KUBE[@]}" --namespace "$namespace" get pods \
     -l 'app.kubernetes.io/name=oce-validation-only-postgres,app.kubernetes.io/instance=validation-only' \
     -o 'jsonpath={.items[*].status.podIP}')

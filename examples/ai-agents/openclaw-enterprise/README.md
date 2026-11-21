@@ -128,7 +128,7 @@ when your threat model requires those stronger boundaries.
 | Adapter, controller, ownership helper, runtime | Digest-qualified outputs from one successful CodeBuild run |
 | Controller runtime base | Allowlisted, digest-pinned distroless Node.js 24 on Debian 13 (`nonroot`); the build verifies Node.js 24.22.1+, UID and GID 1000, and the absence of shell and package-manager tools. |
 | cert-manager | `v1.21.3` |
-| Validation PostgreSQL | `16.16-bookworm`, digest-pinned in Step 6 |
+| Validation PostgreSQL | OCE-qualified `18.6`, digest-pinned in Step 6 |
 | Local Node.js tooling | `22` or later |
 | `yq` | Mike Farah `yq` `v4.54.3` |
 
@@ -691,7 +691,7 @@ administrator-approved process. Verify the existing tag without changing it:
 export OCE_NAMESPACE='openclaw-system'
 export OCE_STATE_DIR="$PRIVATE_STATE_DIR/oce-install"
 export OCE_RECEIPT_DIR="$OCE_STATE_DIR/receipt"
-export OCE_VALIDATION_POSTGRES_IMAGE='public.ecr.aws/docker/library/postgres@sha256:ce3efec6bc404f6b15ebf5d9bed6b45a9d4655aea238d7dacc3467ccb05a1175'
+export OCE_VALIDATION_POSTGRES_IMAGE='public.ecr.aws/docker/library/postgres@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae'
 
 cluster_arn="$(
   aws eks describe-cluster \
@@ -797,8 +797,10 @@ done < <(
   --validation-postgres-image "$OCE_VALIDATION_POSTGRES_IMAGE"
 ```
 
-This optional database is a single validation-only pod with `emptyDir`
-storage. Its data disappears when the pod or system namespace is removed.
+This optional database is a single validation-only PostgreSQL 18.6 pod with
+`emptyDir` storage. Its data disappears when the pod or system namespace is
+removed. The installer rejects PostgreSQL versions earlier than 17 before it
+dispatches the OCE installation.
 
 For an external database, omit the two validation flags and provide protected
 application URL, migration URL, and CA files plus at least one exact database

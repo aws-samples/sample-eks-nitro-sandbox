@@ -18,6 +18,9 @@ POSTGRES = ROOT / "deploy" / "oce-validation-postgres.yaml"
 README = ROOT / "README.md"
 PIN = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
 DIGEST = "a" * 64
+VALIDATION_POSTGRES_DIGEST = (
+    "86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"
+)
 DATABASE_CA_PATH = "/etc/openclaw/database-ca/ca.pem"
 MODEL_PROVIDER_BASE_URL = (
     "https://agentgateway.openclaw-enterprise-agw.svc.cluster.local/v1"
@@ -92,6 +95,8 @@ def test_static_install_contract_is_pinned_and_closed() -> None:
     assert "wrong AWS account" in text
     assert "require_helm_3" in text
     assert "pinned OCE revision requires Helm 3" in text
+    assert "require_validation_postgres_version" in text
+    assert "pinned OCE revision requires PostgreSQL 17 or later" in text
     assert "kube context endpoint does not match EKS cluster" in text
     assert "refusing to adopt existing" in text
     assert 'VALIDATION_CLUSTER_TAG_KEY="Environment"' in text
@@ -416,6 +421,8 @@ case "$*" in
   *"get "*" -o name"*)
     printf 'resource/owned\\n' ;;
   *"jsonpath={.metadata.labels.app"*) printf 'openclaw-enterprise-blueprint' ;;
+  *" exec deployment/oce-validation-only-postgres "*"SHOW server_version_num"*)
+    printf '%s\n' "${TEST_POSTGRES_VERSION:-180006}" ;;
   *"jsonpath={.items[*].status.podIP}"*) printf '10.2.3.4' ;;
   *" apply "*) : ;;
   *" rollout status "*) : ;;
@@ -453,6 +460,22 @@ def test_helm_4_fails_before_aws_or_cluster_access(tmp_path: Path) -> None:
     calls = (tmp_path / "calls.log").read_text()
     assert calls.splitlines() == ["helm version --short"]
     assert not (tmp_path / "state").exists()
+
+
+def test_old_validation_postgres_fails_before_oce_install(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_POSTGRES_VERSION"] = "160016"
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert (
+        "pinned OCE revision requires PostgreSQL 17 or later; "
+        "validation database reported 160016"
+    ) in result.stderr
+    calls = (tmp_path / "calls.log").read_text()
+    assert "SHOW server_version_num" in calls
+    assert "occ installation install" not in calls
+    assert not (tmp_path / "state" / "receipt").exists()
 
 
 def test_wrong_aws_account_fails_closed(tmp_path: Path) -> None:
@@ -689,6 +712,11 @@ def test_readme_derives_network_inputs_and_pins_validation_postgres() -> None:
         r"OCE_VALIDATION_POSTGRES_IMAGE='[^']+@sha256:[0-9a-f]{64}'",
         install_step,
     )
+    assert (
+        "OCE_VALIDATION_POSTGRES_IMAGE="
+        f"'public.ecr.aws/docker/library/postgres@sha256:{VALIDATION_POSTGRES_DIGEST}'"
+    ) in install_step
+    assert "| Validation PostgreSQL | OCE-qualified `18.6`" in readme
     assert "sample_pod_ip=" in install_step
     assert "ipaddress.ip_network" in install_step
     assert "cluster.resourcesVpcConfig.clusterSecurityGroupId" in install_step
