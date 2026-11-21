@@ -192,6 +192,73 @@ def cmd_check_networkd(args):
     print("systemd-networkd: " + ", ".join(f"{n} unmanaged" for n in sorted(secondary.values())))
 
 
+def eni_state(text):
+    """One host capture: '==link==' `ip -o link`, '==addr==' `ip -o addr`, '==route=='
+    `ip route show table all`, '==rule==' `ip rule`. Returns {name: (mac, addrs, routes, tables)}
+    for eth1 and later, and the rule lines."""
+    parts = dict(re.findall(r"^==(link|addr|route|rule)==\n(.*?)(?=^==|\Z)", text, re.M | re.S))
+    if set(parts) != {"link", "addr", "route", "rule"}:
+        raise Unknown("the capture has no ==link==, ==addr==, ==route== and ==rule== sections")
+    links = {}
+    for line in parts["link"].splitlines():
+        m = re.match(r"^[0-9]+: (eth[1-9][0-9]*)[:@].*link/ether ([0-9a-f:]{17})", line.strip())
+        if m:
+            links[m.group(1)] = m.group(2)
+    state = {}
+    for name, mac in links.items():
+        addrs = sorted(line.split()[3] for line in parts["addr"].splitlines()
+                       if len(line.split()) > 3 and line.split()[1] == name and line.split()[2] == "inet")
+        routes = sorted(re.sub(r" expires \S+", "", line.strip()) for line in parts["route"].splitlines()
+                        if re.search(rf"\bdev {name}\b", line))
+        tables = sorted({m.group(1) for line in routes for m in [re.search(r"\btable (\S+)", line)] if m})
+        state[name] = (mac, addrs, routes, tables)
+    rules = sorted(line.strip() for line in parts["rule"].splitlines() if line.strip())
+    return state, rules
+
+
+def cmd_check_eni_stable(args):
+    """For each eth1 and later interface: the same MAC, IPv4 addresses, routes (all tables) and
+    the ip rules that point to its route tables, before and after the event; each IPv4 address
+    is an address of the CiliumNode ENI record with that MAC."""
+    before, rules_before = eni_state(read_input(args.before))
+    after, rules_after = eni_state(read_input(args.after))
+    if not after:
+        raise Unknown("no eth1 or later interface in the capture after the event")
+    try:
+        enis = read_json(args.ciliumnode)["status"]["eni"]["enis"]
+    except (KeyError, TypeError) as err:
+        raise Unknown("the CiliumNode has no status.eni.enis") from err
+    by_mac = {e.get("mac", "").lower(): e for e in enis.values()}
+    wrong = []
+    for name in sorted(set(before) | set(after)):
+        if name not in before or name not in after:
+            wrong.append(f"{name} is in only one capture")
+            continue
+        (mac_b, addr_b, route_b, tab_b), (mac_a, addr_a, route_a, tab_a) = before[name], after[name]
+        if mac_b != mac_a:
+            wrong.append(f"{name} MAC changed {mac_b} -> {mac_a}")
+        if addr_b != addr_a:
+            wrong.append(f"{name} addresses changed {addr_b} -> {addr_a}")
+        if route_b != route_a:
+            wrong.append(f"{name} routes changed: {sorted(set(route_b) ^ set(route_a))[:3]}")
+        tables = set(tab_b) | set(tab_a)
+        rb = [r for r in rules_before if any(re.search(rf"\blookup {re.escape(t)}\b", r) for t in tables)]
+        ra = [r for r in rules_after if any(re.search(rf"\blookup {re.escape(t)}\b", r) for t in tables)]
+        if rb != ra:
+            wrong.append(f"{name} rules for tables {sorted(tables)} changed: {sorted(set(rb) ^ set(ra))[:3]}")
+        eni = by_mac.get(mac_a)
+        if eni is None:
+            wrong.append(f"{name} ({mac_a}) is not an ENI of the CiliumNode")
+            continue
+        known = set(eni.get("addresses", [])) | {eni.get("ip")}
+        stray = [a for a in addr_a if a.split("/")[0] not in known]
+        if stray:
+            wrong.append(f"{name} has addresses {stray} that are not in the ENI record {eni.get('id')}")
+    require(not wrong, "; ".join(wrong))
+    print("Cilium ENIs unchanged by networkd: " + ", ".join(
+        f"{n} ({len(after[n][1])} addresses, {len(after[n][2])} routes, tables {','.join(after[n][3]) or '-'})" for n in sorted(after)))
+
+
 def cmd_check_dm_verity(args):
     """Capture: '==dm==' the name of /sys/block/dm-0, '==dev==' its major:minor, '==cmdline=='
     /proc/cmdline, '==mount==' the mountinfo line of /. The root is the read-only dm-verity

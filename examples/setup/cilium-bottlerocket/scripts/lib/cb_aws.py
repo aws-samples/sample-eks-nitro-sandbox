@@ -125,10 +125,14 @@ def cmd_check_sandbox_ami(args):
         wrong.append(f"snapshots {snaps} differ from the state file {recorded!r}")
     sdoc = read_json(args.snapshots) if args.snapshots else (
         aws("ec2", "describe-snapshots", "--owner-ids", "self", "--snapshot-ids", *snaps) if snaps else {"Snapshots": []})
+    slots = str(int_setting("SANDBOX_SLOTS", 1, 250))
     for snap in sdoc.get("Snapshots", []):
         stags = tag_map(snap.get("Tags", [])) or {}
         if stags.get(OWNER_TAG[0]) != OWNER_TAG[1] or (not args.reuse and stags.get("RunId") != run_id()):
             wrong.append(f"snapshot {snap.get('SnapshotId')} lacks the sample tags")
+        # On both paths, also with --reuse: each snapshot carries the density of the AMI.
+        if stags.get("SandboxSlots") != slots:
+            wrong.append(f"snapshot {snap.get('SnapshotId')} has SandboxSlots={stags.get('SandboxSlots')!r}, config SANDBOX_SLOTS={slots}")
     if len(sdoc.get("Snapshots", [])) != 2:
         wrong.append(f"{len(sdoc.get('Snapshots', []))} snapshots found, want 2")
     require(not wrong, f"sandbox AMI {ami}: " + "; ".join(wrong))

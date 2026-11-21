@@ -233,10 +233,12 @@ if should_run ami; then
     python3 "$PY" check-sandbox-ami --reuse --ami "$REUSE_SANDBOX_AMI_ID"
     state_set SANDBOX_AMI_ID "$REUSE_SANDBOX_AMI_ID"
     state_set AMI_REUSED yes
+    # The reused AMI keeps the RunId of the run that built it, so clean.sh of this run keeps it.
+    echo "Run $RUN_ID uses AMI $REUSE_SANDBOX_AMI_ID from an earlier run."
   else
     export BUILD_INSTANCE_TYPE BUILD_WORK_VOLUME_GIB AMI_WAIT_SECONDS SANDBOX_SLOTS
     rc=0; "$CB_BUILD_AMI_CMD" build || rc=$?
-    ((rc == 0)) || die E_AMI_BUILD "the AMI build did not finish (exit $rc); run ./clean.sh --dry-run, then ./clean.sh"
+    ((rc == 0)) || die E_AMI_BUILD "the AMI build did not finish (exit $rc); to build again in this run, run RUN_ID=$RUN_ID ./setup.sh (it builds only when each builder part is gone); to delete the run, run ./clean.sh --dry-run, then ./clean.sh"
     [[ "$(state_get AMI_BUILD_RESULT)" == ok ]] || die E_AMI_BUILD "the AMI build exited 0 without AMI_BUILD_RESULT=ok"
   fi
   [[ "$(state_get AMI_REUSED)" == yes ]] || {

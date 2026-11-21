@@ -406,6 +406,14 @@ probe_capture() {
     >"$d/dm-verity.txt" 2>"$d/dm-verity.err" || : >"$d/dm-verity.txt"
 }
 
+# probe_eni_capture <probe> <file>: the links, addresses, routes (all tables) and rules of the
+# host network namespace, in the sections that check-eni-stable reads. A failed read leaves an
+# empty file, which the check reads as "could not check" (exit 2).
+probe_eni_capture() {
+  probe_exec "$1" nsenter -t 1 -n sh -c 'echo "==link=="; ip -o link || exit 1; echo "==addr=="; ip -o addr || exit 1; echo "==route=="; ip route show table all || exit 1; echo "==rule=="; ip rule || exit 1' \
+    >"$2" 2>"$2.err" || : >"$2"
+}
+
 # ---- Tallies ----
 DEMO_PASS=0
 DEMO_FAIL=0

@@ -72,6 +72,8 @@ def parser():
     add("selinux-audit", cb_checks.cmd_selinux_audit, (["avc_file"], {}), (["journal_file"], {}))
     add("check-selinux-domains", cb_checks.cmd_check_selinux_domains, opt_file)
     add("check-networkd", cb_checks.cmd_check_networkd, opt_file)
+    add("check-eni-stable", cb_checks.cmd_check_eni_stable, (["--before"], {"required": True}),
+        (["--after"], {"required": True}), (["--ciliumnode"], {"required": True}))
     add("check-dm-verity", cb_checks.cmd_check_dm_verity, opt_file)
     add("check-network-isolated", cb_checks.cmd_check_network_isolated, opt_file)
     add("pod-in-eni", cb_checks.cmd_pod_in_eni, (["pod_ip"], {}), opt_file)
