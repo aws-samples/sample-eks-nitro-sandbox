@@ -6,9 +6,9 @@ import base64
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
-import signal
 import sys
 import textwrap
 from pathlib import Path
@@ -353,6 +353,7 @@ def _write_executable(path: Path, source: str) -> None:
 def _run(
     tmp_path: Path,
     *,
+    script: Path = SCRIPT,
     state_dir: Path | None = None,
     rotate: bool = False,
     state_updates: dict[str, Any] | None = None,
@@ -395,7 +396,7 @@ def _run(
     })
     command = [
         "bash",
-        str(SCRIPT),
+        str(script),
         "--kubeconfig",
         str(kubeconfig),
         "--kube-context",
@@ -412,6 +413,32 @@ def _run(
     )
     calls = [json.loads(line) for line in log_path.read_text().splitlines()]
     return result, json.loads(state_path.read_text()), calls, state_dir
+
+
+def test_refuses_unexpected_manifest_variable_before_mutation(
+    tmp_path: Path,
+) -> None:
+    sample = tmp_path / "checkout" / "examples" / "ai-agents" / "openclaw-enterprise"
+    shutil.copytree(SAMPLE, sample)
+    manifest = sample / "deploy" / "agentgateway.yaml"
+    source = manifest.read_text()
+    manifest.write_text(
+        source.replace(
+            "    config:\n",
+            "    unexpected: ${UNEXPECTED_VALUE}\n    config:\n",
+            1,
+        )
+    )
+
+    result, state, calls, _ = _run(
+        tmp_path,
+        script=sample / "scripts" / "setup-agentgateway.sh",
+    )
+
+    assert result.returncode != 0
+    assert "rendered manifest contains an unexpected variable" in result.stderr
+    assert state["objects"] == {}
+    assert _mutations(calls) == []
 
 
 def _mutations(calls: list[list[str]]) -> list[list[str]]:

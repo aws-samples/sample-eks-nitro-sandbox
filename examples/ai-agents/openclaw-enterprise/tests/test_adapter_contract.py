@@ -103,7 +103,7 @@ def test_controller_chain_and_ephemeral_updates_are_validated_fail_closed() -> N
         "validate-controller-chain.openclaw-enterprise.sandbox.eks.amazonaws.com"
     ]
     pod_webhook = webhooks[
-        "deny-ephemeral-containers.openclaw-enterprise.sandbox.eks.amazonaws.com"
+        "validate-pods.openclaw-enterprise.sandbox.eks.amazonaws.com"
     ]
     configmap_webhook = webhooks[
         "protect-revision-configmaps.openclaw-enterprise.sandbox.eks.amazonaws.com"
@@ -132,7 +132,7 @@ def test_controller_chain_and_ephemeral_updates_are_validated_fail_closed() -> N
         {
             "apiGroups": [""],
             "apiVersions": ["v1"],
-            "operations": ["CREATE"],
+            "operations": ["CREATE", "UPDATE"],
             "resources": ["pods"],
             "scope": "Namespaced",
         },

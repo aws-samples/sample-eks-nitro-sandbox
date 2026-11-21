@@ -10,6 +10,7 @@ import subprocess
 import textwrap
 import time
 
+import pytest
 import yaml
 
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
@@ -72,10 +73,46 @@ def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
               printf '%s\\n' "${FAKE_ACCOUNT_ID:-123456789012}"
               exit 0
             fi
+            if [[ "$1 $2" == "inspector2 batch-get-account-status" ]]; then
+              printf '%s\\n' \
+                '{"accounts":[{"accountId":"123456789012","state":{"status":"ENABLED"},"resourceState":{"ecr":{"status":"ENABLED"}}}],"failedAccounts":[]}'
+              exit 0
+            fi
+            if [[ "$1 $2" == "ecr get-registry-scanning-configuration" ]]; then
+              printf '%s\\n' \
+                '{"registryId":"123456789012","scanningConfiguration":{"scanType":"ENHANCED","rules":[{"scanFrequency":"SCAN_ON_PUSH","repositoryFilters":[{"filterType":"WILDCARD","filter":"openclaw-enterprise/*"}]}]}}'
+              exit 0
+            fi
+            if [[ "$1 $2" == "inspector2 list-coverage" ]]; then
+              resource_id="arn:aws:ecr:us-west-2:123456789012:repository/openclaw-enterprise/codebuild-builder/sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
+              printf \
+                '{"coveredResources":[{"resourceType":"AWS_ECR_CONTAINER_IMAGE","resourceId":"%s","accountId":"123456789012","scanType":"PACKAGE","resourceMetadata":{"ecrRepository":{"name":"openclaw-enterprise/codebuild-builder"}},"scanStatus":{"statusCode":"ACTIVE","reason":"SUCCESSFUL"},"lastScannedAt":"2026-01-01T00:00:00Z"}]}\\n' \
+                "$resource_id"
+              exit 0
+            fi
+            if [[ "$1 $2" == "inspector2 list-findings" ]]; then
+              if [[ "${FAKE_BUILDER_HIGH_FINDING:-0}" == 1 ]]; then
+                resource_id="arn:aws:ecr:us-west-2:123456789012:repository/openclaw-enterprise/codebuild-builder/sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
+                printf \
+                  '{"findings":[{"awsAccountId":"123456789012","status":"ACTIVE","severity":"HIGH","findingArn":"arn:aws:inspector2:us-west-2:123456789012:finding/example","resources":[{"type":"AWS_ECR_CONTAINER_IMAGE","id":"%s","details":{"awsEcrContainerImage":{"repositoryName":"openclaw-enterprise/codebuild-builder","imageHash":"%s","registry":"123456789012"}}}]}]}\\n' \
+                  "$resource_id" \
+                  "sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
+              else
+                printf '%s\\n' '{"findings":[]}'
+              fi
+              exit 0
+            fi
             if [[ "$1 $2" == "cloudformation deploy" ]]; then
               if [[ -n "${FAKE_DEPLOY_DELAY:-}" ]]; then
                 sleep "$FAKE_DEPLOY_DELAY"
               fi
+              target_platform=linux/amd64
+              for argument in "$@"; do
+                case "$argument" in
+                  TargetPlatform=*) target_platform=${argument#TargetPlatform=} ;;
+                esac
+              done
+              printf '%s\\n' "$target_platform" >"${FAKE_AWS_STATE}.platform"
               : >"$FAKE_AWS_STATE"
               exit 0
             fi
@@ -104,9 +141,13 @@ def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
                     '[{"OutputKey":"ValidationRunId","OutputValue":"%s"}]' \
                     "$run_id"
                 fi
+                target_platform=linux/amd64
+                if [[ -f "${FAKE_AWS_STATE}.platform" ]]; then
+                  target_platform=$(<"${FAKE_AWS_STATE}.platform")
+                fi
                 printf \
-                  '{"Stacks":[{"StackName":"%s","StackId":"%s","Tags":[{"Key":"ManagedBy","Value":"%s"},{"Key":"OpenClawValidationRun","Value":"%s"}],"Parameters":[{"ParameterKey":"ValidationRunId","ParameterValue":"%s"}],"Outputs":%s}]}\\n' \
-                  "$stack_name" "$stack_id" "$managed_by" "$run_id" "$run_id" \
+                  '{"Stacks":[{"StackName":"%s","StackId":"%s","Tags":[{"Key":"ManagedBy","Value":"%s"},{"Key":"OpenClawValidationRun","Value":"%s"}],"Parameters":[{"ParameterKey":"ValidationRunId","ParameterValue":"%s"},{"ParameterKey":"TargetPlatform","ParameterValue":"%s"}],"Outputs":%s}]}\\n' \
+                  "$stack_name" "$stack_id" "$managed_by" "$run_id" "$run_id" "$target_platform" \
                   "$outputs_json"
                 exit 0
               fi
@@ -159,7 +200,9 @@ def _environment(
     return environment
 
 
-def _create_command(receipt: pathlib.Path) -> list[str]:
+def _create_command(
+    receipt: pathlib.Path, target_platform: str = "linux/amd64"
+) -> list[str]:
     return [
         "bash",
         str(SCRIPT),
@@ -174,6 +217,8 @@ def _create_command(receipt: pathlib.Path) -> list[str]:
         "openclaw-enterprise/codebuild-builder",
         "--builder-digest",
         BUILDER_DIGEST,
+        "--target-platform",
+        target_platform,
         "--trusted-build-invoker-arn",
         "arn:aws:iam::123456789012:role/validation",
     ]
@@ -202,7 +247,7 @@ def _write_receipt(receipt: pathlib.Path, status: str, stack_id: str | None) -> 
 
 
 def _wait_for_receipt_status(receipt: pathlib.Path, expected_status: str) -> None:
-    for _ in range(100):
+    for _ in range(500):
         try:
             if (
                 json.loads(receipt.read_text(encoding="utf-8"))["status"]
@@ -216,7 +261,7 @@ def _wait_for_receipt_status(receipt: pathlib.Path, expected_status: str) -> Non
 
 
 def _wait_for_log_text(log_file: pathlib.Path, expected_text: str) -> None:
-    for _ in range(100):
+    for _ in range(500):
         try:
             if expected_text in log_file.read_text(encoding="utf-8"):
                 return
@@ -277,10 +322,12 @@ def test_create_and_delete_use_the_same_verified_stack_arn(
     )
     assert created.returncode == 0, created.stderr
     payload = json.loads(receipt.read_text(encoding="utf-8"))
+    assert payload["version"] == 2
     assert payload["status"] == "created"
     assert payload["runId"] == "a" * 24
     assert payload["stackName"] == f"openclaw-enterprise-images-{'a' * 24}"
     assert payload["repositoryPrefix"] == f"openclaw-enterprise/{'a' * 24}"
+    assert payload["targetPlatform"] == "linux/amd64"
     assert payload["stackId"].startswith("arn:aws:cloudformation:us-west-2:")
     assert receipt.stat().st_mode & 0o777 == 0o600
 
@@ -299,6 +346,54 @@ def test_create_and_delete_use_the_same_verified_stack_arn(
         f"wait stack-delete-complete --region us-west-2 --stack-name {payload['stackId']}"
         in calls
     )
+
+
+@pytest.mark.parametrize("target_platform", ["linux/amd64", "linux/arm64"])
+def test_create_passes_and_records_target_platform(
+    tmp_path: pathlib.Path, target_platform: str
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+
+    result = subprocess.run(
+        _create_command(receipt, target_platform),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    assert payload["targetPlatform"] == target_platform
+    assert f"TargetPlatform={target_platform}" in aws_log.read_text(encoding="utf-8")
+
+
+def test_create_fails_closed_when_builder_has_a_high_finding(
+    tmp_path: pathlib.Path,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    environment["FAKE_BUILDER_HIGH_FINDING"] = "1"
+
+    result = subprocess.run(
+        _create_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "Inspector rejected the privileged builder image" in result.stderr
+    assert "cloudformation deploy" not in aws_log.read_text(encoding="utf-8")
+    assert not receipt.exists()
 
 
 def test_create_refuses_to_adopt_an_existing_stack(tmp_path: pathlib.Path) -> None:

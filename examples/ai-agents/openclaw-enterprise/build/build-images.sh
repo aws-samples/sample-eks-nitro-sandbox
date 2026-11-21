@@ -29,6 +29,22 @@ require_digest() {
     die "$name must be sha256 followed by exactly 64 lowercase hex characters"
 }
 
+read_oce_dockerfile_arg() {
+  local name="$1"
+  local dockerfile="$2"
+  node - "$name" "$dockerfile" <<'NODE'
+const fs = require("node:fs");
+const [name, dockerfile] = process.argv.slice(2);
+const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const pattern = new RegExp(`^ARG[ \t]+${escaped}=([^ \t\r\n]+)$`, "gm");
+const matches = [...fs.readFileSync(dockerfile, "utf8").matchAll(pattern)];
+if (matches.length !== 1 || !/@sha256:[0-9a-f]{64}$/.test(matches[0][1])) {
+  process.exit(1);
+}
+process.stdout.write(matches[0][1]);
+NODE
+}
+
 readonly OCE_REPOSITORY_URL="https://github.com/openclaw/openclaw-enterprise.git"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="gcr.io/distroless/nodejs24-debian13"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="nonroot"
@@ -106,6 +122,32 @@ python3 -I \
   "$OCE_SOURCE_DIR/pnpm-lock.yaml" \
   "$OCE_MSAL_NODE_VERSION"
 
+# Consume the exact bases reviewed with the pinned OCE commit. The runtime
+# Dockerfile currently requires Bookworm, so substituting a newer Debian base
+# without an upstream change would fail the build. Inspector gates the final
+# pushed images below.
+OCE_RUNTIME_DOCKERFILE="$OCE_SOURCE_DIR/deploy/runtime/Dockerfile"
+OCE_NODE_BUILD_BASE_IMAGE="$(
+  read_oce_dockerfile_arg NODE_BASE_IMAGE "$OCE_RUNTIME_DOCKERFILE"
+)" || die "could not resolve OCE's digest-pinned NODE_BASE_IMAGE"
+OCE_NODE_RUNTIME_BASE_IMAGE="$(
+  read_oce_dockerfile_arg NODE_RUNTIME_BASE_IMAGE "$OCE_RUNTIME_DOCKERFILE"
+)" || die "could not resolve OCE's digest-pinned NODE_RUNTIME_BASE_IMAGE"
+readonly OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
+node - "$OCE_NODE_BUILD_BASE_IMAGE" "$OCE_NODE_RUNTIME_BASE_IMAGE" <<'NODE' ||
+  die "OCE Node bases must be matching digest-pinned Bookworm build/runtime images"
+const [build, runtime] = process.argv.slice(2);
+const buildMatch = build.match(
+  /^docker\.io\/library\/node:([0-9]+\.[0-9]+\.[0-9]+)-bookworm@sha256:[0-9a-f]{64}$/
+);
+const runtimeMatch = runtime.match(
+  /^docker\.io\/library\/node:([0-9]+\.[0-9]+\.[0-9]+)-bookworm-slim@sha256:[0-9a-f]{64}$/
+);
+if (!buildMatch || !runtimeMatch || buildMatch[1] !== runtimeMatch[1]) {
+  process.exit(1);
+}
+NODE
+
 REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
 aws ecr get-login-password --region "$AWS_DEFAULT_REGION" |
   docker login --username AWS --password-stdin "$REGISTRY"
@@ -124,6 +166,7 @@ OWNERSHIP_HELPER_BUILDER_IMAGE="public.ecr.aws/docker/library/golang:1.26.9-alpi
 docker buildx build \
   --pull \
   --push \
+  --provenance=false \
   --platform "${TARGET_PLATFORM:-linux/amd64}" \
   --metadata-file "$metadata_dir/adapter.json" \
   --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
@@ -133,6 +176,7 @@ docker buildx build \
 docker buildx build \
   --pull \
   --push \
+  --provenance=false \
   --platform "${TARGET_PLATFORM:-linux/amd64}" \
   --metadata-file "$metadata_dir/ownership-helper.json" \
   --build-arg "OWNERSHIP_HELPER_BUILDER_IMAGE=$OWNERSHIP_HELPER_BUILDER_IMAGE" \
@@ -140,29 +184,20 @@ docker buildx build \
   --tag "$ownership_helper_tagged" \
   "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/ownership-helper"
 
-node_base_image="$(
-  node -e '
-    const fs = require("node:fs");
-    const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    const value = data?.prepare?.defaultEnv?.NODE_BASE_IMAGE;
-    if (typeof value !== "string" || !/@sha256:[0-9a-f]{64}$/.test(value)) {
-      process.exit(1);
-    }
-    process.stdout.write(value);
-  ' "$OCE_SOURCE_DIR/scripts/ci/test-suites/images-packaging.json"
-)" || die "could not resolve OCE's pinned NODE_BASE_IMAGE"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY}:${CONTROLLER_RUNTIME_BASE_IMAGE_TAG}@${CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST}"
 
 docker buildx build \
   --pull \
   --push \
+  --provenance=false \
   --platform "${TARGET_PLATFORM:-linux/amd64}" \
   --target runtime \
   --metadata-file "$metadata_dir/controller.json" \
-  --build-arg "NODE_BUILD_BASE_IMAGE=$node_base_image" \
+  --build-arg "NODE_BUILD_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE" \
   --build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE" \
   --build-arg "OCC_BUILD_REVISION=$OCE_SOURCE_REVISION" \
-  --label "org.opencontainers.image.revision=$OCE_SOURCE_REVISION" \
+  --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
+  --label "org.openclaw.enterprise.source-revision=$OCE_SOURCE_REVISION" \
   --file "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile" \
   --tag "$controller_tagged" \
   "$OCE_SOURCE_DIR"
@@ -183,13 +218,16 @@ done
 docker buildx build \
   --pull \
   --push \
+  --provenance=false \
   --platform "${TARGET_PLATFORM:-linux/amd64}" \
   --metadata-file "$metadata_dir/runtime.json" \
   "${runtime_build_args[@]}" \
-  --build-arg "NODE_BASE_IMAGE=$node_base_image" \
+  --build-arg "NODE_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE" \
+  --build-arg "NODE_RUNTIME_BASE_IMAGE=$OCE_NODE_RUNTIME_BASE_IMAGE" \
   --build-arg "OCC_BUILD_REVISION=$OCE_SOURCE_REVISION" \
-  --label "org.opencontainers.image.revision=$OCE_SOURCE_REVISION" \
-  --file "$OCE_SOURCE_DIR/deploy/runtime/Dockerfile" \
+  --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
+  --label "org.openclaw.enterprise.source-revision=$OCE_SOURCE_REVISION" \
+  --file "$OCE_RUNTIME_DOCKERFILE" \
   --tag "$runtime_tagged" \
   "$OCE_SOURCE_DIR"
 
@@ -331,6 +369,7 @@ RUNTIME_IMAGE="${REGISTRY}/${RUNTIME_REPOSITORY}@${runtime_digest}"
 export ADAPTER_IMAGE CONTROLLER_IMAGE OWNERSHIP_INIT_IMAGE RUNTIME_IMAGE
 export OWNERSHIP_HELPER_BUILDER_IMAGE
 export SAMPLE_SOURCE_REVISION OCE_SOURCE_REVISION
+export OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
 
 {
   printf 'export ADAPTER_IMAGE=%q\n' "$ADAPTER_IMAGE"
@@ -353,7 +392,8 @@ result = {
     },
     "controller": {
         "image": os.environ["CONTROLLER_IMAGE"],
-        "sourceRevision": os.environ["OCE_SOURCE_REVISION"],
+        "oceSourceRevision": os.environ["OCE_SOURCE_REVISION"],
+        "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
     },
     "ownershipHelper": {
         "builderImage": os.environ["OWNERSHIP_HELPER_BUILDER_IMAGE"],
@@ -361,8 +401,11 @@ result = {
         "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
     },
     "runtime": {
+        "baseImage": os.environ["OCE_NODE_RUNTIME_BASE_IMAGE"],
+        "buildBaseImage": os.environ["OCE_NODE_BUILD_BASE_IMAGE"],
         "image": os.environ["RUNTIME_IMAGE"],
-        "sourceRevision": os.environ["OCE_SOURCE_REVISION"],
+        "oceSourceRevision": os.environ["OCE_SOURCE_REVISION"],
+        "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
     },
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:

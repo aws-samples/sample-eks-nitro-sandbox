@@ -35,7 +35,9 @@ Editable diagrams:
 ## Prerequisites
 
 - An EKS Auto Mode cluster with the `isolated-sandbox` RuntimeClass, created by
-  the shared setup.
+  the shared setup. Before using the disposable database path, the cluster must
+  already carry the tag `Environment=validation`; you need
+  `eks:ListTagsForResource` to verify it.
 - Access to Amazon Bedrock model `amazon.nova-lite-v1:0` in `us-west-2`.
 - Private OCE authentication and Agent DNS names that resolve from the cluster.
 - [cert-manager](https://cert-manager.io/docs/installation/) `v1.21.3`
@@ -53,12 +55,31 @@ Editable diagrams:
   [Mike Farah `yq`](https://github.com/mikefarah/yq) `v4.54.3`.
   This sample was tested with Helm `v3.22.1`. The pinned OCE revision predates
   [upstream Helm 4 support](https://github.com/openclaw/openclaw-enterprise/pull/6691).
-- Kubernetes permission to get, create, and delete
-  `admissionregistration.k8s.io/v1` admission policies and bindings; create
-  server-side dry-run ConfigMaps in each cleanup namespace; create a
-  StorageClass; and create `pods/portforward` requests.
-- AWS permission to manage the blueprint IAM role and EKS Pod Identity
-  association.
+- Kubernetes permissions for each phase:
+  - setup and install: read cluster discovery data; install the documented
+    cluster-scoped admission, storage, and RBAC resources; and manage the
+    blueprint namespaces and their workloads
+  - validation: manage the two retained validation tenants and create
+    `pods/portforward` requests
+  - cleanup: delete only receipt-matched blueprint resources, create
+    server-side dry-run ConfigMaps, and temporarily manage the documented
+    admission policies and bindings
+- AWS permissions for each phase:
+  - image build: inspect the regional Amazon Inspector and ECR scanning
+    configuration; manage the receipt-bound builder repository and
+    CloudFormation stack; read its outputs; assume the generated invocation
+    role; and read the resulting Step Functions and CodeBuild execution
+  - install and validation: call `sts:GetCallerIdentity`; read the EKS cluster,
+    tags, VPC, and network interfaces; and manage the receipt-bound IAM role,
+    inline Bedrock policy, and EKS Pod Identity association
+  - cleanup: delete only the receipt-matched stack, repositories, IAM role,
+    inline policy, and Pod Identity association
+
+The image-build stack creates its own CodeBuild, Step Functions, ECR, KMS,
+CloudWatch Logs, and IAM resources through CloudFormation. It relies on Amazon
+Inspector enhanced ECR scanning already being enabled for the account and
+Region. The generated invocation role, not the operator's base identity, starts
+and reads the build workflow.
 
 This terminal-managed topology disables OCE gateway routing and native browser
 routing. It does not require Gateway API, Envoy Gateway, or their CRDs, and the
@@ -127,6 +148,7 @@ when your threat model requires those stronger boundaries.
 | AgentGateway | `v1.7.0`, digest-pinned in `deploy/agentgateway.yaml` |
 | Amazon Bedrock model | `amazon.nova-lite-v1:0` in `us-west-2` |
 | Adapter, controller, ownership helper, runtime | Digest-qualified outputs from one successful CodeBuild run |
+| OCE Node.js build and runtime bases | Node.js `24.22.1` on Debian 13 (Trixie), each pinned by multi-platform image digest; the build records both references in `image-digests.json` |
 | Controller runtime base | Allowlisted, digest-pinned distroless Node.js 24 on Debian 13 (`nonroot`); the build verifies Node.js 24.22.1+, UID and GID 1000, and the absence of shell and package-manager tools. |
 | cert-manager | `v1.21.3` |
 | Validation PostgreSQL | OCE-qualified `18.6`, digest-pinned in Step 6 |
@@ -167,6 +189,7 @@ export BUILDER_REPOSITORY_RECEIPT="$PRIVATE_STATE_DIR/builder-repository.json"
 export IMAGE_BUILD_STACK_RECEIPT="$PRIVATE_STATE_DIR/image-build-stack.json"
 export STORAGE_CLASS_RECEIPT="$PRIVATE_STATE_DIR/storage-class-receipt.json"
 export AGENTGATEWAY_POD_IDENTITY_RECEIPT="$PRIVATE_STATE_DIR/agentgateway-pod-identity-receipt.json"
+export AGENTGATEWAY_IAM_ROLE_NAME='openclaw-enterprise-agentgateway'
 export AGENTGATEWAY_STATE_DIR="$PRIVATE_STATE_DIR/agentgateway"
 export AGENTGATEWAY_RECEIPT="$AGENTGATEWAY_STATE_DIR/lifecycle-receipt.json"
 export OCE_SOURCE_REVISION='86c8c12310f691bb21651118ffffd6bfd460e9ff'
@@ -557,7 +580,7 @@ only with the `openclaw-enterprise-agw/agentgateway` ServiceAccount:
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "InvokeNovaLiteFoundationModelUsWest2",
+      "Sid": "InvokeCentralBedrockModel",
       "Effect": "Allow",
       "Action": [
         "bedrock:InvokeModel",
@@ -574,9 +597,10 @@ only with the `openclaw-enterprise-agw/agentgateway` ServiceAccount:
 }
 ```
 
-Create or verify the AgentGateway namespace, ServiceAccount, IAM role, policy,
-and Pod Identity association. The script owns the namespace and ServiceAccount
-creation and reuses them when their complete contract already matches:
+Create or verify the AgentGateway namespace, ServiceAccount, immutable Region
+ConfigMap, IAM role, policy, and Pod Identity association. The script records
+which resources it created and reuses an existing resource only when its
+complete contract already matches:
 
 ```bash
 "$SAMPLE_DIR/scripts/setup-agentgateway-pod-identity.sh" \
@@ -584,6 +608,7 @@ creation and reuses them when their complete contract already matches:
   --aws-account-id "$AWS_ACCOUNT_ID" \
   --eks-cluster-name "$EKS_CLUSTER_NAME" \
   --kube-context "$KUBE_CONTEXT" \
+  --iam-role-name "$AGENTGATEWAY_IAM_ROLE_NAME" \
   --receipt "$AGENTGATEWAY_POD_IDENTITY_RECEIPT"
 ```
 
@@ -595,6 +620,13 @@ export POD_IDENTITY_ASSOCIATION_ID="$(
     "$AGENTGATEWAY_POD_IDENTITY_RECEIPT"
 )"
 ```
+
+Keep the receipt and any adjacent `.journal` file. If setup is interrupted,
+rerun the same command with the same receipt. The script reconciles only
+resources with its recorded invocation identity. Do not edit the receipt or
+journal. If the script reports that a receipt predates the Region ConfigMap
+lifecycle contract, use that receipt's original sample revision to clean up
+before creating a new receipt.
 
 Create or verify AgentGateway and its private key state:
 
@@ -817,89 +849,23 @@ In another terminal:
 
 ```bash
 export OCC_URL='http://127.0.0.1:18080'
-export OCC_SERVICE_KEY_FILE="$PRIVATE_STATE_DIR/initial-admin-service-key.json"
+export OCC_SERVICE_KEY_FILE="$OCE_STATE_DIR/initial-admin-service-key.json"
 export OCC_BIN="$OCE_STATE_DIR/occ-$OCE_SOURCE_REVISION"
 test -x "$OCC_BIN"
-```
-
-The installer writes the bootstrap response to
-`pvc/oce-sample-bootstrap-output` as
-`initial-admin-service-key.json`. Retrieve it without printing the key, using a
-short-lived pod that mounts the claim read-only:
-
-```bash
-export BOOTSTRAP_READER_POD='oce-bootstrap-reader'
-bootstrap_key_tmp="$(mktemp "$PRIVATE_STATE_DIR/bootstrap-key.XXXXXX")"
-chmod 600 "$bootstrap_key_tmp"
-trap 'kubectl --context "$KUBE_CONTEXT" --namespace "$OCE_NAMESPACE" delete \
-  pod "$BOOTSTRAP_READER_POD" --ignore-not-found >/dev/null; \
-  rm -f "$bootstrap_key_tmp"' EXIT
-
-jq -n \
-  --arg namespace "$OCE_NAMESPACE" \
-  --arg image "$CONTROLLER_IMAGE" \
-  --arg pod "$BOOTSTRAP_READER_POD" \
-  '{
-    apiVersion: "v1",
-    kind: "Pod",
-    metadata: {
-      name: $pod,
-      namespace: $namespace,
-      labels: {"app.kubernetes.io/managed-by": "openclaw-enterprise-blueprint"}
-    },
-    spec: {
-      automountServiceAccountToken: false,
-      restartPolicy: "Never",
-      securityContext: {
-        runAsNonRoot: true,
-        runAsUser: 1000,
-        runAsGroup: 1000,
-        fsGroup: 1000,
-        seccompProfile: {type: "RuntimeDefault"}
-      },
-      containers: [{
-        name: "reader",
-        image: $image,
-        command: ["node", "-e", "setInterval(() => {}, 300000)"],
-        securityContext: {
-          allowPrivilegeEscalation: false,
-          readOnlyRootFilesystem: true,
-          capabilities: {drop: ["ALL"]}
-        },
-        volumeMounts: [{
-          name: "bootstrap",
-          mountPath: "/bootstrap",
-          readOnly: true
-        }]
-      }],
-      volumes: [{
-        name: "bootstrap",
-        persistentVolumeClaim: {
-          claimName: "oce-sample-bootstrap-output",
-          readOnly: true
-        }
-      }]
-    }
-  }' |
-  kubectl --context "$KUBE_CONTEXT" apply --filename -
-kubectl --context "$KUBE_CONTEXT" --namespace "$OCE_NAMESPACE" \
-  wait --for=condition=Ready "pod/$BOOTSTRAP_READER_POD" --timeout=120s
-kubectl --context "$KUBE_CONTEXT" --namespace "$OCE_NAMESPACE" \
-  exec "$BOOTSTRAP_READER_POD" -- \
-  node -e \
-    'process.stdout.write(require("fs").readFileSync(
-      "/bootstrap/initial-admin-service-key.json"))' \
-  >"$bootstrap_key_tmp"
 jq -e '.data.key | type == "string" and length > 0' \
-  "$bootstrap_key_tmp" >/dev/null
-mv "$bootstrap_key_tmp" "$OCC_SERVICE_KEY_FILE"
-kubectl --context "$KUBE_CONTEXT" --namespace "$OCE_NAMESPACE" \
-  delete pod "$BOOTSTRAP_READER_POD"
-trap - EXIT
+  "$OCC_SERVICE_KEY_FILE" >/dev/null
 ```
 
-Permission to read this claim is administrator access. Keep the resulting file
-at mode `0600`.
+The installer copies the initial administrator service key and password into
+`$OCE_STATE_DIR` at mode `0600`, verifies both files, erases the cluster copies,
+and deletes the temporary Job, PVC, and encrypted EBS volume before recording a
+successful install. If the command stops after OCC deploys, rerun the exact same
+command with the same state directory and receipt. The installer resumes only
+when its journal, OCC receipt, Helm release, and recorded bootstrap resource
+UIDs still match. If the Helm release is absent, preserve the state and receipt
+and follow the installer's diagnostic instead of retrying blindly. Protect the
+local state directory and rotate or revoke the administrator service key if it
+is exposed.
 
 The local Kubernetes identity needs permission to read the Service and its
 selected Pod and to create `pods/portforward`. Port-forwarding bypasses
@@ -1381,8 +1347,14 @@ TODO: output from the fresh run
   routes required by OCE gateway pods. It does not provide general tenant
   network isolation. Add that boundary with the
   [dedicated network-policy sample](../../isolation/network-policy/README.md).
+  DNS egress permits name resolution; it is not DNS content filtering. For
+  hostile workloads, add Route 53 Resolver DNS Firewall and query logging, or
+  use a dedicated VPC or cluster.
   [OCE issue #4254](https://github.com/openclaw/openclaw-enterprise/issues/4254)
   tracks native support for private model service egress.
+- Do not run setup, rotation, and cleanup concurrently. Receipts and ownership
+  checks refuse mismatched resources, but the separate AWS and Kubernetes API
+  calls are not one atomic transaction.
 - The validation procedure is destructive to tenant A's runtime pod. Use
   retained validation tenants.
 - The blueprint does not validate human SSO, sustained load, high
@@ -1391,8 +1363,11 @@ TODO: output from the fresh run
 
 ## Clean up
 
-Stop every local OCE API port-forward, then run cleanup with the original
-state, receipts, context, tenant namespaces, and Pod Identity values:
+Stop every local OCE API port-forward. By default, cleanup refuses to change
+the deployment while an OCE-managed tenant namespace exists. To delete the
+disposable validation tenants and their data, run cleanup with the original
+state, receipts, context, exact tenant namespace list, Pod Identity values, and
+the explicit `--delete-tenant-data` opt-in:
 
 ```bash
 "$SAMPLE_DIR/scripts/cleanup.sh" \
@@ -1404,40 +1379,59 @@ state, receipts, context, tenant namespaces, and Pod Identity values:
   --release oce \
   --tenant-namespace '<tenant-a-kubernetes-namespace>' \
   --tenant-namespace '<tenant-b-kubernetes-namespace>' \
+  --delete-tenant-data \
   --storage-class-receipt "$STORAGE_CLASS_RECEIPT" \
+  --agentgateway-receipt "$AGENTGATEWAY_RECEIPT" \
   --agentgateway-pod-identity-receipt "$AGENTGATEWAY_POD_IDENTITY_RECEIPT" \
   --aws-region "$AWS_REGION" \
   --aws-account-id "$AWS_ACCOUNT_ID" \
   --eks-cluster-name "$EKS_CLUSTER_NAME" \
   --pod-identity-association-id "$POD_IDENTITY_ASSOCIATION_ID" \
-  --iam-role-name openclaw-enterprise-agentgateway \
+  --iam-role-name "$AGENTGATEWAY_IAM_ROLE_NAME" \
   --iam-inline-policy-name openclaw-enterprise-bedrock-invoke
+```
 
+Delete the build resources only after cluster cleanup exits zero:
+
+```bash
 "$SAMPLE_DIR/scripts/manage-image-build-stack.sh" delete \
-  --receipt "$IMAGE_BUILD_STACK_RECEIPT"
-
+  --receipt "$IMAGE_BUILD_STACK_RECEIPT" &&
 "$SAMPLE_DIR/scripts/manage-builder-repository.sh" delete \
   --receipt "$BUILDER_REPOSITORY_RECEIPT"
 ```
 
-Cleanup verifies the installation receipt and resource ownership before it
-uninstalls the OCE release, deletes the blueprint-owned system, adapter,
-AgentGateway, and supplied tenant namespaces, and deletes the verified Pod
-Identity and IAM resources. Before deleting a namespace, it inventories every
-descendant, temporarily denies namespaced `CREATE` and `UPDATE` requests, and
-verifies that admission rejects a server-side dry-run ConfigMap. It then
-refreshes the inventory and deletes the namespace while leaving `DELETE`
-requests available for cleanup. It stops if it finds a resource that is
-neither OCE-owned, blueprint-owned, nor a narrow expected
-Kubernetes-generated object.
+Cleanup verifies the installation and lifecycle receipts before it changes the
+cluster. The supplied tenant namespace list must exactly match the recorded
+cleanup set. With `--delete-tenant-data`, cleanup records each namespace UID
+and tenant-bound persistent volume, temporarily blocks namespaced `CREATE` and
+`UPDATE` requests, removes the OCE control plane, and deletes only those exact
+namespaces. It waits until the tenant namespaces, PVCs, and recorded PVs are
+absent before removing the temporary freeze or the original Nitro admission
+controls. If cleanup stops partway through, rerun the same command and private
+state; the deletion record prevents a same-name replacement from being
+accepted.
+
+The script removes the Pod Identity association before its Kubernetes identity,
+then uninstalls OCE and deletes only receipt-matched system, adapter,
+AgentGateway, and cluster-scoped resources. AgentGateway resources must match
+their recorded UID and setup identity. Cleanup combines both AgentGateway
+receipts: it can delete a shared namespace or ServiceAccount that Pod Identity
+setup created even though AgentGateway setup later reused it. It preserves
+the complete AgentGateway dependency closure when either receipt identifies a
+reused workload or dependency.
+
+Before deleting each blueprint-owned system namespace, cleanup also
+temporarily denies namespaced `CREATE` and `UPDATE` requests and verifies the
+guard with a server-side dry-run ConfigMap. `DELETE` requests remain available
+throughout cleanup.
 
 It preserves any external database. It deletes the blueprint StorageClass only
-when no PVC still references it. Cleanup exits non-zero when a blueprint-owned
-resource must be preserved for safety. It also removes its admission freeze on
-success or handled failure and reports an error if guarded removal cannot be
-verified. If the process is forcibly terminated while the freeze is active,
-rerun the same cleanup command with the same private state; cleanup verifies
-and removes its recorded admission resources before continuing. The stack
+when no PVC still references it. Cleanup reports intentionally preserved
+resources and exits non-zero when required lifecycle evidence is missing or an
+identity or ownership check fails. It removes a tenant freeze only while the
+original admission controls remain or after every recorded tenant namespace
+and volume is gone. If the process is forcibly terminated while a freeze is
+active, rerun the same cleanup command with the same private state. The stack
 manager deletes the image build workflow and its four ECR repositories,
 including the sample images, then marks its private receipt as deleted. The
 builder repository manager separately deletes only the exact private mirror

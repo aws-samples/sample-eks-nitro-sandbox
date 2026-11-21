@@ -15,7 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "validate-live.sh"
 NATIVE_HISTORY_EVALUATOR = ROOT / "scripts" / "lib" / "evaluate-native-tool-history.mjs"
 DIGEST = "a" * 64
-RUNTIME_IMAGE = f"registry.example/oce-runtime@sha256:{DIGEST}"
+ECR_REGISTRY = "123456789012.dkr.ecr.us-west-2.amazonaws.com"
+RUNTIME_IMAGE = f"{ECR_REGISTRY}/openclaw-enterprise/runtime@sha256:{DIGEST}"
+AGENTGATEWAY_DIGEST = "b" * 64
+AGENTGATEWAY_IMAGE = (
+    f"{ECR_REGISTRY}/openclaw-enterprise/agentgateway@sha256:{AGENTGATEWAY_DIGEST}"
+)
+OCE_API_DIGEST = "c" * 64
+OCE_API_IMAGE = f"{ECR_REGISTRY}/openclaw-enterprise/api@sha256:{OCE_API_DIGEST}"
 OCE_SOURCE_REVISION = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
 GIT_REVISION = "d" * 40
 
@@ -41,7 +48,7 @@ FAKE_COMMAND = textwrap.dedent(
         log.write(json.dumps({{"tool": tool, "args": args}}) + "\\n")
 
     digest = "{DIGEST}"
-    image = "registry.example/oce-runtime@sha256:" + digest
+    image = "{RUNTIME_IMAGE}"
 
     def emit(value):
         if isinstance(value, (dict, list)):
@@ -185,6 +192,12 @@ FAKE_COMMAND = textwrap.dedent(
             }},
             "status": {{
                 "phase": "Running",
+                "initContainerStatuses": [{{
+                    "name": "prepare-private-state",
+                    "ready": True,
+                    "state": {{"terminated": {{"exitCode": 0}}}},
+                    "imageID": "containerd://sha256:" + digest,
+                }}],
                 "containerStatuses": [{{
                     "name": "gateway",
                     "ready": True,
@@ -453,6 +466,28 @@ FAKE_COMMAND = textwrap.dedent(
             }}}})
         elif args[:2] == ["eks", "list-pod-identity-associations"]:
             emit({{"associations": []}})
+        elif args[:2] == ["ecr", "batch-get-image"]:
+            repository = args[args.index("--repository-name") + 1]
+            requested_digest = args[args.index("--image-ids") + 1].split("=", 1)[1]
+            emit({{
+                "images": [{{
+                    "registryId": "123456789012",
+                    "repositoryName": repository,
+                    "imageId": {{"imageDigest": requested_digest}},
+                    "imageManifest": json.dumps({{
+                        "schemaVersion": 2,
+                        "config": {{
+                            "mediaType": "application/vnd.oci.image.config.v1+json",
+                            "digest": "sha256:" + ("f" * 64),
+                            "size": 123,
+                        }},
+                        "layers": [],
+                    }}),
+                }}],
+                "failures": [],
+            }})
+        elif args[:2] == ["ecr", "get-download-url-for-layer"]:
+            emit("https://ecr.example.invalid/config")
         elif args[:2] == ["kms", "get-public-key"]:
             emit({{
                 "KeyId": "arn:aws:kms:us-west-2:123456789012:key/fake-evidence-key",
@@ -610,10 +645,13 @@ FAKE_COMMAND = textwrap.dedent(
                 "name": "agentgateway",
                 "ready": True,
                 "state": {{"running": {{}}}},
-                "imageID": "containerd://sha256:" + ("b" * 64),
+                "imageID": "containerd://sha256:" + "{AGENTGATEWAY_DIGEST}",
             }}],
         }}
-        spec = {{"containers": [{{"name": "agentgateway"}}]}}
+        spec = {{"containers": [{{
+            "name": "agentgateway",
+            "image": "{AGENTGATEWAY_IMAGE}",
+        }}]}}
         emit({{"items": [
             {{
                 "metadata": {{"name": "agentgateway-0", "uid": "uid-agw-1"}},
@@ -662,14 +700,17 @@ FAKE_COMMAND = textwrap.dedent(
                 "uid": "uid-oce-api-1",
                 "labels": {{"app.kubernetes.io/component": "api"}},
             }},
-            "spec": {{"containers": [{{"name": "api"}}]}},
+            "spec": {{"containers": [{{
+                "name": "api",
+                "image": "{OCE_API_IMAGE}",
+            }}]}},
             "status": {{
                 "phase": "Running",
                 "containerStatuses": [{{
                     "name": "api",
                     "ready": True,
                     "state": {{"running": {{}}}},
-                    "imageID": "containerd://sha256:" + ("c" * 64),
+                    "imageID": "containerd://sha256:" + "{OCE_API_DIGEST}",
                 }}],
             }},
         }}]}})
@@ -1244,6 +1285,30 @@ FAKE_GIT = textwrap.dedent(
     """
 )
 
+FAKE_CURL = textwrap.dedent(
+    f"""\
+    #!/usr/bin/env python3
+    import json
+    import os
+    import sys
+    from pathlib import Path
+
+    args = sys.argv[1:]
+    output = Path(args[args.index("--output") + 1])
+    revision = (
+        "e" * 40
+        if os.environ.get("FAKE_SCENARIO") == "image_revision_mismatch"
+        else "{GIT_REVISION}"
+    )
+    output.write_text(json.dumps({{
+        "architecture": "amd64",
+        "config": {{
+            "Labels": {{"org.opencontainers.image.revision": revision}},
+        }},
+    }}))
+    """
+)
+
 
 def _make_fake_commands(tmp_path: Path) -> tuple[Path, Path]:
     fake_bin = tmp_path / "bin"
@@ -1257,6 +1322,9 @@ def _make_fake_commands(tmp_path: Path) -> tuple[Path, Path]:
     git_command = fake_bin / "git"
     git_command.write_text(FAKE_GIT)
     git_command.chmod(0o755)
+    curl_command = fake_bin / "curl"
+    curl_command.write_text(FAKE_CURL)
+    curl_command.chmod(0o755)
     return fake_bin, state_dir
 
 
@@ -1719,6 +1787,10 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         "EVIDENCE\tworkload-image-oce-system-1\t"
         "uid=uid-oce-api-1 container=api digest=sha256:" + ("c" * 64)
     ) in evidence
+    assert (
+        "EVIDENCE\timage-source-revision-tenant-a-1\t"
+        f"openclaw-enterprise/runtime@sha256:{DIGEST} revision={GIT_REVISION}"
+    ) in evidence
     for call_index, alias in enumerate(
         ("tenant-a", "tenant-b", "tenant-a-replacement"), start=1
     ):
@@ -1895,7 +1967,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     port_forward_args = port_forward_commands[0]["args"]
     assert "--address=127.0.0.1" in port_forward_args
     assert "service/openclaw-enterprise-api" in port_forward_args
-    wildcard_address = ".".join(("0", "0", "0", "0"))
+    wildcard_address = ".".join(["0"] * 4)
     assert not any(
         wildcard_address in arg or arg == "--address=localhost"
         for arg in port_forward_args
@@ -1919,6 +1991,19 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert manifest_path.read_text() == expected_manifest
     assert not (tmp_path / "evidence" / "live-validation-evidence.sig.b64").exists()
     assert not list((tmp_path / "evidence").glob(".live-validation-*"))
+
+
+def test_deployed_ecr_image_revision_mismatch_fails_closed(tmp_path: Path) -> None:
+    result = _run(tmp_path, "image_revision_mismatch")
+
+    assert result.returncode != 0
+    assert (
+        "tenant-a-1 ECR image revision label does not match the candidate Git revision"
+        in result.stderr
+    )
+    evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
+    assert "FAIL\ttenant-runtime-contract\t" in evidence
+    assert "RESULT\tPASS" not in evidence
 
 
 @pytest.mark.parametrize(

@@ -9,7 +9,6 @@ readonly INVOCATION_LABEL="openclaw.enterprise/setup-invocation"
 readonly NAMESPACE="openclaw-enterprise-agw"
 readonly SERVICE_ACCOUNT="agentgateway"
 readonly REGION_CONFIG_MAP="agentgateway-aws-region"
-readonly ROLE_NAME="openclaw-enterprise-agentgateway"
 readonly POLICY_NAME="openclaw-enterprise-bedrock-invoke"
 readonly MODEL_ID="amazon.nova-lite-v1:0"
 
@@ -17,7 +16,8 @@ usage() {
   cat >&2 <<'EOF'
 Usage: setup-agentgateway-pod-identity.sh \
   --aws-region REGION --aws-account-id ACCOUNT_ID \
-  --eks-cluster-name CLUSTER_NAME --kube-context CONTEXT [--receipt FILE]
+  --eks-cluster-name CLUSTER_NAME --kube-context CONTEXT \
+  [--iam-role-name NAME] [--receipt FILE]
 
 Creates or verifies the AgentGateway Kubernetes identity, IAM role and policy,
 and EKS Pod Identity association. Existing resources must match this sample.
@@ -40,6 +40,7 @@ AWS_REGION=""
 AWS_ACCOUNT_ID=""
 EKS_CLUSTER_NAME=""
 KUBE_CONTEXT=""
+ROLE_NAME="openclaw-enterprise-agentgateway"
 RECEIPT_PATH=""
 while (( $# )); do
   case "$1" in
@@ -52,6 +53,9 @@ while (( $# )); do
       ;;
     --kube-context)
       require_value "$1" "${2:-}"; KUBE_CONTEXT="$2"; shift 2
+      ;;
+    --iam-role-name)
+      require_value "$1" "${2:-}"; ROLE_NAME="$2"; shift 2
       ;;
     --receipt) require_value "$1" "${2:-}"; RECEIPT_PATH="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
@@ -77,8 +81,11 @@ if [[ ! "${AWS_REGION}" =~ ^[a-z]{2}(-[a-z]+)+-[0-9]+$ ]] ||
 fi
 [[ "${EKS_CLUSTER_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$ ]] ||
   die "--eks-cluster-name is invalid."
+[[ "${ROLE_NAME}" =~ ^[A-Za-z0-9+=,.@_-]{1,64}$ ]] ||
+  die "--iam-role-name is invalid."
 [[ -z "${RECEIPT_PATH}" || "${RECEIPT_PATH}" = /* ]] ||
   die "--receipt must be an absolute path."
+readonly ROLE_NAME
 for command in aws kubectl jq mktemp python3 grep; do
   command -v "${command}" >/dev/null || die "${command} is required."
 done
@@ -338,7 +345,8 @@ validate_receipt() {
   jq -e --arg context "${KUBE_CONTEXT}" --arg endpoint "${cluster_endpoint}" \
     --arg region "${AWS_REGION}" --arg account "${AWS_ACCOUNT_ID}" \
     --arg cluster "${EKS_CLUSTER_NAME}" --arg cluster_arn "${cluster_arn}" \
-    --arg role_arn "${role_arn}" --arg association_prefix "${association_prefix}" '
+    --arg role_name "${ROLE_NAME}" --arg role_arn "${role_arn}" \
+    --arg association_prefix "${association_prefix}" '
     def bool: type == "boolean";
     def invocation: type == "string" and test("^[a-f0-9]{32}$");
     . as $root
@@ -349,7 +357,7 @@ validate_receipt() {
     }
     and (.resources | keys | sort) == [
       "iamRole","inlinePolicy","namespace",
-      "podIdentityAssociation","serviceAccount"
+      "podIdentityAssociation","regionConfigMap","serviceAccount"
     ]
     and (.resources.namespace |
       .apiVersion == "v1" and .kind == "Namespace"
@@ -359,13 +367,18 @@ validate_receipt() {
       .apiVersion == "v1" and .kind == "ServiceAccount"
       and .namespace == "openclaw-enterprise-agw" and .name == "agentgateway"
       and (.uid | strings | length > 0) and (.created | bool))
+    and (.resources.regionConfigMap |
+      .apiVersion == "v1" and .kind == "ConfigMap"
+      and .namespace == "openclaw-enterprise-agw"
+      and .name == "agentgateway-aws-region"
+      and (.uid | strings | length > 0) and (.created | bool))
     and (.resources.iamRole |
-      .name == "openclaw-enterprise-agentgateway" and .arn == $role_arn
+      .name == $role_name and .arn == $role_arn
       and (.roleId | test("^ARO[A-Z0-9]{16,}$"))
       and (.invocationId | invocation) and (.created | bool))
     and (.resources.inlinePolicy |
       .name == "openclaw-enterprise-bedrock-invoke"
-      and .roleName == "openclaw-enterprise-agentgateway"
+      and .roleName == $role_name
       and .roleId == $root.resources.iamRole.roleId
       and (.documentSha256 | test("^[a-f0-9]{64}$"))
       and (.created | bool))
@@ -377,6 +390,8 @@ validate_receipt() {
       and .targetRoleArn == null and .externalId == null
       and .disableSessionTags == false and .policy == null
       and (.invocationId | invocation) and (.created | bool))
+    and .resources.podIdentityAssociation.invocationId
+      == .resources.iamRole.invocationId
   ' "${RECEIPT_PATH}" >/dev/null
 }
 record_step() {
@@ -402,7 +417,18 @@ if [[ -n "${RECEIPT_PATH}" ]]; then
   journal_path="${RECEIPT_PATH}.journal"
   check_private_path "${journal_path}" || die "journal path is unsafe."
   if [[ -e "${RECEIPT_PATH}" ]]; then
+    if jq -e '
+      .version == 2
+      and .operation == "setup-agentgateway-pod-identity"
+      and (.resources | type == "object")
+      and (.resources | has("regionConfigMap") | not)
+    ' "${RECEIPT_PATH}" >/dev/null; then
+      die "--receipt predates the region ConfigMap lifecycle contract; use its original sample revision to clean up, then create a new receipt."
+    fi
     validate_receipt || die "--receipt is invalid or belongs to another target."
+    invocation_id="$(jq -er '.resources.iamRole.invocationId' \
+      "${RECEIPT_PATH}")" ||
+      die "--receipt has no valid invocation identity."
     receipt_existing=true
   elif [[ -e "${journal_path}" ]]; then
     invocation_id="$(jq -er \
@@ -410,13 +436,15 @@ if [[ -n "${RECEIPT_PATH}" ]]; then
       "${journal_path}")" || die "journal has no valid invocation identity."
     jq -e --arg context "${KUBE_CONTEXT}" --arg endpoint "${cluster_endpoint}" \
       --arg region "${AWS_REGION}" --arg account "${AWS_ACCOUNT_ID}" \
-      --arg cluster "${EKS_CLUSTER_NAME}" --arg arn "${cluster_arn}" '
+      --arg cluster "${EKS_CLUSTER_NAME}" --arg arn "${cluster_arn}" \
+      --arg role_name "${ROLE_NAME}" '
       def state: . == "unknown" or . == "pending"
         or . == "created" or . == "reused";
-      .version == 1 and .operation == "setup-agentgateway-pod-identity"
+      .version == 2 and .operation == "setup-agentgateway-pod-identity"
       and .target == {
         kubeContext:$context,clusterEndpoint:$endpoint,awsRegion:$region,
-        awsAccountId:$account,eksClusterName:$cluster,eksClusterArn:$arn
+        awsAccountId:$account,eksClusterName:$cluster,eksClusterArn:$arn,
+        iamRoleName:$role_name
       }
       and (.resources | keys | sort) == [
         "iamRole","inlinePolicy","namespace","podIdentityAssociation",
@@ -435,11 +463,12 @@ if [[ -n "${RECEIPT_PATH}" ]]; then
     jq -n --arg invocation "${invocation_id}" --arg context "${KUBE_CONTEXT}" \
       --arg endpoint "${cluster_endpoint}" --arg region "${AWS_REGION}" \
       --arg account "${AWS_ACCOUNT_ID}" --arg cluster "${EKS_CLUSTER_NAME}" \
-      --arg arn "${cluster_arn}" '{
-        version:1,operation:"setup-agentgateway-pod-identity",
+      --arg arn "${cluster_arn}" --arg role_name "${ROLE_NAME}" '{
+        version:2,operation:"setup-agentgateway-pod-identity",
         invocationId:$invocation,
         target:{kubeContext:$context,clusterEndpoint:$endpoint,awsRegion:$region,
-          awsAccountId:$account,eksClusterName:$cluster,eksClusterArn:$arn},
+          awsAccountId:$account,eksClusterName:$cluster,eksClusterArn:$arn,
+          iamRoleName:$role_name},
         resources:{namespace:"unknown",serviceAccount:"unknown",
           regionConfigMap:"unknown",iamRole:"unknown",inlinePolicy:"unknown",
           podIdentityAssociation:"unknown"}
@@ -524,19 +553,23 @@ jq -n --arg owner "${OWNER}" --arg label_key "${INVOCATION_LABEL}" \
       "pod-security.kubernetes.io/audit":"restricted",
       "pod-security.kubernetes.io/warn":"restricted",($label_key):$invocation}}
 }' >"${namespace_file}"
-jq -n --arg label_key "${INVOCATION_LABEL}" \
+jq -n --arg owner "${OWNER}" --arg label_key "${INVOCATION_LABEL}" \
   --arg invocation "${invocation_id}" '{
   apiVersion:"v1",kind:"ServiceAccount",
   metadata:{namespace:"openclaw-enterprise-agw",name:"agentgateway",
-    labels:{($label_key):$invocation}},
+    labels:{
+      "app.kubernetes.io/managed-by":$owner,
+      ($label_key):$invocation}},
   automountServiceAccountToken:false
 }' >"${service_account_file}"
-jq -n --arg label_key "${INVOCATION_LABEL}" \
+jq -n --arg owner "${OWNER}" --arg label_key "${INVOCATION_LABEL}" \
   --arg invocation "${invocation_id}" --arg region "${AWS_REGION}" '{
   apiVersion:"v1",kind:"ConfigMap",
   metadata:{namespace:"openclaw-enterprise-agw",
     name:"agentgateway-aws-region",
-    labels:{($label_key):$invocation}},
+    labels:{
+      "app.kubernetes.io/managed-by":$owner,
+      ($label_key):$invocation}},
   immutable:true,data:{AWS_REGION:$region}
 }' >"${region_config_map_file}"
 
@@ -568,6 +601,7 @@ ensure_kube regionConfigMap "configmap/${REGION_CONFIG_MAP}" "${NAMESPACE}" \
     and .metadata.name == "agentgateway-aws-region"
     and .immutable == true and (.data | keys) == ["AWS_REGION"]
     and .data.AWS_REGION == $region'
+region_config_map_uid="${resource_uid}"
 
 role_error="${work_dir}/role.err"
 read_role() {
@@ -636,6 +670,8 @@ if [[ "${role_exists}" == false ]]; then
     die "IAM role creation failed without a recoverable role."
 fi
 validate_role
+[[ "${role_invocation}" == "${invocation_id}" ]] ||
+  die "IAM role ${ROLE_NAME} is owned by another lifecycle invocation; use its original receipt or clean it up first."
 role_matches=false
 [[ "${role_invocation}" == "${invocation_id}" ]] && role_matches=true
 reconcile_step iamRole "${role_state}" "${role_matches}"
@@ -744,6 +780,8 @@ if [[ "${association_exists}" == false ]]; then
     die "association creation failed without a recoverable association."
 fi
 validate_association
+[[ "${association_invocation}" == "${invocation_id}" ]] ||
+  die "Pod Identity association is owned by another lifecycle invocation; use its original receipt or clean it up first."
 association_matches=false
 [[ "${association_invocation}" == "${invocation_id}" ]] &&
   association_matches=true
@@ -753,6 +791,7 @@ reconcile_step podIdentityAssociation "${association_state}" \
 if [[ "${receipt_existing}" == true ]]; then
   jq -e --arg namespace_uid "${namespace_uid}" \
     --arg account_uid "${service_account_uid}" --arg role_id "${role_id}" \
+    --arg region_config_map_uid "${region_config_map_uid}" \
     --arg role_invocation "${role_invocation}" \
     --arg policy_sha256 "${policy_sha256}" \
     --arg association_id "${association_id}" \
@@ -760,6 +799,7 @@ if [[ "${receipt_existing}" == true ]]; then
     --arg association_invocation "${association_invocation}" '
     .resources.namespace.uid == $namespace_uid
     and .resources.serviceAccount.uid == $account_uid
+    and .resources.regionConfigMap.uid == $region_config_map_uid
     and .resources.iamRole.roleId == $role_id
     and .resources.iamRole.invocationId == $role_invocation
     and .resources.inlinePolicy.roleId == $role_id
@@ -772,10 +812,11 @@ if [[ "${receipt_existing}" == true ]]; then
 elif [[ -n "${RECEIPT_PATH}" ]]; then
   namespace_created=false
   service_account_created=false
+  region_config_map_created=false
   role_created=false
   policy_created=false
   association_created=false
-  for name in namespace service_account role policy association; do
+  for name in namespace service_account region_config_map role policy association; do
     state_name="${name}_state"
     created_name="${name}_created"
     [[ "${!state_name}" == created ]] &&
@@ -790,7 +831,10 @@ elif [[ -n "${RECEIPT_PATH}" ]]; then
     --argjson namespace_created "${namespace_created}" \
     --arg account_uid "${service_account_uid}" \
     --argjson account_created "${service_account_created}" \
-    --arg role_arn "${role_arn}" --arg role_id "${role_id}" \
+    --arg region_config_map_uid "${region_config_map_uid}" \
+    --argjson region_config_map_created "${region_config_map_created}" \
+    --arg role_name "${ROLE_NAME}" --arg role_arn "${role_arn}" \
+    --arg role_id "${role_id}" \
     --arg role_invocation "${role_invocation}" \
     --argjson role_created "${role_created}" \
     --arg policy_sha256 "${policy_sha256}" \
@@ -809,10 +853,13 @@ elif [[ -n "${RECEIPT_PATH}" ]]; then
       serviceAccount:{apiVersion:"v1",kind:"ServiceAccount",
         namespace:"openclaw-enterprise-agw",name:"agentgateway",
         uid:$account_uid,created:$account_created},
-      iamRole:{name:"openclaw-enterprise-agentgateway",arn:$role_arn,
+      regionConfigMap:{apiVersion:"v1",kind:"ConfigMap",
+        namespace:"openclaw-enterprise-agw",name:"agentgateway-aws-region",
+        uid:$region_config_map_uid,created:$region_config_map_created},
+      iamRole:{name:$role_name,arn:$role_arn,
         roleId:$role_id,invocationId:$role_invocation,created:$role_created},
       inlinePolicy:{name:"openclaw-enterprise-bedrock-invoke",
-        roleName:"openclaw-enterprise-agentgateway",roleId:$role_id,
+        roleName:$role_name,roleId:$role_id,
         documentSha256:$policy_sha256,created:$policy_created},
       podIdentityAssociation:{clusterName:$cluster,associationId:$association_id,
         associationArn:$association_arn,namespace:"openclaw-enterprise-agw",

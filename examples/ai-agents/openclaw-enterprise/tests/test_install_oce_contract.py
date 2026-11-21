@@ -4,13 +4,13 @@ import base64
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "install-oce.sh"
@@ -35,14 +35,22 @@ RECEIPT_RESOURCE_KEYS = {
     "namespace/openclaw-enterprise-agw",
     "networkpolicy.networking.k8s.io/oce-eks-cluster-dns",
     "storageclass.storage.k8s.io/gp3",
-    "validatingadmissionpolicies.admissionregistration.k8s.io/"
-    "protect-openclaw-enterprise-namespace-label",
-    "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
-    "protect-openclaw-enterprise-namespace-label",
-    "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
-    "openclaw-enterprise-nitro-adapter",
-    "validatingwebhookconfigurations.admissionregistration.k8s.io/"
-    "openclaw-enterprise-nitro-policy",
+    (
+        "validatingadmissionpolicies.admissionregistration.k8s.io/"
+        "protect-openclaw-enterprise-namespace-label"
+    ),
+    (
+        "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
+        "protect-openclaw-enterprise-namespace-label"
+    ),
+    (
+        "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
+        "openclaw-enterprise-nitro-adapter"
+    ),
+    (
+        "validatingwebhookconfigurations.admissionregistration.k8s.io/"
+        "openclaw-enterprise-nitro-policy"
+    ),
     "clusterrole.rbac.authorization.k8s.io/oce-openclaw-namespace-observer",
     "clusterrole.rbac.authorization.k8s.io/oce-openclaw-namespace-worker",
     "clusterrole.rbac.authorization.k8s.io/oce-openclaw-tenant-worker",
@@ -80,6 +88,17 @@ def test_static_install_contract_is_pinned_and_closed() -> None:
     assert "app.kubernetes.io/managed-by: $OWNER_LABEL" in text
     assert "--server-side --field-manager=" in text
     assert '"$occ_binary" installation install' in text
+    persist = text[
+        text.index("persist_private_file() {") : text.index(
+            "sha256_file() {"
+        )
+    ]
+    assert persist.index('sync_file_and_parent "$source"') < persist.index(
+        'mv "$source" "$destination"'
+    )
+    assert persist.index('mv "$source" "$destination"') < persist.index(
+        'sync_directory "$(dirname "$destination")"'
+    )
     for explicit_flag in (
         '--release "$release"',
         '--chart "$chart_dir"',
@@ -102,6 +121,9 @@ def test_static_install_contract_is_pinned_and_closed() -> None:
     assert "role contract does not match pinned OCE requirements" in text
     assert "kube context endpoint does not match EKS cluster" in text
     assert "refusing to adopt existing" in text
+    assert 'create \\\n        -f "$bootstrap_handoff" -o json' in text
+    assert "openclaw.dev/bootstrap-handoff-receipt" in text
+    assert "bootstrap_handoff_contract_matches" in text
     assert 'VALIDATION_CLUSTER_TAG_KEY="Environment"' in text
     assert 'VALIDATION_CLUSTER_TAG_VALUE="validation"' in text
     assert 'MODEL_PROVIDER_PROTOCOL="openai-responses"' in text
@@ -300,6 +322,10 @@ def _fake_environment(tmp_path: Path, *, account: str = "123456789012") -> tuple
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     log = tmp_path / "calls.log"
+    kube_state = tmp_path / "kube-state"
+    kube_state.mkdir()
+    (kube_state / "remote-key").touch()
+    (kube_state / "remote-password").touch()
     source = tmp_path / "source"
     (source / "deploy" / "helm" / "openclaw-enterprise").mkdir(parents=True)
     (source / "deploy" / "helm" / "openclaw-enterprise" / "Chart.yaml").write_text(
@@ -319,17 +345,29 @@ receipt=
 while (($#)); do
   if [[ "$1" == --receipt ]]; then receipt=$2; shift 2; else shift; fi
 done
+attempt=${TEST_OCC_ATTEMPT:-attempt-test}
 mkdir "$receipt"
-printf '%s\n' \
-  '{"version":1,"operation":"helm-install","attempt":"attempt-test",'\
+printf \
+  '{"version":1,"operation":"helm-install","attempt":"%s",'\
 '"createdAt":"2026-11-20T00:00:00Z","clusterSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'\
 '"namespace":"openclaw-system","release":"oce",'\
 '"chartSha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'\
-'"valuesSha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}' \
+'"valuesSha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}\n' \
+  "$attempt" \
   >"$receipt/intent.json"
+chmod 600 "$receipt/intent.json"
+if [[ "${TEST_OCC_PRE_DISPATCH_ONLY:-}" == true ]]; then
+  exit 73
+fi
 printf '%s\n' '{"outcome":"unknown"}' >"$receipt/dispatch.json"
-printf '%s\n' '{"outcome":"succeeded"}' >"$receipt/helm-result.json"
+printf '{"outcome":"%s"}\n' "${TEST_OCC_OUTCOME:-succeeded}" \
+  >"$receipt/helm-result.json"
 chmod 600 "$receipt"/*.json
+printf '%s\n' deployed >"$TEST_KUBE_STATE/release-status"
+printf '%s\n' "$attempt" >"$TEST_KUBE_STATE/release-attempt"
+if [[ "${TEST_OCC_RESPONSE_LOSS:-}" == true ]]; then
+  exit 74
+fi
 """,
     )
 
@@ -398,7 +436,31 @@ esac
 printf 'helm %s\n' "$*" >>"$TEST_LOG"
 case "$1" in
   version) printf '%s\n' "${TEST_HELM_VERSION:-v3.22.1+gtest}" ;;
-  list) : ;;
+  list)
+    status=
+    [[ ! -f "$TEST_KUBE_STATE/release-status" ]] ||
+      status=$(<"$TEST_KUBE_STATE/release-status")
+    selected=false
+    case "$status" in
+      deployed) [[ " $* " == *" --deployed "* ]] && selected=true ;;
+      failed) [[ " $* " == *" --failed "* ]] && selected=true ;;
+      pending-*) [[ " $* " == *" --pending "* ]] && selected=true ;;
+      uninstalled) [[ " $* " == *" --uninstalled "* ]] && selected=true ;;
+      superseded) [[ " $* " == *" --superseded "* ]] && selected=true ;;
+      uninstalling) [[ " $* " == *" --uninstalling "* ]] && selected=true ;;
+    esac
+    if [[ "$selected" == true ]]; then
+      printf '%s\n' oce
+    fi
+    ;;
+  get)
+    [[ "$2" == values && "$3" == oce ]] || exit 2
+    attempt=${TEST_HELM_ATTEMPT:-}
+    if [[ -z "$attempt" && -f "$TEST_KUBE_STATE/release-attempt" ]]; then
+      attempt=$(<"$TEST_KUBE_STATE/release-attempt")
+    fi
+    printf '{"installationAttempt":"%s"}\n' "$attempt"
+    ;;
   template) printf '%s\n' 'apiVersion: v1' 'kind: List' 'items: []' ;;
   *) exit 2 ;;
 esac
@@ -408,18 +470,167 @@ esac
         fake_bin / "kubectl",
         """#!/usr/bin/env bash
 printf 'kubectl %s\n' "$*" >>"$TEST_LOG"
+not_found() {
+  printf 'Error from server (NotFound): %s not found\\n' "$1" >&2
+  exit 1
+}
+fail_after_delete() {
+  local resource=$1
+  if [[ "${TEST_FAIL_AFTER_DELETE:-}" == "$resource" &&
+    ! -f "$TEST_KUBE_STATE/failed-delete-$resource" ]]; then
+    : >"$TEST_KUBE_STATE/failed-delete-$resource"
+    exit 42
+  fi
+}
+require_delete_preconditions() {
+  local body=$1 expected_uid=$2 expected_resource_version=$3
+  if [[ "$(jq -r '.preconditions.uid' <<<"$body")" != "$expected_uid" ||
+    "$(jq -r '.preconditions.resourceVersion' <<<"$body")" != \
+      "$expected_resource_version" ]]; then
+    printf '%s\n' \
+      'Error from server (Conflict): deletion precondition failed' >&2
+    exit 1
+  fi
+}
+handoff_pod_json() {
+  local receipt owner image extra_container
+  receipt=${TEST_POD_RECEIPT:-}
+  if [[ -z "$receipt" && -f "$TEST_KUBE_STATE/pod-receipt" ]]; then
+    receipt=$(<"$TEST_KUBE_STATE/pod-receipt")
+  fi
+  owner=${TEST_POD_OWNER:-openclaw-enterprise-blueprint}
+  image=${TEST_POD_IMAGE:-example/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+  extra_container=${TEST_POD_EXTRA_CONTAINER:-false}
+  jq -cn \
+    --arg uid "${TEST_POD_UID:-uid-bootstrap-pod}" \
+    --arg resource_version "${TEST_POD_RESOURCE_VERSION:-103}" \
+    --arg receipt "$receipt" \
+    --arg owner "$owner" \
+    --arg image "$image" \
+    --arg extra_container "$extra_container" \
+    '{
+      metadata: {
+        name: "oce-sample-bootstrap-handoff",
+        namespace: "openclaw-system",
+        uid: $uid,
+        resourceVersion: $resource_version,
+        labels: {
+          "app.kubernetes.io/managed-by": $owner,
+          "app.kubernetes.io/part-of": "openclaw-enterprise-blueprint",
+          "app.kubernetes.io/component": "bootstrap-handoff"
+        },
+        annotations: {
+          "openclaw.dev/bootstrap-handoff-receipt": $receipt
+        }
+      },
+      spec: {
+        automountServiceAccountToken: false,
+        enableServiceLinks: false,
+        restartPolicy: "Never",
+        securityContext: {
+          runAsNonRoot: true,
+          runAsUser: 1000,
+          runAsGroup: 1000,
+          fsGroup: 1000,
+          seccompProfile: {type: "RuntimeDefault"}
+        },
+        containers: [{
+          name: "handoff",
+          image: $image,
+          imagePullPolicy: "IfNotPresent",
+          command: ["node"],
+          args: ["-e", "setInterval(() => {}, 300000)"],
+          securityContext: {
+            allowPrivilegeEscalation: false,
+            readOnlyRootFilesystem: true,
+            capabilities: {drop: ["ALL"]}
+          },
+          volumeMounts: [{
+            name: "bootstrap",
+            mountPath: "/bootstrap"
+          }]
+        }],
+        volumes: [{
+          name: "bootstrap",
+          persistentVolumeClaim: {
+            claimName: "oce-sample-bootstrap-output"
+          }
+        }]
+      }
+    }
+    | if $extra_container == "true"
+      then .spec.containers += [{
+        name: "sidecar",
+        image: "example/attacker:latest"
+      }]
+      else .
+      end'
+}
 case "$*" in
   *"config get-contexts"*) printf 'oce-test\\n' ;;
   *"config current-context"*) printf 'oce-test\\n' ;;
   *"config view"*) printf 'https://eks.example.test' ;;
   *"get namespace kube-system"*) printf 'namespace/kube-system\\n' ;;
-  *"get storageclass gp3"*) printf 'storageclass.storage.k8s.io/gp3\\n' ;;
+  *"get storageclass gp3 -o json")
+    printf '%s\\n' \
+      '{"metadata":{"name":"gp3","labels":{"app.kubernetes.io/managed-by":"'"${TEST_STORAGE_OWNER:-openclaw-enterprise-blueprint}"'"}},"provisioner":"'"${TEST_STORAGE_PROVISIONER:-ebs.csi.eks.amazonaws.com}"'","parameters":{"type":"'"${TEST_STORAGE_TYPE:-gp3}"'","encrypted":"'"${TEST_STORAGE_ENCRYPTED:-true}"'"},"reclaimPolicy":"'"${TEST_STORAGE_RECLAIM:-Delete}"'","volumeBindingMode":"'"${TEST_STORAGE_BINDING:-WaitForFirstConsumer}"'"}'
+    ;;
   *"get namespace openclaw-system"*"jsonpath"*)
     printf 'openclaw-enterprise-blueprint' ;;
   *"get namespace openclaw-system"*) printf 'namespace/openclaw-system\\n' ;;
   *"get job/oce-sample-bootstrap-volume-prep"*) printf '1' ;;
+  *"get job oce-sample-bootstrap-volume-prep -o json")
+    [[ ! -f "$TEST_KUBE_STATE/job-deleted" ]] ||
+      not_found job/oce-sample-bootstrap-volume-prep
+    printf '%s\\n' \
+      '{"metadata":{"name":"oce-sample-bootstrap-volume-prep","uid":"'"${TEST_JOB_UID:-uid-bootstrap-job}"'","resourceVersion":"'"${TEST_JOB_RESOURCE_VERSION:-101}"'","labels":{"app.kubernetes.io/managed-by":"'"${TEST_JOB_OWNER:-openclaw-enterprise-blueprint}"'"}}}'
+    ;;
   *"get job oce-sample-bootstrap-volume-prep"*"-o name"*)
+    [[ ! -f "$TEST_KUBE_STATE/job-deleted" ]] ||
+      not_found job/oce-sample-bootstrap-volume-prep
     printf 'job.batch/oce-sample-bootstrap-volume-prep\\n' ;;
+  *"get persistentvolumeclaim oce-sample-bootstrap-output -o json")
+    [[ ! -f "$TEST_KUBE_STATE/pvc-deleted" ]] ||
+      not_found persistentvolumeclaim/oce-sample-bootstrap-output
+    printf '%s\\n' \
+      '{"metadata":{"name":"oce-sample-bootstrap-output","uid":"'"${TEST_PVC_UID:-uid-bootstrap-pvc}"'","resourceVersion":"'"${TEST_PVC_RESOURCE_VERSION:-102}"'","labels":{"app.kubernetes.io/managed-by":"'"${TEST_PVC_OWNER:-openclaw-enterprise-blueprint}"'"}},"spec":{"volumeName":"'"${TEST_PV_NAME:-pvc-bootstrap-output}"'","storageClassName":"gp3"}}'
+    ;;
+  *"get persistentvolume/pvc-bootstrap-output -o json")
+    [[ ! -f "$TEST_KUBE_STATE/pv-deleted" ]] ||
+      not_found persistentvolume/pvc-bootstrap-output
+    printf '%s\\n' \
+      '{"metadata":{"name":"pvc-bootstrap-output","uid":"'"${TEST_PV_UID:-uid-bootstrap-pv}"'"},"spec":{"storageClassName":"'"${TEST_PV_STORAGE_CLASS:-gp3}"'","persistentVolumeReclaimPolicy":"'"${TEST_PV_RECLAIM:-Delete}"'","csi":{"driver":"'"${TEST_PV_DRIVER:-ebs.csi.eks.amazonaws.com}"'"},"claimRef":{"namespace":"openclaw-system","name":"oce-sample-bootstrap-output","uid":"'"${TEST_PV_CLAIM_UID:-${TEST_PVC_UID:-uid-bootstrap-pvc}}"'"}}}'
+    ;;
+  *"get pod oce-sample-bootstrap-handoff -o json")
+    [[ -f "$TEST_KUBE_STATE/pod-live" ]] ||
+      not_found pod/oce-sample-bootstrap-handoff
+    handoff_pod_json
+    ;;
+  *"exec pod/oce-sample-bootstrap-handoff"*"readFileSync"*\
+"initial-admin-service-key.json"*)
+    [[ -f "$TEST_KUBE_STATE/remote-key" ]] ||
+      not_found initial-admin-service-key.json
+    printf x >>"$TEST_KUBE_STATE/key-reads"
+    printf '%s' '{"data":{"key":"test-service-key"}}' ;;
+  *"exec pod/oce-sample-bootstrap-handoff"*"readFileSync"*\
+"initial-admin-password"*)
+    if [[ "${TEST_FAIL_PASSWORD_READ_ONCE:-}" == true &&
+      ! -f "$TEST_KUBE_STATE/failed-password-read" ]]; then
+      : >"$TEST_KUBE_STATE/failed-password-read"
+      exit 42
+    fi
+    [[ -f "$TEST_KUBE_STATE/remote-password" ]] ||
+      not_found initial-admin-password
+    printf '%s' 'test-admin-password' ;;
+  *"exec pod/oce-sample-bootstrap-handoff"*"rmSync"*)
+    rm -f "$TEST_KUBE_STATE/remote-key"
+    if [[ "${TEST_FAIL_ERASE_AFTER_KEY_ONCE:-}" == true &&
+      ! -f "$TEST_KUBE_STATE/failed-erase" ]]; then
+      : >"$TEST_KUBE_STATE/failed-erase"
+      exit 42
+    fi
+    rm -f "$TEST_KUBE_STATE/remote-password"
+    ;;
   *"jsonpath={.metadata.name}"*"metadata.uid"*)
     target=
     previous=
@@ -446,8 +657,67 @@ case "$*" in
   *"get service oce-validation-only-postgres"*"jsonpath={.spec.clusterIP}"*)
     printf '10.100.169.63' ;;
   *"jsonpath={.items[*].status.podIP}"*) printf '10.2.3.4' ;;
+  *" create "*"bootstrap-handoff.yaml"*"-o json"*)
+    if [[ -f "$TEST_KUBE_STATE/pod-live" ]]; then
+      printf '%s\n' \
+        'Error from server (AlreadyExists): pods "oce-sample-bootstrap-handoff" already exists' >&2
+      exit 1
+    fi
+    manifest=
+    previous=
+    for argument in "$@"; do
+      if [[ "$previous" == -f ]]; then manifest=$argument; break; fi
+      previous=$argument
+    done
+    receipt=$(sed -n \
+      's/^[[:space:]]*openclaw.dev\\/bootstrap-handoff-receipt:[[:space:]]*"\\([^"]*\\)"[[:space:]]*$/\\1/p' \
+      "$manifest")
+    [[ "$receipt" =~ ^[a-f0-9]{64}$ ]] || exit 2
+    printf '%s' "$receipt" >"$TEST_KUBE_STATE/pod-receipt"
+    : >"$TEST_KUBE_STATE/pod-live"
+    handoff_pod_json
+    ;;
   *" apply "*) : ;;
+  *" delete --raw=/api/v1/namespaces/openclaw-system/pods/oce-sample-bootstrap-handoff -f -")
+    body=$(cat)
+    require_delete_preconditions "$body" \
+      "${TEST_DELETE_POD_UID:-${TEST_POD_UID:-uid-bootstrap-pod}}" \
+      "${TEST_DELETE_POD_RESOURCE_VERSION:-${TEST_POD_RESOURCE_VERSION:-103}}"
+    rm -f "$TEST_KUBE_STATE/pod-live"
+    fail_after_delete pod
+    printf '%s\n' '{"kind":"Pod","metadata":{"name":"oce-sample-bootstrap-handoff"}}'
+    ;;
+  *" delete --raw=/apis/batch/v1/namespaces/openclaw-system/jobs/oce-sample-bootstrap-volume-prep -f -")
+    body=$(cat)
+    require_delete_preconditions "$body" \
+      "${TEST_DELETE_JOB_UID:-${TEST_JOB_UID:-uid-bootstrap-job}}" \
+      "${TEST_DELETE_JOB_RESOURCE_VERSION:-${TEST_JOB_RESOURCE_VERSION:-101}}"
+    : >"$TEST_KUBE_STATE/job-deleted"
+    fail_after_delete job
+    printf '%s\n' '{"kind":"Job","metadata":{"name":"oce-sample-bootstrap-volume-prep"}}'
+    ;;
+  *" delete --raw=/api/v1/namespaces/openclaw-system/persistentvolumeclaims/oce-sample-bootstrap-output -f -")
+    body=$(cat)
+    require_delete_preconditions "$body" \
+      "${TEST_DELETE_PVC_UID:-${TEST_PVC_UID:-uid-bootstrap-pvc}}" \
+      "${TEST_DELETE_PVC_RESOURCE_VERSION:-${TEST_PVC_RESOURCE_VERSION:-102}}"
+    : >"$TEST_KUBE_STATE/pvc-deleted"
+    if [[ "${TEST_STORAGE_RECLAIM:-Delete}" == Delete ]]; then
+      : >"$TEST_KUBE_STATE/pv-delete-requested"
+    fi
+    fail_after_delete pvc
+    printf '%s\n' '{"kind":"PersistentVolumeClaim","metadata":{"name":"oce-sample-bootstrap-output"}}'
+    ;;
   *" rollout status "*) : ;;
+  *" wait --for=delete persistentvolume/pvc-bootstrap-output "*)
+    [[ -f "$TEST_KUBE_STATE/pv-delete-requested" ]] || exit 42
+    : >"$TEST_KUBE_STATE/pv-deleted"
+    if [[ "${TEST_FAIL_PV_WAIT_ONCE:-}" == true &&
+      ! -f "$TEST_KUBE_STATE/failed-pv-wait" ]]; then
+      : >"$TEST_KUBE_STATE/failed-pv-wait"
+      exit 42
+    fi
+    ;;
   *" wait "*) : ;;
   *) printf 'unexpected kubectl invocation: %s\\n' "$*" >&2; exit 2 ;;
 esac
@@ -456,6 +726,7 @@ esac
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["TEST_LOG"] = str(log)
+    env["TEST_KUBE_STATE"] = str(kube_state)
     env["TEST_CLUSTER_TAGS"] = '{"Environment":"validation"}'
     env.pop("HELM_DRIVER", None)
     for key in list(env):
@@ -531,23 +802,31 @@ def test_wrong_aws_account_fails_closed(tmp_path: Path) -> None:
     "bad_url, expected_error",
     [
         (
-            "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
-            f"?sslmode=require&sslrootcert={DATABASE_CA_PATH}",
+            (  # pragma: allowlist secret -- test placeholder
+                "postgresql://app:secret@db.example.test:5432/openclaw"
+                f"?sslmode=require&sslrootcert={DATABASE_CA_PATH}"
+            ),
             "must set sslmode=verify-full exactly once",
         ),
         (
-            "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
-            f"?sslmode=verify-full&sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}",
+            (  # pragma: allowlist secret -- test placeholder
+                "postgresql://app:secret@db.example.test:5432/openclaw"
+                f"?sslmode=verify-full&sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}"
+            ),
             "must not contain duplicate query parameters",
         ),
         (
-            "postgresql://app:secret@db.example.test:5432/openclaw"  # pragma: allowlist secret -- test placeholder
-            f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}%ZZ",
+            (  # pragma: allowlist secret -- test placeholder
+                "postgresql://app:secret@db.example.test:5432/openclaw"
+                f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}%ZZ"
+            ),
             "contains malformed URL escaping",
         ),
         (
-            "postgresql://app:secret@not_a_dns_name:5432/openclaw"  # pragma: allowlist secret -- test placeholder
-            f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}",
+            (  # pragma: allowlist secret -- test placeholder
+                "postgresql://app:secret@not_a_dns_name:5432/openclaw"
+                f"?sslmode=verify-full&sslrootcert={DATABASE_CA_PATH}"
+            ),
             "must use a valid DNS hostname",
         ),
     ],
@@ -778,7 +1057,459 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
     assert stat.S_IMODE(
         (state / "receipt" / "resources.json").stat().st_mode
     ) == 0o600
+    assert json.loads((state / "initial-admin-service-key.json").read_text()) == {
+        "data": {"key": "test-service-key"}
+    }
+    assert (state / "initial-admin-password").read_text() == "test-admin-password"
+    assert stat.S_IMODE(
+        (state / "initial-admin-service-key.json").stat().st_mode
+    ) == 0o600
+    assert stat.S_IMODE((state / "initial-admin-password").stat().st_mode) == 0o600
+    handoff = yaml.safe_load((state / "bootstrap-handoff.yaml").read_text())
+    handoff_spec = handoff["spec"]
+    assert re.fullmatch(
+        r"[a-f0-9]{64}",
+        handoff["metadata"]["annotations"][
+            "openclaw.dev/bootstrap-handoff-receipt"
+        ],
+    )
+    assert handoff_spec["automountServiceAccountToken"] is False
+    assert handoff_spec["containers"][0]["imagePullPolicy"] == "IfNotPresent"
+    assert handoff_spec["containers"][0]["volumeMounts"] == [
+        {"name": "bootstrap", "mountPath": "/bootstrap"}
+    ]
+    assert (
+        "exec pod/oce-sample-bootstrap-handoff"
+        in calls
+    )
+    assert " create " in calls
+    assert "bootstrap-handoff.yaml -o json" in calls
+    assert " apply " + str(state / "bootstrap-handoff.yaml") not in calls
+    assert (
+        "delete --raw=/api/v1/namespaces/openclaw-system/"
+        "pods/oce-sample-bootstrap-handoff -f -"
+    ) in calls
+    assert (
+        "delete --raw=/apis/batch/v1/namespaces/openclaw-system/"
+        "jobs/oce-sample-bootstrap-volume-prep -f -"
+    ) in calls
+    assert (
+        "delete --raw=/api/v1/namespaces/openclaw-system/"
+        "persistentvolumeclaims/oce-sample-bootstrap-output -f -"
+    ) in calls
+    assert "wait --for=delete persistentvolume/pvc-bootstrap-output" in calls
     assert (state / "install.complete").is_file()
+
+
+def test_missing_jq_fails_before_external_commands(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    fake_bin = Path(env["PATH"].split(os.pathsep)[0])
+    isolated_bin = tmp_path / "isolated-bin"
+    isolated_bin.mkdir()
+    for command in (
+        "bash",
+        "dirname",
+        "aws",
+        "kubectl",
+        "helm",
+        "git",
+        "go",
+        "openssl",
+        "base64",
+        "python3",
+        "install",
+        "mktemp",
+        "sed",
+        "grep",
+        "tr",
+        "stat",
+    ):
+        candidate = fake_bin / command
+        source_path = candidate if candidate.exists() else Path(
+            shutil.which(command, path=env["PATH"]) or ""
+        )
+        assert source_path.is_file(), command
+        os.symlink(source_path, isolated_bin / command)
+    env["PATH"] = str(isolated_bin)
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "missing prerequisite: jq" in result.stderr
+    assert not (tmp_path / "calls.log").exists()
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("TEST_STORAGE_OWNER", "another-installer"),
+        ("TEST_STORAGE_PROVISIONER", "kubernetes.io/aws-ebs"),
+        ("TEST_STORAGE_TYPE", "gp2"),
+        ("TEST_STORAGE_ENCRYPTED", "false"),
+        ("TEST_STORAGE_RECLAIM", "Retain"),
+        ("TEST_STORAGE_BINDING", "Immediate"),
+    ],
+)
+def test_storage_class_contract_fails_before_cluster_mutation(
+    tmp_path: Path,
+    variable: str,
+    value: str,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env[variable] = value
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "StorageClass gp3 must be blueprint-owned encrypted gp3" in result.stderr
+    calls = (tmp_path / "calls.log").read_text()
+    assert " apply " not in calls
+    assert "occ installation install" not in calls
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["failed", "pending-install", "uninstalling"],
+)
+def test_non_deployed_helm_release_is_not_resumable(
+    tmp_path: Path,
+    status: str,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    (Path(env["TEST_KUBE_STATE"]) / "release-status").write_text(f"{status}\n")
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "exists but is not deployed" in result.stderr
+    assert "occ installation install" not in (tmp_path / "calls.log").read_text()
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("TEST_PV_STORAGE_CLASS", "other"),
+        ("TEST_PV_RECLAIM", "Retain"),
+        ("TEST_PV_DRIVER", "example.invalid/csi"),
+        ("TEST_PV_CLAIM_UID", "uid-other-claim"),
+    ],
+)
+def test_bound_pv_contract_fails_before_occ(
+    tmp_path: Path,
+    variable: str,
+    value: str,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env[variable] = value
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "persistent volume does not match" in result.stderr
+    assert "occ installation install" not in (tmp_path / "calls.log").read_text()
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("TEST_FAIL_PASSWORD_READ_ONCE", "true"),
+        ("TEST_FAIL_ERASE_AFTER_KEY_ONCE", "true"),
+        ("TEST_FAIL_AFTER_DELETE", "pod"),
+        ("TEST_FAIL_AFTER_DELETE", "job"),
+        ("TEST_FAIL_AFTER_DELETE", "pvc"),
+        ("TEST_FAIL_PV_WAIT_ONCE", "true"),
+    ],
+)
+def test_post_occ_failures_resume_without_reinstalling(
+    tmp_path: Path,
+    variable: str,
+    value: str,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env[variable] = value
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+
+    first = run_script(*args, env=env)
+    assert first.returncode != 0
+
+    second = run_script(*args, env=env)
+    assert second.returncode == 0, second.stderr
+
+    state = tmp_path / "state"
+    kube_state = Path(env["TEST_KUBE_STATE"])
+    calls = (tmp_path / "calls.log").read_text()
+    assert calls.count("occ installation install") == 1
+    assert (state / "initial-admin-service-key.json").is_file()
+    assert (state / "initial-admin-password").is_file()
+    assert not (state / "bootstrap-handoff-state.json").exists()
+    assert not (kube_state / "remote-key").exists()
+    assert not (kube_state / "remote-password").exists()
+    assert (kube_state / "job-deleted").is_file()
+    assert (kube_state / "pvc-deleted").is_file()
+    assert (kube_state / "pv-deleted").is_file()
+
+
+def test_interrupted_remote_read_copies_no_partial_credentials(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+
+    first = run_script(*args, env=env)
+
+    state = tmp_path / "state"
+    assert first.returncode != 0
+    assert not (state / "initial-admin-service-key.json").exists()
+    assert not (state / "initial-admin-password").exists()
+    journal = json.loads((state / "bootstrap-handoff-state.json").read_text())
+    assert journal["version"] == 3
+    assert journal["phase"] == "handoff-pod-ready"
+    assert journal["podUid"] == "uid-bootstrap-pod"
+    assert re.fullmatch(r"[a-f0-9]{64}", journal["podReceipt"])
+    handoff = yaml.safe_load((state / "bootstrap-handoff.yaml").read_text())
+    assert (
+        handoff["metadata"]["annotations"][
+            "openclaw.dev/bootstrap-handoff-receipt"
+        ]
+        == journal["podReceipt"]
+    )
+    assert journal["occAttempt"] == "attempt-test"
+    assert journal["credentialKeySha256"] == ""
+    assert journal["credentialPasswordSha256"] == ""
+
+    second = run_script(*args, env=env)
+    assert second.returncode == 0, second.stderr
+    assert (Path(env["TEST_KUBE_STATE"]) / "key-reads").read_text() == "xx"
+    assert (tmp_path / "calls.log").read_text().count(
+        "bootstrap-handoff.yaml -o json"
+    ) == 1
+
+
+def test_existing_local_credential_must_match_cluster_copy(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    key = state / "initial-admin-service-key.json"
+    key.write_text('{"data":{"key":"unrelated-service-key"}}')
+    key.chmod(0o600)
+
+    result = run_script(
+        *_base_args(tmp_path, source, kubeconfig, occ),
+        env=env,
+    )
+
+    assert result.returncode != 0
+    assert "does not match the deployed installation" in result.stderr
+    kube_state = Path(env["TEST_KUBE_STATE"])
+    assert (kube_state / "remote-key").is_file()
+    assert (kube_state / "remote-password").is_file()
+
+
+def test_recorded_local_credential_hashes_gate_retry(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_ERASE_AFTER_KEY_ONCE"] = "true"
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    first = run_script(*args, env=env)
+    assert first.returncode != 0
+
+    state = tmp_path / "state"
+    journal = json.loads((state / "bootstrap-handoff-state.json").read_text())
+    assert journal["version"] == 3
+    assert journal["phase"] == "credentials-local"
+    assert re.fullmatch(r"[a-f0-9]{64}", journal["credentialKeySha256"])
+    assert re.fullmatch(r"[a-f0-9]{64}", journal["credentialPasswordSha256"])
+    password = state / "initial-admin-password"
+    password.write_text("different-valid-password")
+    password.chmod(0o600)
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode != 0
+    assert "does not match the handoff journal" in retry.stderr
+    assert (Path(env["TEST_KUBE_STATE"]) / "remote-password").is_file()
+
+
+def test_resume_rejects_helm_attempt_mismatching_receipt(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    assert run_script(*args, env=env).returncode != 0
+    env["TEST_HELM_ATTEMPT"] = "attempt-replaced"
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode != 0
+    assert "does not match the OCC receipt attempt" in retry.stderr
+    assert (tmp_path / "calls.log").read_text().count("occ installation install") == 1
+
+
+def test_undispatched_receipt_requires_a_new_receipt_directory(
+    tmp_path: Path,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_OCC_PRE_DISPATCH_ONLY"] = "true"
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    first = run_script(*args, env=env)
+    assert first.returncode != 0
+    receipt = tmp_path / "state" / "receipt"
+    assert (receipt / "intent.json").is_file()
+    assert not (receipt / "dispatch.json").exists()
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode != 0
+    assert "records an undispatched intent" in retry.stderr
+    assert "new --receipt directory" in retry.stderr
+    assert (tmp_path / "calls.log").read_text().count(
+        "occ installation install"
+    ) == 1
+
+
+def test_occ_receipt_must_prove_success(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_OCC_OUTCOME"] = "failed"
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "does not prove a successful install" in result.stderr
+    assert not (tmp_path / "state" / "install.complete").exists()
+
+
+def test_recovered_occ_receipt_is_accepted(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_OCC_OUTCOME"] = "recovered"
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_occ_response_loss_recovers_without_reinstalling(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_OCC_RESPONSE_LOSS"] = "true"
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+
+    first = run_script(*args, env=env)
+    assert first.returncode != 0
+
+    env.pop("TEST_OCC_RESPONSE_LOSS")
+    second = run_script(*args, env=env)
+
+    assert second.returncode == 0, second.stderr
+    assert (tmp_path / "calls.log").read_text().count(
+        "occ installation install"
+    ) == 1
+
+
+def test_precreated_handoff_pod_is_neither_adopted_nor_deleted(
+    tmp_path: Path,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    kube_state = Path(env["TEST_KUBE_STATE"])
+    (kube_state / "pod-live").touch()
+    env["TEST_POD_RECEIPT"] = "b" * 64
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert (
+        "refusing to adopt existing pod/oce-sample-bootstrap-handoff "
+        "without a journalled UID"
+    ) in result.stderr
+    assert (kube_state / "pod-live").is_file()
+    calls = (tmp_path / "calls.log").read_text()
+    assert "bootstrap-handoff.yaml -o json" in calls
+    assert "exec pod/oce-sample-bootstrap-handoff" not in calls
+    assert "delete --raw=" not in calls
+
+
+def test_retry_rejects_replaced_handoff_pod_uid(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    first = run_script(*args, env=env)
+    assert first.returncode != 0
+    calls_before_retry = (tmp_path / "calls.log").read_text()
+    env["TEST_POD_UID"] = "uid-replacement-pod"
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode != 0
+    assert (
+        "refusing to recover replaced pod/oce-sample-bootstrap-handoff"
+        in retry.stderr
+    )
+    calls = (tmp_path / "calls.log").read_text()
+    assert calls.count("bootstrap-handoff.yaml -o json") == 1
+    assert calls.count("exec pod/oce-sample-bootstrap-handoff") == (
+        calls_before_retry.count("exec pod/oce-sample-bootstrap-handoff")
+    )
+    assert (Path(env["TEST_KUBE_STATE"]) / "pod-live").is_file()
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("TEST_POD_RECEIPT", "c" * 64),
+        ("TEST_POD_EXTRA_CONTAINER", "true"),
+        (
+            "TEST_POD_IMAGE",
+            "example/other@sha256:" + "d" * 64,
+        ),
+    ],
+)
+def test_retry_rejects_tampered_handoff_pod(
+    tmp_path: Path,
+    variable: str,
+    value: str,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    first = run_script(*args, env=env)
+    assert first.returncode != 0
+    calls_before_retry = (tmp_path / "calls.log").read_text()
+    env[variable] = value
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode != 0
+    assert (
+        "does not match its journalled receipt and canonical specification"
+        in retry.stderr
+    )
+    calls = (tmp_path / "calls.log").read_text()
+    assert calls.count("bootstrap-handoff.yaml -o json") == 1
+    assert calls.count("exec pod/oce-sample-bootstrap-handoff") == (
+        calls_before_retry.count("exec pod/oce-sample-bootstrap-handoff")
+    )
+    assert (Path(env["TEST_KUBE_STATE"]) / "pod-live").is_file()
+
+
+def test_retry_rejects_replaced_job_identity_before_delete(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_AFTER_DELETE"] = "pod"
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    assert run_script(*args, env=env).returncode != 0
+    env["TEST_JOB_UID"] = "uid-replacement-job"
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode != 0
+    assert "refusing to delete replaced job/" in retry.stderr
+    assert not (Path(env["TEST_KUBE_STATE"]) / "job-deleted").exists()
+
+
+def test_raw_delete_uses_resource_version_precondition(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_DELETE_JOB_RESOURCE_VERSION"] = "resource-version-changed"
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "preconditioned deletion failed for job/" in result.stderr
+    assert not (Path(env["TEST_KUBE_STATE"]) / "job-deleted").exists()
 
 
 @pytest.mark.parametrize(

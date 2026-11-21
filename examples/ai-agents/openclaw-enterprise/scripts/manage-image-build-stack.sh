@@ -7,6 +7,7 @@ readonly MANAGED_BY="openclaw-enterprise-sample"
 readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff"
 readonly BUILDER_IMAGE_DIGEST="sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
 error_file=""
+scan_dir=""
 operation_lock=""
 lock_owned=false
 lock_release_safe=true
@@ -16,7 +17,8 @@ usage() {
 Usage:
   manage-image-build-stack.sh create --receipt FILE --region REGION \
     --sample-revision SHA --builder-repository NAME --builder-digest SHA \
-    --trusted-build-invoker-arn ARN
+    --trusted-build-invoker-arn ARN \
+    [--target-platform linux/amd64|linux/arm64]
 
   manage-image-build-stack.sh delete --receipt FILE
 
@@ -69,6 +71,17 @@ private_receipt() {
 cleanup() {
   [[ -z "$error_file" ]] || rm -f -- "$error_file"
   error_file=""
+  if [[ -n "$scan_dir" && -d "$scan_dir" ]]; then
+    rm -f -- \
+      "$scan_dir/account-status.json" \
+      "$scan_dir/coverage-filter.json" \
+      "$scan_dir/coverage.json" \
+      "$scan_dir/findings-filter.json" \
+      "$scan_dir/findings.json" \
+      "$scan_dir/registry-scanning.json"
+    rmdir -- "$scan_dir" 2>/dev/null || true
+  fi
+  scan_dir=""
   if [[ "$lock_owned" == true && "$lock_release_safe" == true &&
     -n "$operation_lock" ]]; then
     rm -f -- "$operation_lock/pid"
@@ -124,7 +137,90 @@ stack_does_not_exist() {
   grep -Fq "does not exist" "$1"
 }
 
-for command in aws jq openssl stat mktemp ln mkdir rmdir; do
+verify_builder_scan() {
+  local account_id=$1 region=$2 repository=$3 digest=$4 partition=$5
+  local checker_dir=$6 resource_id scan_result _
+  resource_id="arn:${partition}:ecr:${region}:${account_id}:repository/${repository}/${digest}"
+  scan_dir=$(mktemp -d)
+
+  aws inspector2 batch-get-account-status \
+    --region "$region" \
+    --account-ids "$account_id" \
+    --output json >"$scan_dir/account-status.json" ||
+    die "could not verify Amazon Inspector account status for the builder image."
+  aws ecr get-registry-scanning-configuration \
+    --region "$region" \
+    --output json >"$scan_dir/registry-scanning.json" ||
+    die "could not verify ECR enhanced scanning for the builder image."
+  python3 -I "$checker_dir/check-enhanced-scanning.py" \
+    "$scan_dir/account-status.json" \
+    "$scan_dir/registry-scanning.json" \
+    "$account_id" \
+    "$repository" ||
+    die "the privileged builder repository is not covered by enhanced scanning."
+
+  jq -n \
+    --arg account "$account_id" \
+    --arg repository "$repository" \
+    --arg resource "$resource_id" '{
+      accountId: [{comparison: "EQUALS", value: $account}],
+      resourceId: [{comparison: "EQUALS", value: $resource}],
+      resourceType: [{comparison: "EQUALS", value: "AWS_ECR_CONTAINER_IMAGE"}],
+      scanType: [{comparison: "EQUALS", value: "PACKAGE"}],
+      ecrRepositoryName: [{comparison: "EQUALS", value: $repository}]
+    }' >"$scan_dir/coverage-filter.json"
+  jq -n \
+    --arg account "$account_id" \
+    --arg repository "$repository" \
+    --arg digest "$digest" \
+    --arg resource "$resource_id" '{
+      awsAccountId: [{comparison: "EQUALS", value: $account}],
+      resourceType: [{comparison: "EQUALS", value: "AWS_ECR_CONTAINER_IMAGE"}],
+      resourceId: [{comparison: "EQUALS", value: $resource}],
+      ecrImageRegistry: [{comparison: "EQUALS", value: $account}],
+      ecrImageRepositoryName: [{comparison: "EQUALS", value: $repository}],
+      ecrImageHash: [{comparison: "EQUALS", value: $digest}],
+      findingStatus: [{comparison: "EQUALS", value: "ACTIVE"}],
+      severity: [
+        {comparison: "EQUALS", value: "CRITICAL"},
+        {comparison: "EQUALS", value: "HIGH"}
+      ]
+    }' >"$scan_dir/findings-filter.json"
+
+  for _ in {1..120}; do
+    aws inspector2 list-coverage \
+      --region "$region" \
+      --filter-criteria "file://$scan_dir/coverage-filter.json" \
+      --max-results 2 \
+      --no-paginate \
+      --output json >"$scan_dir/coverage.json" ||
+      die "Inspector coverage lookup failed for the privileged builder image."
+    aws inspector2 list-findings \
+      --region "$region" \
+      --filter-criteria "file://$scan_dir/findings-filter.json" \
+      --max-results 1 \
+      --no-paginate \
+      --output json >"$scan_dir/findings.json" ||
+      die "Inspector findings lookup failed for the privileged builder image."
+    if python3 -I "$checker_dir/check-inspector-scan.py" \
+      "$scan_dir/coverage.json" \
+      "$scan_dir/findings.json" \
+      "$resource_id" \
+      "$account_id" \
+      "$repository" \
+      "$digest"; then
+      return 0
+    else
+      scan_result=$?
+    fi
+    [[ "$scan_result" -eq 10 ]] ||
+      die "Inspector rejected the privileged builder image."
+    sleep 5
+  done
+  die "Inspector did not complete the privileged builder image scan."
+}
+
+for command in aws jq openssl python3 sleep stat mktemp ln mkdir rmdir; do
   command -v "$command" >/dev/null || die "$command is required."
 done
 
@@ -136,12 +232,12 @@ action=$1
 shift
 
 receipt="" region="" sample_revision="" builder_repository=""
-builder_digest="" trusted_invoker_arn=""
+builder_digest="" trusted_invoker_arn="" target_platform=""
 while (($#)); do
   option=$1
   case "$option" in
     --receipt|--region|--sample-revision|--builder-repository|\
-    --builder-digest|--trusted-build-invoker-arn)
+    --builder-digest|--trusted-build-invoker-arn|--target-platform)
       require_value "$option" "${2:-}"
       value=$2
       case "$option" in
@@ -151,6 +247,7 @@ while (($#)); do
         --builder-repository) builder_repository=$value ;;
         --builder-digest) builder_digest=$value ;;
         --trusted-build-invoker-arn) trusted_invoker_arn=$value ;;
+        --target-platform) target_platform=$value ;;
       esac
       shift 2
       ;;
@@ -179,6 +276,7 @@ trap 'exit 143' TERM
 if [[ "$action" == create ]]; then
   [[ ! -e "$receipt" && ! -L "$receipt" ]] ||
     die "refusing to replace an existing receipt: $receipt"
+  target_platform=${target_platform:-linux/amd64}
   [[ -n "$region" && -n "$sample_revision" &&
     -n "$builder_repository" && -n "$builder_digest" &&
     -n "$trusted_invoker_arn" ]] ||
@@ -194,6 +292,8 @@ if [[ "$action" == create ]]; then
     die "--builder-repository is not a valid ECR repository name."
   [[ "$trusted_invoker_arn" =~ ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:(role|user)/[A-Za-z0-9+=,.@_/-]+$ ]] ||
     die "--trusted-build-invoker-arn is not a valid IAM principal ARN."
+  [[ "$target_platform" =~ ^linux/(amd64|arm64)$ ]] ||
+    die "--target-platform must be linux/amd64 or linux/arm64."
 
   account_id=$(
     aws sts get-caller-identity --query Account --output text
@@ -204,6 +304,16 @@ if [[ "$action" == create ]]; then
   arn_account=${arn_account%%:*}
   [[ "$arn_account" == "$account_id" ]] ||
     die "trusted build invoker must belong to the caller AWS account."
+  partition=${trusted_invoker_arn#arn:}
+  partition=${partition%%:*}
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+  verify_builder_scan \
+    "$account_id" \
+    "$region" \
+    "$builder_repository" \
+    "$builder_digest" \
+    "$partition" \
+    "$script_dir/../build"
 
   run_id=$(openssl rand -hex 12)
   [[ "$run_id" =~ ^[a-f0-9]{24}$ ]] ||
@@ -228,8 +338,9 @@ if [[ "$action" == create ]]; then
       --arg repositoryPrefix "$repository_prefix" \
       --arg sampleRevision "$sample_revision" \
       --arg oceRevision "$OCE_SOURCE_PIN" \
+      --arg targetPlatform "$target_platform" \
       '{
-        version: 1,
+        version: 2,
         operation: "image-build-stack",
         status: "create-planned",
         accountId: $accountId,
@@ -239,12 +350,12 @@ if [[ "$action" == create ]]; then
         stackId: null,
         repositoryPrefix: $repositoryPrefix,
         sampleRevision: $sampleRevision,
-        oceRevision: $oceRevision
+        oceRevision: $oceRevision,
+        targetPlatform: $targetPlatform
       }'
   )
   create_receipt "$receipt" "$planned_receipt"
 
-  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
   template_file="$script_dir/../build/template.yaml"
   lock_release_safe=false
   if ! aws cloudformation deploy \
@@ -260,6 +371,7 @@ if [[ "$action" == create ]]; then
       "RepositoryPrefix=$repository_prefix" \
       "SampleGitRevision=$sample_revision" \
       "OceGitRevision=$OCE_SOURCE_PIN" \
+      "TargetPlatform=$target_platform" \
       "BuilderImageRepositoryName=$builder_repository" \
       "BuilderImageDigest=$builder_digest" \
       "TrustedBuildInvokerArn=$trusted_invoker_arn"; then
@@ -294,6 +406,7 @@ if [[ "$action" == create ]]; then
       --arg region "$region" \
       --arg runId "$run_id" \
       --arg stackName "$stack_name" \
+      --arg targetPlatform "$target_platform" \
       --arg managedBy "$MANAGED_BY" '
         .Stacks | length == 1
         and .[0].StackName == $stackName
@@ -303,6 +416,10 @@ if [[ "$action" == create ]]; then
         and (
           [.[0].Parameters[]? | select(.ParameterKey == "ValidationRunId")]
           == [{"ParameterKey": "ValidationRunId", "ParameterValue": $runId}]
+        )
+        and (
+          [.[0].Parameters[]? | select(.ParameterKey == "TargetPlatform")]
+          == [{"ParameterKey": "TargetPlatform", "ParameterValue": $targetPlatform}]
         )
         and (
           [.[0].Outputs[]? | select(.OutputKey == "ValidationRunId")]
@@ -325,32 +442,56 @@ if [[ "$action" == create ]]; then
   cleanup
   printf 'Created run-owned image build stack. Receipt: %s\n' "$receipt"
 elif [[ "$action" == delete ]]; then
-  [[ -z "$region$sample_revision$builder_repository$builder_digest$trusted_invoker_arn" ]] ||
+  [[ -z "$region$sample_revision$builder_repository$builder_digest$trusted_invoker_arn$target_platform" ]] ||
     die "delete accepts only --receipt."
   private_receipt "$receipt"
   receipt_json=$(jq -e '.' "$receipt") ||
     die "receipt is not valid JSON."
   printf '%s' "$receipt_json" |
     jq -e '
-      keys | sort == [
-        "accountId",
-        "oceRevision",
-        "operation",
-        "region",
-        "repositoryPrefix",
-        "runId",
-        "sampleRevision",
-        "stackId",
-        "stackName",
-        "status",
-        "version"
-      ]
+      (
+        .version == 1
+        and (
+          keys | sort == [
+            "accountId",
+            "oceRevision",
+            "operation",
+            "region",
+            "repositoryPrefix",
+            "runId",
+            "sampleRevision",
+            "stackId",
+            "stackName",
+            "status",
+            "version"
+          ]
+        )
+      )
+      or (
+        .version == 2
+        and (
+          keys | sort == [
+            "accountId",
+            "oceRevision",
+            "operation",
+            "region",
+            "repositoryPrefix",
+            "runId",
+            "sampleRevision",
+            "stackId",
+            "stackName",
+            "status",
+            "targetPlatform",
+            "version"
+          ]
+        )
+      )
     ' >/dev/null ||
     die "receipt has an unexpected schema."
   printf '%s' "$receipt_json" |
     jq -e \
       --arg oceRevision "$OCE_SOURCE_PIN" '
-        .version == 1
+        (.version == 1 or .version == 2)
         and .operation == "image-build-stack"
         and (
           .status == "create-planned"
@@ -367,6 +508,13 @@ elif [[ "$action" == delete ]]; then
         and .stackName == ("openclaw-enterprise-images-" + .runId)
         and .repositoryPrefix == ("openclaw-enterprise/" + .runId)
         and (.sampleRevision | test("^[a-f0-9]{40}$"))
+        and (
+          (.version == 1 and (.targetPlatform == null))
+          or (
+            .version == 2
+            and (.targetPlatform == "linux/amd64" or .targetPlatform == "linux/arm64")
+          )
+        )
         and (
           (
             (.status == "create-planned" or .status == "create-unconfirmed")
@@ -400,6 +548,8 @@ elif [[ "$action" == delete ]]; then
   stack_name=$(printf '%s' "$receipt_json" | jq -r '.stackName')
   stack_id=$(printf '%s' "$receipt_json" | jq -r '.stackId')
   receipt_status=$(printf '%s' "$receipt_json" | jq -r '.status')
+  receipt_version=$(printf '%s' "$receipt_json" | jq -r '.version')
+  receipt_target_platform=$(printf '%s' "$receipt_json" | jq -r '.targetPlatform // empty')
   actual_account_id=$(
     aws sts get-caller-identity --query Account --output text
   )
@@ -444,6 +594,8 @@ elif [[ "$action" == delete ]]; then
       --arg accountId "$account_id" \
       --arg region "$region" \
       --arg runId "$run_id" \
+      --argjson receiptVersion "$receipt_version" \
+      --arg targetPlatform "$receipt_target_platform" \
       --arg managedBy "$MANAGED_BY" '
         .Stacks | length == 1
         and .[0].StackId == $stackId
@@ -454,6 +606,13 @@ elif [[ "$action" == delete ]]; then
         and (
           [.[0].Parameters[]? | select(.ParameterKey == "ValidationRunId")]
           == [{"ParameterKey": "ValidationRunId", "ParameterValue": $runId}]
+        )
+        and (
+          $receiptVersion == 1
+          or (
+            [.[0].Parameters[]? | select(.ParameterKey == "TargetPlatform")]
+            == [{"ParameterKey": "TargetPlatform", "ParameterValue": $targetPlatform}]
+          )
         )
         and (
           [.[0].Outputs[]? | select(.OutputKey == "ValidationRunId")] as $outputs

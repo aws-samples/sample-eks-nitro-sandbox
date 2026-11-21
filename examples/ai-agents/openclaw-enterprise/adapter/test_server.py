@@ -8,19 +8,27 @@ import os
 import unittest
 from unittest import mock
 
-from server import AdmissionHandler, admit, validate
+from server import (
+    AdmissionHandler,
+    admit,
+    validate,
+)
 from test_adapter import RUNTIME_IMAGE, apply_patch, target_pod
 
 OWNERSHIP_INIT_IMAGE = f"example.invalid/ownership-helper@sha256:{'b' * 64}"
 ADMISSION_USER = "system:serviceaccount:kube-system:replicaset-controller"
 DEPLOYMENT_USER = "system:serviceaccount:openclaw-system:openclaw-enterprise-worker"
 REPLICASET_USER = "system:kube-controller-manager"
+GARBAGE_COLLECTOR_USER = (
+    "system:serviceaccount:kube-system:generic-garbage-collector"
+)
 
 
 def review(
     pod: dict,
     *,
     operation: str = "CREATE",
+    old_pod: dict | None = None,
     subresource: str | None = None,
     resource: dict | None = None,
     username: str = ADMISSION_USER,
@@ -33,6 +41,8 @@ def review(
         "userInfo": {"username": username},
         "object": pod,
     }
+    if old_pod is not None:
+        request["oldObject"] = old_pod
     if subresource is not None:
         request["subResource"] = subresource
     return {
@@ -257,6 +267,166 @@ class AdmitTests(unittest.TestCase):
         )
         response = validate(review(final_pod))["response"]
         self.assertFalse(response["allowed"])
+
+    def test_validation_allows_only_unchanged_regular_pod_updates(self) -> None:
+        pod = target_pod()
+        final_pod = apply_patch(
+            pod, json.loads(base64.b64decode(admit(review(pod))["response"]["patch"]))
+        )
+
+        bookkeeping_update = copy.deepcopy(final_pod)
+        bookkeeping_update["metadata"].update(
+            {
+                "creationTimestamp": "2026-11-22T00:00:00Z",
+                "generation": 2,
+                "managedFields": [{"manager": "kubelet", "operation": "Update"}],
+                "resourceVersion": "42",
+            }
+        )
+        response = validate(
+            review(
+                bookkeeping_update,
+                operation="UPDATE",
+                old_pod=final_pod,
+            )
+        )["response"]
+        self.assertTrue(response["allowed"])
+
+        changed = copy.deepcopy(final_pod)
+        changed["metadata"].setdefault("annotations", {})["attacker.example/test"] = "x"
+        response = validate(
+            review(changed, operation="UPDATE", old_pod=final_pod)
+        )["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn("security metadata are immutable", response["status"]["message"])
+
+        changed = copy.deepcopy(final_pod)
+        changed["spec"]["activeDeadlineSeconds"] = 60
+        response = validate(
+            review(changed, operation="UPDATE", old_pod=final_pod)
+        )["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn("Pod spec is immutable", response["status"]["message"])
+
+    def test_validation_allows_lifecycle_metadata_removal_only(self) -> None:
+        pod = target_pod()
+        final_pod = apply_patch(
+            pod, json.loads(base64.b64decode(admit(review(pod))["response"]["patch"]))
+        )
+
+        deleting = copy.deepcopy(final_pod)
+        deleting["metadata"]["finalizers"] = ["openclaw.dev/cleanup"]
+        removed_finalizer = copy.deepcopy(deleting)
+        removed_finalizer["metadata"]["deletionTimestamp"] = "2026-11-22T00:00:00Z"
+        removed_finalizer["metadata"]["finalizers"] = []
+        response = validate(
+            review(
+                removed_finalizer,
+                operation="UPDATE",
+                old_pod=deleting,
+            )
+        )["response"]
+        self.assertTrue(response["allowed"])
+
+        orphaned = copy.deepcopy(final_pod)
+        orphaned["metadata"]["ownerReferences"] = []
+        response = validate(
+            review(
+                orphaned,
+                operation="UPDATE",
+                old_pod=final_pod,
+                username=GARBAGE_COLLECTOR_USER,
+            )
+        )["response"]
+        self.assertTrue(response["allowed"])
+
+        controller_orphaned = copy.deepcopy(final_pod)
+        controller_orphaned["metadata"]["ownerReferences"] = []
+        response = validate(
+            review(
+                controller_orphaned,
+                operation="UPDATE",
+                old_pod=final_pod,
+                username="system:kube-controller-manager",
+            )
+        )["response"]
+        self.assertTrue(response["allowed"])
+
+    def test_validation_rejects_lifecycle_metadata_addition_or_untrusted_removal(
+        self,
+    ) -> None:
+        pod = target_pod()
+        final_pod = apply_patch(
+            pod, json.loads(base64.b64decode(admit(review(pod))["response"]["patch"]))
+        )
+
+        added_finalizer = copy.deepcopy(final_pod)
+        added_finalizer["metadata"]["finalizers"] = ["attacker.example/hold"]
+        response = validate(
+            review(
+                added_finalizer,
+                operation="UPDATE",
+                old_pod=final_pod,
+            )
+        )["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn("finalizers permit removal only", response["status"]["message"])
+
+        final_pod["metadata"]["finalizers"] = ["openclaw.dev/cleanup"]
+        removed_before_deletion = copy.deepcopy(final_pod)
+        removed_before_deletion["metadata"]["finalizers"] = []
+        response = validate(
+            review(
+                removed_before_deletion,
+                operation="UPDATE",
+                old_pod=final_pod,
+            )
+        )["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn(
+            "finalizers may be removed only during deletion",
+            response["status"]["message"],
+        )
+
+        removed_owner = copy.deepcopy(final_pod)
+        removed_owner["metadata"]["ownerReferences"] = []
+        response = validate(
+            review(
+                removed_owner,
+                operation="UPDATE",
+                old_pod=final_pod,
+            )
+        )["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn("owner-reference controllers", response["status"]["message"])
+
+        changed_owner = copy.deepcopy(final_pod)
+        changed_owner["metadata"]["ownerReferences"][0]["uid"] = (
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        )
+        response = validate(
+            review(
+                changed_owner,
+                operation="UPDATE",
+                old_pod=final_pod,
+                username=GARBAGE_COLLECTOR_USER,
+            )
+        )["response"]
+        self.assertFalse(response["allowed"])
+        self.assertIn(
+            "owner references permit removal only",
+            response["status"]["message"],
+        )
+
+    def test_validation_denies_regular_pod_update_without_old_object(self) -> None:
+        pod = target_pod()
+        final_pod = apply_patch(
+            pod, json.loads(base64.b64decode(admit(review(pod))["response"]["patch"]))
+        )
+        response = validate(review(final_pod, operation="UPDATE"))["response"]
+
+        self.assertFalse(response["allowed"])
+        self.assertIn("old Pod must be an object", response["status"]["message"])
 
     def test_validation_rejects_post_mutation_contract_changes(self) -> None:
         pod = target_pod()

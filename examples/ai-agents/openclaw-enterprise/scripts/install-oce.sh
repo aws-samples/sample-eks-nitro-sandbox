@@ -253,6 +253,61 @@ write_private() {
   chmod 600 "$path"
 }
 
+sync_file_and_parent() {
+  local path=$1
+  python3 -I -c '
+import os
+import sys
+
+path = sys.argv[1]
+with open(path, "rb") as handle:
+    os.fsync(handle.fileno())
+directory = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+' "$path" || die "could not durably persist $path."
+}
+
+sync_directory() {
+  local path=$1
+  python3 -I -c '
+import os
+import sys
+
+directory = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(directory)
+finally:
+    os.close(directory)
+' "$path" || die "could not durably persist directory $path."
+}
+
+persist_private_file() {
+  local source=$1 destination=$2
+  [[ ! -e "$destination" && ! -L "$destination" ]] ||
+    die "refusing to overwrite existing bootstrap credential $destination."
+  chmod 600 "$source"
+  sync_file_and_parent "$source"
+  mv "$source" "$destination"
+  sync_directory "$(dirname "$destination")"
+}
+
+sha256_file() {
+  local path=$1
+  python3 -I -c '
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as handle:
+    for chunk in iter(lambda: handle.read(131072), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+' "$path" || die "could not hash $path."
+}
+
 normalize_hex_secret() {
   local LC_ALL=C label=$1 path=$2 expected_length=$3 value
   require_private_file "$label" "$path"
@@ -280,6 +335,10 @@ kubectl_error_is_not_found() {
   grep -Eq '(\(NotFound\)| not found|NotFound)' <<<"$1"
 }
 
+kubectl_error_is_already_exists() {
+  grep -Eq '(\(AlreadyExists\)|already exists|AlreadyExists)' <<<"$1"
+}
+
 resource_is_owned() {
   local kind=$1 name=$2
   local output status owner
@@ -303,6 +362,432 @@ apply_owned_resource() {
   resource_is_owned "$kind" "$name" || true
   "${KUBE[@]}" --namespace "$namespace" apply \
     --server-side --field-manager="$OWNER_LABEL" -f "$manifest" >/dev/null
+}
+
+require_kubernetes_uid() {
+  local label=$1 uid=$2
+  [[ "$uid" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
+    die "$label reported an invalid Kubernetes UID."
+}
+
+inspect_owned_resource() {
+  local kind=$1 name=$2 expected_owner=$3
+  local output status owner uid resource_version
+  INSPECTED_RESOURCE_PRESENT=false
+  INSPECTED_RESOURCE_UID=
+  INSPECTED_RESOURCE_VERSION=
+  INSPECTED_RESOURCE_JSON=
+  set +e
+  output=$("${KUBE[@]}" --namespace "$namespace" get "$kind" "$name" -o json 2>&1)
+  status=$?
+  set -e
+  if ((status != 0)); then
+    kubectl_error_is_not_found "$output" && return 0
+    die "could not inspect $kind/$name: $output"
+  fi
+  owner=$(jq -er '.metadata.labels["app.kubernetes.io/managed-by"]' <<<"$output") ||
+    die "$kind/$name is missing its ownership label."
+  [[ "$owner" == "$expected_owner" ]] ||
+    die "refusing to use $kind/$name; expected managed-by=$expected_owner."
+  uid=$(jq -er '.metadata.uid' <<<"$output") ||
+    die "$kind/$name is missing its UID."
+  require_kubernetes_uid "$kind/$name" "$uid"
+  resource_version=$(jq -er \
+    '.metadata.resourceVersion | select(type == "string" and length > 0)' \
+    <<<"$output") ||
+    die "$kind/$name is missing its resourceVersion."
+  INSPECTED_RESOURCE_PRESENT=true
+  INSPECTED_RESOURCE_UID=$uid
+  INSPECTED_RESOURCE_VERSION=$resource_version
+  INSPECTED_RESOURCE_JSON=$output
+}
+
+bootstrap_handoff_contract_matches() {
+  local pod_json=$1
+  [[ "$bootstrap_pod_receipt" =~ ^[a-f0-9]{64}$ ]] || return 1
+  jq -e \
+    --arg namespace "$namespace" \
+    --arg owner "$OWNER_LABEL" \
+    --arg image "$controller_image" \
+    --arg receipt "$bootstrap_pod_receipt" \
+    '
+      def normalized_container:
+        del(.terminationMessagePath, .terminationMessagePolicy)
+        | if .resources == {} then del(.resources) else . end;
+      .metadata.name == "oce-sample-bootstrap-handoff"
+      and .metadata.namespace == $namespace
+      and (.metadata.generateName // "") == ""
+      and (.metadata.ownerReferences // []) == []
+      and .metadata.labels == {
+        "app.kubernetes.io/managed-by": $owner,
+        "app.kubernetes.io/part-of": $owner,
+        "app.kubernetes.io/component": "bootstrap-handoff"
+      }
+      and .metadata.annotations[
+        "openclaw.dev/bootstrap-handoff-receipt"
+      ] == $receipt
+      and (.spec.dnsPolicy // "ClusterFirst") == "ClusterFirst"
+      and (.spec.schedulerName // "default-scheduler") == "default-scheduler"
+      and (.spec.serviceAccountName // "default") == "default"
+      and (.spec.serviceAccount // "default") == "default"
+      and (.spec.terminationGracePeriodSeconds // 30) == 30
+      and (.spec.priority // 0) == 0
+      and (
+        (.spec.preemptionPolicy // "PreemptLowerPriority")
+        == "PreemptLowerPriority"
+      )
+      and (
+        (.spec.nodeName // "") == ""
+        or (.spec.nodeName | type == "string" and length > 0)
+      )
+      and (
+        (.spec.tolerations // [])
+        | all(
+          (
+            .key == "node.kubernetes.io/not-ready"
+            or .key == "node.kubernetes.io/unreachable"
+          )
+          and .operator == "Exists"
+          and .effect == "NoExecute"
+          and .tolerationSeconds == 300
+        )
+      )
+      and (
+        (
+          .spec
+          | del(
+              .nodeName,
+              .dnsPolicy,
+              .schedulerName,
+              .serviceAccountName,
+              .serviceAccount,
+              .terminationGracePeriodSeconds,
+              .tolerations,
+              .priority,
+              .preemptionPolicy
+            )
+          | .containers |= map(normalized_container)
+        ) == {
+          automountServiceAccountToken: false,
+          enableServiceLinks: false,
+          restartPolicy: "Never",
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 1000,
+            runAsGroup: 1000,
+            fsGroup: 1000,
+            seccompProfile: {type: "RuntimeDefault"}
+          },
+          containers: [{
+            name: "handoff",
+            image: $image,
+            imagePullPolicy: "IfNotPresent",
+            command: ["node"],
+            args: ["-e", "setInterval(() => {}, 300000)"],
+            securityContext: {
+              allowPrivilegeEscalation: false,
+              readOnlyRootFilesystem: true,
+              capabilities: {drop: ["ALL"]}
+            },
+            volumeMounts: [{
+              name: "bootstrap",
+              mountPath: "/bootstrap"
+            }]
+          }],
+          volumes: [{
+            name: "bootstrap",
+            persistentVolumeClaim: {
+              claimName: "oce-sample-bootstrap-output"
+            }
+          }]
+        }
+      )
+    ' <<<"$pod_json" >/dev/null
+}
+
+require_bootstrap_handoff_contract() {
+  local pod_json=$1 expected_uid=$2 actual_uid
+  actual_uid=$(jq -er '.metadata.uid' <<<"$pod_json") ||
+    die "bootstrap handoff Pod is missing its UID."
+  require_kubernetes_uid "bootstrap handoff Pod" "$actual_uid"
+  [[ -z "$expected_uid" || "$actual_uid" == "$expected_uid" ]] ||
+    die "refusing to recover replaced pod/oce-sample-bootstrap-handoff."
+  bootstrap_handoff_contract_matches "$pod_json" ||
+    die "bootstrap handoff Pod does not match its journalled receipt and canonical specification."
+}
+
+kubernetes_resource_path() {
+  local kind=$1 name=$2
+  case "$kind" in
+    pod)
+      printf '/api/v1/namespaces/%s/pods/%s' "$namespace" "$name"
+      ;;
+    persistentvolumeclaim)
+      printf '/api/v1/namespaces/%s/persistentvolumeclaims/%s' \
+        "$namespace" "$name"
+      ;;
+    job)
+      printf '/apis/batch/v1/namespaces/%s/jobs/%s' "$namespace" "$name"
+      ;;
+    *)
+      die "raw deletion is not implemented for Kubernetes kind $kind."
+      ;;
+  esac
+}
+
+delete_owned_resource() {
+  local kind=$1 name=$2 expected_uid=$3 timeout=$4
+  local resource_path delete_options output status
+  inspect_owned_resource "$kind" "$name" "$OWNER_LABEL"
+  if [[ "$INSPECTED_RESOURCE_PRESENT" != true ]]; then
+    return 0
+  fi
+  [[ -n "$expected_uid" && "$INSPECTED_RESOURCE_UID" == "$expected_uid" ]] ||
+    die "refusing to delete replaced $kind/$name; UID does not match the handoff journal."
+  resource_path=$(kubernetes_resource_path "$kind" "$name")
+  delete_options=$(jq -cn \
+    --arg uid "$INSPECTED_RESOURCE_UID" \
+    --arg resource_version "$INSPECTED_RESOURCE_VERSION" \
+    '{
+      apiVersion: "v1",
+      kind: "DeleteOptions",
+      propagationPolicy: "Background",
+      preconditions: {
+        uid: $uid,
+        resourceVersion: $resource_version
+      }
+    }')
+  set +e
+  output=$("${KUBE[@]}" --namespace "$namespace" delete \
+    --raw="$resource_path" -f - <<<"$delete_options" 2>&1)
+  status=$?
+  set -e
+  if ((status != 0)); then
+    kubectl_error_is_not_found "$output" && return 0
+    die "preconditioned deletion failed for $kind/$name: $output"
+  fi
+  "${KUBE[@]}" --namespace "$namespace" wait \
+    --for=delete "$kind/$name" --timeout="$timeout"
+}
+
+require_storage_class_contract() {
+  local storage_class_json
+  storage_class_json=$("${KUBE[@]}" get storageclass \
+    "$runtime_storage_class" -o json) ||
+    die "required StorageClass $runtime_storage_class does not exist."
+  jq -e \
+    --arg name "$runtime_storage_class" \
+    --arg owner "$OWNER_LABEL" \
+    '
+      .metadata.name == $name
+      and .metadata.labels["app.kubernetes.io/managed-by"] == $owner
+      and .provisioner == "ebs.csi.eks.amazonaws.com"
+      and .parameters.type == "gp3"
+      and .parameters.encrypted == "true"
+      and .reclaimPolicy == "Delete"
+      and .volumeBindingMode == "WaitForFirstConsumer"
+    ' <<<"$storage_class_json" >/dev/null ||
+    die "StorageClass $runtime_storage_class must be blueprint-owned encrypted gp3 with reclaimPolicy=Delete."
+}
+
+validate_occ_receipt() {
+  [[ -d "$receipt" && ! -L "$receipt" ]] ||
+    die "OCC receipt must be a directory, not a symbolic link."
+  require_private_file "OCC receipt intent" "$receipt/intent.json"
+  require_private_file "OCC receipt dispatch state" "$receipt/dispatch.json"
+  require_private_file "OCC receipt Helm result" "$receipt/helm-result.json"
+  occ_receipt_attempt=$(python3 -I -c '
+import json
+import sys
+from pathlib import Path
+
+intent_path, dispatch_path, result_path, namespace, release = sys.argv[1:]
+try:
+    intent = json.loads(Path(intent_path).read_text(encoding="utf-8"))
+    dispatch = json.loads(Path(dispatch_path).read_text(encoding="utf-8"))
+    result = json.loads(Path(result_path).read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError):
+    raise SystemExit("invalid OCC receipt JSON")
+attempt = intent.get("attempt")
+valid_intent = (
+    intent.get("version") == 1
+    and intent.get("operation") == "helm-install"
+    and intent.get("namespace") == namespace
+    and intent.get("release") == release
+    and isinstance(attempt, str)
+    and bool(attempt)
+)
+if not valid_intent:
+    raise SystemExit("OCC receipt intent does not match this install")
+if dispatch != {"outcome": "unknown"}:
+    raise SystemExit("invalid OCC dispatch state")
+if result not in ({"outcome": "succeeded"}, {"outcome": "recovered"}):
+    raise SystemExit("OCC receipt does not prove a successful install")
+print(attempt)
+' "$receipt/intent.json" "$receipt/dispatch.json" \
+    "$receipt/helm-result.json" "$namespace" "$release") ||
+    die "OCC receipt does not prove a successful install for this target."
+  require_kubernetes_uid "OCC installation attempt" "$occ_receipt_attempt"
+}
+
+require_deployed_release_attempt() {
+  local helm_values live_attempt
+  helm_values=$(helm get values "$release" \
+    --kubeconfig "$kubeconfig" --kube-context "$kube_context" \
+    --namespace "$namespace" --output json) ||
+    die "could not inspect Helm values for deployed release $release."
+  live_attempt=$(jq -er \
+    '.installationAttempt | select(type == "string" and length > 0)' \
+    <<<"$helm_values") ||
+    die "deployed release $release has no OCC installation attempt."
+  [[ "$live_attempt" == "$occ_receipt_attempt" ]] ||
+    die "deployed release $release does not match the OCC receipt attempt."
+}
+
+write_handoff_state() {
+  local phase=$1
+  [[ ! -L "$handoff_state" ]] ||
+    die "bootstrap handoff journal must not be a symlink."
+  python3 -I -c '
+import json
+import os
+import sys
+import tempfile
+
+(
+    path,
+    phase,
+    source,
+    cluster_arn,
+    context,
+    namespace,
+    release,
+    storage_class,
+    job_uid,
+    pvc_uid,
+    pv_name,
+    pv_uid,
+    pod_uid,
+    pod_receipt,
+    occ_attempt,
+    credential_key_sha256,
+    credential_password_sha256,
+) = sys.argv[1:]
+parent = os.path.dirname(path)
+data = {
+    "version": 3,
+    "phase": phase,
+    "source": source,
+    "clusterArn": cluster_arn,
+    "context": context,
+    "namespace": namespace,
+    "release": release,
+    "storageClass": storage_class,
+    "jobUid": job_uid,
+    "pvcUid": pvc_uid,
+    "pvName": pv_name,
+    "pvUid": pv_uid,
+    "podUid": pod_uid,
+    "podReceipt": pod_receipt,
+    "occAttempt": occ_attempt,
+    "credentialKeySha256": credential_key_sha256,
+    "credentialPasswordSha256": credential_password_sha256,
+}
+descriptor, temporary = tempfile.mkstemp(
+    dir=parent, prefix=".bootstrap-handoff.", text=True
+)
+try:
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, sort_keys=True, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+except BaseException:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+' "$handoff_state" "$phase" "$OCE_SOURCE_PIN" "$cluster_arn" \
+    "$kube_context" "$namespace" "$release" "$runtime_storage_class" \
+    "$bootstrap_job_uid" "$bootstrap_pvc_uid" "$bootstrap_pv" \
+    "$bootstrap_pv_uid" "$bootstrap_pod_uid" "$bootstrap_pod_receipt" \
+    "$occ_attempt" \
+    "$credential_key_sha256" "$credential_password_sha256" ||
+    die "could not persist the bootstrap handoff journal."
+  handoff_phase=$phase
+}
+
+load_handoff_state() {
+  require_private_file "bootstrap handoff journal" "$handoff_state"
+  jq -e \
+    --arg source "$OCE_SOURCE_PIN" \
+    --arg cluster_arn "$cluster_arn" \
+    --arg context "$kube_context" \
+    --arg namespace "$namespace" \
+    --arg release "$release" \
+    --arg storage_class "$runtime_storage_class" \
+    '
+      .phase as $phase
+      | .version == 3
+      and .source == $source
+      and .clusterArn == $cluster_arn
+      and .context == $context
+      and .namespace == $namespace
+      and .release == $release
+      and .storageClass == $storage_class
+      and (.phase | type == "string")
+      and (.jobUid | type == "string")
+      and (.pvcUid | type == "string")
+      and (.pvName | type == "string")
+      and (.pvUid | type == "string")
+      and (.podUid | type == "string")
+      and (.podReceipt | test("^[a-f0-9]{64}$"))
+      and (.occAttempt | type == "string")
+      and (.credentialKeySha256 | type == "string")
+      and (.credentialPasswordSha256 | type == "string")
+      and (
+        if (
+          $phase == "credentials-local"
+          or $phase == "credentials-erased"
+          or $phase == "pod-deleted"
+          or $phase == "job-deleted"
+          or $phase == "pvc-deleted"
+          or $phase == "pv-deleted"
+        )
+        then
+          (.credentialKeySha256 | test("^[a-f0-9]{64}$"))
+          and (.credentialPasswordSha256 | test("^[a-f0-9]{64}$"))
+        else
+          .credentialKeySha256 == ""
+          and .credentialPasswordSha256 == ""
+        end
+      )
+    ' "$handoff_state" >/dev/null ||
+    die "bootstrap handoff journal does not match this install request."
+  handoff_phase=$(jq -er '.phase' "$handoff_state")
+  bootstrap_job_uid=$(jq -er '.jobUid' "$handoff_state")
+  bootstrap_pvc_uid=$(jq -er '.pvcUid' "$handoff_state")
+  bootstrap_pv=$(jq -er '.pvName' "$handoff_state")
+  bootstrap_pv_uid=$(jq -er '.pvUid' "$handoff_state")
+  bootstrap_pod_uid=$(jq -er '.podUid' "$handoff_state")
+  bootstrap_pod_receipt=$(jq -er '.podReceipt' "$handoff_state")
+  occ_attempt=$(jq -er '.occAttempt' "$handoff_state")
+  credential_key_sha256=$(jq -er '.credentialKeySha256' "$handoff_state")
+  credential_password_sha256=$(jq -er \
+    '.credentialPasswordSha256' "$handoff_state")
+  case "$handoff_phase" in
+    prepared|volume-ready|installed|handoff-pod-ready|credentials-local|\
+      credentials-erased|pod-deleted|job-deleted|pvc-deleted|pv-deleted) ;;
+    *) die "bootstrap handoff journal has an invalid phase." ;;
+  esac
 }
 
 aws_account_id=
@@ -332,6 +817,16 @@ database_migration_url_file=
 database_ca_file=
 cluster_api_cidrs=()
 database_cidrs=()
+handoff_phase=
+bootstrap_job_uid=
+bootstrap_pvc_uid=
+bootstrap_pv=
+bootstrap_pv_uid=
+bootstrap_pod_uid=
+bootstrap_pod_receipt=
+occ_attempt=
+credential_key_sha256=
+credential_password_sha256=
 
 while (($#)); do
   case "$1" in
@@ -435,7 +930,7 @@ else
   done
 fi
 
-for prerequisite in aws kubectl helm git go openssl base64 python3 install mktemp sed grep tr stat; do
+for prerequisite in aws kubectl helm git go openssl base64 python3 install mktemp sed grep tr stat jq; do
   require_command "$prerequisite"
 done
 require_helm_3
@@ -471,6 +966,7 @@ receipt=$(python3 -c \
 database_app_url_value="$state_dir/database-application-url"
 database_migration_url_value="$state_dir/database-migration-url"
 database_ca_value="$state_dir/database-ca.pem"
+handoff_state="$state_dir/bootstrap-handoff-state.json"
 if [[ "$validation_postgres" != true ]]; then
   install_postgres_url --database-app-url-file \
     "$database_app_url_file" "$database_app_url_value"
@@ -549,29 +1045,89 @@ HELM_RELEASE_STATES=(
 )
 "${KUBE[@]}" get namespace kube-system -o name >/dev/null ||
   die "cannot reach kube-system through the selected context."
-"${KUBE[@]}" get storageclass "$runtime_storage_class" -o name >/dev/null ||
-  die "required StorageClass $runtime_storage_class does not exist."
+require_storage_class_contract
 
 release_names=$(helm list --kubeconfig "$kubeconfig" --kube-context "$kube_context" \
   --namespace "$namespace" "${HELM_RELEASE_STATES[@]}" --short)
+deployed_release_names=$(helm list --kubeconfig "$kubeconfig" \
+  --kube-context "$kube_context" --namespace "$namespace" --deployed --short)
 marker="$state_dir/install.complete"
+resume_handoff=false
 if grep -Fqx "$release" <<<"$release_names"; then
-  [[ -f "$marker" && ! -L "$marker" && -d "$receipt" &&
-    -f "$receipt/resources.json" && ! -L "$receipt/resources.json" ]] ||
-    die "Helm release $release exists without this installer's completion evidence."
-  if ! grep -Fqx "source=$OCE_SOURCE_PIN" "$marker" ||
-    ! grep -Fqx "cluster_arn=$cluster_arn" "$marker" ||
-    ! grep -Fqx "context=$kube_context" "$marker" ||
-    ! grep -Fqx "namespace=$namespace" "$marker" ||
-    ! grep -Fqx "release=$release" "$marker"; then
-    die "existing release $release does not match this install request."
+  grep -Fqx "$release" <<<"$deployed_release_names" ||
+    die "Helm release $release exists but is not deployed; refusing bootstrap recovery."
+  if [[ -f "$marker" && ! -L "$marker" && -d "$receipt" &&
+    -f "$receipt/resources.json" && ! -L "$receipt/resources.json" ]]; then
+    if ! grep -Fqx "source=$OCE_SOURCE_PIN" "$marker" ||
+      ! grep -Fqx "cluster_arn=$cluster_arn" "$marker" ||
+      ! grep -Fqx "context=$kube_context" "$marker" ||
+      ! grep -Fqx "namespace=$namespace" "$marker" ||
+      ! grep -Fqx "release=$release" "$marker"; then
+      die "existing release $release does not match this install request."
+    fi
+    validate_occ_receipt
+    require_deployed_release_attempt
+    printf 'OpenClaw Enterprise release %s is already installed with matching evidence.\n' "$release"
+    exit 0
   fi
-  printf 'OpenClaw Enterprise release %s is already installed with matching evidence.\n' "$release"
-  exit 0
+  [[ -d "$receipt" && ! -L "$receipt" &&
+    -f "$receipt/intent.json" && ! -L "$receipt/intent.json" &&
+    -f "$handoff_state" && ! -L "$handoff_state" ]] ||
+    die "Helm release $release exists without resumable handoff evidence."
+  load_handoff_state
+  validate_occ_receipt
+  require_deployed_release_attempt
+  case "$handoff_phase" in
+    volume-ready)
+      [[ -z "$occ_attempt" || "$occ_attempt" == "$occ_receipt_attempt" ]] ||
+        die "bootstrap handoff journal does not match the OCC receipt attempt."
+      occ_attempt=$occ_receipt_attempt
+      write_handoff_state installed
+      ;;
+    installed|handoff-pod-ready|credentials-local|credentials-erased|\
+      pod-deleted|job-deleted|pvc-deleted|pv-deleted)
+      [[ "$occ_attempt" == "$occ_receipt_attempt" ]] ||
+        die "bootstrap handoff journal does not match the OCC receipt attempt."
+      ;;
+    *)
+      die "bootstrap handoff journal does not prove OCC reached the deployed release."
+      ;;
+  esac
+  [[ -n "$bootstrap_job_uid" && -n "$bootstrap_pvc_uid" &&
+    -n "$bootstrap_pv" && -n "$bootstrap_pv_uid" ]] ||
+    die "bootstrap handoff journal is missing bound resource identities."
+  require_kubernetes_uid "bootstrap preparation Job" "$bootstrap_job_uid"
+  require_kubernetes_uid "bootstrap output PVC" "$bootstrap_pvc_uid"
+  is_dns_subdomain "$bootstrap_pv" ||
+    die "bootstrap handoff journal contains an invalid persistent volume name."
+  require_kubernetes_uid "bootstrap output PV" "$bootstrap_pv_uid"
+  [[ -z "$bootstrap_pod_uid" ]] ||
+    require_kubernetes_uid "bootstrap handoff Pod" "$bootstrap_pod_uid"
+  resume_handoff=true
+else
+  ! grep -Fqx "$release" <<<"$deployed_release_names" ||
+    die "Helm deployed-release lookup disagrees with the all-state lookup."
+  [[ ! -e "$marker" ]] ||
+    die "release is absent but completion evidence exists; inspect the prior OCC attempt."
+  if [[ -e "$receipt" || -L "$receipt" ]]; then
+    if [[ -d "$receipt" && ! -L "$receipt" &&
+      -f "$receipt/intent.json" && ! -L "$receipt/intent.json" &&
+      ! -e "$receipt/dispatch.json" && ! -L "$receipt/dispatch.json" ]]; then
+      die "release is unused and the OCC receipt records an undispatched intent. Preserve it and rerun with a new --receipt directory after confirming the original OCC process exited."
+    fi
+    die "release is absent but the OCC receipt may record a dispatched attempt. Preserve it and reconcile the original attempt with occ installation plan; do not retry."
+  fi
+  if [[ -e "$handoff_state" || -L "$handoff_state" ]]; then
+    load_handoff_state
+  else
+    bootstrap_pod_receipt=$(openssl rand -hex 32)
+    [[ "$bootstrap_pod_receipt" =~ ^[a-f0-9]{64}$ ]] ||
+      die "could not generate a valid bootstrap handoff receipt."
+    write_handoff_state prepared
+  fi
 fi
-[[ ! -e "$marker" && ! -e "$receipt" ]] ||
-  die "release is absent but receipt or completion evidence exists; inspect the prior OCC attempt."
 
+if [[ "$resume_handoff" != true ]]; then
 namespace_manifest="$state_dir/namespace.yaml"
 write_private "$namespace_manifest" printf '%s\n' \
 "apiVersion: v1
@@ -1015,6 +1571,51 @@ fi
 "${KUBE[@]}" --namespace "$namespace" wait \
   --for=condition=complete job/oce-sample-bootstrap-volume-prep --timeout=120s
 
+previous_job_uid=$bootstrap_job_uid
+inspect_owned_resource job oce-sample-bootstrap-volume-prep "$OWNER_LABEL"
+[[ "$INSPECTED_RESOURCE_PRESENT" == true ]] ||
+  die "bootstrap preparation Job disappeared before installation."
+[[ -z "$previous_job_uid" || "$previous_job_uid" == "$INSPECTED_RESOURCE_UID" ]] ||
+  die "bootstrap preparation Job was replaced during a retry."
+bootstrap_job_uid=$INSPECTED_RESOURCE_UID
+
+previous_pvc_uid=$bootstrap_pvc_uid
+inspect_owned_resource persistentvolumeclaim oce-sample-bootstrap-output "$OWNER_LABEL"
+[[ "$INSPECTED_RESOURCE_PRESENT" == true ]] ||
+  die "bootstrap output PVC disappeared before installation."
+[[ -z "$previous_pvc_uid" || "$previous_pvc_uid" == "$INSPECTED_RESOURCE_UID" ]] ||
+  die "bootstrap output PVC was replaced during a retry."
+bootstrap_pvc_uid=$INSPECTED_RESOURCE_UID
+bootstrap_pv=$(jq -er '.spec.volumeName' <<<"$INSPECTED_RESOURCE_JSON") ||
+  die "could not identify the bootstrap output volume."
+is_dns_subdomain "$bootstrap_pv" ||
+  die "bootstrap output claim reported an invalid persistent volume name."
+
+bootstrap_pv_json=$("${KUBE[@]}" get "persistentvolume/$bootstrap_pv" -o json) ||
+  die "could not inspect bootstrap output persistentvolume/$bootstrap_pv."
+current_pv_uid=$(jq -er '.metadata.uid' <<<"$bootstrap_pv_json") ||
+  die "bootstrap output persistent volume is missing its UID."
+require_kubernetes_uid "bootstrap output persistent volume" "$current_pv_uid"
+[[ -z "$bootstrap_pv_uid" || "$bootstrap_pv_uid" == "$current_pv_uid" ]] ||
+  die "bootstrap output persistent volume was replaced during a retry."
+bootstrap_pv_uid=$current_pv_uid
+jq -e \
+  --arg name "$bootstrap_pv" \
+  --arg storage_class "$runtime_storage_class" \
+  --arg namespace "$namespace" \
+  --arg pvc_uid "$bootstrap_pvc_uid" \
+  '
+    .metadata.name == $name
+    and .spec.storageClassName == $storage_class
+    and .spec.persistentVolumeReclaimPolicy == "Delete"
+    and .spec.csi.driver == "ebs.csi.eks.amazonaws.com"
+    and .spec.claimRef.namespace == $namespace
+    and .spec.claimRef.name == "oce-sample-bootstrap-output"
+    and .spec.claimRef.uid == $pvc_uid
+  ' <<<"$bootstrap_pv_json" >/dev/null ||
+  die "bootstrap output persistent volume does not match the encrypted EBS deletion contract."
+write_handoff_state volume-ready
+
 rendered="$state_dir/rendered.yaml"
 helm template "$release" "$chart_dir" --namespace "$namespace" \
   --values "$values_yaml" \
@@ -1030,6 +1631,320 @@ chmod 600 "$rendered"
   --values "$values_yaml" \
   --receipt "$receipt" \
   --wait-timeout "$wait_timeout"
+post_occ_deployed_releases=$(helm list --kubeconfig "$kubeconfig" \
+  --kube-context "$kube_context" --namespace "$namespace" --deployed --short)
+grep -Fqx "$release" <<<"$post_occ_deployed_releases" ||
+  die "OCC returned without a deployed Helm release $release."
+validate_occ_receipt
+require_deployed_release_attempt
+occ_attempt=$occ_receipt_attempt
+write_handoff_state installed
+fi
+
+bootstrap_key="$state_dir/initial-admin-service-key.json"
+bootstrap_password="$state_dir/initial-admin-password"
+
+bootstrap_handoff="$state_dir/bootstrap-handoff.yaml"
+write_private "$bootstrap_handoff" printf '%s\n' \
+"apiVersion: v1
+kind: Pod
+metadata:
+  name: oce-sample-bootstrap-handoff
+  namespace: $namespace
+  annotations:
+    openclaw.dev/bootstrap-handoff-receipt: \"$bootstrap_pod_receipt\"
+  labels:
+    app.kubernetes.io/managed-by: $OWNER_LABEL
+    app.kubernetes.io/part-of: $OWNER_LABEL
+    app.kubernetes.io/component: bootstrap-handoff
+spec:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: handoff
+      image: \"$controller_image\"
+      imagePullPolicy: IfNotPresent
+      command: [node]
+      args: [-e, \"setInterval(() => {}, 300000)\"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: bootstrap
+          mountPath: /bootstrap
+  volumes:
+    - name: bootstrap
+      persistentVolumeClaim:
+        claimName: oce-sample-bootstrap-output"
+
+(
+  bootstrap_reader_live=false
+  remote_erasure_recorded=false
+  bootstrap_key_tmp=
+  bootstrap_password_tmp=
+  bootstrap_create_error=
+  cleanup_bootstrap_handoff() {
+    trap - EXIT
+    rm -f "${bootstrap_key_tmp:-}" "${bootstrap_password_tmp:-}" \
+      "${bootstrap_create_error:-}"
+    if [[ "$bootstrap_reader_live" == true &&
+      "$remote_erasure_recorded" == true &&
+      -n "$bootstrap_pod_uid" ]]; then
+      set +e
+      cleanup_pod=$("${KUBE[@]}" --namespace "$namespace" get \
+        pod oce-sample-bootstrap-handoff -o json 2>/dev/null)
+      cleanup_status=$?
+      set -e
+      if ((cleanup_status == 0)); then
+        cleanup_owner=$(jq -r \
+          '.metadata.labels["app.kubernetes.io/managed-by"] // ""' \
+          <<<"$cleanup_pod")
+        cleanup_uid=$(jq -r '.metadata.uid // ""' <<<"$cleanup_pod")
+        cleanup_resource_version=$(jq -r \
+          '.metadata.resourceVersion // ""' <<<"$cleanup_pod")
+        if [[ "$cleanup_owner" == "$OWNER_LABEL" &&
+          "$cleanup_uid" == "$bootstrap_pod_uid" &&
+          -n "$cleanup_resource_version" ]] &&
+          bootstrap_handoff_contract_matches "$cleanup_pod"; then
+          cleanup_delete_options=$(jq -cn \
+            --arg uid "$cleanup_uid" \
+            --arg resource_version "$cleanup_resource_version" \
+            '{
+              apiVersion: "v1",
+              kind: "DeleteOptions",
+              propagationPolicy: "Background",
+              preconditions: {
+                uid: $uid,
+                resourceVersion: $resource_version
+              }
+            }')
+          "${KUBE[@]}" --namespace "$namespace" delete \
+            --raw="/api/v1/namespaces/$namespace/pods/oce-sample-bootstrap-handoff" \
+            -f - <<<"$cleanup_delete_options" >/dev/null 2>&1 || true
+        fi
+      fi
+      set -e
+    fi
+  }
+  trap cleanup_bootstrap_handoff EXIT
+
+  bootstrap_key_local=false
+  if [[ -e "$bootstrap_key" || -L "$bootstrap_key" ]]; then
+    require_private_file "local bootstrap service key" "$bootstrap_key"
+    jq -e '.data.key | type == "string" and length > 0' \
+      "$bootstrap_key" >/dev/null ||
+      die "local bootstrap service key has an invalid format."
+    bootstrap_key_local=true
+  fi
+  bootstrap_password_local=false
+  if [[ -e "$bootstrap_password" || -L "$bootstrap_password" ]]; then
+    require_private_file "local bootstrap password" "$bootstrap_password"
+    [[ -s "$bootstrap_password" ]] ||
+      die "local bootstrap password is empty."
+    bootstrap_password_local=true
+  fi
+
+  case "$handoff_phase" in
+    credentials-erased|pod-deleted|job-deleted|pvc-deleted|pv-deleted)
+      remote_erasure_recorded=true
+      ;;
+  esac
+  credentials_local_recorded=false
+  case "$handoff_phase" in
+    credentials-local|credentials-erased|pod-deleted|job-deleted|pvc-deleted|\
+      pv-deleted)
+      credentials_local_recorded=true
+      ;;
+  esac
+  if [[ "$credentials_local_recorded" == true ]]; then
+    [[ "$bootstrap_key_local" == true && "$bootstrap_password_local" == true ]] ||
+      die "handoff journal records local credentials, but a credential is missing."
+    [[ "$(sha256_file "$bootstrap_key")" == "$credential_key_sha256" ]] ||
+      die "local bootstrap service key does not match the handoff journal."
+    [[ "$(sha256_file "$bootstrap_password")" == \
+      "$credential_password_sha256" ]] ||
+      die "local bootstrap password does not match the handoff journal."
+  fi
+  if [[ "$remote_erasure_recorded" == true &&
+    ( "$bootstrap_key_local" != true || "$bootstrap_password_local" != true ) ]]; then
+    die "handoff journal records erased cluster credentials, but a local credential is missing."
+  fi
+
+  inspect_owned_resource \
+    persistentvolumeclaim oce-sample-bootstrap-output "$OWNER_LABEL"
+  bootstrap_pvc_live=$INSPECTED_RESOURCE_PRESENT
+  if [[ "$bootstrap_pvc_live" == true &&
+    "$INSPECTED_RESOURCE_UID" != "$bootstrap_pvc_uid" ]]; then
+    die "refusing to mount replaced persistentvolumeclaim/oce-sample-bootstrap-output."
+  fi
+  if [[ "$bootstrap_pvc_live" != true &&
+    "$remote_erasure_recorded" != true ]]; then
+    die "bootstrap output PVC is gone before cluster credential erasure was recorded."
+  fi
+
+  if [[ "$bootstrap_pvc_live" == true &&
+    "$remote_erasure_recorded" != true ]]; then
+    if [[ -z "$bootstrap_pod_uid" ]]; then
+      bootstrap_create_error=$(mktemp \
+        "$state_dir/bootstrap-create-error.XXXXXX")
+      set +e
+      bootstrap_pod_json=$("${KUBE[@]}" --namespace "$namespace" create \
+        -f "$bootstrap_handoff" -o json 2>"$bootstrap_create_error")
+      bootstrap_create_status=$?
+      set -e
+      bootstrap_create_message=$(<"$bootstrap_create_error")
+      rm -f "$bootstrap_create_error"
+      bootstrap_create_error=
+      if ((bootstrap_create_status != 0)); then
+        if kubectl_error_is_already_exists "$bootstrap_create_message"; then
+          die "refusing to adopt existing pod/oce-sample-bootstrap-handoff without a journalled UID."
+        fi
+        die "exclusive creation failed for bootstrap handoff Pod: $bootstrap_create_message"
+      fi
+      require_bootstrap_handoff_contract "$bootstrap_pod_json" ""
+      bootstrap_pod_uid=$(jq -er '.metadata.uid' <<<"$bootstrap_pod_json")
+      if [[ "$credentials_local_recorded" == true ]]; then
+        write_handoff_state credentials-local
+      else
+        write_handoff_state handoff-pod-ready
+      fi
+    fi
+    inspect_owned_resource pod oce-sample-bootstrap-handoff "$OWNER_LABEL"
+    [[ "$INSPECTED_RESOURCE_PRESENT" == true ]] ||
+      die "journalled bootstrap handoff Pod is missing."
+    require_bootstrap_handoff_contract \
+      "$INSPECTED_RESOURCE_JSON" "$bootstrap_pod_uid"
+    bootstrap_reader_live=true
+    "${KUBE[@]}" --namespace "$namespace" wait \
+      --for=condition=Ready pod/oce-sample-bootstrap-handoff --timeout=120s
+
+    if [[ "$credentials_local_recorded" != true ]]; then
+      bootstrap_key_tmp=$(mktemp "$state_dir/bootstrap-key.XXXXXX")
+      write_private "$bootstrap_key_tmp" \
+        "${KUBE[@]}" --namespace "$namespace" exec \
+        pod/oce-sample-bootstrap-handoff -- node -e \
+        'process.stdout.write(require("node:fs").readFileSync(
+          "/bootstrap/initial-admin-service-key.json"))'
+      jq -e '.data.key | type == "string" and length > 0' \
+        "$bootstrap_key_tmp" >/dev/null ||
+        die "bootstrap service key has an invalid format."
+
+      bootstrap_password_tmp=$(mktemp "$state_dir/bootstrap-password.XXXXXX")
+      write_private "$bootstrap_password_tmp" \
+        "${KUBE[@]}" --namespace "$namespace" exec \
+        pod/oce-sample-bootstrap-handoff -- node -e \
+        'process.stdout.write(require("node:fs").readFileSync(
+          "/bootstrap/initial-admin-password"))'
+      [[ -s "$bootstrap_password_tmp" ]] ||
+        die "bootstrap password is empty."
+
+      if [[ "$bootstrap_key_local" == true ]]; then
+        [[ "$(sha256_file "$bootstrap_key")" == \
+          "$(sha256_file "$bootstrap_key_tmp")" ]] ||
+          die "existing local bootstrap service key does not match the deployed installation."
+        rm -f "$bootstrap_key_tmp"
+        bootstrap_key_tmp=
+      else
+        persist_private_file "$bootstrap_key_tmp" "$bootstrap_key"
+        bootstrap_key_tmp=
+        bootstrap_key_local=true
+      fi
+
+      if [[ "$bootstrap_password_local" == true ]]; then
+        [[ "$(sha256_file "$bootstrap_password")" == \
+          "$(sha256_file "$bootstrap_password_tmp")" ]] ||
+          die "existing local bootstrap password does not match the deployed installation."
+        rm -f "$bootstrap_password_tmp"
+        bootstrap_password_tmp=
+      else
+        persist_private_file "$bootstrap_password_tmp" "$bootstrap_password"
+        bootstrap_password_tmp=
+        bootstrap_password_local=true
+      fi
+
+      credential_key_sha256=$(sha256_file "$bootstrap_key")
+      credential_password_sha256=$(sha256_file "$bootstrap_password")
+      write_handoff_state credentials-local
+      credentials_local_recorded=true
+    fi
+
+    [[ "$(sha256_file "$bootstrap_key")" == "$credential_key_sha256" ]] ||
+      die "local bootstrap service key changed before cluster erasure."
+    [[ "$(sha256_file "$bootstrap_password")" == \
+      "$credential_password_sha256" ]] ||
+      die "local bootstrap password changed before cluster erasure."
+    "${KUBE[@]}" --namespace "$namespace" exec \
+      pod/oce-sample-bootstrap-handoff -- node -e '
+        const fs = require("node:fs");
+        const files = [
+          "/bootstrap/initial-admin-service-key.json",
+          "/bootstrap/initial-admin-password",
+        ];
+        for (const file of files) {
+          fs.rmSync(file, {force: true});
+        }
+        if (files.some((file) => fs.existsSync(file))) {
+          throw new Error("bootstrap credential erasure verification failed");
+        }
+      '
+    write_handoff_state credentials-erased
+    remote_erasure_recorded=true
+  fi
+
+  require_private_file "local bootstrap service key" "$bootstrap_key"
+  jq -e '.data.key | type == "string" and length > 0' \
+    "$bootstrap_key" >/dev/null ||
+    die "bootstrap service key has an invalid format."
+  require_private_file "local bootstrap password" "$bootstrap_password"
+  [[ -s "$bootstrap_password" ]] || die "bootstrap password is empty."
+
+  inspect_owned_resource pod oce-sample-bootstrap-handoff "$OWNER_LABEL"
+  if [[ "$INSPECTED_RESOURCE_PRESENT" == true ]]; then
+    require_bootstrap_handoff_contract \
+      "$INSPECTED_RESOURCE_JSON" "$bootstrap_pod_uid"
+    delete_owned_resource pod oce-sample-bootstrap-handoff \
+      "$bootstrap_pod_uid" 120s
+  fi
+  bootstrap_reader_live=false
+  write_handoff_state pod-deleted
+
+  delete_owned_resource job oce-sample-bootstrap-volume-prep \
+    "$bootstrap_job_uid" 120s
+  write_handoff_state job-deleted
+
+  delete_owned_resource persistentvolumeclaim oce-sample-bootstrap-output \
+    "$bootstrap_pvc_uid" 120s
+  write_handoff_state pvc-deleted
+
+  set +e
+  bootstrap_pv_json=$("${KUBE[@]}" get \
+    "persistentvolume/$bootstrap_pv" -o json 2>&1)
+  bootstrap_pv_status=$?
+  set -e
+  if ((bootstrap_pv_status == 0)); then
+    current_pv_uid=$(jq -er '.metadata.uid' <<<"$bootstrap_pv_json") ||
+      die "bootstrap output persistent volume is missing its UID."
+    [[ "$current_pv_uid" == "$bootstrap_pv_uid" ]] ||
+      die "refusing to wait for replaced persistentvolume/$bootstrap_pv."
+    "${KUBE[@]}" wait --for=delete "persistentvolume/$bootstrap_pv" \
+      --timeout=180s
+  elif ! kubectl_error_is_not_found "$bootstrap_pv_json"; then
+    die "could not inspect persistentvolume/$bootstrap_pv: $bootstrap_pv_json"
+  fi
+  write_handoff_state pv-deleted
+  trap - EXIT
+  cleanup_bootstrap_handoff
+)
 
 declare -a receipt_resource_guards=()
 record_receipt_resource() {
@@ -1118,6 +2033,9 @@ write_private "$marker" printf '%s\n' \
   "context=$kube_context" \
   "namespace=$namespace" \
   "release=$release"
+sync_file_and_parent "$marker"
+rm -f "$handoff_state"
+sync_directory "$state_dir"
 
 printf 'Installed OpenClaw Enterprise release %s in namespace %s.\n' "$release" "$namespace"
 printf 'Receipt: %s\n' "$receipt"

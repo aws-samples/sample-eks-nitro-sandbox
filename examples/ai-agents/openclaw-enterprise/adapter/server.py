@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import logging
 import os
@@ -48,6 +49,12 @@ OCE_LABELS = (
     "openclaw.dev/revision",
     "openclaw.dev/service-principal",
     "openclaw.dev/workload-role",
+)
+KUBE_OWNER_REFERENCE_REMOVAL_USERS = frozenset(
+    {
+        "system:kube-controller-manager",
+        "system:serviceaccount:kube-system:generic-garbage-collector",
+    }
 )
 
 
@@ -208,6 +215,91 @@ def _validate_replicaset(replicaset: Any) -> None:
     _validate_template_labels(labels, spec.get("template"), "ReplicaSet.spec.template")
 
 
+def _removal_only(old_value: Any, new_value: Any, location: str) -> bool:
+    old_items = [] if old_value is None else old_value
+    new_items = [] if new_value is None else new_value
+    if not isinstance(old_items, list) or not isinstance(new_items, list):
+        raise AdmissionError(f"{location} must be an array")
+    remaining = list(old_items)
+    for item in new_items:
+        try:
+            remaining.remove(item)
+        except ValueError:
+            return False
+    return True
+
+
+def _validate_pod_update(
+    old_pod: Any,
+    new_pod: Any,
+    username: Any,
+) -> None:
+    """Allow API bookkeeping updates, but keep the admitted workload immutable."""
+    old_pod = _metadata(old_pod, "old Pod")
+    new_pod = _metadata(new_pod, "Pod")
+    validate_pod(old_pod)
+
+    if old_pod.get("spec") != new_pod.get("spec"):
+        raise AdmissionError("OpenClaw Enterprise Pod spec is immutable")
+
+    old_metadata = _metadata(old_pod.get("metadata"), "old Pod.metadata")
+    new_metadata = _metadata(new_pod.get("metadata"), "Pod.metadata")
+    validation_pod = copy.deepcopy(new_pod)
+    validation_metadata = _metadata(
+        validation_pod.get("metadata"),
+        "Pod.metadata",
+    )
+    for field in ("ownerReferences", "finalizers"):
+        if field in old_metadata:
+            validation_metadata[field] = copy.deepcopy(old_metadata[field])
+        else:
+            validation_metadata.pop(field, None)
+    validate_pod(validation_pod)
+
+    immutable_fields = (
+        "name",
+        "namespace",
+        "uid",
+        "labels",
+        "annotations",
+    )
+    if any(old_metadata.get(field) != new_metadata.get(field) for field in immutable_fields):
+        raise AdmissionError(
+            "OpenClaw Enterprise Pod identity and security metadata are immutable"
+        )
+    if not _removal_only(
+        old_metadata.get("finalizers"),
+        new_metadata.get("finalizers"),
+        "Pod.metadata.finalizers",
+    ):
+        raise AdmissionError(
+            "OpenClaw Enterprise Pod finalizers permit removal only"
+        )
+    if (
+        old_metadata.get("finalizers") != new_metadata.get("finalizers")
+        and not new_metadata.get("deletionTimestamp")
+    ):
+        raise AdmissionError(
+            "OpenClaw Enterprise Pod finalizers may be removed only during deletion"
+        )
+    if not _removal_only(
+        old_metadata.get("ownerReferences"),
+        new_metadata.get("ownerReferences"),
+        "Pod.metadata.ownerReferences",
+    ):
+        raise AdmissionError(
+            "OpenClaw Enterprise Pod owner references permit removal only"
+        )
+    if (
+        old_metadata.get("ownerReferences") != new_metadata.get("ownerReferences")
+        and username not in KUBE_OWNER_REFERENCE_REMOVAL_USERS
+    ):
+        raise AdmissionError(
+            "only Kubernetes owner-reference controllers may remove "
+            "OpenClaw Enterprise Pod owner references"
+        )
+
+
 def admit(review: Any) -> dict[str, Any]:
     """Build an AdmissionReview response without any HTTP dependencies."""
     uid = ""
@@ -285,6 +377,13 @@ def validate(review: Any) -> dict[str, Any]:
         if resource == POD_RESOURCE and operation == "CREATE" and not subresource:
             _validate_admission_user(request)
             validate_pod(request.get("object"))
+            response = {"uid": uid, "allowed": True}
+        elif resource == POD_RESOURCE and operation == "UPDATE" and not subresource:
+            _validate_pod_update(
+                request.get("oldObject"),
+                request.get("object"),
+                request.get("userInfo", {}).get("username"),
+            )
             response = {"uid": uid, "allowed": True}
         elif (
             resource == POD_RESOURCE

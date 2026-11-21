@@ -8,7 +8,6 @@ import os
 import pathlib
 import re
 import subprocess
-import sys
 import textwrap
 from typing import Any
 
@@ -220,9 +219,8 @@ def _install_fake_cli(bin_dir: pathlib.Path) -> None:
         NAMESPACE = "openclaw-enterprise-agw"
         SERVICE_ACCOUNT = "agentgateway"
         REGION_CONFIG_MAP = "agentgateway-aws-region"
-        ROLE_NAME = "openclaw-enterprise-agentgateway"
+        DEFAULT_ROLE_NAME = "openclaw-enterprise-agentgateway"
         POLICY_NAME = "openclaw-enterprise-bedrock-invoke"
-        ROLE_ARN = "arn:aws:iam::111122223333:role/" + ROLE_NAME
         ASSOCIATION_ID = "a-abcdefghijklmnopq"
         ASSOCIATION_ARN = (
             "arn:aws:eks:us-west-2:111122223333:"
@@ -237,6 +235,15 @@ def _install_fake_cli(bin_dir: pathlib.Path) -> None:
         args = sys.argv[1:]
         state_path = pathlib.Path(os.environ["FAKE_STATE"])
         state = json.loads(state_path.read_text())
+        if "--role-name" in args:
+            ROLE_NAME = args[args.index("--role-name") + 1]
+        elif "--role-arn" in args:
+            ROLE_NAME = args[args.index("--role-arn") + 1].rsplit("/", 1)[1]
+        elif state.get("role"):
+            ROLE_NAME = state["role"]["name"]
+        else:
+            ROLE_NAME = DEFAULT_ROLE_NAME
+        ROLE_ARN = "arn:aws:iam::111122223333:role/" + ROLE_NAME
         log_path = pathlib.Path(
             os.environ["FAKE_AWS_LOG" if tool == "aws" else "FAKE_KUBE_LOG"]
         )
@@ -534,9 +541,9 @@ def _run_setup(
             **(extra_env or {}),
         },
     )
-    calls = lambda path: [
-        json.loads(line) for line in path.read_text().splitlines()
-    ]
+    def calls(path: pathlib.Path) -> list[list[str]]:
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
     return result, calls(aws_log), calls(kube_log), json.loads(
         state_path.read_text()
     )
@@ -568,6 +575,23 @@ def test_requires_explicit_target() -> None:
     )
     assert result.returncode == 2
     assert "--aws-region is required" in result.stderr
+
+
+def test_rejects_invalid_iam_role_name() -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            *ARGS,
+            "--iam-role-name",
+            "invalid/role",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "--iam-role-name is invalid" in result.stderr
 
 
 def test_creates_exact_resources_and_private_receipt(
@@ -604,6 +628,7 @@ def test_creates_exact_resources_and_private_receipt(
     assert set(resources) == {
         "namespace",
         "serviceAccount",
+        "regionConfigMap",
         "iamRole",
         "inlinePolicy",
         "podIdentityAssociation",
@@ -622,6 +647,14 @@ def test_creates_exact_resources_and_private_receipt(
         "namespace": NAMESPACE,
         "name": SERVICE_ACCOUNT,
         "uid": SERVICE_ACCOUNT_UID,
+        "created": True,
+    }
+    assert resources["regionConfigMap"] == {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "namespace": NAMESPACE,
+        "name": REGION_CONFIG_MAP,
+        "uid": CONFIG_MAP_UID,
         "created": True,
     }
     role = resources["iamRole"]
@@ -653,21 +686,50 @@ def test_creates_exact_resources_and_private_receipt(
         "created": True,
     }
     assert re.fullmatch(r"[a-f0-9]{32}", association["invocationId"])
+    assert (
+        final["service_account"]["metadata"]["labels"][
+            "app.kubernetes.io/managed-by"
+        ]
+        == OWNER
+    )
+    assert (
+        final["region_config_map"]["metadata"]["labels"][
+            "app.kubernetes.io/managed-by"
+        ]
+        == OWNER
+    )
     assert final["role"]["trust"] == _trust_policy()
     assert final["role"]["inline_policies"][POLICY_NAME] == _bedrock_policy()
 
 
-def test_reuses_exact_resources_idempotently(tmp_path: pathlib.Path) -> None:
+def test_creates_custom_named_role_and_records_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    role_name = "openclaw-enterprise-agentgateway-validation"
     receipt = tmp_path / "receipt.json"
-    result, aws_calls, _, _ = _run_setup(
-        tmp_path, state=_owned_state(), args=_receipt_args(receipt)
+    result, aws_calls, _, final = _run_setup(
+        tmp_path,
+        state=_base_state(),
+        args=(*ARGS, "--iam-role-name", role_name, "--receipt", str(receipt)),
     )
     assert result.returncode == 0, result.stderr
-    assert not _mutating_aws_calls(aws_calls)
-    assert all(
-        item["created"] is False
-        for item in _receipt(receipt)["resources"].values()
+    role_arn = f"arn:aws:iam::{ACCOUNT}:role/{role_name}"
+    assert final["role"]["name"] == role_name
+    assert final["role"]["arn"] == role_arn
+    assert _receipt(receipt)["resources"]["iamRole"]["name"] == role_name
+    assert (
+        _receipt(receipt)["resources"]["inlinePolicy"]["roleName"]
+        == role_name
     )
+    assert _receipt(receipt)["resources"]["podIdentityAssociation"]["roleArn"] == role_arn
+    create = next(call for call in aws_calls if "create-role" in call)
+    assert create[create.index("--role-name") + 1] == role_name
+
+
+def test_reuses_exact_resources_idempotently(tmp_path: pathlib.Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    result, _, _, _ = _run_setup(tmp_path, args=_receipt_args(receipt))
+    assert result.returncode == 0, result.stderr
     before = receipt.read_bytes()
     result, aws_calls, _, _ = _run_setup(
         tmp_path, args=_receipt_args(receipt)
@@ -675,6 +737,19 @@ def test_reuses_exact_resources_idempotently(tmp_path: pathlib.Path) -> None:
     assert result.returncode == 0, result.stderr
     assert not _mutating_aws_calls(aws_calls)
     assert receipt.read_bytes() == before
+
+
+def test_refuses_resources_owned_by_another_invocation(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    result, aws_calls, _, _ = _run_setup(
+        tmp_path, state=_owned_state(), args=_receipt_args(receipt)
+    )
+    assert result.returncode != 0
+    assert "owned by another lifecycle invocation" in result.stderr
+    assert not _mutating_aws_calls(aws_calls)
+    assert not receipt.exists()
 
 
 @pytest.mark.parametrize(
@@ -786,6 +861,34 @@ def test_recovers_interrupted_creation_with_original_provenance(
         assert resources["podIdentityAssociation"]["created"] is True
 
 
+def test_interruption_journal_rejects_a_different_role_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    state = _base_state()
+    state["kill_after"] = "iam:create-role"
+    first, _, _, after_first = _run_setup(
+        tmp_path, state=state, args=_receipt_args(receipt)
+    )
+    assert first.returncode < 0
+
+    replacement_role = "openclaw-enterprise-agentgateway-replacement"
+    retry_args = (
+        *ARGS,
+        "--iam-role-name",
+        replacement_role,
+        "--receipt",
+        str(receipt),
+    )
+    second, aws_calls, _, _ = _run_setup(
+        tmp_path, state=after_first, args=retry_args
+    )
+
+    assert second.returncode != 0
+    assert "journal is invalid or belongs to another target" in second.stderr
+    assert not _mutating_aws_calls(aws_calls)
+
+
 def test_partial_create_response_fails_then_recovers(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -816,6 +919,7 @@ def test_receipt_records_mixed_created_and_reused_provenance(
     resources = _receipt(receipt)["resources"]
     assert resources["namespace"]["created"] is False
     assert resources["serviceAccount"]["created"] is False
+    assert resources["regionConfigMap"]["created"] is False
     assert resources["iamRole"]["created"] is True
     assert resources["inlinePolicy"]["created"] is True
     assert resources["podIdentityAssociation"]["created"] is True
@@ -830,6 +934,46 @@ def test_existing_receipt_rejects_replaced_live_identity(
     )
     assert first.returncode == 0, first.stderr
     state["role"]["role_id"] = "AROZZZZZZZZZZZZZZZZ"
+    second, aws_calls, _, _ = _run_setup(
+        tmp_path, state=state, args=_receipt_args(receipt)
+    )
+    assert second.returncode != 0
+    assert not _mutating_aws_calls(aws_calls)
+
+
+def test_legacy_receipt_requires_cleanup_with_its_original_revision(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    first, _, _, state = _run_setup(
+        tmp_path, state=_base_state(), args=_receipt_args(receipt)
+    )
+    assert first.returncode == 0, first.stderr
+    legacy_receipt = _receipt(receipt)
+    del legacy_receipt["resources"]["regionConfigMap"]
+    receipt.write_text(json.dumps(legacy_receipt), encoding="utf-8")
+
+    second, aws_calls, _, _ = _run_setup(
+        tmp_path, state=state, args=_receipt_args(receipt)
+    )
+
+    assert second.returncode != 0
+    assert (
+        "--receipt predates the region ConfigMap lifecycle contract; "
+        "use its original sample revision to clean up, then create a new receipt."
+    ) in second.stderr
+    assert not _mutating_aws_calls(aws_calls)
+
+
+def test_existing_receipt_rejects_replaced_region_config_map(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    first, _, _, state = _run_setup(
+        tmp_path, state=_base_state(), args=_receipt_args(receipt)
+    )
+    assert first.returncode == 0, first.stderr
+    state["region_config_map"]["metadata"]["uid"] = "replacement-uid"
     second, aws_calls, _, _ = _run_setup(
         tmp_path, state=state, args=_receipt_args(receipt)
     )

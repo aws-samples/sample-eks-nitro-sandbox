@@ -678,7 +678,7 @@ for pod_name in "$TENANT_A_POD" "$TENANT_B_POD"; do
 done
 
 for command_name in \
-  awk aws basename cat chmod cp date dirname git grep id jq kubectl mkdir mktemp node openssl rm \
+  awk aws basename cat chmod cp curl date dirname git grep id jq kubectl mkdir mktemp node openssl rm \
   sed sleep stat uname; do
   command -v "$command_name" >/dev/null 2>&1 || die "required command is unavailable: $command_name"
 done
@@ -884,6 +884,114 @@ pod_container_digest() {
   [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
     die "workload image ID contained an invalid digest"
   printf '%s' "$digest"
+}
+
+verify_ecr_image_revision() {
+  local evidence_alias="$1"
+  local image="$2"
+  local digest="$3"
+  local registry repository_ref repository expected_digest
+  local manifest_file config_file config_digest config_url
+
+  [[ "$image" == *".dkr.ecr."* ]] || return 0
+  registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/"
+  [[ "$image" == "$registry"* ]] ||
+    die "$evidence_alias image belongs to an unexpected ECR registry"
+  repository_ref="${image#"$registry"}"
+  [[ "$repository_ref" == *@sha256:* ]] ||
+    die "$evidence_alias ECR image is not pinned by digest"
+  repository="${repository_ref%@*}"
+  expected_digest="${repository_ref##*@}"
+  [[ "$repository" =~ ^[A-Za-z0-9._/-]+$ ]] ||
+    die "$evidence_alias ECR repository name is invalid"
+  [[ "$expected_digest" == "$digest" ]] ||
+    die "$evidence_alias running image digest does not match the deployed ECR reference"
+
+  manifest_file="$WORK_DIR/ecr-manifest-${evidence_alias}.json"
+  config_file="$WORK_DIR/ecr-config-${evidence_alias}.json"
+  aws ecr batch-get-image \
+    --region "$AWS_REGION" \
+    --registry-id "$AWS_ACCOUNT_ID" \
+    --repository-name "$repository" \
+    --image-ids "imageDigest=$digest" \
+    --accepted-media-types \
+    application/vnd.oci.image.manifest.v1+json \
+    application/vnd.docker.distribution.manifest.v2+json \
+    --output json >"$manifest_file"
+  jq -e \
+    --arg registry "$AWS_ACCOUNT_ID" \
+    --arg repository "$repository" \
+    --arg digest "$digest" '
+      (.failures | length) == 0
+      and (.images | length) == 1
+      and .images[0].registryId == $registry
+      and .images[0].repositoryName == $repository
+      and .images[0].imageId.imageDigest == $digest
+    ' "$manifest_file" >/dev/null ||
+    die "$evidence_alias ECR manifest lookup did not bind the requested digest"
+  config_digest="$(
+    jq -er '.images[0].imageManifest | fromjson | .config.digest' "$manifest_file"
+  )" || die "$evidence_alias ECR manifest did not contain an image config digest"
+  [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+    die "$evidence_alias ECR image config digest is invalid"
+  config_url="$(
+    aws ecr get-download-url-for-layer \
+      --region "$AWS_REGION" \
+      --registry-id "$AWS_ACCOUNT_ID" \
+      --repository-name "$repository" \
+      --layer-digest "$config_digest" \
+      --query downloadUrl \
+      --output text
+  )" || die "$evidence_alias ECR image config URL lookup failed"
+  [[ "$config_url" == https://* ]] ||
+    die "$evidence_alias ECR image config URL was not HTTPS"
+  curl --fail --silent --show-error \
+    --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 1048576 \
+    --output "$config_file" "$config_url" ||
+    die "$evidence_alias ECR image config download failed"
+  jq -e --arg revision "$GIT_REVISION" '
+    .config.Labels["org.opencontainers.image.revision"] == $revision
+  ' "$config_file" >/dev/null ||
+    die "$evidence_alias ECR image revision label does not match the candidate Git revision"
+  printf 'EVIDENCE\timage-source-revision-%s\t%s@%s revision=%s\n' \
+    "$evidence_alias" "$repository" "$digest" "$GIT_REVISION" >>"$EVIDENCE_FILE"
+}
+
+verify_pod_ecr_image_revisions() {
+  local evidence_alias="$1"
+  local pod_file="$2"
+  local index container image digest records_file
+
+  records_file="$WORK_DIR/ecr-images-${evidence_alias}.tsv"
+  jq -er '
+    def records($spec; $status):
+      ($spec // [])[] as $container
+      | (
+          [($status // [])[] | select(.name == $container.name)]
+          | if length == 1
+            then .[0]
+            else error("container image status is missing or ambiguous")
+            end
+        ) as $state
+      | [
+          $container.name,
+          $container.image,
+          (
+            $state.imageID
+            | capture("(?<digest>sha256:[0-9a-f]{64})$").digest
+          )
+        ]
+      | @tsv;
+    records(.spec.containers; .status.containerStatuses),
+    records(.spec.initContainers; .status.initContainerStatuses),
+    records(.spec.ephemeralContainers; .status.ephemeralContainerStatuses)
+  ' "$pod_file" >"$records_file" ||
+    die "$evidence_alias pod lacks complete immutable image status"
+  index=0
+  while IFS=$'\t' read -r container image digest; do
+    index=$((index + 1))
+    verify_ecr_image_revision "${evidence_alias}-${index}" "$image" "$digest"
+  done <"$records_file"
 }
 
 assert_no_aws_credential_paths() {
@@ -1361,6 +1469,7 @@ verify_runtime_pod() {
   ' "$output_file" >/dev/null || die "$tenant_alias security context check failed"
 
   assert_no_aws_credential_paths "$tenant_alias" "$output_file" "$container"
+  verify_pod_ecr_image_revisions "$tenant_alias" "$output_file"
 }
 
 CURRENT_CHECK="tenant-runtime-contract"
@@ -1888,7 +1997,7 @@ jq -e '
 capture_pod_list_evidence() {
   local evidence_alias="$1"
   local pod_list_file="$2"
-  local index uid container digest
+  local index pod_index uid container digest pod_file
   jq -e '
     (.items | length) > 0
     and all(.items[];
@@ -1936,6 +2045,13 @@ capture_pod_list_evidence() {
     | [.uid, .container, .digest]
     | @tsv
   ' "$pod_list_file")
+  pod_index=0
+  while IFS= read -r pod_json; do
+    pod_index=$((pod_index + 1))
+    pod_file="$WORK_DIR/${evidence_alias}-pod-${pod_index}.json"
+    printf '%s\n' "$pod_json" >"$pod_file"
+    verify_pod_ecr_image_revisions "${evidence_alias}-${pod_index}" "$pod_file"
+  done < <(jq -c '.items[]' "$pod_list_file")
 }
 
 capture_pod_list_evidence "agentgateway" "$WORK_DIR/agentgateway-pods.json"

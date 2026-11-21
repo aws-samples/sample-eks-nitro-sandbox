@@ -8,7 +8,6 @@ import signal
 from pathlib import Path
 
 import pytest
-
 from test_setup_agentgateway import (
     NAMESPACE,
     STATE_FILES,

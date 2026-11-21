@@ -301,7 +301,7 @@ webhooks:
           - deployments
           - replicasets
         scope: Namespaced
-  - name: deny-ephemeral-containers.openclaw-enterprise.sandbox.eks.amazonaws.com
+  - name: validate-pods.openclaw-enterprise.sandbox.eks.amazonaws.com
     admissionReviewVersions:
       - v1
     sideEffects: None
@@ -324,6 +324,7 @@ webhooks:
           - v1
         operations:
           - CREATE
+          - UPDATE
         resources:
           - pods
         scope: Namespaced

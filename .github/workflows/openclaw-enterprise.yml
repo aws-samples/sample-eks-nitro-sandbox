@@ -1,0 +1,102 @@
+name: OpenClaw Enterprise sample
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/openclaw-enterprise.yml'
+      - 'examples/ai-agents/openclaw-enterprise/**'
+      - 'README.md'
+      - 'docs/ROADMAP.md'
+      - 'mkdocs.yml'
+      - 'requirements.txt'
+      - 'scripts/check-agent-files.sh'
+      - 'scripts/check-sample-index.sh'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/openclaw-enterprise.yml'
+      - 'examples/ai-agents/openclaw-enterprise/**'
+      - 'README.md'
+      - 'docs/ROADMAP.md'
+      - 'mkdocs.yml'
+      - 'requirements.txt'
+      - 'scripts/check-agent-files.sh'
+      - 'scripts/check-sample-index.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: Static and unit checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12.16'
+          cache: pip
+          cache-dependency-path: examples/ai-agents/openclaw-enterprise/tests/requirements-ci.txt
+
+      - name: Set up Go
+        uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
+        with:
+          go-version: '1.25.14'
+          cache: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: '24.22.1'
+          cache: false
+
+      - name: Install validation tools
+        run: |
+          python -m pip install --disable-pip-version-check \
+            --require-hashes \
+            -r examples/ai-agents/openclaw-enterprise/tests/requirements-ci.txt
+
+      - name: Check shell scripts
+        run: |
+          shellcheck -S warning -x \
+            examples/ai-agents/openclaw-enterprise/scripts/*.sh \
+            examples/ai-agents/openclaw-enterprise/build/*.sh
+          bash -n \
+            examples/ai-agents/openclaw-enterprise/scripts/*.sh \
+            examples/ai-agents/openclaw-enterprise/build/*.sh
+
+      - name: Check Python and CloudFormation
+        run: |
+          ruff check \
+            examples/ai-agents/openclaw-enterprise/adapter \
+            examples/ai-agents/openclaw-enterprise/tests
+          cfn-lint examples/ai-agents/openclaw-enterprise/build/template.yaml
+
+      - name: Run contract tests
+        working-directory: examples/ai-agents/openclaw-enterprise
+        run: python -m pytest -q
+
+      - name: Test the ownership helper
+        working-directory: examples/ai-agents/openclaw-enterprise/ownership-helper
+        run: |
+          go test ./...
+          GOOS=linux GOARCH=amd64 go build ./...
+          GOOS=linux GOARCH=arm64 go build ./...
+
+      - name: Check repository structure and documentation
+        run: |
+          ./scripts/check-agent-files.sh
+          ./scripts/check-sample-index.sh
+          mkdocs build --strict

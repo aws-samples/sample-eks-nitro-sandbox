@@ -394,7 +394,21 @@ build_expected() {
   # shellcheck disable=SC2016
   AGW_TENANT_A_KEY_SHA256="$a" AGW_TENANT_B_KEY_SHA256="$b" envsubst \
     '${AGW_TENANT_A_KEY_SHA256} ${AGW_TENANT_B_KEY_SHA256}' <"$MANIFEST" >"$rendered"
-  grep -Eq '\\$[{A-Za-z_]' "$rendered" && die "rendered manifest contains an unresolved variable."
+  if ! python3 -I - "$rendered" <<'PY'
+import pathlib
+import re
+import sys
+
+text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+variables = re.findall(r"\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*", text)
+if variables != ["${AWS_REGION}"]:
+    raise SystemExit(
+        "rendered manifest must retain exactly one ${AWS_REGION} placeholder"
+    )
+PY
+  then
+    die "rendered manifest contains an unexpected variable."
+  fi
   yq -o=json -I=0 '.' "$rendered" >"$objects"
   python3 -I - "$objects" "$destination" "$NAMESPACE" <<'PY'
 import json, pathlib, sys

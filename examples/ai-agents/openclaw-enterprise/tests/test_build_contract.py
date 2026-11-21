@@ -26,6 +26,9 @@ OWNERSHIP_HELPER = SAMPLE / "ownership-helper"
 OWNERSHIP_HELPER_DOCKERFILE = OWNERSHIP_HELPER / "Dockerfile"
 STACK_MANAGER = SAMPLE / "scripts" / "manage-image-build-stack.sh"
 BUILDER_REPOSITORY_MANAGER = SAMPLE / "scripts" / "manage-builder-repository.sh"
+REPOSITORY_ROOT = SAMPLE.parents[2]
+WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "openclaw-enterprise.yml"
+CI_REQUIREMENTS = SAMPLE / "tests" / "requirements-ci.txt"
 
 
 class _CloudFormationLoader(yaml.SafeLoader):
@@ -91,6 +94,32 @@ def test_template_creates_four_immutable_scan_on_push_repositories() -> None:
             "EncryptionType": "KMS",
             "KmsKey": "ImageEncryptionKey.Arn",
         }
+
+
+def test_sample_workflow_pins_runner_toolchains_and_hashed_dependencies() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    requirements = CI_REQUIREMENTS.read_text(encoding="utf-8")
+
+    assert "runs-on: ubuntu-24.04" in workflow
+    assert "python-version: '3.12.16'" in workflow
+    assert "go-version: '1.25.14'" in workflow
+    assert "node-version: '24.22.1'" in workflow
+    assert "--require-hashes" in workflow
+    assert "tests/requirements-ci.txt" in workflow
+    assert "- 'README.md'" in workflow
+    assert "examples/README.md" not in workflow
+    for dependency in (
+        "cfn-lint==1.47.1",
+        "mkdocs==1.6.1",
+        "mkdocs-material==9.7.7",
+        "pymdown-extensions==12.1",
+        "pytest==9.0.3",
+        "pyyaml==6.0.3",
+        "ruff==0.17.6",
+    ):
+        assert dependency in requirements
+    assert " --hash=sha256:" in requirements
+    assert not re.search(r"(?m)^\s*(?:-e|--editable|-f|--find-links|https?://)", requirements)
 
 
 def test_ecr_repositories_are_empty_on_stack_delete() -> None:
@@ -236,6 +265,18 @@ def test_stack_inputs_are_exact_revisions_and_a_controller_digest() -> None:
         r"sha256:[0-9a-f]{64}",
         controller_digest["Default"],
     )
+
+
+def test_node_build_and_runtime_bases_come_from_the_pinned_oce_source() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert "read_oce_dockerfile_arg()" in script
+    assert "read_oce_dockerfile_arg NODE_BASE_IMAGE" in script
+    assert "read_oce_dockerfile_arg NODE_RUNTIME_BASE_IMAGE" in script
+    assert "@sha256:[0-9a-f]{64}$" in script
+    assert "-bookworm@sha256:" in script
+    assert "-bookworm-slim@sha256:" in script
+    assert "trixie" not in script
 
 
 def test_buildspec_defensively_rebinds_environment_input_overrides() -> None:
@@ -480,6 +521,29 @@ def test_privileged_builder_image_is_account_local_and_digest_pinned() -> None:
 
 def test_only_fixed_workflow_role_can_start_the_privileged_build() -> None:
     template = _template()
+    assert template["Rules"]["TrustedBuildInvokerIsInThisAccount"] == {
+        "Assertions": [{
+            "Assert": {
+                "Fn::Equals": [
+                    {
+                        "Fn::Select": [
+                            4,
+                            {
+                                "Fn::Split": [
+                                    ":",
+                                    {"Ref": "TrustedBuildInvokerArn"},
+                                ]
+                            },
+                        ]
+                    },
+                    {"Ref": "AWS::AccountId"},
+                ]
+            },
+            "AssertDescription": (
+                "TrustedBuildInvokerArn must belong to this AWS account."
+            ),
+        }]
+    }
     roles = _resources("AWS::IAM::Role")
     workflow_role = next(
         role
@@ -803,7 +867,7 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     )
     assert '--build-arg "OWNERSHIP_HELPER_BUILDER_IMAGE=' in script
     assert "--target runtime" in script
-    assert '--build-arg "NODE_BUILD_BASE_IMAGE=$node_base_image"' in script
+    assert '--build-arg "NODE_BUILD_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE"' in script
     assert (
         '--build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE"' in script
     )
@@ -811,13 +875,43 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
         '--file "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/'
         'build/controller-runtime.Dockerfile"' in script
     )
-    assert '--file "$OCE_SOURCE_DIR/deploy/runtime/Dockerfile"' in script
+    assert '--file "$OCE_RUNTIME_DOCKERFILE"' in script
+    assert '--build-arg "NODE_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE"' in script
+    assert (
+        '--build-arg "NODE_RUNTIME_BASE_IMAGE=$OCE_NODE_RUNTIME_BASE_IMAGE"' in script
+    )
     assert "node scripts/lib/openclaw-source.mjs build-args" in script
     assert 'OCE_MSAL_NODE_VERSION="7.2.0"' in script
     assert "check-oce-lock.py" in script
     assert script.count("docker buildx build") == 4
+    assert script.count("--provenance=false") == 4
+    assert (
+        script.count(
+            '--label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION"'
+        )
+        == 4
+    )
+    assert (
+        script.count(
+            '--label "org.openclaw.enterprise.source-revision=$OCE_SOURCE_REVISION"'
+        )
+        == 2
+    )
     assert "docker pull" not in script
     assert "skopeo copy" not in script
+
+
+def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert '"baseImage": os.environ["OCE_NODE_RUNTIME_BASE_IMAGE"]' in script
+    assert '"buildBaseImage": os.environ["OCE_NODE_BUILD_BASE_IMAGE"]' in script
+    assert script.count(
+        '"oceSourceRevision": os.environ["OCE_SOURCE_REVISION"]'
+    ) == 2
+    assert script.count(
+        '"sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"]'
+    ) == 4
 
 
 def test_build_script_checks_bash_four_before_using_mapfile() -> None:

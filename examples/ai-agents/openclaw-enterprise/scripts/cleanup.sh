@@ -30,8 +30,33 @@ AGW_SERVICE_ACCOUNT = "agentgateway"
 STORAGE_CLASS = "openclaw-enterprise-gp3"
 FREEZE_PREFIX = "openclaw-enterprise-cleanup-freeze-"
 FREEZE_KEY = "cleanup.openclaw.aws/"
+SETUP_KEY = "openclaw-enterprise.aws.dev/setup-token"
+POD_SETUP_KEY = "openclaw.enterprise/setup-invocation"
 INVOCATION_TAG = "OpenClawSetupInvocation"
 AWS_ABSENT = ("NoSuchEntity", "ResourceNotFoundException")
+TENANT_WORKLOADS = (
+    "pods,deployments.apps,statefulsets.apps,daemonsets.apps,"
+    "jobs.batch,cronjobs.batch,replicasets.apps"
+)
+AGW_RESOURCES = (
+    ("namespace", "_", AGW_NAMESPACE, "Namespace"),
+    ("serviceaccount", AGW_NAMESPACE, "agentgateway", "ServiceAccount"),
+    ("issuer.cert-manager.io", AGW_NAMESPACE, "agentgateway-selfsigned", "Issuer"),
+    ("certificate.cert-manager.io", AGW_NAMESPACE, "agentgateway-root", "Certificate"),
+    ("issuer.cert-manager.io", AGW_NAMESPACE, "agentgateway-ca", "Issuer"),
+    ("certificate.cert-manager.io", AGW_NAMESPACE, "agentgateway-serving", "Certificate"),
+    ("secret", AGW_NAMESPACE, "agw-client-key", "Secret"),
+    ("secret", AGW_NAMESPACE, "agw-session-key", "Secret"),
+    ("configmap", AGW_NAMESPACE, "agentgateway-config", "ConfigMap"),
+    ("deployment.apps", AGW_NAMESPACE, "agentgateway", "Deployment"),
+    (
+        "poddisruptionbudget.policy",
+        AGW_NAMESPACE,
+        "agentgateway",
+        "PodDisruptionBudget",
+    ),
+    ("service", AGW_NAMESPACE, "agentgateway", "Service"),
+)
 
 
 class CleanupError(Exception):
@@ -49,8 +74,10 @@ def parse_args():
     parser.add_argument("--namespace", default="openclaw-system")
     parser.add_argument("--release", default="oce")
     parser.add_argument("--tenant-namespace", action="append", default=[])
+    parser.add_argument("--delete-tenant-data", action="store_true")
     for flag in (
-        "storage-class-receipt", "agentgateway-pod-identity-receipt",
+        "storage-class-receipt", "agentgateway-receipt",
+        "agentgateway-pod-identity-receipt",
         "aws-region", "aws-account-id", "eks-cluster-name",
         "pod-identity-association-id", "iam-role-name", "iam-inline-policy-name",
     ):
@@ -68,6 +95,8 @@ def parse_args():
     reserved = {args.namespace, "openclaw-enterprise-adapter", AGW_NAMESPACE}
     if reserved & set(args.tenant_namespace):
         fail("a reserved namespace was supplied as a tenant namespace.")
+    if args.delete_tenant_data and not args.tenant_namespace:
+        fail("--delete-tenant-data requires at least one --tenant-namespace.")
     aws_fields = (
         "aws_region", "aws_account_id", "eks_cluster_name",
         "pod_identity_association_id", "iam_role_name", "iam_inline_policy_name",
@@ -77,6 +106,11 @@ def parse_args():
         fail("AgentGateway cleanup requires every AWS identifier.")
     if bool(args.agentgateway_pod_identity_receipt) != all(aws_values):
         fail("AgentGateway cleanup requires its lifecycle receipt and every AWS identifier.")
+    if bool(args.agentgateway_receipt) != bool(args.agentgateway_pod_identity_receipt):
+        fail(
+            "AgentGateway cleanup requires both its Kubernetes and Pod Identity "
+            "lifecycle receipts."
+        )
     if args.aws_account_id and not re.fullmatch(r"\d{12}", args.aws_account_id):
         fail("--aws-account-id must be a 12-digit AWS account ID.")
     if args.pod_identity_association_id and not re.fullmatch(
@@ -138,10 +172,14 @@ class Cleanup:
                   args.kube_context, "--request-timeout=20s"]
         self.h = ["helm", "--kubeconfig", args.kubeconfig, "--kube-context", args.kube_context]
         self.freeze_path = Path(args.state_dir) / "cleanup-freeze.json"
+        self.tenant_freeze_path = Path(args.state_dir) / "cleanup-tenant-freeze.json"
+        self.tenant_deletion_path = Path(args.state_dir) / "cleanup-tenant-deletion.json"
         self.freeze_started = False
+        self.tenant_freeze_started = False
+        self.admission_controls_dismantled = False
         self.endpoint = self.attempt = self.cluster_arn = ""
         self.install_uids = {}
-        self.storage = self.pod = None
+        self.storage = self.pod = self.gateway = None
 
     def kubectl(self, *args, stdin=None):
         return run([*self.k, *args], stdin=stdin)
@@ -252,13 +290,50 @@ class Cleanup:
             return
 
         item = load_json(
+            self.a.agentgateway_receipt, "AgentGateway Kubernetes lifecycle receipt"
+        )
+        expected = [
+            {"resource": resource, "namespace": namespace, "name": name}
+            for resource, namespace, name, _ in AGW_RESOURCES
+        ]
+        resources = item.get("resources")
+        valid_gateway = (
+            item.get("version") == 1
+            and item.get("clusterEndpoint") == self.endpoint
+            and item.get("namespace") == AGW_NAMESPACE
+            and re.fullmatch(r"[a-f0-9]{32}", item.get("setupId", ""))
+            and isinstance(resources, list)
+            and len(resources) == len(expected)
+            and all(
+                isinstance(record, dict)
+                and set(record) == {"resource", "namespace", "name", "uid", "created"}
+                and {
+                    key: record.get(key)
+                    for key in ("resource", "namespace", "name")
+                } == target
+                and isinstance(record.get("uid"), str)
+                and bool(record["uid"])
+                and isinstance(record.get("created"), bool)
+                for record, target in zip(resources or [], expected)
+            )
+        )
+        if not valid_gateway:
+            fail("AgentGateway Kubernetes lifecycle receipt does not match this cleanup target.")
+        self.gateway = {
+            "setupId": item["setupId"],
+            "resources": resources,
+        }
+
+        item = load_json(
             self.a.agentgateway_pod_identity_receipt, "AgentGateway lifecycle receipt"
         )
         target, resources = item.get("target", {}), item.get("resources", {})
         account = self.a.aws_account_id
         role_arn = f"arn:aws:iam::{account}:role/{self.a.iam_role_name}"
         cluster_arn = f"arn:aws:eks:{self.a.aws_region}:{account}:cluster/{self.a.eks_cluster_name}"
-        namespace, service_account = resources.get("namespace", {}), resources.get("serviceAccount", {})
+        namespace = resources.get("namespace", {})
+        service_account = resources.get("serviceAccount", {})
+        region_config_map = resources.get("regionConfigMap", {})
         role, policy = resources.get("iamRole", {}), resources.get("inlinePolicy", {})
         association = resources.get("podIdentityAssociation", {})
         checks = (
@@ -276,6 +351,10 @@ class Cleanup:
                 "apiVersion": "v1", "kind": "ServiceAccount",
                 "name": AGW_SERVICE_ACCOUNT, "namespace": AGW_NAMESPACE,
             }),
+            has_fields(region_config_map, {
+                "apiVersion": "v1", "kind": "ConfigMap",
+                "name": "agentgateway-aws-region", "namespace": AGW_NAMESPACE,
+            }),
             has_fields(role, {"name": self.a.iam_role_name, "arn": role_arn}),
             has_fields(policy, {"name": self.a.iam_inline_policy_name,
                                 "roleName": self.a.iam_role_name, "roleId": role.get("roleId")}),
@@ -289,15 +368,107 @@ class Cleanup:
         )
         provenance = all(
             isinstance(resources.get(name, {}).get("created"), bool)
-            for name in ("namespace", "serviceAccount", "iamRole", "inlinePolicy", "podIdentityAssociation")
+            for name in (
+                "namespace", "serviceAccount", "regionConfigMap", "iamRole",
+                "inlinePolicy", "podIdentityAssociation",
+            )
         )
         if not all(checks):
             fail("AgentGateway lifecycle receipt does not match this cleanup target.")
         if not provenance:
             fail("AgentGateway lifecycle receipt has invalid provenance.")
-        if not namespace.get("uid") or not service_account.get("uid"):
+        if (
+            not namespace.get("uid")
+            or not service_account.get("uid")
+            or not region_config_map.get("uid")
+        ):
             fail("AgentGateway lifecycle receipt has an invalid Kubernetes UID.")
+        gateway_namespace, gateway_service_account = (
+            self.gateway["resources"][0],
+            self.gateway["resources"][1],
+        )
+        if (
+            gateway_namespace["uid"] != namespace["uid"]
+            or gateway_service_account["uid"] != service_account["uid"]
+            or gateway_namespace["created"]
+            or gateway_service_account["created"]
+        ):
+            fail(
+                "AgentGateway Kubernetes and Pod Identity lifecycle receipts "
+                "do not agree on their shared resources."
+            )
         self.pod = resources
+
+    def validate_gateway_resource(self, target, record, item, *, late=False):
+        _, namespace, name, kind = target
+        metadata = item.get("metadata", {})
+        token = metadata.get("annotations", {}).get(SETUP_KEY)
+        valid = (
+            item.get("kind") == kind
+            and metadata.get("name") == name
+            and metadata.get("namespace")
+            == (None if namespace == "_" else namespace)
+            and metadata.get("uid") == record["uid"]
+            and metadata.get("labels", {}).get(OWNER_KEY) == OWNER
+            and (
+                token == self.gateway["setupId"]
+                if record["created"]
+                else token is None
+            )
+        )
+        if not valid:
+            detail = (
+                " changed after AgentGateway cleanup preflight"
+                if late
+                else " does not match its AgentGateway lifecycle receipt"
+            )
+            fail(f"{kind}/{name}{detail}.")
+
+    def gateway_plan(self):
+        if not self.gateway:
+            return [], False
+        planned = []
+        preserve_dependencies = False
+        for target, record in zip(AGW_RESOURCES, self.gateway["resources"]):
+            resource, namespace, name, kind = target
+            item = self.get(
+                f"{resource}/{name}",
+                None if namespace == "_" else namespace,
+            )
+            if not item:
+                planned.append((target, record, None))
+                continue
+            self.validate_gateway_resource(target, record, item)
+            if not record["created"] and kind not in ("Namespace", "ServiceAccount"):
+                preserve_dependencies = True
+            planned.append((target, record, item))
+        if self.pod and any(
+            not self.pod[name]["created"]
+            for name in (
+                "regionConfigMap",
+                "iamRole",
+                "inlinePolicy",
+                "podIdentityAssociation",
+            )
+        ):
+            preserve_dependencies = True
+        return planned, preserve_dependencies
+
+    def delete_gateway_resources(self, planned):
+        for target, record, planned_item in reversed(planned):
+            _, _, name, kind = target
+            if kind in ("Namespace", "ServiceAccount") or not record["created"]:
+                continue
+            live = self.get(
+                f"{target[0]}/{name}",
+                None if target[1] == "_" else target[1],
+            )
+            if not live:
+                continue
+            if not planned_item:
+                fail(f"{kind}/{name} changed after AgentGateway cleanup preflight.")
+            self.validate_gateway_resource(target, record, live, late=True)
+            self.raw_delete(live)
 
     def freeze_exists(self):
         try:
@@ -417,7 +588,22 @@ class Cleanup:
         paths = {
             "Namespace": f"/api/v1/namespaces/{name}",
             "ServiceAccount": f"/api/v1/namespaces/{namespace}/serviceaccounts/{name}",
+            "Secret": f"/api/v1/namespaces/{namespace}/secrets/{name}",
+            "ConfigMap": f"/api/v1/namespaces/{namespace}/configmaps/{name}",
+            "Service": f"/api/v1/namespaces/{namespace}/services/{name}",
+            "Issuer": f"/apis/cert-manager.io/v1/namespaces/{namespace}/issuers/{name}",
+            "Certificate": (
+                f"/apis/cert-manager.io/v1/namespaces/{namespace}/certificates/{name}"
+            ),
+            "Deployment": f"/apis/apps/v1/namespaces/{namespace}/deployments/{name}",
+            "PodDisruptionBudget": (
+                f"/apis/policy/v1/namespaces/{namespace}/poddisruptionbudgets/{name}"
+            ),
             "StorageClass": f"/apis/storage.k8s.io/v1/storageclasses/{name}",
+            "ClusterRole": f"/apis/rbac.authorization.k8s.io/v1/clusterroles/{name}",
+            "ClusterRoleBinding": f"/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/{name}",
+            "MutatingWebhookConfiguration": f"/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations/{name}",
+            "ValidatingWebhookConfiguration": f"/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/{name}",
             "ValidatingAdmissionPolicy": f"/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicies/{name}",
             "ValidatingAdmissionPolicyBinding": f"/apis/admissionregistration.k8s.io/v1/validatingadmissionpolicybindings/{name}",
         }
@@ -457,6 +643,700 @@ class Cleanup:
                 fail(f"admission-freeze {kind} still exists after deletion.")
         self.freeze_path.unlink()
         self.freeze_started = False
+
+    def tenant_freeze_exists(self):
+        try:
+            self.tenant_freeze_path.lstat()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def tenant_deletion_exists(self):
+        try:
+            self.tenant_deletion_path.lstat()
+            return True
+        except FileNotFoundError:
+            return False
+
+    def check_tenant_deletion_file(self):
+        info = self.tenant_deletion_path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            fail(
+                "tenant deletion state must be an owned regular file "
+                "with mode 0600."
+            )
+
+    def write_tenant_deletion(self, state):
+        if self.tenant_deletion_exists():
+            self.check_tenant_deletion_file()
+        temporary = self.tenant_deletion_path.with_name(
+            f".cleanup-tenant-deletion.{os.getpid()}"
+        )
+        with temporary.open("x") as stream:
+            json.dump(state, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, self.tenant_deletion_path)
+
+    def read_tenant_deletion(self):
+        if not self.tenant_deletion_exists():
+            return None
+        self.check_tenant_deletion_file()
+        try:
+            state = json.loads(self.tenant_deletion_path.read_text())
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            fail("tenant deletion state is invalid.")
+        expected_keys = {
+            "version",
+            "context",
+            "endpoint",
+            "attempt",
+            "namespaces",
+            "persistentVolumes",
+            "complete",
+        }
+        namespaces = state.get("namespaces") if isinstance(state, dict) else None
+        volumes = (
+            state.get("persistentVolumes") if isinstance(state, dict) else None
+        )
+        valid_targets = (
+            isinstance(namespaces, list)
+            and bool(namespaces)
+            and namespaces == sorted(namespaces, key=lambda item: item.get("name", ""))
+            and all(
+                isinstance(item, dict)
+                and set(item) == {"name", "uid"}
+                and isinstance(item["name"], str)
+                and bool(item["name"])
+                and isinstance(item["uid"], str)
+                and bool(item["uid"])
+                for item in namespaces
+            )
+            and len({item["name"] for item in namespaces}) == len(namespaces)
+        )
+        valid_volumes = (
+            isinstance(volumes, list)
+            and volumes == sorted(volumes, key=lambda item: item.get("name", ""))
+            and all(
+                isinstance(item, dict)
+                and set(item) == {"name", "uid"}
+                and isinstance(item["name"], str)
+                and bool(item["name"])
+                and isinstance(item["uid"], str)
+                and bool(item["uid"])
+                for item in volumes
+            )
+            and len({item["name"] for item in volumes}) == len(volumes)
+        )
+        valid = (
+            isinstance(state, dict)
+            and set(state) == expected_keys
+            and state.get("version") == 1
+            and state.get("context") == self.a.kube_context
+            and state.get("endpoint") == self.endpoint
+            and state.get("attempt") == self.attempt
+            and valid_targets
+            and valid_volumes
+            and isinstance(state.get("complete"), bool)
+        )
+        if not valid:
+            fail("tenant deletion state does not match this cleanup target.")
+        return state
+
+    def check_tenant_freeze_file(self):
+        info = self.tenant_freeze_path.lstat()
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o600
+        ):
+            fail(
+                "tenant admission-freeze state must be an owned regular file "
+                "with mode 0600."
+            )
+
+    def tenant_freeze_identity(self, namespaces):
+        identity = {
+            "context": self.a.kube_context,
+            "endpoint": self.endpoint,
+            "attempt": self.attempt,
+            "namespaces": namespaces,
+        }
+        suffix = digest(identity)[:16]
+        return (
+            f"{FREEZE_PREFIX}tenants-{suffix}",
+            "OpenClaw Enterprise cleanup admission freeze is active for tenant namespaces.",
+        )
+
+    def write_tenant_freeze(self, state):
+        if self.tenant_freeze_exists():
+            self.check_tenant_freeze_file()
+        temporary = self.tenant_freeze_path.with_name(
+            f".cleanup-tenant-freeze.{os.getpid()}"
+        )
+        with temporary.open("x") as stream:
+            json.dump(state, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, self.tenant_freeze_path)
+
+    def read_tenant_freeze(self):
+        if not self.tenant_freeze_exists():
+            return None
+        self.check_tenant_freeze_file()
+        try:
+            state = json.loads(self.tenant_freeze_path.read_text())
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            fail("tenant admission-freeze state is invalid.")
+        expected_keys = {
+            "version",
+            "context",
+            "endpoint",
+            "attempt",
+            "namespaces",
+            "name",
+            "token",
+            "denialMessage",
+            "policyUid",
+            "bindingUid",
+        }
+        namespaces = state.get("namespaces") if isinstance(state, dict) else None
+        valid_namespaces = (
+            isinstance(namespaces, list)
+            and bool(namespaces)
+            and namespaces == sorted(namespaces, key=lambda item: item.get("name", ""))
+            and all(
+                isinstance(item, dict)
+                and set(item) == {"name", "uid"}
+                and isinstance(item["name"], str)
+                and bool(item["name"])
+                and isinstance(item["uid"], str)
+                and bool(item["uid"])
+                for item in namespaces
+            )
+            and len({item["name"] for item in namespaces}) == len(namespaces)
+        )
+        expected_name, expected_message = self.tenant_freeze_identity(
+            namespaces if valid_namespaces else []
+        )
+        valid = (
+            isinstance(state, dict)
+            and set(state) == expected_keys
+            and state.get("version") == 1
+            and state.get("context") == self.a.kube_context
+            and state.get("endpoint") == self.endpoint
+            and state.get("attempt") == self.attempt
+            and valid_namespaces
+            and state.get("name") == expected_name
+            and state.get("denialMessage") == expected_message
+            and re.fullmatch(r"[a-f0-9]{32}", state.get("token", ""))
+            and all(
+                state.get(key) is None
+                or isinstance(state.get(key), str) and bool(state.get(key))
+                for key in ("policyUid", "bindingUid")
+            )
+        )
+        if not valid:
+            fail("tenant admission-freeze state does not match this cleanup target.")
+        return state
+
+    def tenant_freeze_annotations(self, state):
+        return {
+            f"{FREEZE_KEY}target-digest": digest(state["namespaces"]),
+            f"{FREEZE_KEY}attempt": state["attempt"],
+            f"{FREEZE_KEY}token": state["token"],
+        }
+
+    def tenant_freeze_spec(self, state, kind):
+        if kind == "binding":
+            return {
+                "policyName": state["name"],
+                "validationActions": ["Deny"],
+                "matchResources": {
+                    "namespaceSelector": {
+                        "matchLabels": {OWNER_KEY: OCE_OWNER},
+                    },
+                },
+            }
+        return {
+            "failurePolicy": "Fail",
+            "matchConstraints": {
+                "resourceRules": [
+                    {
+                        "apiGroups": ["*"],
+                        "apiVersions": ["*"],
+                        "operations": ["CREATE", "UPDATE"],
+                        "resources": ["*", "*/*"],
+                        "scope": "Namespaced",
+                    }
+                ]
+            },
+            "validations": [
+                {"expression": "false", "message": state["denialMessage"]}
+            ],
+        }
+
+    def validate_tenant_freeze(self, item, state, kind):
+        metadata = (item or {}).get("metadata", {})
+        expected_kind = (
+            "ValidatingAdmissionPolicyBinding"
+            if kind == "binding"
+            else "ValidatingAdmissionPolicy"
+        )
+        expected_uid = state[f"{kind}Uid"]
+        valid = (
+            (item or {}).get("kind") == expected_kind
+            and metadata.get("name") == state["name"]
+            and metadata.get("labels", {}).get(OWNER_KEY) == OWNER
+            and all(
+                metadata.get("annotations", {}).get(key) == value
+                for key, value in self.tenant_freeze_annotations(state).items()
+            )
+            and item.get("spec") == self.tenant_freeze_spec(state, kind)
+            and (expected_uid is None or metadata.get("uid") == expected_uid)
+        )
+        if not valid:
+            fail(
+                f"tenant admission-freeze {kind} identity/UID does not match "
+                "private state; refusing deletion."
+            )
+
+    def recover_tenant_freeze(self):
+        state = self.read_tenant_freeze()
+        if not state:
+            return
+        resources = (
+            (
+                "binding",
+                "validatingadmissionpolicybindings.admissionregistration.k8s.io",
+            ),
+            (
+                "policy",
+                "validatingadmissionpolicies.admissionregistration.k8s.io",
+            ),
+        )
+        for kind, resource_type in resources:
+            resource = f"{resource_type}/{state['name']}"
+            item = self.get(resource)
+            if not item:
+                continue
+            self.validate_tenant_freeze(item, state, kind)
+            self.raw_delete(item)
+            item = self.get(resource)
+            if item:
+                self.validate_tenant_freeze(item, state, kind)
+                fail(f"tenant admission-freeze {kind} still exists after deletion.")
+        self.tenant_freeze_path.unlink()
+        self.tenant_freeze_started = False
+
+    def verify_tenant_freeze(self, state, live_targets):
+        for target in live_targets:
+            probe = {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": "openclaw-cleanup-freeze-probe",
+                    "namespace": target["name"],
+                },
+            }
+            result = subprocess.run(
+                [*self.k, "create", "--dry-run=server", "-f", "-"],
+                input=json.dumps(probe),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if result.returncode == 0 or state["denialMessage"] not in result.stderr:
+                fail(
+                    f"tenant admission freeze could not be verified for "
+                    f"namespace/{target['name']}."
+                )
+
+    def ensure_tenant_freeze(self, tenant_plans, protected_targets):
+        live_targets = self.tenant_namespace_targets(tenant_plans)
+        state = self.read_tenant_freeze()
+        if state:
+            if state["namespaces"] != protected_targets:
+                fail(
+                    "tenant admission-freeze state does not match the recorded "
+                    "tenant deletion targets."
+                )
+            self.tenant_freeze_started = True
+            for kind, resource_type in (
+                (
+                    "policy",
+                    "validatingadmissionpolicies.admissionregistration.k8s.io",
+                ),
+                (
+                    "binding",
+                    "validatingadmissionpolicybindings.admissionregistration.k8s.io",
+                ),
+            ):
+                self.validate_tenant_freeze(
+                    self.get(f"{resource_type}/{state['name']}"),
+                    state,
+                    kind,
+                )
+            self.verify_tenant_freeze(state, live_targets)
+            return
+        if not live_targets:
+            return
+
+        name, denial_message = self.tenant_freeze_identity(protected_targets)
+        state = {
+            "version": 1,
+            "context": self.a.kube_context,
+            "endpoint": self.endpoint,
+            "attempt": self.attempt,
+            "namespaces": protected_targets,
+            "name": name,
+            "token": secrets.token_hex(16),
+            "denialMessage": denial_message,
+            "policyUid": None,
+            "bindingUid": None,
+        }
+        self.write_tenant_freeze(state)
+        self.tenant_freeze_started = True
+        for kind in ("policy", "binding"):
+            document = {
+                "apiVersion": "admissionregistration.k8s.io/v1",
+                "kind": (
+                    "ValidatingAdmissionPolicyBinding"
+                    if kind == "binding"
+                    else "ValidatingAdmissionPolicy"
+                ),
+                "metadata": {
+                    "name": state["name"],
+                    "labels": {OWNER_KEY: OWNER},
+                    "annotations": self.tenant_freeze_annotations(state),
+                },
+                "spec": self.tenant_freeze_spec(state, kind),
+            }
+            self.kubectl("create", "-f", "-", stdin=json.dumps(document))
+            resource_type = (
+                "validatingadmissionpolicybindings.admissionregistration.k8s.io"
+                if kind == "binding"
+                else "validatingadmissionpolicies.admissionregistration.k8s.io"
+            )
+            item = self.get(f"{resource_type}/{state['name']}")
+            self.validate_tenant_freeze(item, state, kind)
+            state[f"{kind}Uid"] = item["metadata"]["uid"]
+            self.write_tenant_freeze(state)
+        self.verify_tenant_freeze(state, live_targets)
+
+    def discover_managed_tenant_namespaces(self):
+        result = json.loads(
+            self.kubectl(
+                "get",
+                "namespaces",
+                "--selector",
+                f"{OWNER_KEY}={OCE_OWNER}",
+                "--output=json",
+            )
+        )
+        items = result.get("items")
+        if not isinstance(items, list):
+            fail("managed tenant namespace discovery returned an unexpected result.")
+        discovered = {}
+        for item in items:
+            metadata = item.get("metadata", {})
+            name = metadata.get("name")
+            uid = metadata.get("uid")
+            if (
+                item.get("kind") != "Namespace"
+                or not isinstance(name, str)
+                or not name
+                or not isinstance(uid, str)
+                or not uid
+                or metadata.get("labels", {}).get(OWNER_KEY) != OCE_OWNER
+                or name in discovered
+            ):
+                fail("managed tenant namespace discovery returned an invalid namespace.")
+            discovered[name] = item
+        return [discovered[name] for name in sorted(discovered)]
+
+    def tenant_namespace_targets(self, tenant_plans):
+        return [
+            {
+                "name": item["metadata"]["name"],
+                "uid": item["metadata"]["uid"],
+            }
+            for item in tenant_plans
+        ]
+
+    def managed_tenant_namespaces(self):
+        tenant_plans = self.discover_managed_tenant_namespaces()
+        discovered = {
+            item["metadata"]["name"]: item
+            for item in tenant_plans
+        }
+        supplied = set(self.a.tenant_namespace)
+        deletion = self.read_tenant_deletion()
+        if deletion and not self.a.delete_tenant_data:
+            fail(
+                "tenant deletion is incomplete; rerun with "
+                "--delete-tenant-data and the same --tenant-namespace values."
+            )
+        expected = (
+            {item["name"] for item in deletion["namespaces"]}
+            if deletion
+            else set(discovered)
+        )
+        if supplied != expected:
+            missing = sorted(expected - supplied)
+            extra = sorted(supplied - expected)
+            detail = []
+            if missing:
+                detail.append("not supplied: " + ", ".join(missing))
+            if extra:
+                detail.append("not recorded: " + ", ".join(extra))
+            fail(
+                "the supplied tenant namespace set does not exactly match the "
+                "cleanup tenant namespace set (" + "; ".join(detail) + ")."
+            )
+        if deletion:
+            live = self.require_tenant_namespaces_unchanged(
+                deletion["namespaces"], allow_absent=True
+            )
+            if deletion["complete"] and live:
+                fail(
+                    "tenant deletion state is complete but a recorded namespace "
+                    "exists; refusing to continue."
+                )
+            return live, deletion["namespaces"]
+        if tenant_plans and not self.a.delete_tenant_data:
+            fail(
+                "tenant namespaces may contain user data; cleanup made no "
+                "changes. Rerun with --delete-tenant-data to delete the exact "
+                "listed tenant namespaces and their data."
+            )
+        return tenant_plans, self.tenant_namespace_targets(tenant_plans)
+
+    def require_tenant_namespaces_unchanged(self, expected, allow_absent=False):
+        expected_targets = (
+            expected
+            if not expected or "metadata" not in expected[0]
+            else self.tenant_namespace_targets(expected)
+        )
+        expected_by_name = {item["name"]: item["uid"] for item in expected_targets}
+        current = self.discover_managed_tenant_namespaces()
+        current_by_name = {
+            item["metadata"]["name"]: item["metadata"]["uid"]
+            for item in current
+        }
+        if set(current_by_name) - set(expected_by_name):
+            fail(
+                "managed tenant namespaces changed during cleanup; "
+                "refusing to continue."
+            )
+        live = []
+        for name, expected_uid in sorted(expected_by_name.items()):
+            item = self.get(f"namespace/{name}")
+            if not item:
+                if not allow_absent:
+                    fail(
+                        "managed tenant namespaces changed during cleanup; "
+                        "refusing to continue."
+                    )
+                continue
+            metadata = item.get("metadata", {})
+            if (
+                item.get("kind") != "Namespace"
+                or metadata.get("uid") != expected_uid
+                or metadata.get("labels", {}).get(OWNER_KEY) != OCE_OWNER
+                or current_by_name.get(name) != expected_uid
+            ):
+                fail(
+                    "managed tenant namespaces changed during cleanup; "
+                    "refusing to continue."
+                )
+            live.append(item)
+        return live
+
+    def tenant_persistent_volumes(self, namespace_names):
+        result = json.loads(
+            self.kubectl("get", "persistentvolumes", "--output=json")
+        )
+        items = result.get("items")
+        if not isinstance(items, list):
+            fail("persistent volume discovery returned an unexpected result.")
+        volumes = []
+        for item in items:
+            claim = item.get("spec", {}).get("claimRef", {})
+            if claim.get("namespace") not in namespace_names:
+                continue
+            metadata = item.get("metadata", {})
+            name, uid = metadata.get("name"), metadata.get("uid")
+            if (
+                item.get("kind") != "PersistentVolume"
+                or not isinstance(name, str)
+                or not name
+                or not isinstance(uid, str)
+                or not uid
+            ):
+                fail("persistent volume discovery returned an invalid volume.")
+            volumes.append({"name": name, "uid": uid})
+        return sorted(volumes, key=lambda item: item["name"])
+
+    def prepare_tenant_deletion(self, protected_targets):
+        state = self.read_tenant_deletion()
+        if state:
+            if state["namespaces"] != protected_targets:
+                fail(
+                    "tenant deletion state does not match the recorded "
+                    "namespace identities."
+                )
+            return state
+        names = {item["name"] for item in protected_targets}
+        state = {
+            "version": 1,
+            "context": self.a.kube_context,
+            "endpoint": self.endpoint,
+            "attempt": self.attempt,
+            "namespaces": protected_targets,
+            "persistentVolumes": self.tenant_persistent_volumes(names),
+            "complete": False,
+        }
+        self.write_tenant_deletion(state)
+        return state
+
+    def wait_for_tenant_data_deletion(self, state, seconds=600):
+        target_names = {item["name"] for item in state["namespaces"]}
+        expected_volumes = {
+            item["name"]: item["uid"] for item in state["persistentVolumes"]
+        }
+        deadline = time.monotonic() + seconds
+        while True:
+            pending = []
+            for target in state["namespaces"]:
+                item = self.get(f"namespace/{target['name']}")
+                if item:
+                    if item.get("metadata", {}).get("uid") != target["uid"]:
+                        fail(
+                            f"namespace/{target['name']} was replaced while "
+                            "tenant deletion was in progress."
+                        )
+                    pending.append(f"namespace/{target['name']}")
+            pvcs = json.loads(
+                self.kubectl(
+                    "get",
+                    "persistentvolumeclaims",
+                    "--all-namespaces",
+                    "--output=json",
+                )
+            )
+            pvc_items = pvcs.get("items")
+            if not isinstance(pvc_items, list):
+                fail(
+                    "persistent volume claim discovery returned an "
+                    "unexpected result."
+                )
+            pending.extend(
+                f"persistentvolumeclaim/{item.get('metadata', {}).get('name', '<unknown>')}"
+                for item in pvc_items
+                if item.get("metadata", {}).get("namespace") in target_names
+            )
+            pvs = json.loads(
+                self.kubectl("get", "persistentvolumes", "--output=json")
+            )
+            pv_items = pvs.get("items")
+            if not isinstance(pv_items, list):
+                fail("persistent volume discovery returned an unexpected result.")
+            for item in pv_items:
+                metadata = item.get("metadata", {})
+                name, uid = metadata.get("name"), metadata.get("uid")
+                claim_namespace = item.get("spec", {}).get("claimRef", {}).get(
+                    "namespace"
+                )
+                if name in expected_volumes:
+                    if uid != expected_volumes[name]:
+                        fail(
+                            f"persistentvolume/{name} was replaced while "
+                            "tenant deletion was in progress."
+                        )
+                    pending.append(f"persistentvolume/{name}")
+                elif claim_namespace in target_names:
+                    pending.append(
+                        f"persistentvolume/{name or '<unknown>'}"
+                    )
+            if not pending:
+                return
+            if time.monotonic() >= deadline:
+                fail(
+                    "tenant data still exists after namespace deletion: "
+                    + ", ".join(sorted(set(pending)))
+                    + "."
+                )
+            time.sleep(2)
+
+    def delete_tenant_data(self, tenant_plans, protected_targets):
+        state = self.prepare_tenant_deletion(protected_targets)
+        if state["complete"]:
+            self.wait_for_tenant_data_deletion(state)
+            if self.tenant_freeze_exists():
+                self.recover_tenant_freeze()
+            return
+        tenant_plans = self.require_tenant_namespaces_unchanged(
+            protected_targets, allow_absent=True
+        )
+        by_name = {
+            item["metadata"]["name"]: item
+            for item in tenant_plans
+        }
+        for target in protected_targets:
+            item = by_name.get(target["name"])
+            if not item:
+                continue
+            self.raw_delete(item)
+            self.wait_absent(f"namespace/{target['name']}", target["uid"])
+        self.wait_for_tenant_data_deletion(state)
+        if self.discover_managed_tenant_namespaces():
+            fail(
+                "managed tenant namespaces remain after tenant deletion; "
+                "refusing to continue."
+            )
+        state["complete"] = True
+        self.write_tenant_deletion(state)
+        self.recover_tenant_freeze()
+
+    def require_tenant_quiescence(self, tenant_plans):
+        for namespace in tenant_plans:
+            name = namespace["metadata"]["name"]
+            result = json.loads(
+                self.kubectl(
+                    "get",
+                    TENANT_WORKLOADS,
+                    "--namespace",
+                    name,
+                    "--ignore-not-found",
+                    "--output=json",
+                )
+            )
+            items = result.get("items")
+            if not isinstance(items, list):
+                fail(
+                    f"workload discovery for namespace/{name} returned an "
+                    "unexpected result."
+                )
+            if items:
+                summaries = sorted(
+                    f"{item.get('kind', 'Resource')}/"
+                    f"{item.get('metadata', {}).get('name', '<unknown>')}"
+                    for item in items
+                )
+                fail(
+                    f"namespace/{name} still has workload resources: "
+                    f"{', '.join(summaries)}. Delete or quiesce its agents "
+                    "before cleanup."
+                )
 
     def start_freeze(self, namespace):
         metadata = namespace["metadata"]
@@ -530,15 +1410,35 @@ class Cleanup:
         if not planned:
             return
         name, uid = planned["metadata"]["name"], planned["metadata"]["uid"]
+        expected_labels = planned["metadata"].get("labels", {})
+        expected_annotations = planned["metadata"].get("annotations", {})
+
+        def validate_live(item, stage):
+            metadata = item.get("metadata", {})
+            labels, annotations = (
+                metadata.get("labels", {}),
+                metadata.get("annotations", {}),
+            )
+            valid = (
+                item.get("kind") == "Namespace"
+                and metadata.get("name") == name
+                and metadata.get("uid") == uid
+                and labels.get(OWNER_KEY) == expected_labels.get(OWNER_KEY)
+                and labels.get(POD_SETUP_KEY) == expected_labels.get(POD_SETUP_KEY)
+                and annotations.get(SETUP_KEY) == expected_annotations.get(SETUP_KEY)
+            )
+            if not valid:
+                fail(f"namespace/{name} identity changed {stage}.")
+
         live = self.get(f"namespace/{name}")
         if not live:
             return
-        if live["metadata"]["uid"] != uid:
-            fail(f"namespace/{name} UID changed before deletion.")
+        validate_live(live, "before deletion")
         self.start_freeze(live)
         live = self.get(f"namespace/{name}")
-        if not live or live["metadata"]["uid"] != uid:
+        if not live:
             fail(f"namespace/{name} identity changed while admission was frozen.")
+        validate_live(live, "while admission was frozen")
         self.raw_delete(live)
         self.wait_absent(f"namespace/{name}", uid)
         self.recover_freeze()
@@ -560,12 +1460,16 @@ class Cleanup:
             fail("live Helm release does not match the OCC receipt attempt.")
         return True
 
-    def verify_cluster_resources(self, helm_present):
+    def cluster_resources(self):
         resources = [
-            "validatingadmissionpolicies.admissionregistration.k8s.io/protect-openclaw-enterprise-namespace-label",
-            "validatingadmissionpolicybindings.admissionregistration.k8s.io/protect-openclaw-enterprise-namespace-label",
-            "mutatingwebhookconfigurations.admissionregistration.k8s.io/openclaw-enterprise-nitro-adapter",
             "validatingwebhookconfigurations.admissionregistration.k8s.io/openclaw-enterprise-nitro-policy",
+            "mutatingwebhookconfigurations.admissionregistration.k8s.io/openclaw-enterprise-nitro-adapter",
+            "validatingadmissionpolicybindings.admissionregistration.k8s.io/protect-openclaw-enterprise-namespace-label",
+            "validatingadmissionpolicies.admissionregistration.k8s.io/protect-openclaw-enterprise-namespace-label",
+        ]
+        resources += [
+            f"clusterrolebinding.rbac.authorization.k8s.io/{self.a.release}-{name}"
+            for name in ("openclaw-worker-namespaces", "openclaw-api-namespaces")
         ]
         resources += [
             f"clusterrole.rbac.authorization.k8s.io/{self.a.release}-{name}"
@@ -575,45 +1479,59 @@ class Cleanup:
                 "openclaw-tenant-configuration", "openclaw-gateway-observer",
             )
         ]
-        resources += [
-            f"clusterrolebinding.rbac.authorization.k8s.io/{self.a.release}-{name}"
-            for name in ("openclaw-worker-namespaces", "openclaw-api-namespaces")
-        ]
-        for resource in resources:
+        return resources
+
+    def validate_cluster_resource(self, resource, item):
+        expected_uid = self.install_uids.get(resource)
+        if not expected_uid:
+            fail(f"{resource} is live but has no UID in the installation receipt.")
+        metadata = item["metadata"]
+        if metadata.get("uid") != expected_uid:
+            fail(f"{resource} does not match the UID recorded in the installation receipt.")
+        labels, annotations = metadata.get("labels", {}), metadata.get("annotations", {})
+        owner = labels.get(OWNER_KEY)
+        helm_identity = (
+            owner == "Helm"
+            and labels.get("app.kubernetes.io/instance") == self.a.release
+            and annotations.get("meta.helm.sh/release-name") == self.a.release
+            and annotations.get("meta.helm.sh/release-namespace") == self.a.namespace
+        )
+        if owner != OWNER and not helm_identity:
+            fail(f"{resource} does not carry an exact cleanup ownership label.")
+
+    def verify_cluster_resources(self):
+        for resource in self.cluster_resources():
             item = self.get(resource)
             if not item:
                 continue
-            expected_uid = self.install_uids.get(resource)
-            if not expected_uid:
-                fail(f"{resource} is live but has no UID in the installation receipt.")
-            metadata = item["metadata"]
-            if metadata.get("uid") != expected_uid:
-                fail(f"{resource} does not match the UID recorded in the installation receipt.")
-            labels, annotations = metadata.get("labels", {}), metadata.get("annotations", {})
-            owner = labels.get(OWNER_KEY)
-            helm_identity = (
-                owner == "Helm"
-                and labels.get("app.kubernetes.io/instance") == self.a.release
-                and annotations.get("meta.helm.sh/release-name") == self.a.release
-                and annotations.get("meta.helm.sh/release-namespace") == self.a.namespace
-            )
-            if owner != OWNER and not helm_identity:
-                fail(f"{resource} does not carry an exact cleanup ownership label.")
-            if not helm_present:
-                fail(f"{resource} is live but the receipt-matched Helm release is absent.")
+            self.validate_cluster_resource(resource, item)
 
-    def pod_action(self):
+    def delete_cluster_resources(self):
+        for resource in self.cluster_resources():
+            item = self.get(resource)
+            if not item:
+                continue
+            self.validate_cluster_resource(resource, item)
+            self.raw_delete(item)
+
+    def pod_action(self, preserve_gateway=False):
         if not self.pod:
             return None
         association = self.pod["podIdentityAssociation"]["created"]
-        preserve_sa = not self.pod["serviceAccount"]["created"] or not association
+        preserve_sa = (
+            preserve_gateway
+            or not self.pod["serviceAccount"]["created"]
+            or not association
+        )
+        preserve_namespace = preserve_sa or not self.pod["regionConfigMap"]["created"]
         return (
-            "delete-namespace" if self.pod["namespace"]["created"] and not preserve_sa
+            "delete-namespace"
+            if self.pod["namespace"]["created"] and not preserve_namespace
             else "delete-service-account" if not preserve_sa
             else "preserve"
         )
 
-    def validate_storage(self):
+    def validate_storage(self, deleting_tenants=()):
         item = self.get(f"storageclass.storage.k8s.io/{STORAGE_CLASS}")
         if not item or not self.storage or not self.storage["created"]:
             return item
@@ -626,12 +1544,39 @@ class Cleanup:
         pvcs = json.loads(self.kubectl(
             "get", "persistentvolumeclaims", "--all-namespaces", "--output=json"
         ))
+        deleting = set(deleting_tenants)
         if any(
-            item.get("spec", {}).get("storageClassName") == STORAGE_CLASS
-            for item in pvcs.get("items", [])
+            pvc.get("spec", {}).get("storageClassName") == STORAGE_CLASS
+            and pvc.get("metadata", {}).get("namespace") not in deleting
+            for pvc in pvcs.get("items", [])
         ):
             fail("storage class is still referenced by a persistent volume claim.")
         return item
+
+    def validate_pod_kubernetes_resource(self, key, item, *, late=False):
+        expected = self.pod[key]
+        metadata = item.get("metadata", {})
+        namespace = expected.get("namespace")
+        valid = (
+            item.get("apiVersion") == expected.get("apiVersion")
+            and item.get("kind") == expected.get("kind")
+            and metadata.get("name") == expected.get("name")
+            and metadata.get("namespace") == namespace
+            and metadata.get("uid") == expected.get("uid")
+            and metadata.get("labels", {}).get(OWNER_KEY) == OWNER
+        )
+        if expected["created"]:
+            valid = (
+                valid
+                and metadata.get("labels", {}).get(POD_SETUP_KEY)
+                == self.pod["iamRole"].get("invocationId")
+            )
+        if not valid:
+            label = f"{expected.get('kind')}/{expected.get('name')}"
+            detail = " changed after cleanup preflight" if late else (
+                " does not match its lifecycle receipt"
+            )
+            fail(f"{label}{detail}.")
 
     def role(self):
         return self.aws_json(
@@ -659,6 +1604,38 @@ class Cleanup:
             "--association-id", self.a.pod_identity_association_id,
             absent=AWS_ABSENT,
         )
+
+    def delete_pod_identity_association(self):
+        if not self.pod or not self.pod["podIdentityAssociation"]["created"]:
+            return
+        expected = self.pod["podIdentityAssociation"]
+        result = self.association()
+        if not result:
+            return
+        live = result.get("association", {})
+        fields = (
+            "associationId", "associationArn", "clusterName", "namespace",
+            "serviceAccount", "roleArn", "targetRoleArn", "externalId",
+            "disableSessionTags", "policy",
+        )
+        if any(live.get(key) != expected.get(key) for key in fields):
+            fail("Pod Identity association does not match the lifecycle receipt identity.")
+        self.aws(
+            "eks", "delete-pod-identity-association",
+            "--cluster-name", self.a.eks_cluster_name,
+            "--association-id", self.a.pod_identity_association_id,
+        )
+        deadline = time.monotonic() + 300
+        while True:
+            result = self.association()
+            if not result:
+                return
+            live = result.get("association", {})
+            if any(live.get(key) != expected.get(key) for key in fields):
+                fail("Pod Identity association was replaced while deletion was in progress.")
+            if time.monotonic() >= deadline:
+                fail("Pod Identity association still exists after deletion.")
+            time.sleep(2)
 
     def validate_aws(self):
         if not self.pod:
@@ -698,20 +1675,27 @@ class Cleanup:
         association = self.pod["podIdentityAssociation"]
         policy, role_receipt = self.pod["inlinePolicy"], self.pod["iamRole"]
         preserve_role = not role_receipt["created"] or not policy["created"] or not association["created"]
-        if association["created"] and self.association():
-            self.aws(
-                "eks", "delete-pod-identity-association",
-                "--cluster-name", self.a.eks_cluster_name,
-                "--association-id", self.a.pod_identity_association_id,
-            )
         if policy["created"]:
             role = self.role()
             if role:
                 self.validate_role(role)
-                self.aws(
-                    "iam", "delete-role-policy", "--role-name", self.a.iam_role_name,
+                live_policy = self.aws_json(
+                    "iam", "get-role-policy",
+                    "--role-name", self.a.iam_role_name,
                     "--policy-name", self.a.iam_inline_policy_name,
+                    absent=AWS_ABSENT,
                 )
+                if live_policy:
+                    if (
+                        digest(live_policy.get("PolicyDocument"))
+                        != policy.get("documentSha256")
+                    ):
+                        fail("inline policy changed after cleanup preflight.")
+                    self.aws(
+                        "iam", "delete-role-policy",
+                        "--role-name", self.a.iam_role_name,
+                        "--policy-name", self.a.iam_inline_policy_name,
+                    )
         if preserve_role:
             print(f"Preserved iam-role/{self.a.iam_role_name}: required by a reused resource.")
             return
@@ -739,7 +1723,7 @@ class Cleanup:
         self.validate_lifecycle_receipts()
         self.recover_freeze()
         helm = self.helm_present()
-        self.verify_cluster_resources(helm)
+        self.verify_cluster_resources()
         self.validate_aws()
 
         plans = [
@@ -751,12 +1735,11 @@ class Cleanup:
                 "openclaw-enterprise-adapter", OWNER,
                 self.install_uids.get("namespace/openclaw-enterprise-adapter"), True,
             ),
-            *[
-                self.namespace_plan(namespace, OCE_OWNER)
-                for namespace in self.a.tenant_namespace
-            ],
         ]
-        pod_action, agw_plan, service_account = self.pod_action(), None, None
+        tenant_plans, tenant_targets = self.managed_tenant_namespaces()
+        gateway_resources, preserve_gateway = self.gateway_plan()
+        pod_action, agw_plan = self.pod_action(preserve_gateway), None
+        service_account, region_config_map = None, None
         if pod_action == "delete-namespace":
             agw_plan = self.namespace_plan(
                 AGW_NAMESPACE, OWNER, self.pod["namespace"]["uid"], True
@@ -766,24 +1749,89 @@ class Cleanup:
                 f"serviceaccount/{AGW_SERVICE_ACCOUNT}", AGW_NAMESPACE
             )
             if service_account:
-                receipt, metadata = self.pod["serviceAccount"], service_account["metadata"]
-                if (
-                    metadata.get("uid") != receipt["uid"]
-                    or metadata.get("labels", {}).get(OWNER_KEY) != OWNER
-                ):
-                    fail("AgentGateway service account does not match its lifecycle receipt.")
-        storage = self.validate_storage()
+                self.validate_pod_kubernetes_resource(
+                    "serviceAccount", service_account
+                )
+        if pod_action != "delete-namespace" and self.pod:
+            live_region_config_map = self.get(
+                "configmap/agentgateway-aws-region", AGW_NAMESPACE
+            )
+            if live_region_config_map:
+                receipt = self.pod["regionConfigMap"]
+                self.validate_pod_kubernetes_resource(
+                    "regionConfigMap", live_region_config_map
+                )
+                if not preserve_gateway and receipt["created"]:
+                    region_config_map = live_region_config_map
+        deleting_tenants = (
+            [item["name"] for item in tenant_targets]
+            if self.a.delete_tenant_data
+            else []
+        )
+        storage = self.validate_storage(deleting_tenants)
 
+        if self.a.delete_tenant_data:
+            # Keep the tenant freeze active until the exact namespace UIDs and
+            # their recorded storage have gone. The OCE release is removed
+            # first so its controllers cannot recreate a deleted tenant.
+            self.ensure_tenant_freeze(tenant_plans, tenant_targets)
+            tenant_plans = self.require_tenant_namespaces_unchanged(
+                tenant_targets, allow_absent=self.tenant_deletion_exists()
+            )
+            if helm:
+                run([
+                    *self.h, "uninstall", self.a.release,
+                    "--namespace", self.a.namespace, "--wait", "--timeout", "10m",
+                ])
+                helm = False
+            self.delete_tenant_data(tenant_plans, tenant_targets)
+
+        # Remove the AWS identity binding before deleting its Kubernetes
+        # ServiceAccount or namespace. A failed AWS deletion therefore leaves
+        # the named Kubernetes identity intact and cannot silently transfer the
+        # role to a later same-name ServiceAccount.
+        if preserve_gateway:
+            print(
+                "Preserved the complete AgentGateway dependency closure: "
+                "at least one lifecycle dependency was reused."
+            )
+        else:
+            self.delete_pod_identity_association()
+            self.delete_gateway_resources(gateway_resources)
         if helm:
             run([
                 *self.h, "uninstall", self.a.release,
                 "--namespace", self.a.namespace, "--wait", "--timeout", "10m",
             ])
+        # No tenant namespace can survive removal of the original
+        # cluster-scoped admission controls.
+        if self.discover_managed_tenant_namespaces():
+            fail(
+                "managed tenant namespaces remain before admission teardown; "
+                "refusing to continue."
+            )
+        self.admission_controls_dismantled = True
+        self.delete_cluster_resources()
         for plan in plans:
             self.delete_namespace(plan)
-        self.delete_aws()
         if service_account:
-            self.raw_delete(service_account)
+            live_service_account = self.get(
+                f"serviceaccount/{AGW_SERVICE_ACCOUNT}", AGW_NAMESPACE
+            )
+            if live_service_account:
+                self.validate_pod_kubernetes_resource(
+                    "serviceAccount", live_service_account, late=True
+                )
+                self.raw_delete(live_service_account)
+        if region_config_map:
+            live_region_config_map = self.get(
+                "configmap/agentgateway-aws-region", AGW_NAMESPACE
+            )
+            if live_region_config_map:
+                self.validate_pod_kubernetes_resource(
+                    "regionConfigMap", live_region_config_map, late=True
+                )
+                self.raw_delete(live_region_config_map)
         self.delete_namespace(agw_plan)
         if storage:
             if not self.storage:
@@ -792,7 +1840,19 @@ class Cleanup:
             if not self.storage["created"]:
                 print(f"Preserved storageclass/{STORAGE_CLASS}: setup reused it.")
             else:
-                self.raw_delete(storage)
+                storage = self.validate_storage()
+                if storage:
+                    self.raw_delete(storage)
+        # Delete the policy and role last. If the caller lacks an IAM cleanup
+        # permission, the Pod Identity association and Kubernetes workloads
+        # have already been removed and a rerun can safely resume cleanup.
+        if not preserve_gateway:
+            self.delete_aws()
+        if self.tenant_freeze_exists():
+            fail(
+                "tenant admission freeze remains after tenant data deletion; "
+                "refusing to report successful cleanup."
+            )
         print(f"Cleanup completed for release {self.a.release} in kube context {self.a.kube_context}.")
 
 
@@ -808,6 +1868,17 @@ def main():
                 cleanup.recover_freeze()
             except CleanupError as nested:
                 recovery_error = nested
+        if (
+            cleanup
+            and cleanup.tenant_freeze_started
+            and not cleanup.admission_controls_dismantled
+        ):
+            try:
+                cleanup.recover_tenant_freeze()
+            except CleanupError as nested:
+                recovery_error = nested if recovery_error is None else CleanupError(
+                    f"{recovery_error}; {nested}"
+                )
         print(f"cleanup: {error}", file=sys.stderr)
         if recovery_error:
             print(f"cleanup: failed to remove admission freeze: {recovery_error}", file=sys.stderr)

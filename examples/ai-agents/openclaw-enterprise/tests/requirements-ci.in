@@ -1,0 +1,4 @@
+-r ../../../../requirements.txt
+-r requirements.txt
+cfn-lint==1.47.1
+ruff==0.17.6
