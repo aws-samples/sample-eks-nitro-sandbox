@@ -29,6 +29,8 @@ CILIUM_EXPECTED = {
     ("socketLB", "hostNamespaceOnly"): True, ("operator", "replicas"): 1,
     ("operator", "nodeSelector"): {NODEGROUP_LABEL: "system"},
     ("eni", "eniTags"): {OWNER_TAG[0]: OWNER_TAG[1]},
+    # Bottlerocket SELinux denies the sysctlfix write to /etc/sysctl.d (cilium-values.yaml).
+    ("sysctlfix", "enabled"): False,
 }
 RUNTIMECLASS = {
     "apiVersion": "node.k8s.io/v1", "kind": "RuntimeClass",
@@ -185,6 +187,16 @@ def cmd_render_probe(args):
     require(re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", args.node) is not None, f"node name {args.node} is not valid")
     print(yaml.safe_dump(fill(load_template("deploy/probe/node-probe.yaml"),
                               {"PROBE_NAME": args.name, "NODE_NAME": args.node,
+                               "BUSYBOX_IMAGE": setting("BUSYBOX_IMAGE")}), sort_keys=False))
+
+
+def cmd_render_filler(args):
+    """A filler pod for the networkd check of test.sh: cb-filler-<n>-<run ID>, pinned to one node."""
+    require(re.fullmatch(r"cb-filler-([1-9]|1[0-6])-[a-z0-9]{1,20}", args.name) is not None,
+            f"filler name {args.name} is not cb-filler-<1 to 16>-<run ID>")
+    require(re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", args.node) is not None, f"node name {args.node} is not valid")
+    print(yaml.safe_dump(fill(load_template("deploy/probe/filler-pod.yaml"),
+                              {"FILLER_NAME": args.name, "NODE_NAME": args.node,
                                "BUSYBOX_IMAGE": setting("BUSYBOX_IMAGE")}), sort_keys=False))
 
 

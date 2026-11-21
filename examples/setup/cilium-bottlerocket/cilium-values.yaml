@@ -50,3 +50,10 @@ operator:
 
 # Restart the agents when this file changes, so that a new run of setup.sh applies the change.
 rollOutCiliumPods: true
+
+# No sysctlfix init container. It writes a file into /etc/sysctl.d on the host. On Bottlerocket,
+# SELinux denies that write (an AVC denial for "cilium-sysctlfi", control_t on etc_t), so the
+# container has no effect, and its denial would stop the boot-wide SELinux audit of the sandbox
+# node. This is the only Bottlerocket-specific difference from the values of ../cilium-ubuntu.
+sysctlfix:
+  enabled: false

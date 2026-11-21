@@ -95,7 +95,6 @@ check "SELinux is enforcing" pyc check-selinux-mode "$P/selinux-enforce.txt"
 check "the shim and the CRI proxy run in the SELinux domain runtime_t" pyc check-selinux-domains "$P/domains.txt"
 check "no SELinux denial in the kernel log or the journal since boot (fails closed)" \
   pyc selinux-audit "$P/kernel.log" "$P/journal.log"
-check "systemd-networkd leaves each Cilium ENI (eth1 and later) unmanaged" pyc check-networkd "$P/networkd.txt"
 check "the root file system is the read-only dm-verity device" pyc check-dm-verity "$P/dm-verity.txt"
 
 # The drop-in test: containerd config dump of the node's own containerd with a copy of its
@@ -120,6 +119,41 @@ not_accepted() { local rc=0; pyc check-containerd-dump "$1" >/dev/null 2>&1 || r
 check "containerd config dump with the valid drop-in: the handler is there" pyc check-containerd-dump "$OUT/containerd-dump-valid.toml"
 check "containerd config dump with no drop-in: the node check refuses it" not_accepted "$OUT/containerd-dump-missing.toml"
 check "containerd config dump with a malformed drop-in: the node check refuses it" not_accepted "$OUT/containerd-dump-malformed.toml"
+
+# networkd and the Cilium ENIs. Cilium gives pods the secondary addresses of eth0 first, so a
+# second ENI comes only when the node needs more addresses. test.sh starts ordinary filler
+# pods on the sandbox node, by exact name, until the CiliumNode of the node lists two ENIs (at
+# most 16, and never more than SANDBOX_SLOTS allows), checks networkd, and deletes the filler
+# pods by exact name. No second ENI is a failure (E_NETWORKD_ENI), never a skip.
+cilium_enis() { # the number of ENIs in the CiliumNode of the sandbox node
+  kc get ciliumnode "$SANDBOX_NODE" -o jsonpath='{.status.eni.enis}' \
+    | python3 -c 'import json, sys; t = sys.stdin.read().strip(); print(len(json.loads(t)) if t else 0)'
+}
+two_enis() { local n; n="$(cilium_enis)" || return 1; ((n >= 2)); }
+pods_on_node="$(kc get pods -A --field-selector "spec.nodeName=$SANDBOX_NODE" -o name | wc -l)"
+filler_max=$((SANDBOX_SLOTS - pods_on_node))
+((filler_max <= 16)) || filler_max=16
+fillers=()
+for ((i = 1; i <= filler_max; i++)); do
+  two_enis && break
+  f="cb-filler-$i-$RUN_ID"
+  pyc render-filler --name "$f" --node "$SANDBOX_NODE" | kc create -f - >/dev/null || break
+  fillers+=("$f")
+  kc -n "$NS" wait --for=condition=Ready "pod/$f" --timeout=3m >/dev/null || break
+done
+# The operator attaches the ENI after it sees the demand: wait for it.
+two_enis || wait_until "${CB_WAIT_TRIES:-30}" "a second ENI on $SANDBOX_NODE" two_enis || true
+printf 'filler pods started: %d (limit %d); ENIs in the CiliumNode of %s: %s\n' \
+  "${#fillers[@]}" "$filler_max" "$SANDBOX_NODE" "$(cilium_enis)"
+if two_enis; then
+  probe_capture "$probe" "$P-networkd"
+  networkd_ok() { pyc check-networkd "$1"; local rc=$?; ((rc == 0)); }   # exit 2 is a failure here
+  check "systemd-networkd leaves each Cilium ENI (eth1 and later) unmanaged" networkd_ok "$P-networkd/networkd.txt"
+else
+  printf 'ERROR: E_NETWORKD_ENI: no second ENI on %s after %d filler pods\n' "$SANDBOX_NODE" "${#fillers[@]}" >&2
+  assert "a second Cilium ENI on the sandbox node, for the networkd check (E_NETWORKD_ENI)" 1
+fi
+for f in "${fillers[@]}"; do kc -n "$NS" delete pod "$f" --ignore-not-found --wait=false >/dev/null; done
 probe_stop "$probe"
 
 step "4. the sandbox pod runs in its own guest"

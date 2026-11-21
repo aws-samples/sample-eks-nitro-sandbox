@@ -44,6 +44,7 @@ def parser():
     add("render-pod-identity", cb_render.cmd_render_pod_identity)
     add("render-nodegroup", cb_render.cmd_render_nodegroup, group)
     add("render-probe", cb_render.cmd_render_probe, (["--name"], {"required": True}), (["--node"], {"required": True}))
+    add("render-filler", cb_render.cmd_render_filler, (["--name"], {"required": True}), (["--node"], {"required": True}))
     add("launch-template", cb_render.cmd_launch_template, group)
     add("check-user-data", cb_render.cmd_check_user_data, group, opt_file)
     add("runtimeclass", cb_render.cmd_runtimeclass)

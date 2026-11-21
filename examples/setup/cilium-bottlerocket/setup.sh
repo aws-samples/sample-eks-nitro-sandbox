@@ -88,6 +88,11 @@ if [[ -n "${RUN_ID:-}" ]]; then
   require_run_id
   check_run_record
   echo "Resuming run $RUN_ID after stage $(state_get STAGE_DONE)"
+  # A --stop-after stage that the run already finished would not stop the run: it would go on
+  # into the next stage (for example the AMI build). Refuse it before anything runs.
+  if [[ -n "$stop_after" ]] && (( $(stage_index "$stop_after") <= $(stage_index "$(state_get STAGE_DONE)") )); then
+    die E_USAGE "run $RUN_ID already finished stage $stop_after (STAGE_DONE=$(state_get STAGE_DONE)); --stop-after must name a later stage"
+  fi
 else
   reserve_run
   echo "New run $RUN_ID, state file $RUN_STATE_FILE"
