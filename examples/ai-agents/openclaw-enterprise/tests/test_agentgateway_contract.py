@@ -191,7 +191,10 @@ def test_bedrock_model_and_sdk_share_the_runtime_region_source():
     assert model["provider"] == "bedrock"
     assert model["auth"] == {"aws": {}}
     assert model["name"] == MODEL_ALIAS
-    assert model["params"] == {"model": MODEL}
+    assert model["params"] == {
+        "model": MODEL,
+        "awsRegion": "${AWS_REGION}",
+    }
 
     env = {item["name"]: item for item in container["env"]}
     expected_region_source = {
@@ -212,7 +215,7 @@ def test_bedrock_model_and_sdk_share_the_runtime_region_source():
 
     manifest = MANIFEST.read_text(encoding="utf-8")
     assert "us-west-2" not in manifest
-    assert "${AWS_REGION}" not in manifest
+    assert manifest.count("${AWS_REGION}") == 1
 
 
 def test_deployment_uses_an_immutable_image_and_restricted_container():

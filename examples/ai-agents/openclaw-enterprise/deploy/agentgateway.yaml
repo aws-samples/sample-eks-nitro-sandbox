@@ -114,6 +114,7 @@ data:
             aws: {}
           params:
             model: amazon.nova-lite-v1:0
+            awsRegion: ${AWS_REGION}
 ---
 apiVersion: apps/v1
 kind: Deployment
