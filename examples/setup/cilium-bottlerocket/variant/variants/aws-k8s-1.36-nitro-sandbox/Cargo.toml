@@ -17,9 +17,10 @@ erofs-root-partition = true
 systemd-networkd = true
 external-kmod-development = false
 
-# PROVISIONAL: the first build measures the use of the root partition and sets this value.
+# Twoliter gives ROOT-A 460 MiB for each GiB of this value: 4 gives 1,840 MiB. A measured build
+# used 479,363,072 bytes of ROOT-A (about 25 percent of 1,840 MiB).
 [package.metadata.build-variant.image-layout]
-os-image-size-gib = 8
+os-image-size-gib = 4
 
 [package.metadata.build-variant]
 included-packages = [

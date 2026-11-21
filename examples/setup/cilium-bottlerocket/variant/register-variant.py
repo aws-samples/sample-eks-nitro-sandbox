@@ -71,7 +71,8 @@ def variant_edits(os_gib):
         ('name = "aws-k8s-1_36"\n', f'name = "{VARIANT_CRATE}"\n'),
         ("external-kmod-development = false\n\n",
          "external-kmod-development = false\n\n"
-         "# PROVISIONAL: the first build measures the use of the root partition and sets this value.\n"
+         "# Twoliter gives ROOT-A 460 MiB for each GiB of this value: 4 gives 1,840 MiB. A measured build\n"
+         "# used 479,363,072 bytes of ROOT-A (about 25 percent of 1,840 MiB).\n"
          "[package.metadata.build-variant.image-layout]\n"
          f"os-image-size-gib = {os_gib}\n\n"),
         ('    "thar-be-image-verifiers",\n]\n',
