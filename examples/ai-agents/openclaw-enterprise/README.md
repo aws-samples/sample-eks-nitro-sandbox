@@ -159,7 +159,7 @@ when your threat model requires those stronger boundaries.
 
 | Path | Purpose |
 |---|---|
-| [`build/codebuild-builder.Dockerfile`](build/codebuild-builder.Dockerfile) | Derive the privileged builder from a pinned CodeBuild image without its unused legacy ECS CLI. |
+| [`build/codebuild-builder.Dockerfile`](build/codebuild-builder.Dockerfile) | Build a pinned, purpose-built Alpine image with the Docker engine and only the host tools required by the image build. |
 | [`build/template.yaml`](build/template.yaml) | Build and scan the four deployable images. |
 | [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml) | Define the admission adapter; adjacent manifests define AgentGateway and storage settings. |
 | [`scripts/manage-builder-repository.sh`](scripts/manage-builder-repository.sh) | Create and delete one receipt-bound private builder repository. |
@@ -310,15 +310,15 @@ to images covered by the rule.
 
 **Step 2: Build and scan the images**
 
-Build a minimal overlay on the pinned CodeBuild standard 5.0 image and push it
-to private ECR. The overlay removes the unused legacy ECS CLI that otherwise
-adds an unnecessary vulnerable binary to the privileged builder. The build
-project selects the private image by digest, and the stack manager waits for
-Amazon Inspector to report no active HIGH or CRITICAL package findings before
-creating the build resources.
+Build the purpose-built image from a pinned Alpine base and push it to private
+ECR. It contains the Docker engine and only the host tools required by the
+image build.
+The build project selects the private image by digest, and the stack manager
+waits for Amazon Inspector to report no active HIGH or CRITICAL package
+findings before creating the build resources.
 
 ```bash
-export BUILDER_TAG='codebuild-5.0-without-legacy-ecs-cli'
+export BUILDER_TAG='alpine-3.24-openclaw-builder'
 export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
 "$SAMPLE_DIR/scripts/manage-builder-repository.sh" create \

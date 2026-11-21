@@ -2232,6 +2232,14 @@ global_settings:
       path: 'examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile'
       reason: 'Kubernetes owns controller health through startup, readiness, and liveness probes; a Docker HEALTHCHECK is not consumed by the deployment'
       expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_2
+      path: 'examples/ai-agents/openclaw-enterprise/build/codebuild-builder.Dockerfile'
+      reason: 'CodeBuild owns the lifecycle and health of this short-lived build environment; it is not deployed as a long-running container service'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_3
+      path: 'examples/ai-agents/openclaw-enterprise/build/codebuild-builder.Dockerfile'
+      reason: 'The isolated CodeBuild environment requires root for its privileged Docker daemon; this image is not used by an application runtime'
+      expiration: '2027-12-31'
     - rule_id: CKV_DOCKER_3
       path: 'examples/ai-agents/openclaw-enterprise/ownership-helper/Dockerfile'
       reason: 'Minimal scratch init image must run as root inside the Nitro guest to repair ownership on exact PVC paths, then exits'

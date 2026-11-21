@@ -161,11 +161,27 @@ def test_readme_builds_a_pinned_scanned_builder_and_resolves_the_principal() -> 
     )
 
     assert re.search(
-        r"^FROM public\.ecr\.aws/codebuild/[^@\s]+@sha256:[0-9a-f]{64}$",
+        r"^FROM public\.ecr\.aws/docker/library/alpine:"
+        r"[^@\s]+@sha256:[0-9a-f]{64}$",
         builder_dockerfile,
         re.MULTILINE,
     )
-    assert "rm /usr/local/bin/ecs-cli" in builder_dockerfile
+    assert "apk upgrade --no-cache" in builder_dockerfile
+    assert "apk add --no-cache" in builder_dockerfile
+    for required_package in (
+        "aws-cli",
+        "bash",
+        "coreutils",
+        "docker",
+        "docker-cli-buildx",
+        "git",
+        "nodejs",
+        "python3",
+    ):
+        assert required_package in builder_dockerfile
+    assert "ENV DOCKER_HOST=unix:///var/run/docker.sock" in builder_dockerfile
+    assert "dockerd --version" in builder_dockerfile
+    assert "docker buildx version" in builder_dockerfile
     assert 'docker build \\' in build_step
     assert "--platform linux/amd64" in build_step
     assert "--pull" in build_step
@@ -248,9 +264,16 @@ def test_codebuild_has_no_local_source_and_exports_digest_outputs() -> None:
 def test_codebuild_starts_docker_before_building_images() -> None:
     commands = yaml.safe_load(_buildspec())["phases"]["build"]["commands"]
 
-    start_index = commands.index("/usr/local/bin/dockerd-entrypoint.sh true")
-    ready_index = commands.index(
-        "docker info --format 'daemon {{.ServerVersion}}, storage driver {{.Driver}}'"
+    start_index = commands.index(
+        "dockerd --host=unix:///var/run/docker.sock "
+        "--storage-driver=vfs "
+        ">/tmp/dockerd.log 2>&1 &"
+    )
+    ready_index = next(
+        index
+        for index, command in enumerate(commands)
+        if "docker info --format" in command
+        and 'cat /tmp/dockerd.log >&2; exit 1' in command
     )
     build_index = commands.index(
         "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/"
