@@ -2334,8 +2334,8 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_cleanup_contract.py'
-      line_start: 133
-      line_end: 133
+      line_start: 134
+      line_end: 134
       reason: 'Test mapping names the Kubernetes Secret resource type; it contains no credential value'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING

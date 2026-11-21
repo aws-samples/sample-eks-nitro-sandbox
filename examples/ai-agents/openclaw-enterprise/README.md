@@ -1283,8 +1283,9 @@ Run the static contracts from the repository root:
 
 ```bash
 cd "$(git -C "$SAMPLE_DIR" rev-parse --show-toplevel)"
-python3 -m venv .venv
-. .venv/bin/activate
+export STATIC_VALIDATION_VENV="$PRIVATE_STATE_DIR/static-validation-venv"
+python3 -m venv "$STATIC_VALIDATION_VENV"
+. "$STATIC_VALIDATION_VENV/bin/activate"
 python -m pip install \
   --requirement \
   examples/ai-agents/openclaw-enterprise/tests/requirements.txt
