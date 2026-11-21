@@ -307,30 +307,65 @@ gone() {
 # ---- the builder security group, role and instance profile -----------------------------------
 # A refusal from the first create to packer build undoes this invocation's own creates: MADE
 # gets each part only after its create call succeeds, and undo_made deletes exactly those, by
-# group ID and by name, reads each back, and stops with E_UNDONE or E_UNDO_LEFTOVER. The state
-# keys stay, so the retry reads the parts absent and builds again. Nothing else is deleted.
+# group ID and by name. Just before each step it reads the part back with both tags (a part
+# whose tags changed, or that cannot be read, is left for clean.sh), reads each delete back,
+# and stops with E_UNDONE or E_UNDO_LEFTOVER. The state keys stay, so the retry reads the parts
+# absent and builds again. Nothing else is deleted.
 MADE=()
 made_has() { local x; for x in "${MADE[@]}"; do [ "$x" = "$1" ] && return 0; done; return 1; }
+# owned_now <step> <sg|profile|role>: read the part back just before an undo step and require
+# ManagedBy and this run's RunId (a profile also holds no role but ours). 0 owned. Otherwise it
+# notes 1 (the tags or roles differ) or 2 (the read failed), prints why, and the step is skipped:
+# the part is left for clean.sh.
+owned_now() {
+  local step="$1" kind="$2" f="$PRIV/undo-$1.json" r=0
+  local read=() extra=()
+  case "$kind" in
+    sg) read=(ec2 describe-security-groups --region "$AWS_REGION" --group-ids "$SG_ID") ;;
+    profile) read=(iam get-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME"); extra=(--role "$BUILDER_ROLE_NAME") ;;
+    role) read=(iam get-role --role-name "$BUILDER_ROLE_NAME") ;;
+  esac
+  if ! aws "${read[@]}" --output json >"$f" 2>"$PRIV/undo-$step.err"; then
+    echo "undo: the $kind could not be read back before $step ($(tail -n 1 "$PRIV/undo-$step.err")); it is left for clean.sh" >&2
+    note 2; return 1
+  fi
+  "${PM[@]}" owned "$kind" "$f" --run-id "$RUN_ID" --managed-by "$OWNER_TAG_VALUE" ${extra[@]+"${extra[@]}"} >/dev/null || r=$?
+  [ "$r" = 0 ] && return 0
+  echo "undo: the $kind is not this run's before $step (see above); it is left for clean.sh" >&2
+  if [ "$r" = 2 ]; then note 2; else note 1; fi
+  return 1
+}
 undo_made() {
   local rc=$? r
   trap - EXIT
   if [ "$rc" != 0 ] && [ "${#MADE[@]}" -gt 0 ]; then
     worst=0
+    # Before each step, the parts it changes are read back again. While the profile still holds
+    # the role, the profile, the policy attachment and the role are all left for clean.sh.
+    local held=0
     if made_has profile-role; then
-      aws iam remove-role-from-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" --role-name "$BUILDER_ROLE_NAME" || note 1
+      held=1
+      if owned_now remove-role profile && owned_now remove-role-role role; then
+        if aws iam remove-role-from-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" --role-name "$BUILDER_ROLE_NAME"; then
+          held=0
+        else
+          note 1
+        fi
+      fi
+      [ "$held" = 0 ] || echo "undo: the profile still holds the role; the profile and the role are left for clean.sh" >&2
     fi
-    if made_has profile; then
+    if made_has profile && [ "$held" = 0 ] && owned_now delete-profile profile; then
       aws iam delete-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" || note 1
       r=0; gone profile undo-profile iam get-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" || r=$?; note "$r"
     fi
-    if made_has policy; then
+    if made_has policy && [ "$held" = 0 ] && owned_now detach-policy role; then
       aws iam detach-role-policy --role-name "$BUILDER_ROLE_NAME" --policy-arn "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore" || note 1
     fi
-    if made_has role; then
+    if made_has role && [ "$held" = 0 ] && owned_now delete-role role; then
       aws iam delete-role --role-name "$BUILDER_ROLE_NAME" || note 1
       r=0; gone role undo-role iam get-role --role-name "$BUILDER_ROLE_NAME" || r=$?; note "$r"
     fi
-    if made_has sg; then
+    if made_has sg && owned_now delete-sg sg; then
       aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$SG_ID" >/dev/null || note 1
       r=0; gone sg undo-sg ec2 describe-security-groups --group-ids "$SG_ID" || r=$?; note "$r"
     fi

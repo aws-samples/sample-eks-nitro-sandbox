@@ -10,7 +10,8 @@
 #      lib.sh sourced in a subshell, CLONE set after the source.
 #        fetch_verified   E_DIGEST E_DOWNLOAD (a curl stub writes a fixture to the -o path)
 #        find_images      E_IMAGES (fixture trees under the work folder)
-#        not_in_use       E_VOLUME_IN_USE (an lsblk stub)
+#        not_in_use       E_VOLUME_IN_USE E_VOLUME_READ (an lsblk stub: a mount point, one long
+#                         enough to get SIGPIPE from an early-closing test, a failed lsblk)
 #        volume_device    E_VOLUME_DEVICE, reject side (a volume ID with no device node)
 #
 #   examples/setup/cilium-bottlerocket/scripts/test-builder.sh
@@ -125,12 +126,25 @@ check "REJECT find_images when both links name one file" 1 "$RC" "$WORK/fi-same.
 
 # not_in_use: lsblk lists the mount points of the device and its partitions.
 entry scripts/builder/lib.sh:not_in_use
-stub lsblk 'case "$*" in *MOUNTPOINT*/dev/busy*) printf "\n/mnt/data\n" ;; *MOUNTPOINT*) printf "\n\n" ;; *) exit 97 ;; esac'
+# /dev/sigpipe: the first line is a mount point, and lsblk writes more after a pause, so a test
+# that closes the pipe at its first match ends lsblk with SIGPIPE. /dev/lsblkfail: lsblk fails.
+stub lsblk 'case "$*" in *MOUNTPOINT*/dev/busy*) printf "\n/mnt/data\n" ;;
+  *MOUNTPOINT*/dev/sigpipe*) printf "/mnt/data\n"; sleep 1; i=0; while [ "$i" -lt 2000 ]; do printf "/mnt/data/p%s\n" "$i"; i=$((i + 1)); done ;;
+  *MOUNTPOINT*/dev/lsblkfail*) echo "lsblk: /dev/lsblkfail: not a block device" >&2; exit 32 ;;
+  *MOUNTPOINT*) printf "\n\n" ;; *) exit 97 ;; esac'
 lb "$WORK/nu-ok.log" "not_in_use /dev/free; echo free"
 check "ACCEPT not_in_use: no mount point on the device or its partitions" 0 "$RC" "$WORK/nu-ok.log" '^free$'
-cover accept E_VOLUME_IN_USE
+cover accept E_VOLUME_IN_USE E_VOLUME_READ
 lb "$WORK/nu-bad.log" "not_in_use /dev/busy"
 check "REJECT not_in_use when a partition of the device is mounted" 1 "$RC" "$WORK/nu-bad.log" '^ERROR: E_VOLUME_IN_USE: /dev/busy or a partition of it is mounted$'
+lb "$WORK/nu-sigpipe.log" "not_in_use /dev/sigpipe; echo free"
+check "REJECT not_in_use when the mounted device's lsblk output is long enough to get SIGPIPE from an early-closing test" 1 "$RC" \
+  "$WORK/nu-sigpipe.log" '^ERROR: E_VOLUME_IN_USE: /dev/sigpipe or a partition of it is mounted$'
+! grep -qx free "$WORK/nu-sigpipe.log"; check "  ... and the caller does not go on" 0 $? "$WORK/nu-sigpipe.log"
+lb "$WORK/nu-fail.log" "not_in_use /dev/lsblkfail; echo free"
+check "REJECT not_in_use when lsblk itself fails (no output, exit 32)" 1 "$RC" \
+  "$WORK/nu-fail.log" '^ERROR: E_VOLUME_READ: could not read the mount points of /dev/lsblkfail \(lsblk exit 32\)$'
+! grep -qx free "$WORK/nu-fail.log"; check "  ... and the caller does not go on" 0 $? "$WORK/nu-fail.log"
 
 # volume_device: the reject side here; part 2 runs the accept side on the by-id folder of a fixture SYSROOT.
 entry scripts/builder/lib.sh:volume_device
@@ -189,7 +203,10 @@ sed -e "s/^BUILDX_SHA256_LINUX_AMD64=.*/BUILDX_SHA256_LINUX_AMD64=$(sha "$FIX_DL
 stub findmnt 'case "$*" in "-nvo SOURCE /") echo "${FIX_ROOT_SRC:-/dev/nvme0n1p1}" ;; *"-nvo SOURCE "*) echo "${FIX_WORK_SRC:-/dev/nvme2n1}" ;; *) exit 97 ;; esac'
 stub lsblk 'dev=""; for a in "$@"; do dev="$a"; done
 case "$*" in
-  *MOUNTPOINT*) if [ "${FIX_MOUNTED:-}" = "$dev" ]; then printf "\n/mnt/data\n"; else printf "\n\n"; fi ;;
+  *MOUNTPOINT*) if [ "${FIX_LSBLK:-}" = fail ]; then echo "lsblk: $dev: not a block device" >&2; exit 32
+    elif [ "${FIX_LSBLK:-}" = sigpipe ] && [ "${FIX_MOUNTED:-}" = "$dev" ]; then
+      printf "/mnt/data\n"; sleep 1; i=0; while [ "$i" -lt 2000 ]; do printf "/mnt/data/p%s\n" "$i"; i=$((i + 1)); done
+    elif [ "${FIX_MOUNTED:-}" = "$dev" ]; then printf "\n/mnt/data\n"; else printf "\n\n"; fi ;;
   *NAME,PARTLABEL*) printf "%s\n" "$dev"
     for p in ${FIX_PARTS:-${dev}p1:EFI-A ${dev}p2:BOTTLEROCKET-ROOT-A ${dev}p3:BOTTLEROCKET-ROOT-B}; do echo "$p" | tr ":" " "; done ;;
   *PKNAME*) echo "${FIX_ROOT_DISK:-/dev/nvme0n1}" ;;
@@ -319,6 +336,8 @@ check "REJECT release when the data volume has no device node" 1 "$RC" "$WORK/re
 new_sysroot
 stage "$WORK/rel-busy.log" 70-release.sh "FIX_MOUNTED=$DEV"
 check "REJECT release when the OS volume is still mounted" 1 "$RC" "$WORK/rel-busy.log" "^ERROR: E_VOLUME_IN_USE: $DEV or a partition of it is mounted\$"
+stage "$WORK/rel-lsblk.log" 70-release.sh FIX_LSBLK=fail
+check "REJECT release when lsblk cannot read the mount points" 1 "$RC" "$WORK/rel-lsblk.log" "^ERROR: E_VOLUME_READ: could not read the mount points of $DEV \\(lsblk exit 32\\)\$"
 cover accept E_VOLUME_IN_USE
 
 echo "== 3/6 60-verify-root.sh =============================================================="
@@ -452,7 +471,14 @@ FIX_DEV_BYTES=18~^ERROR: E_BOUNDS: the data image is 19 bytes; the volume $VOL_D
 FIX_FAIL=dd-write~^ERROR: E_WRITE: writing the os image failed\$~REJECT a failed write
 FIX_FAIL=dd-readback~^ERROR: E_WRITE: the os volume does not read back the image\$~REJECT a volume that reads back other bytes
 CB_OS_VOLUME_ID=$VOL_DATA~^ERROR: E_INPUT: the OS and data volumes are the same\$~REJECT the same volume for OS and data
+FIX_LSBLK=fail~^ERROR: E_VOLUME_READ: could not read the mount points of $DEV \(lsblk exit 32\)\$~REJECT a target whose mount points lsblk cannot read
 CASES
+# A mounted target whose lsblk output is long enough to get SIGPIPE from an early-closing test:
+# refused, and dd writes nothing.
+new_sysroot; images; : > "$BSTUB_LOG"
+stage "$WORK/wi-sigpipe.log" 50-write-images.sh "FIX_MOUNTED=$DEV" FIX_LSBLK=sigpipe
+check "REJECT a mounted target whose lsblk output gets SIGPIPE" 1 "$RC" "$WORK/wi-sigpipe.log" "^ERROR: E_VOLUME_IN_USE: $DEV or a partition of it is mounted\$"
+! grep -q '^dd .*of=' "$BSTUB_LOG"; check "  ... and dd writes nothing" 0 $? "$BSTUB_LOG"
 new_sysroot
 stage "$WORK/wi-noimg.log" 50-write-images.sh
 check "REJECT write-images when the build left no image folder" 1 "$RC" "$WORK/wi-noimg.log" '^ERROR: E_IMAGES: no .*/latest$'
@@ -523,6 +549,8 @@ done <<CASES
 FIX_ROOT_SRC=$DEV~^ERROR: E_WORK_VOLUME: $DEV is the root device\$~REJECT a work volume that is the root device
 FIX_FSTYPE=xfs~^ERROR: E_WORK_VOLUME: $DEV already has a file system\$~REJECT a work volume that already has a file system
 FIX_MOUNTED=$DEV~^ERROR: E_VOLUME_IN_USE: $DEV or a partition of it is mounted\$~REJECT a work volume that is mounted
+FIX_MOUNTED=$DEV FIX_LSBLK=sigpipe~^ERROR: E_VOLUME_IN_USE: $DEV or a partition of it is mounted\$~REJECT a mounted work volume whose lsblk output is long enough to get SIGPIPE
+FIX_LSBLK=fail~^ERROR: E_VOLUME_READ: could not read the mount points of $DEV \(lsblk exit 32\)\$~REJECT a work volume whose mount points lsblk cannot read
 FIX_FAIL=dnf~^ERROR: E_DNF: the package install failed\$~REJECT a failed dnf install
 FIX_FAIL=curl-buildx-$BX_V.linux-amd64~^ERROR: E_DOWNLOAD: https://github.com/docker/buildx/releases/download/~REJECT a buildx download that fails
 FIX_FAIL=systemctl~^ERROR: E_DOCKER: docker did not start\$~REJECT a Docker that does not start

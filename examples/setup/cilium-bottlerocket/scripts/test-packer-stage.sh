@@ -4,7 +4,8 @@
 # RUN_STATE_DIR in the environment), against a builder in the fake world:
 #   the template's run folder, the stage name, build.ID, the Packer run UUID, SANDBOX_SLOTS
 #   the stage order, a stage that ran twice, another builder or Packer run than the bound one
-#   bind: the builder read-back (no key pair, no public IP ...), SSM Online, a failed read
+#   bind: the builder read-back (no key pair, no public IP ...), its network interfaces and their
+#   two run tags (BUILDER_ENI_IDS), SSM Online, a failed read
 #   upload: the measured overlay, the base64 chunks
 #   every Run Command stage: the parameter file, a failed send, a failed or successful status
 #
@@ -68,6 +69,12 @@ cover accept E_RUN_STATE_DIR E_STAGE_UNKNOWN E_BUILDER_ID E_PACKER_RUN_UUID E_IN
 [[ "$(st BUILDER_INSTANCE_ID)" == "$BID" && "$(st BUILDER_VOLUME_IDS)" =~ ^vol-[0-9a-f]{17}(,vol-[0-9a-f]{17}){3}$ \
    && -n "$(st OS_VOLUME_ID)" && -n "$(st DATA_VOLUME_ID)" && -f "$PK/stage-bind.done" && "$(cat "$PK/packer-run-uuid")" == "$UUID" ]]
 check "  ... it records the builder, its four volumes (comma), the OS and data volumes, the run UUID and the stage marker" 0 $? "$RD/state.env"
+cover accept E_BUILDER_ENI E_BUILDER_ENI_TAGS
+eni="$(world_get '[e["NetworkInterfaceId"] for e in s["ec2"]["network_interfaces"] if (e.get("Attachment") or {}).get("InstanceId") == "'"$BID"'"][0]')"
+[[ "$(st BUILDER_ENI_IDS)" == "$eni" && "$eni" =~ ^eni-[0-9a-f]{17}$ ]] \
+  && grep -qx 'builder-enis count=1 attached=builder tags=ok' "$RD/evidence/ami-build.txt" \
+  && [[ "$(count_calls aws 'ec2 create-tags')" == 0 ]]
+check "  ... it records the builder's interface in BUILDER_ENI_IDS, reads its ManagedBy and RunId back, and writes no tag (Packer tagged it)" 0 $? "$RD/state.env"
 [[ "$(count_calls aws 'ssm send-command')" == 0 ]]
 check "  ... and sends no command to the builder" 0 $? "$WORK/bind.log"
 stage "$WORK/bind-again.log" bind
@@ -82,6 +89,29 @@ check "REJECT stage bind for a builder with a key pair" 1 "$RC" "$WORK/bind-key.
 prep 's["ec2"]["security_groups"][0]["IpPermissions"] = [{"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22}]'
 stage "$WORK/bind-inbound.log" bind
 check "REJECT stage bind when the builder security group has an inbound rule" 1 "$RC" "$WORK/bind-inbound.log" '^ERROR: E_BUILDER_INBOUND: '
+# The builder's network interfaces: each one attached to it carries ManagedBy and this run's RunId.
+while IFS='~' read -r cfg rx why; do
+  [[ -n "$why" ]] || continue
+  prep "s[\"packer\"] = {\"eni_tags_override\": $cfg}"
+  stage "$WORK/bind-eni.log" bind
+  check "$why" 1 "$RC" "$WORK/bind-eni.log" "$rx"
+  [[ ! -f "$PK/stage-bind.done" && "$(st BUILDER_ENI_IDS)" =~ ^eni-[0-9a-f]{17}$ ]]
+  check "  ... no stage marker, and BUILDER_ENI_IDS names the interface for clean.sh" 0 $? "$RD/state.env"
+done <<'CASES'
+{"RunId": None}~^ERROR: E_BUILDER_ENI_TAGS: ManagedBy='cilium-bottlerocket-sample' RunId=None~REJECT stage bind when the builder's interface has no RunId tag
+{"ManagedBy": None}~^ERROR: E_BUILDER_ENI_TAGS: ManagedBy=None~REJECT stage bind when the builder's interface has no ManagedBy tag
+{"RunId": "r2"}~^ERROR: E_BUILDER_ENI_TAGS: ManagedBy='cilium-bottlerocket-sample' RunId='r2'~REJECT stage bind when the builder's interface is tagged for another run
+CASES
+prep
+world_py 's["ec2"]["network_interfaces"].append({"NetworkInterfaceId": "eni-0fd00000000000009", "Status": "in-use", "Attachment": {"InstanceId": "'"$BID"'", "DeviceIndex": 1}, "TagSet": [{"Key": "ManagedBy", "Value": "cilium-bottlerocket-sample"}, {"Key": "RunId", "Value": "r1"}]})'
+stage "$WORK/bind-eni2.log" bind
+check "REJECT stage bind when an interface attached to the builder is not one the instance lists" 1 "$RC" "$WORK/bind-eni2.log" '^ERROR: E_BUILDER_ENI: the interfaces attached to the builder are '
+prep 's["packer"] = {"builder_overrides": {"NetworkInterfaces": []}}'
+stage "$WORK/bind-eni0.log" bind
+check "REJECT stage bind for a builder read that lists no network interface" 1 "$RC" "$WORK/bind-eni0.log" '^ERROR: E_BUILDER_ENI: network interfaces \[\]'
+prep; FAKE_FAIL='aws|ec2 describe-network-interfaces||RequestLimitExceeded' stage "$WORK/bind-eniread.log" bind
+check "REJECT stage bind when the builder's interfaces cannot be read, as could not determine (exit 2)" 2 "$RC" "$WORK/bind-eniread.log" \
+  '^ERROR: E_READ: describe-network-interfaces of the builder failed'
 prep; FAKE_FAIL='aws|ec2 describe-instances||RequestLimitExceeded' stage "$WORK/bind-read.log" bind
 check "REJECT stage bind when the builder cannot be read, as could not determine (exit 2)" 2 "$RC" "$WORK/bind-read.log" '^ERROR: E_READ: describe-instances of the builder failed'
 prep 's["ssm"]["online"] = False'

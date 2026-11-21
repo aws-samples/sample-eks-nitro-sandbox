@@ -115,6 +115,8 @@ source "amazon-ebssurrogate" "bottlerocket" {
     max_attempts  = var.ami_wait_attempts
   }
 
+  # The plugin puts run_tags on the instance and on its network interface in RunInstances;
+  # stage bind reads both tags back on every interface of the builder.
   run_tags        = local.run_tags
   run_volume_tags = local.run_tags
   tags            = local.image_tags

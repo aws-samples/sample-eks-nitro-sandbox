@@ -5,7 +5,8 @@
 #   manifest   exactly one build and one AMI, of this run and this Packer run      (#281)
 #   image      the registration values, no UEFI data, the tags and SandboxSlots    (#281)
 #   snapshots  exactly two snapshots, from the OS and data volumes, tagged         (#281 M2)
-#   builder    no key pair, no public IP, one SG with no inbound rule, IMDSv2      (#281)
+#   builder    no key pair, no public IP, one SG with no inbound rule, IMDSv2, its interfaces (#281)
+#   enis       each interface attached to the builder is one it lists, with both run tags (#281)
 #   volumes, sg, owned, gone   the builder's parts, their ownership and their absence after the build
 #
 #   examples/setup/cilium-bottlerocket/scripts/test-packer-manifest.sh
@@ -15,6 +16,16 @@ need_file "$PM" "every packer_manifest.py case" || finish
 FX="$TESTLIB/fixture_aws_json.py"
 G="$WORK/good"
 python3 "$FX" good "$G"
+# The builder's network interfaces (describe-network-interfaces by attachment.instance-id): the
+# one interface the fixture instance lists, attached to it and tagged as Packer's run_tags tag it.
+python3 - "$G/enis.json" <<'PY'
+import json, sys
+json.dump({"NetworkInterfaces": [{"NetworkInterfaceId": "eni-0fb00000000000001", "Status": "in-use",
+                                  "Attachment": {"InstanceId": "i-0fb00000000000001", "DeviceIndex": 0},
+                                  "TagSet": [{"Key": "Name", "Value": "cb-offline-test-r1-builder"},
+                                             {"Key": "ManagedBy", "Value": "cilium-bottlerocket-sample"},
+                                             {"Key": "RunId", "Value": "r1"}]}]}, open(sys.argv[1], "w"))
+PY
 COMMON=(--run-id r1 --managed-by cilium-bottlerocket-sample)
 
 # argv_for <command> <dir>: the arguments of a good call on the documents in <dir>.
@@ -29,6 +40,7 @@ argv_for() {
                  --profile cb-offline-test-r1-builder --subnet subnet-0fa00000000000001 "${COMMON[@]}") ;;
     volumes)   ARGV=(volumes "$d/volumes.json" --ids vol-0fb00000000000001,vol-0fb00000000000002,vol-0fb00000000000003,vol-0fb00000000000004
                  --builder i-0fb00000000000001 "${COMMON[@]}") ;;
+    enis)      ARGV=(enis "$d/enis.json" --ids eni-0fb00000000000001 --builder i-0fb00000000000001 "${COMMON[@]}") ;;
     sg)        ARGV=(sg "$d/groups.json" --sg sg-0fc00000000000001 --vpc vpc-0fa00000000000001 "${COMMON[@]}") ;;
     owned-sg)  ARGV=(owned sg "$d/groups.json" "${COMMON[@]}") ;;
     owned-role) ARGV=(owned role "$d/role.json" "${COMMON[@]}") ;;
@@ -148,11 +160,16 @@ entry scripts/lib/packer_manifest.py:builder
 argv_for builder "$G"; run_real "$WORK/b-good.log" python3 "$PM" "${ARGV[@]}"
 check "ACCEPT the builder: no key pair, no public IP, one SG with no inbound rule, the profile, IMDSv2 hop 1, the subnet, four volumes" 0 "$RC" "$WORK/b-good.log" \
   '^builder key_name=none public_ip=none inbound_rules=0 http_tokens=required hop_limit=1$'
-cover accept E_BUILDER_COUNT E_BUILDER_KEY E_BUILDER_PUBLIC_IP E_BUILDER_SG E_BUILDER_PROFILE E_BUILDER_IMDS E_BUILDER_SUBNET E_BUILDER_TAGS E_BUILDER_VOLUMES E_BUILDER_INBOUND
+cover accept E_BUILDER_COUNT E_BUILDER_KEY E_BUILDER_PUBLIC_IP E_BUILDER_SG E_BUILDER_PROFILE E_BUILDER_IMDS E_BUILDER_SUBNET E_BUILDER_TAGS E_BUILDER_VOLUMES E_BUILDER_INBOUND E_BUILDER_ENI
+grep -qx 'BUILDER_ENI_IDS=eni-0fb00000000000001' "$WORK/b-good.log"
+check "  ... and prints the builder's interface IDs for the state file (BUILDER_ENI_IDS)" 0 $? "$WORK/b-good.log"
 while IFS='|' read -r file code want tag why; do
   [[ -n "$file" ]] || continue
   case_run builder "$file" "$code" "$want" "$tag" "$why"
 done <<'CASES'
+instances.json|d["Reservations"][0]["Instances"][0]["NetworkInterfaces"] = []|1|E_BUILDER_ENI|REJECT a builder read with no network interface
+instances.json|d["Reservations"][0]["Instances"][0]["NetworkInterfaces"][0]["NetworkInterfaceId"] = "not-an-eni"|1|E_BUILDER_ENI|REJECT a builder interface whose ID is not an interface ID
+instances.json|d["Reservations"][0]["Instances"][0]["NetworkInterfaces"].append({"NetworkInterfaceId": "eni-0fb00000000000001"})|1|E_BUILDER_ENI|REJECT a builder read that lists one interface twice
 instances.json|d["Reservations"][0]["Instances"].append({"InstanceId": "i-0fb00000000000002"})|1|E_BUILDER_COUNT|REJECT a read with two instances
 instances.json|d["Reservations"][0]["Instances"][0]["KeyName"] = "a-key"|1|E_BUILDER_KEY|REJECT a builder with an SSH key pair
 instances.json|d["Reservations"][0]["Instances"][0]["PublicIpAddress"] = "198.51.100.7"|1|E_BUILDER_PUBLIC_IP|REJECT a builder with a public IP address
@@ -180,6 +197,26 @@ volumes.json|d["Volumes"][3]["VolumeType"] = "io2"|1|E_BUILDER_VOLUMES|REJECT a 
 volumes.json|d["Volumes"][1]["Tags"] = [{"Key": "ManagedBy", "Value": "someone-else"}]|1|E_BUILDER_VOLUME_TAGS|REJECT a builder volume of another owner
 CASES
 case_run volumes "" "" 1 E_INPUT "REJECT --ids that are not four volume IDs" 'ARGV[3]=vol-0fb00000000000001,vol-0fb00000000000002'
+entry scripts/lib/packer_manifest.py:enis
+argv_for enis "$G"; run_real "$WORK/e-good.log" python3 "$PM" "${ARGV[@]}"
+check "ACCEPT the builder's network interface: the one the instance lists, attached to it, with ManagedBy and this run's RunId" 0 "$RC" \
+  "$WORK/e-good.log" '^builder-enis count=1 attached=builder tags=ok$'
+cover accept E_INPUT E_BUILDER_ENI E_BUILDER_ENI_TAGS
+while IFS='|' read -r file code want tag why; do
+  [[ -n "$file" ]] || continue
+  case_run enis "$file" "$code" "$want" "$tag" "$why"
+done <<'CASES'
+enis.json|d["NetworkInterfaces"][0]["TagSet"] = [t for t in d["NetworkInterfaces"][0]["TagSet"] if t["Key"] != "RunId"]|1|E_BUILDER_ENI_TAGS|REJECT a builder interface with no RunId tag
+enis.json|d["NetworkInterfaces"][0]["TagSet"] = [t for t in d["NetworkInterfaces"][0]["TagSet"] if t["Key"] != "ManagedBy"]|1|E_BUILDER_ENI_TAGS|REJECT a builder interface with no ManagedBy tag
+enis.json|d["NetworkInterfaces"][0]["TagSet"][2]["Value"] = "r2"|1|E_BUILDER_ENI_TAGS|REJECT a builder interface tagged for another run
+enis.json|d["NetworkInterfaces"][0]["TagSet"][1]["Value"] = "someone-else"|1|E_BUILDER_ENI_TAGS|REJECT a builder interface of another owner
+enis.json|d["NetworkInterfaces"][0]["TagSet"] = []|1|E_BUILDER_ENI_TAGS|REJECT an untagged builder interface
+enis.json|d["NetworkInterfaces"].append(dict(d["NetworkInterfaces"][0], NetworkInterfaceId="eni-0fb00000000000009"))|1|E_BUILDER_ENI|REJECT a second interface attached to the builder that the instance does not list
+enis.json|d["NetworkInterfaces"] = []|1|E_BUILDER_ENI|REJECT a read with no interface attached to the builder
+enis.json|d["NetworkInterfaces"][0]["Attachment"]["InstanceId"] = "i-0fb00000000000009"|1|E_BUILDER_ENI|REJECT an interface attached to another instance
+enis.json|d.pop("NetworkInterfaces")|2|E_READ|REJECT an interface read with no NetworkInterfaces, as could not determine (exit 2)
+CASES
+case_run enis "" "" 1 E_INPUT "REJECT --ids that are not interface IDs" 'ARGV[3]=vol-0fb00000000000001'
 entry scripts/lib/packer_manifest.py:sg
 argv_for sg "$G"; run_real "$WORK/g-good.log" python3 "$PM" "${ARGV[@]}"
 check "ACCEPT the builder security group: no inbound rule, one egress rule TCP 443, tagged" 0 "$RC" "$WORK/g-good.log" '^builder-sg inbound_rules=0 egress=tcp/443'

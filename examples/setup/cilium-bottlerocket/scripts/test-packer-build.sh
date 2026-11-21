@@ -128,7 +128,7 @@ cover accept E_INPUT_SANDBOX_SLOTS E_INPUT E_PACKER_LOG E_RESUME E_UPLOAD E_UPLO
 [[ "$(tail -n1 "$CB_RUN_DIR/runs/r1/state.env")" == AMI_BUILD_RESULT=ok && "$(st SANDBOX_AMI_ID)" =~ ^ami-[0-9a-f]{17}$ \
    && "$(st SANDBOX_AMI_SNAPSHOT_IDS)" =~ ^snap-[0-9a-f]{17},snap-[0-9a-f]{17}$ ]]
 check "  ... the state file ends with AMI_BUILD_RESULT=ok and names the AMI and its two snapshots (root,data)" 0 $? "$CB_RUN_DIR/runs/r1/state.env"
-for k in BUILDER_AMI_ID BUILDER_SG_ID BUILDER_ROLE_NAME BUILDER_PROFILE_NAME BUILDER_INSTANCE_ID BUILDER_VOLUME_IDS OS_VOLUME_ID DATA_VOLUME_ID PACKER_MANIFEST PACKER_RUN_UUID; do
+for k in BUILDER_AMI_ID BUILDER_SG_ID BUILDER_ROLE_NAME BUILDER_PROFILE_NAME BUILDER_INSTANCE_ID BUILDER_VOLUME_IDS BUILDER_ENI_IDS OS_VOLUME_ID DATA_VOLUME_ID PACKER_MANIFEST PACKER_RUN_UUID; do
   [[ -n "$(st "$k")" ]] || { echo "missing $k" >> "$WORK/b-keys.log"; }
 done
 [[ ! -s "$WORK/b-keys.log" ]]
@@ -138,6 +138,11 @@ check "  ... and records every builder key (BUILDER_*, OS/DATA_VOLUME_ID, PACKER
 ! ev | grep -q '^undo ' && ev | grep -qx 'partition-use ROOT-A bytes_used=1342177280 bytes_total=2147483648 percent=62.5' \
   && ev | grep -qx 'root-fit ROOT-A used=1342177280 total=2147483648 ok'
 check "  ... no undo ran, and the evidence holds the ROOT-A partition-use and root-fit lines" 0 $? "$WORK/b-good.log"
+# Stage bind reads the builder's network interface back with both run tags (Packer's run_tags
+# put them on it at launch) and records its ID; the interface goes with the builder.
+[[ "$(st BUILDER_ENI_IDS)" =~ ^eni-[0-9a-f]{17}$ ]] && ev | grep -qx 'builder-enis count=1 attached=builder tags=ok' \
+  && [[ "$(world_get 'len(s["ec2"].get("network_interfaces", []))')" == 0 && "$(count_calls aws 'ec2 create-tags')" == 0 ]]
+check "  ... stage bind records BUILDER_ENI_IDS and reads ManagedBy and RunId on the builder's interface; it ends with the builder" 0 $? "$WORK/b-good.log"
 cover accept E_UNDONE E_PARTITION_USE
 [[ "$(world_get 'len([g for g in s["ec2"]["security_groups"] if g.get("GroupName","").endswith("builder") or "builder" in g.get("GroupName","")])')" == 0 \
    && "$(world_get 'len(s["iam"]["roles"]) + len(s["iam"]["profiles"])')" == 0 \
@@ -318,6 +323,68 @@ check "  ... the evidence says result=leftover" 0 $? "$WORK/b-undo-left.log"
 prep 's["packer"]["validate_rc"] = 1'
 FAKE_FAIL='aws|iam get-role||ServiceFailure' CB_WAIT_TRIES=2 run_real "$WORK/b-undo-read.log" bash "$BUILD" build
 check "REJECT an undo whose role read back fails: E_UNDO_LEFTOVER, exit 2" 2 "$RC" "$WORK/b-undo-read.log" '^ERROR: E_UNDO_LEFTOVER: a part this attempt created could not be read back \(see above\); run \./clean\.sh --dry-run$'
+# Each undo step reads its part back first and needs ManagedBy and this run's RunId. tag_change
+# <sg|role|profile>: for one case, the aws stub gives that part another RunId once `packer
+# validate` ran (the fake's "RecheckTags" with "ChangeAfterCall"), so the creates read it back as
+# the run's and the undo does not. undo_calls <log>: the IAM and EC2 delete-side calls of the case.
+cat > "$WORK/tag-change.py" <<'PY'
+import os, sys
+sys.path.insert(0, os.environ["FAKE_TESTLIB"])
+import fakelib
+kind, argv = sys.argv[1], sys.argv[2:]
+op = {"sg": "create-security-group", "role": "create-role", "profile": "create-instance-profile"}[kind]
+if op in argv:
+    key = {"sg": "--group-name", "role": "--role-name", "profile": "--instance-profile-name"}[kind]
+    name = argv[argv.index(key) + 1]
+    other = [{"Key": "ManagedBy", "Value": "cilium-bottlerocket-sample"}, {"Key": "RunId", "Value": "r2"}]
+    with fakelib.world() as (state, _):
+        if kind == "sg":
+            obj = next(g for g in state["ec2"]["security_groups"] if g.get("GroupName") == name)
+        else:
+            obj = state["iam"]["roles" if kind == "role" else "profiles"][name]
+        obj["RecheckTags"], obj["ChangeAfterCall"] = other, "packer validate"
+PY
+tag_change() {
+  printf '#!/bin/sh\n"%s" "%s" "$@"; rc=$?\n[ "$rc" != 0 ] || "%s" "%s" %s "$@"\nexit "$rc"\n' \
+    "$REAL_PYTHON" "$TESTLIB/fake_aws.py" "$REAL_PYTHON" "$WORK/tag-change.py" "$1" > "$WORK/bin/aws"
+  chmod 0755 "$WORK/bin/aws"
+}
+undo_calls() {
+  python3 -c 'import json, sys
+for l in open(sys.argv[1]):
+    c = json.loads(l)
+    if c["tool"] == "aws" and any(w in c["call"] for w in ("delete", "remove", "detach")):
+        print(c["call"])' "$FAKE_LOG" > "$WORK/undo-calls.txt"
+}
+while IFS='~' read -r kind kept done_calls why; do
+  [[ -n "$why" ]] || continue
+  prep 's["packer"]["validate_rc"] = 1'; tag_change "$kind"
+  CB_WAIT_TRIES=2 run_real "$WORK/b-undo-tag.log" bash "$BUILD" build
+  stub_install aws fake_aws.py
+  check "$why" 1 "$RC" "$WORK/b-undo-tag.log" '^ERROR: E_UNDO_LEFTOVER: a part this attempt created remains \(see above\); run \./clean\.sh --dry-run$'
+  undo_calls
+  [[ "$(sort "$WORK/undo-calls.txt" | tr '\n' ' ')" == "$done_calls" ]] && grep -q "^undo: the $kind is not this run's before " "$WORK/b-undo-tag.log" \
+    && [[ "$(world_get "$kept")" == true ]]
+  check "  ... the $kind is left for clean.sh, and only the other steps run (${done_calls% })" 0 $? "$WORK/undo-calls.txt"
+done <<'CASES'
+sg~len([g for g in s["ec2"]["security_groups"] if g.get("GroupName") == "cb-offline-test-r1-builder"]) == 1~iam delete-instance-profile iam delete-role iam detach-role-policy iam remove-role-from-instance-profile ~REJECT an undo whose security group has another RunId when read back before its delete
+role~"cb-offline-test-r1-builder" in s["iam"]["roles"] and "cb-offline-test-r1-builder" in s["iam"]["profiles"]~ec2 delete-security-group ~REJECT an undo whose role has another RunId when read back: the profile keeps the role, both left
+profile~"cb-offline-test-r1-builder" in s["iam"]["profiles"] and "cb-offline-test-r1-builder" in s["iam"]["roles"]~ec2 delete-security-group ~REJECT an undo whose instance profile has another RunId when read back: the profile and role left
+CASES
+# A part that cannot be read back just before its step is left too (exit 2). The sixth FAKE_FAIL
+# field lets the reads of the creates pass first.
+while IFS='~' read -r fail done_calls why; do
+  [[ -n "$why" ]] || continue
+  prep 's["packer"]["validate_rc"] = 1'
+  FAKE_FAIL="$fail" CB_WAIT_TRIES=2 run_real "$WORK/b-undo-noread.log" bash "$BUILD" build
+  check "$why" 2 "$RC" "$WORK/b-undo-noread.log" '^ERROR: E_UNDO_LEFTOVER: a part this attempt created could not be read back \(see above\); run \./clean\.sh --dry-run$'
+  undo_calls
+  [[ "$(sort "$WORK/undo-calls.txt" | tr '\n' ' ')" == "$done_calls" ]] && grep -q '^undo: the .* could not be read back before ' "$WORK/b-undo-noread.log"
+  check "  ... the unreadable part gets no delete (${done_calls% })" 0 $? "$WORK/undo-calls.txt"
+done <<'CASES'
+aws|ec2 describe-security-groups||RequestLimitExceeded||1~iam delete-instance-profile iam delete-role iam detach-role-policy iam remove-role-from-instance-profile ~REJECT an undo whose security group cannot be read back before its delete
+aws|iam get-instance-profile||ServiceFailure||1~ec2 delete-security-group ~REJECT an undo whose instance profile cannot be read back before the role is removed from it
+CASES
 
 echo "== 4/4 build: during and after Packer ==============================================="
 prep 's["packer"]["builder_overrides"] = {"KeyName": "a-key"}'
@@ -328,6 +395,14 @@ check "  ... the build stops (E_PACKER_BUILD), no stage command is sent and no A
 prep 's["packer"]["builder_overrides"] = {"PublicIpAddress": "198.51.100.7"}'
 run_real "$WORK/b-pip.log" bash "$BUILD" build
 check "REJECT a builder with a public IP address at stage bind" 1 "$RC" "$WORK/b-pip.log" '^ERROR: E_BUILDER_PUBLIC_IP: '
+prep 's["packer"]["eni_tags_override"] = {"RunId": "r2"}'
+run_real "$WORK/b-eni.log" bash "$BUILD" build
+check "REJECT a builder whose network interface is tagged for another run, at stage bind" 1 "$RC" "$WORK/b-eni.log" '^ERROR: E_BUILDER_ENI_TAGS: '
+grep -q '^ERROR: E_PACKER_BUILD: ' "$WORK/b-eni.log" && [[ "$(st BUILDER_ENI_IDS)" =~ ^eni-[0-9a-f]{17}$ && -z "$(st SANDBOX_AMI_ID)" ]] && ! ev | grep -q 'status='
+check "  ... the build stops (E_PACKER_BUILD) before any stage command, with BUILDER_ENI_IDS recorded for clean.sh" 0 $? "$WORK/b-eni.log"
+prep 's["packer"]["eni_tags_override"] = {"ManagedBy": None}'
+run_real "$WORK/b-eni2.log" bash "$BUILD" build
+check "REJECT a builder whose network interface has no ManagedBy tag, at stage bind" 1 "$RC" "$WORK/b-eni2.log" '^ERROR: E_BUILDER_ENI_TAGS: ManagedBy=None'
 prep 's["ssm"]["results"] = [{"match": "40-build.sh", "Status": "Failed", "stdout": "", "stderr": "cargo make failed"}, {"match": "", "Status": "Success", "stdout": "ok"}]'
 run_real "$WORK/b-stagefail.log" bash "$BUILD" build
 check "REJECT a stage whose Run Command fails: the build stops" 1 "$RC" "$WORK/b-stagefail.log" '^ERROR: E_PACKER_BUILD: packer build exited'

@@ -41,9 +41,14 @@ volume_device() {
   readlink -f "$p"
 }
 
-# not_in_use <device>: no mount and no mounted partition on it.
+# not_in_use <device>: no mount and no mounted partition on it. The whole lsblk output is read
+# first and then tested: a pipe into a test that stops at its first match can end lsblk with
+# SIGPIPE, and under pipefail that reads as "not mounted". A failed lsblk stops the stage.
 not_in_use() {
-  if lsblk -nrpo MOUNTPOINT "$1" | grep -q .; then die "E_VOLUME_IN_USE: $1 or a partition of it is mounted"; fi
+  local mp rc=0
+  mp=$(lsblk -nrpo MOUNTPOINT "$1") || rc=$?
+  [ "$rc" = 0 ] || die "E_VOLUME_READ: could not read the mount points of $1 (lsblk exit $rc)"
+  [ -z "${mp//$'\n'/}" ] || die "E_VOLUME_IN_USE: $1 or a partition of it is mounted"
 }
 
 # fetch_verified <url> <file> <sha256>: download over HTTPS and check the digest.

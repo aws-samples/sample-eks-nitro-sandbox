@@ -9,6 +9,7 @@
   builder   <describe-instances.json> <describe-security-groups.json> --builder I --sg G
             --profile P --subnet S --run-id R --managed-by O
   volumes   <describe-volumes.json> --ids V1,V2,V3,V4 --builder I --run-id R --managed-by O
+  enis      <describe-network-interfaces.json> --ids N1[,N2...] --builder I --run-id R --managed-by O
   sg        <describe-security-groups.json> --sg G --vpc V --run-id R --managed-by O
   owned     <sg|role|profile> <read.json> --run-id R --managed-by O [--role ROLE]
   gone      <kind> <rc> <stdout-file> <stderr-file>     kind: instance volume sg profile role
@@ -30,6 +31,7 @@ UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 AMI = r"ami-[0-9a-f]{8,17}"
 SNAP = re.compile(r"snap-[0-9a-f]{8,17}")
 VOL = re.compile(r"vol-[0-9a-f]{8,17}")
+ENI = re.compile(r"eni-[0-9a-f]{8,17}")
 DEVICES = ["/dev/xvda", "/dev/xvdb", "/dev/xvdc", "/dev/xvdf"]
 NOT_FOUND = {
     "instance": "InvalidInstanceID.NotFound",
@@ -202,8 +204,12 @@ def cmd_builder(a):
     need(i.get("InstanceId") == a.builder, "E_BUILDER_COUNT", "another instance")
     need(not i.get("KeyName"), "E_BUILDER_KEY", f"key pair {i.get('KeyName')!r}")
     need(not i.get("PublicIpAddress"), "E_BUILDER_PUBLIC_IP", "the builder has a public IP address")
-    for n in i.get("NetworkInterfaces") or []:
+    nics = i.get("NetworkInterfaces") or []
+    for n in nics:
         need(not (n.get("Association") or {}).get("PublicIp"), "E_BUILDER_PUBLIC_IP", "an interface has a public IP address")
+    enis = [n.get("NetworkInterfaceId") if isinstance(n, dict) else None for n in nics]
+    need(enis != [] and all(isinstance(e, str) and ENI.fullmatch(e) for e in enis) and len(set(enis)) == len(enis),
+         "E_BUILDER_ENI", f"network interfaces {enis}, expected one or more distinct interface IDs")
     sgs = [g.get("GroupId") for g in i.get("SecurityGroups") or []]
     need(sgs == [a.sg], "E_BUILDER_SG", f"security groups {sgs}, expected [{a.sg}]")
     arn = (i.get("IamInstanceProfile") or {}).get("Arn", "")
@@ -226,9 +232,29 @@ def cmd_builder(a):
     need(g.get("IpPermissions") == [], "E_BUILDER_INBOUND", f"{len(g.get('IpPermissions') or [])} inbound rules, expected 0")
     owned(tags(g.get("Tags")), a, "E_BUILDER_TAGS")
     print("BUILDER_VOLUME_IDS=" + ",".join(vols[d] for d in DEVICES))
+    print("BUILDER_ENI_IDS=" + ",".join(enis))
     print(f"OS_VOLUME_ID={vols['/dev/xvdf']}")
     print(f"DATA_VOLUME_ID={vols['/dev/xvdb']}")
     print("builder key_name=none public_ip=none inbound_rules=0 http_tokens=required hop_limit=1")
+
+
+def cmd_enis(a):
+    """The network interfaces attached to the builder (describe-network-interfaces by
+    attachment.instance-id) are the ones the instance lists, and each carries both run tags."""
+    ids = a.ids.split(",")
+    need(ids != [] and all(ENI.fullmatch(e) for e in ids) and len(set(ids)) == len(ids), "E_INPUT",
+         "--ids must be one or more distinct interface IDs")
+    nics = load(a.enis).get("NetworkInterfaces")
+    need(isinstance(nics, list) and all(isinstance(n, dict) for n in nics), "E_READ", "no NetworkInterfaces", 2)
+    found = [n.get("NetworkInterfaceId") for n in nics]
+    need(sorted(str(f) for f in found) == sorted(ids), "E_BUILDER_ENI",
+         f"the interfaces attached to the builder are {found}, the instance lists {ids}")
+    for n in nics:
+        att = n.get("Attachment") or {}
+        need(att.get("InstanceId") == a.builder, "E_BUILDER_ENI",
+             f"{n.get('NetworkInterfaceId')} is attached to {att.get('InstanceId')!r}, not the builder")
+        owned(tags(n.get("TagSet")), a, "E_BUILDER_ENI_TAGS")
+    print(f"builder-enis count={len(ids)} attached=builder tags=ok")
 
 
 def cmd_volumes(a):
@@ -337,6 +363,10 @@ def main():
     p.add_argument("volumes")
     for k in ("--ids", "--builder", "--run-id", "--managed-by"):
         p.add_argument(k, required=True)
+    p = sp.add_parser("enis")
+    p.add_argument("enis")
+    for k in ("--ids", "--builder", "--run-id", "--managed-by"):
+        p.add_argument(k, required=True)
     p = sp.add_parser("sg")
     p.add_argument("groups")
     for k in ("--sg", "--vpc", "--run-id", "--managed-by"):
@@ -352,7 +382,7 @@ def main():
         p.add_argument(k)
     a = ap.parse_args()
     cmds = {"manifest": cmd_manifest, "image": cmd_image, "snapshots": cmd_snapshots,
-            "builder": cmd_builder, "volumes": cmd_volumes, "sg": cmd_sg, "owned": cmd_owned,
+            "builder": cmd_builder, "volumes": cmd_volumes, "enis": cmd_enis, "sg": cmd_sg, "owned": cmd_owned,
             "gone": cmd_gone}
     try:
         cmds[a.cmd](a)

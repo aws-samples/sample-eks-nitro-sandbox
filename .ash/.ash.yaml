@@ -2434,9 +2434,9 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: B603
       path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fake_packer.py'
-      line_start: 273
-      line_end: 273
-      reason: 'Test stub: runs each inline command of a shell-local provisioner of the sample''s own Packer template with /bin/sh -c, as Packer runs it (fake_packer.py:109-115,267-273)'
+      line_start: 297
+      line_end: 297
+      reason: 'Test stub: runs each inline command of a shell-local provisioner of the sample''s own Packer template with /bin/sh -c, as Packer runs it (fake_packer.py:109-115,291-297)'
       expiration: '2027-12-31'
     - rule_id: B102
       path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fixture_aws_json.py'

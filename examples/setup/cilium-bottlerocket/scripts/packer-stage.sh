@@ -116,7 +116,7 @@ for line in out.splitlines():
 }
 
 stage_bind() {
-  local sg prof subnet out vols v rc=0 ping=""
+  local sg prof subnet out vols enis v rc=0 ping=""
   [ -z "$(state_get BUILDER_INSTANCE_ID)" ] || die E_BIND_REPEAT "a builder is already bound"
   state_set BUILDER_INSTANCE_ID "$id"
   printf '%s\n' "$CB_PACKER_RUN_UUID" > "$PK/packer-run-uuid"
@@ -128,13 +128,22 @@ stage_bind() {
   out=$("${PM[@]}" builder "$PRIV/bind-instances.json" "$PRIV/bind-sg.json" --builder "$id" --sg "$sg" --profile "$prof" \
         --subnet "$subnet" --run-id "$RUN_ID" --managed-by "$OWNER_TAG_VALUE") || exit $?
   vols=$(printf '%s\n' "$out" | sed -n 's/^BUILDER_VOLUME_IDS=//p')
+  enis=$(printf '%s\n' "$out" | sed -n 's/^BUILDER_ENI_IDS=//p')
   state_set BUILDER_VOLUME_IDS "$vols"
+  state_set BUILDER_ENI_IDS "$enis"
   state_set OS_VOLUME_ID "$(printf '%s\n' "$out" | sed -n 's/^OS_VOLUME_ID=//p')"
   state_set DATA_VOLUME_ID "$(printf '%s\n' "$out" | sed -n 's/^DATA_VOLUME_ID=//p')"
   # shellcheck disable=SC2086
   aws ec2 describe-volumes --region "$AWS_REGION" --volume-ids ${vols//,/ } --output json >"$PRIV/bind-volumes.json" 2>"$PRIV/bind.err" \
     || { echo "ERROR: E_READ: describe-volumes failed" >&2; exit 2; }
   "${PM[@]}" volumes "$PRIV/bind-volumes.json" --ids "$vols" --builder "$id" --run-id "$RUN_ID" --managed-by "$OWNER_TAG_VALUE" | tee -a "$EV" || exit "${PIPESTATUS[0]}"
+  # The builder's network interfaces: Packer's run_tags tag them at launch. Each one attached to
+  # the builder must be one the instance lists and carry ManagedBy and this run's RunId, so that
+  # an interface left after the builder ends is found by its tags or by BUILDER_ENI_IDS.
+  aws ec2 describe-network-interfaces --region "$AWS_REGION" --filters "Name=attachment.instance-id,Values=$id" \
+    --output json >"$PRIV/bind-enis.json" 2>"$PRIV/bind.err" \
+    || { echo "ERROR: E_READ: describe-network-interfaces of the builder failed" >&2; exit 2; }
+  "${PM[@]}" enis "$PRIV/bind-enis.json" --ids "$enis" --builder "$id" --run-id "$RUN_ID" --managed-by "$OWNER_TAG_VALUE" | tee -a "$EV" || exit "${PIPESTATUS[0]}"
   printf '%s\n' "$out" | grep '^builder ' | tee -a "$EV"
   for _ in $(seq 1 "$TRIES"); do
     if ping=$(aws ssm describe-instance-information --region "$AWS_REGION" --filters "Key=InstanceIds,Values=$id" \

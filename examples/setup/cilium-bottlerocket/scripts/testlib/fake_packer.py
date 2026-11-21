@@ -13,7 +13,7 @@ environment:
     "manifest": "one-ami",          one-ami | two-amis | zero | malformed | wrong-run-id | none
     "snapshots": 2,                 snapshots of the registered AMI (2 is right; 3 = builder root kept)
     "untagged_snapshot": false,     one snapshot without the owner tags
-    "leftovers": [],                builder parts left after the build: instance, volume
+    "leftovers": [],                builder parts left after the build: instance, volume, eni
     "hang": "",                     "" | "build" | "stage:<n>": wait for SIGINT at that point
     "build_rc": 0,                  exit code of `packer build` after a normal run
     "validate_rc": 0,
@@ -139,10 +139,12 @@ def manifest_output(dirpath, vars_):
 
 class Builder:
     """The builder and the artifacts, tagged as packer/bottlerocket.pkr.hcl tags them:
-    run_tags (Name = build_name, ManagedBy, RunId) on the instance and its volumes, and
+    run_tags (Name = build_name, ManagedBy, RunId) on the instance, its volumes and its network
+    interface (the plugin's RunInstances tag specification), and
     image_tags (pin_tags, Name = ami_name, ManagedBy, RunId, SandboxSlots) on the AMI and both
     snapshots. cfg["image_tags_override"] changes image tags, cfg["builder_overrides"] adds
-    fields to the instance (for example KeyName or PublicIpAddress)."""
+    fields to the instance (for example KeyName or PublicIpAddress), cfg["eni_tags_override"]
+    changes the tags of its network interface (a value None removes that tag)."""
 
     def __init__(self, vars_, cfg):
         self.vars, self.cfg = vars_, cfg
@@ -176,7 +178,19 @@ class Builder:
                              "Attachments": [{"InstanceId": self.iid, "Device": dev, "State": "attached"}],
                              "Tags": taglist(self.tags)})
                 bdm.append({"DeviceName": dev, "Ebs": {"VolumeId": vid, "Status": "attached", "DeleteOnTermination": True}})
+            # The primary network interface. The Amazon plugin puts run_tags on it in RunInstances
+            # (tag specification "network-interface"); cfg["eni_tags_override"] changes its tags,
+            # and a key set to None removes that tag.
+            eni = f"eni-0fb{n:014d}"
+            eni_tags = dict(self.tags, **(self.cfg.get("eni_tags_override") or {}))
+            ec2.setdefault("network_interfaces", []).append({
+                "NetworkInterfaceId": eni, "Status": "in-use", "SubnetId": subnet, "VpcId": vpc,
+                "InterfaceType": "interface", "Groups": [{"GroupId": sg}] if sg else [],
+                "Attachment": {"InstanceId": self.iid, "DeviceIndex": 0, "Status": "attached", "DeleteOnTermination": True},
+                "TagSet": taglist({k: v for k, v in eni_tags.items() if v is not None})})
             inst = {"InstanceId": self.iid, "State": {"Name": "running"}, "SubnetId": subnet, "VpcId": vpc,
+                    "NetworkInterfaces": [{"NetworkInterfaceId": eni,
+                                           "Attachment": {"DeviceIndex": 0, "Status": "attached", "DeleteOnTermination": True}}],
                     "SecurityGroups": [{"GroupId": sg}] if sg else [], "BlockDeviceMappings": bdm,
                     "IamInstanceProfile": {"Arn": f"arn:aws:iam::{state.get('account', '')}:instance-profile/{prof}"},
                     "MetadataOptions": {"HttpTokens": "required", "HttpPutResponseHopLimit": 1, "HttpEndpoint": "enabled"},
@@ -201,6 +215,16 @@ class Builder:
                     if (v.get("Attachment") or {}).get("InstanceId") == self.iid:
                         v["State"], v["Attachments"] = "available", []
                         v.pop("Attachment", None)
+                # The interface goes with the instance (DeleteOnTermination), unless "eni" is
+                # kept: then it stays detached and available, with its tags.
+                enis = ec2.setdefault("network_interfaces", [])
+                mine = [e for e in enis if (e.get("Attachment") or {}).get("InstanceId") == self.iid]
+                for e in mine:
+                    if "eni" in keep:
+                        e["Status"] = "available"
+                        e.pop("Attachment", None)
+                    else:
+                        enis.remove(e)
         fakelib.log_call("packer", "cleanup builder", [], {"instance": self.iid, "kept": list(keep)})
 
     def register(self):
