@@ -77,6 +77,12 @@ apiVersion: v1\nkind: Pod\nmetadata:\n  name: x\nspec:\n  containers:\n  - name:
 CASES
 mkdir -p "$WORK/emptydeploy"; h "$WORK/mf-empty.log" check-manifests "$WORK/emptydeploy"
 check "REJECT a deploy folder with no manifest, as could not check" 2 "$RC" "$WORK/mf-empty.log" '^ERROR: E_MANIFESTS_UNKNOWN: '
+rm -rf "$WORK/deploy"; cp -r "$SAMPLE_DIR_REAL/deploy" "$WORK/deploy"; printf 'apiVersion: v1\nkind: Pod\nmetadata: [unclosed\n' > "$WORK/deploy/extra.yaml"
+h "$WORK/mf-yaml.log" check-manifests "$WORK/deploy"
+check "REJECT a deploy/ manifest that is not readable YAML, as could not check" 2 "$RC" "$WORK/mf-yaml.log" \
+  '^ERROR: E_MANIFESTS_UNKNOWN: could not check: .*/extra\.yaml is not readable YAML$'
+grep -qv '^ERROR: E_MANIFESTS_UNKNOWN: ' "$WORK/mf-yaml.log"
+check "  ... and it prints nothing else (no deploy/ summary line)" 1 $? "$WORK/mf-yaml.log"
 
 echo "== 2/5 rendered eksctl objects, the probe, the RuntimeClass, the DaemonSet ============="
 full
@@ -447,6 +453,14 @@ r['Inline']['inline']['Statement'][0]['Effect'] = 'Deny'|unexpected policy state
 s['eks']['pod_identity']['a-fake000000000099'] = dict(a)|expected one association for kube-system/cilium-operator, found 2$|REJECT two Pod Identity associations for kube-system/cilium-operator (test.sh runs this check with no count of its own)
 a['roleArn'] = a['roleArn'].rsplit('/', 1)[0] + '/someone-elses-role'|the association uses role someone-elses-role, not cb-offline-test-cilium-operator$|REJECT a Pod Identity association that uses another role
 CASES
+# A trust policy that IAM sends URL-encoded and that does not decode to JSON (here cut short).
+cp "$WORK/or-made.json" "$FAKE_STATE"
+world_py 's["iam"]["roles"]["cb-offline-test-cilium-operator"]["Trust"] = "%7B%22Version%22%3A"'
+h "$WORK/or-trust-json.log" check-operator-role
+check "REJECT an operator role whose trust policy is not JSON, as could not check" 2 "$RC" "$WORK/or-trust-json.log" \
+  '^ERROR: E_OPERATOR_ROLE_UNKNOWN: could not check: the trust policy is not JSON$'
+grep -qv '^ERROR: E_OPERATOR_ROLE_UNKNOWN: ' "$WORK/or-trust-json.log"
+check "  ... and it prints nothing else (no operator role or node role line)" 1 $? "$WORK/or-trust-json.log"
 # Each node role: exactly the two AWS managed policies by ARN, no inline policy. A policy of the
 # account with the same name as an AWS managed one is not that policy.
 ngrole() { # ngrole <python list of policy ARNs, a = the account>: one node group whose role has them
