@@ -62,8 +62,29 @@ CHECKOUT="$(cd -- "$SCRIPT_DIR/../../../.." && pwd -P)"
 MANIFEST="$SCRIPT_DIR/../deploy/agentgateway.yaml"
 [[ -f "$MANIFEST" && ! -L "$MANIFEST" ]] || die "AgentGateway manifest is unsafe."
 
+private_acl_check() {
+  python3 -I - "$1" <<'PY'
+import re
+import subprocess
+import sys
+
+if sys.platform != "darwin":
+    raise SystemExit(0)
+result = subprocess.run(
+    ["/bin/ls", "-lde", "--", sys.argv[1]],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    check=False,
+)
+if result.returncode != 0:
+    raise SystemExit("could not inspect access-control entries")
+if any(re.match(rb"^[ \t]+\d+:", line) for line in result.stdout.splitlines()[1:]):
+    raise SystemExit("private path has access-control entries")
+PY
+}
 file_mode() {
   local value
+  private_acl_check "$1" || die "private path must not have access-control entries: $1"
   if value="$(stat -c '%a' "$1" 2>/dev/null)" &&
     [[ "$value" =~ ^[0-7]{3,4}$ ]]; then
     printf '%s\n' "$value"
@@ -75,6 +96,9 @@ file_mode() {
   fi
 }
 private_file_write() {
+  if [[ "$3" == replace ]]; then
+    private_acl_check "$1" || return 1
+  fi
   python3 -I - "$1" "$2" "$3" <<'PY'
 import os, stat, sys
 path, value, operation = sys.argv[1:]
@@ -97,8 +121,12 @@ try:
 finally:
     os.close(fd)
 PY
+  local write_status=$?
+  (( write_status == 0 )) || return "$write_status"
+  private_acl_check "$1"
 }
 private_file_check() {
+  private_acl_check "$1" || return 1
   python3 -I - "$1" <<'PY'
 import os, stat, sys
 fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -206,6 +234,8 @@ PY
 }
 snapshot_kubeconfig() {
   local bootstrap="$JOURNAL/bootstrap" staged="$JOURNAL/.kubeconfig"
+  private_acl_check "$KUBECONFIG_INPUT" ||
+    die "kubeconfig must not have access-control entries."
   python3 -I - "$KUBECONFIG_INPUT" "$bootstrap" <<'PY'
 import os, stat, sys
 src, dst = sys.argv[1:]
@@ -275,6 +305,7 @@ load_receipt() {
 load_receipt
 
 read_seed() {
+  private_acl_check "$1" || return 1
   python3 -I - "$1" <<'PY'
 import os, re, stat, sys
 fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -310,7 +341,7 @@ generate_ed25519_seed() {
 }
 sha256_seed() { read_seed "$1" | openssl dgst -sha256 -r | awk '{print $1}'; }
 prepare_state() {
-  local file hash
+  local file hash checksum
   for file in tenant-a-agentgateway.key tenant-b-agentgateway.key agentgateway-session.key; do
     [[ ! -L "$STATE_DIR/$file" ]] || die "invalid state file: $file"
     if [[ -e "$STATE_DIR/$file" ]]; then
@@ -320,10 +351,14 @@ prepare_state() {
   done
   for file in tenant-a tenant-b; do
     hash="$(sha256_seed "$STATE_DIR/${file}-agentgateway.key")"
-    if [[ -e "$STATE_DIR/${file}-sha256" ]]; then
-      [[ "$(cat "$STATE_DIR/${file}-sha256")" == "$hash" ]] || die "hash state is inconsistent."
+    checksum="$STATE_DIR/${file}-sha256"
+    [[ ! -L "$checksum" ]] || die "invalid state file: ${file}-sha256"
+    if [[ -e "$checksum" ]]; then
+      private_file_check "$checksum" || die "invalid state file: ${file}-sha256"
+      [[ "$(cat "$checksum")" == "$hash" ]] || die "hash state is inconsistent."
     else
-      printf '%s' "$hash" >"$STATE_DIR/${file}-sha256"; chmod 600 "$STATE_DIR/${file}-sha256"
+      private_file_write "$checksum" "$hash" create ||
+        die "could not create hash state: ${file}-sha256"
     fi
   done
 }

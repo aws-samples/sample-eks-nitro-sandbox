@@ -9,6 +9,7 @@ import shutil
 import stat
 import subprocess
 import signal
+import sys
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -482,6 +483,71 @@ def test_setup_lock_marker_symlink_is_rejected(tmp_path: Path) -> None:
     assert target.read_text() == "unchanged"
     assert state["objects"] == {}
     assert _mutations(calls) == []
+
+
+@pytest.mark.parametrize("target_exists", [False, True])
+def test_checksum_symlink_is_rejected(
+    tmp_path: Path, target_exists: bool
+) -> None:
+    state_dir = tmp_path / "private-state"
+    state_dir.mkdir(mode=0o700)
+    target = tmp_path / "outside-checksum"
+    if target_exists:
+        target.write_text("unchanged")
+    (state_dir / "tenant-a-sha256").symlink_to(target)
+
+    result, state, calls, _ = _run(tmp_path, state_dir=state_dir)
+
+    assert result.returncode != 0
+    assert "invalid state file: tenant-a-sha256" in result.stderr
+    if target_exists:
+        assert target.read_text() == "unchanged"
+    else:
+        assert not target.exists()
+    assert state["objects"] == {}
+    assert _mutations(calls) == []
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS ACL semantics")
+def test_state_directory_with_acl_is_rejected(tmp_path: Path) -> None:
+    state_dir = tmp_path / "private-state"
+    state_dir.mkdir(mode=0o700)
+    subprocess.run(
+        ["chmod", "+a", "everyone allow read", str(state_dir)],
+        check=True,
+    )
+    try:
+        result, state, calls, _ = _run(tmp_path, state_dir=state_dir)
+    finally:
+        subprocess.run(["chmod", "-N", str(state_dir)], check=True)
+
+    assert result.returncode != 0
+    assert "must not have access-control entries" in result.stderr
+    assert state["objects"] == {}
+    assert _mutations(calls) == []
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS ACL semantics")
+def test_rerun_rejects_acl_on_private_state_file(tmp_path: Path) -> None:
+    first, initial_state, first_calls, state_dir = _run(tmp_path)
+    assert first.returncode == 0, first.stderr
+    seed = state_dir / "tenant-a-agentgateway.key"
+    subprocess.run(
+        ["chmod", "+a", "everyone allow read", str(seed)],
+        check=True,
+    )
+    mutation_count = len(_mutations(first_calls))
+    try:
+        second, final_state, all_calls, _ = _run(
+            tmp_path, state_dir=state_dir
+        )
+    finally:
+        subprocess.run(["chmod", "-N", str(seed)], check=True)
+
+    assert second.returncode != 0
+    assert "invalid state file: tenant-a-agentgateway.key" in second.stderr
+    assert final_state["objects"] == initial_state["objects"]
+    assert len(_mutations(all_calls)) == mutation_count
 
 
 def test_kubeconfig_snapshot_is_used_after_live_config_drifts(tmp_path: Path) -> None:
