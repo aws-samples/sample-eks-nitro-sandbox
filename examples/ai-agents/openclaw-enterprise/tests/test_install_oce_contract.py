@@ -611,6 +611,19 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
     calls = (tmp_path / "calls.log").read_text()
     assert "oce-api-cli-client" not in calls
     assert "deployment/oce-api-cli-client" not in calls
+    helm_list = next(
+        line for line in calls.splitlines() if line.startswith("helm list ")
+    )
+    assert "--all" not in helm_list.split()
+    for status in (
+        "--deployed",
+        "--failed",
+        "--pending",
+        "--uninstalled",
+        "--superseded",
+        "--uninstalling",
+    ):
+        assert status in helm_list.split()
     assert "eks list-tags-for-resource" in calls
     assert "occ installation install" in calls
     for expected in (

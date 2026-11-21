@@ -453,13 +453,21 @@ context_endpoint=$(kubectl --kubeconfig "$kubeconfig" config view --raw --minify
   die "kube context endpoint does not match EKS cluster $eks_cluster_name."
 
 KUBE=(kubectl --kubeconfig "$kubeconfig" --context "$kube_context" --request-timeout=20s)
+HELM_RELEASE_STATES=(
+  --deployed
+  --failed
+  --pending
+  --uninstalled
+  --superseded
+  --uninstalling
+)
 "${KUBE[@]}" get namespace kube-system -o name >/dev/null ||
   die "cannot reach kube-system through the selected context."
 "${KUBE[@]}" get storageclass "$runtime_storage_class" -o name >/dev/null ||
   die "required StorageClass $runtime_storage_class does not exist."
 
 release_names=$(helm list --kubeconfig "$kubeconfig" --kube-context "$kube_context" \
-  --namespace "$namespace" --all --short)
+  --namespace "$namespace" "${HELM_RELEASE_STATES[@]}" --short)
 marker="$state_dir/install.complete"
 if grep -Fqx "$release" <<<"$release_names"; then
   [[ -f "$marker" && ! -L "$marker" && -d "$receipt" &&

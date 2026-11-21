@@ -880,6 +880,23 @@ def test_complete_cleanup_removes_tenant_and_preserves_external_state(
         assert all(options["preconditions"].values())
         assert not {"--all", "--selector", "-l"} & set(call["args"])
 
+    helm_lists = [
+        call for call in calls
+        if call["tool"] == "helm" and call["args"][4:5] == ["list"]
+    ]
+    assert helm_lists
+    for call in helm_lists:
+        args = set(call["args"])
+        assert "--all" not in args
+        assert {
+            "--deployed",
+            "--failed",
+            "--pending",
+            "--uninstalled",
+            "--superseded",
+            "--uninstalling",
+        } <= args
+
 
 def test_unowned_tenant_descendant_blocks_cleanup_before_mutation(
     tmp_path: Path,

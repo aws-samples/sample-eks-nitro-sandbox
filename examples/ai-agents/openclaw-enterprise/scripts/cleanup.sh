@@ -292,7 +292,16 @@ case "${HELM_DRIVER:-secret}" in
 esac
 
 release_present=false
-release_names=$("${H[@]}" list --namespace "$system_namespace" --all --short) ||
+HELM_RELEASE_STATES=(
+  --deployed
+  --failed
+  --pending
+  --uninstalled
+  --superseded
+  --uninstalling
+)
+release_names=$("${H[@]}" list --namespace "$system_namespace" \
+  "${HELM_RELEASE_STATES[@]}" --short) ||
   die "could not list Helm releases in $system_namespace."
 while IFS= read -r name; do
   [[ "$name" != "$release" ]] || release_present=true
@@ -1451,7 +1460,8 @@ if [[ "$release_present" == true ]]; then
     die "Helm release changed after preflight."
   "${H[@]}" uninstall "$release" --namespace "$system_namespace" \
     --wait --timeout=5m >/dev/null || die "Helm uninstall failed."
-  release_names=$("${H[@]}" list --namespace "$system_namespace" --all --short) ||
+  release_names=$("${H[@]}" list --namespace "$system_namespace" \
+    "${HELM_RELEASE_STATES[@]}" --short) ||
     die "could not verify Helm release deletion."
   while IFS= read -r name; do
     [[ "$name" != "$release" ]] ||
