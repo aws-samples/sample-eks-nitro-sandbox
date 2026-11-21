@@ -439,7 +439,7 @@ case "$*" in
   *" exec deployment/oce-validation-only-postgres "*"SHOW server_version_num"*)
     printf '%s\n' "${TEST_POSTGRES_VERSION:-180006}" ;;
   *" exec deployment/oce-validation-only-postgres "*"FROM pg_roles"*)
-    printf '%s\n' "${TEST_POSTGRES_ROLE_CONTRACT:-t}" ;;
+    printf '%s\n' "${TEST_POSTGRES_ROLE_CONTRACT:-true}" ;;
   *"jsonpath={.items[*].status.podIP}"*) printf '10.2.3.4' ;;
   *" apply "*) : ;;
   *" rollout status "*) : ;;

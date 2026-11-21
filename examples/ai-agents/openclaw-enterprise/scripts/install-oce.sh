@@ -208,7 +208,7 @@ SELECT (
   AND NOT has_schema_privilege('occ_app', 'public', 'CREATE')
 )::text;"
   ) || die "could not verify validation PostgreSQL role contract."
-  [[ "$role_contract" == t ]] ||
+  [[ "$role_contract" == true ]] ||
     die "validation PostgreSQL role contract does not match pinned OCE requirements."
 }
 
