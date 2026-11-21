@@ -53,19 +53,6 @@ Parameters:
       - linux/amd64
       - linux/arm64
 
-Rules:
-  TrustedBuildInvokerIsInThisAccount:
-    Assertions:
-      - Assert:
-          Fn::Equals:
-            - Fn::Select:
-                - 4
-                - Fn::Split:
-                    - ":"
-                    - Ref: TrustedBuildInvokerArn
-            - Ref: AWS::AccountId
-        AssertDescription: TrustedBuildInvokerArn must belong to this AWS account.
-
 Resources:
   ImageEncryptionKey:
     Type: AWS::KMS::Key
@@ -441,6 +428,9 @@ Resources:
             Principal:
               AWS: !Ref TrustedBuildInvokerArn
             Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:PrincipalAccount: !Ref AWS::AccountId
       Policies:
         - PolicyName: InvokeFixedBuildWorkflowOnly
           PolicyDocument:

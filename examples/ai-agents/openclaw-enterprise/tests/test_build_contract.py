@@ -554,29 +554,7 @@ def test_privileged_builder_image_is_account_local_and_digest_pinned() -> None:
 
 def test_only_fixed_workflow_role_can_start_the_privileged_build() -> None:
     template = _template()
-    assert template["Rules"]["TrustedBuildInvokerIsInThisAccount"] == {
-        "Assertions": [{
-            "Assert": {
-                "Fn::Equals": [
-                    {
-                        "Fn::Select": [
-                            4,
-                            {
-                                "Fn::Split": [
-                                    ":",
-                                    {"Ref": "TrustedBuildInvokerArn"},
-                                ]
-                            },
-                        ]
-                    },
-                    {"Ref": "AWS::AccountId"},
-                ]
-            },
-            "AssertDescription": (
-                "TrustedBuildInvokerArn must belong to this AWS account."
-            ),
-        }]
-    }
+    assert "Rules" not in template
     roles = _resources("AWS::IAM::Role")
     workflow_role = next(
         role
@@ -616,6 +594,15 @@ def test_only_fixed_workflow_role_can_start_the_privileged_build() -> None:
 
     invocation_role = template["Resources"]["ImageBuildInvocationRole"]
     assert "MaxSessionDuration" not in invocation_role["Properties"]
+    invocation_trust = invocation_role["Properties"]["AssumeRolePolicyDocument"][
+        "Statement"
+    ][0]
+    assert invocation_trust["Principal"] == {"AWS": "TrustedBuildInvokerArn"}
+    assert invocation_trust["Condition"] == {
+        "StringEquals": {
+            "aws:PrincipalAccount": "AWS::AccountId",
+        }
+    }
     invocation_statements = invocation_role["Properties"]["Policies"][0][
         "PolicyDocument"
     ]["Statement"]
