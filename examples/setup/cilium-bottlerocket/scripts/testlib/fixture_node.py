@@ -21,8 +21,9 @@ def main(d):
         with open(os.path.join(d, name), "w") as f:
             f.write(text if isinstance(text, str) else json.dumps(text, indent=1))
 
-    # pods: the max-pods of m8i.xlarge (4 ENIs x (30 IPv4 - 1) + 2 = 118); sandbox: SANDBOX_SLOTS.
-    def node(os_image, pods="118", sandbox="58"):
+    # pods: the max-pods of m8i.xlarge (4 vCPUs: ENI formula 4 x (30 IPv4 - 1) + 2 = 118, ceiling
+    # 110, so 110); sandbox: SANDBOX_SLOTS.
+    def node(os_image, pods="110", sandbox="58"):
         return {"metadata": {"name": "ip-10-0-1-10.us-west-2.compute.internal"},
                 "status": {"nodeInfo": {"osImage": os_image, "kubeletVersion": "v1.36.4-eks-fake",
                                         "architecture": "amd64", "kernelVersion": "6.18.62"},
@@ -36,10 +37,10 @@ def main(d):
     w("slots.txt", "pcie_slots_total=58\npcie_slots=58\nmax_pcie_devices=32\n")
     w("cmdline.txt", "BOOT_IMAGE=(hd0,gpt3)/vmlinuz root=/dev/dm-0 ro nitro_enclaves.mempool=95%-1G quiet\n")
     w("kernel-log.txt", "[    0.000000] Linux version 6.18.62\n[    0.012345] nitro_enclaves: CMA pool: 14336 MiB reserved in 7 region(s), 14848 MiB requested\n")
-    w("configz.json", {"kubeletconfig": {"containerRuntimeEndpoint": "unix:///run/nitro-sandbox/cri-proxy.sock", "maxPods": 118}})
+    w("configz.json", {"kubeletconfig": {"containerRuntimeEndpoint": "unix:///run/nitro-sandbox/cri-proxy.sock", "maxPods": 110}})
     w("ami-tags.json", {"Images": [{"ImageId": "ami-0fa00000000000101",
                                     "Tags": [{"Key": "SandboxSlots", "Value": "58"}, {"Key": "RunId", "Value": "r1"}]}]})
-    user_data = ('[settings.kubernetes]\ncluster-name = "cb-offline-test"\nmax-pods = 118\n'
+    user_data = ('[settings.kubernetes]\ncluster-name = "cb-offline-test"\nmax-pods = 110\n'
                  'container-runtime-endpoint = "unix:///run/nitro-sandbox/cri-proxy.sock"\n')
     w("lt-sandbox.json", {"LaunchTemplateVersions": [{"LaunchTemplateData": {
         "UserData": base64.b64encode(user_data.encode()).decode(), "EnclaveOptions": {"Enabled": True}}}]})

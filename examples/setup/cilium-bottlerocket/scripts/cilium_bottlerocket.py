@@ -70,15 +70,15 @@ def parser():
         (["--shim-toml"], {}))
     add("derive-max-pods", cb_render.cmd_derive_max_pods, (["instance_type"], {}))
     add("check-max-pods", cb_checks.cmd_check_max_pods, (["--want"], {"type": int, "required": True}),
+        (["--formula"], {"type": int, "required": True}), (["--ceiling"], {"type": int, "required": True}),
         (["--launch-template"], {}), (["--node"], {}))
     add("check-slots", cb_checks.cmd_check_slots, (["--driver"], {"required": True}), (["--node"], {"required": True}),
         (["--journal"], {}))
     add("check-selinux-mode", cb_checks.cmd_check_selinux_mode, opt_file)
     add("selinux-audit", cb_checks.cmd_selinux_audit, (["avc_file"], {}), (["journal_file"], {}))
     add("check-selinux-domains", cb_checks.cmd_check_selinux_domains, opt_file)
-    add("check-networkd", cb_checks.cmd_check_networkd, opt_file)
     add("check-eni-stable", cb_checks.cmd_check_eni_stable, (["--before"], {"required": True}),
-        (["--after"], {"required": True}), (["--ciliumnode"], {"required": True}))
+        (["--after"], {"required": True}))
     add("check-eni-capture", cb_checks.cmd_check_eni_capture, (["--capture"], {"required": True}),
         (["--networkd"], {"required": True}), (["--ciliumnode"], {"required": True}))
     add("check-kubeconfig-path", cb_checks.cmd_check_kubeconfig_path, (["--shim-toml"], {"required": True}),

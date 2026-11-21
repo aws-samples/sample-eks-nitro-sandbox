@@ -10,7 +10,9 @@
   "m8i.4xlarge": {"NitroEnclavesSupport": "supported", "VCpuInfo": {"DefaultVCpus": 16},
    "NetworkInfo": {"MaximumNetworkInterfaces": 8, "Ipv4AddressesPerInterface": 30}},
   "m8i.large": {"NitroEnclavesSupport": "unsupported", "VCpuInfo": {"DefaultVCpus": 2},
-   "NetworkInfo": {"MaximumNetworkInterfaces": 3, "Ipv4AddressesPerInterface": 10}}
+   "NetworkInfo": {"MaximumNetworkInterfaces": 3, "Ipv4AddressesPerInterface": 10}},
+  "m8i.16xlarge": {"NitroEnclavesSupport": "supported", "VCpuInfo": {"DefaultVCpus": 64},
+   "NetworkInfo": {"MaximumNetworkInterfaces": 15, "Ipv4AddressesPerInterface": 50}}
  },
  "quotas": {
   "vpc/L-F678F1CE": 10.0,

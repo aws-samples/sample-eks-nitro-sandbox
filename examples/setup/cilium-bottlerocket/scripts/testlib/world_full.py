@@ -176,7 +176,9 @@ def build(cases):
              "OPERATOR_ROLE_NAME": f"{CL}-cilium-operator", "POD_IDENTITY_ASSOCIATION_ID": "a-fake000000000001",
              "SYSTEM_LAUNCH_TEMPLATE_ID": lt_ids["system"], "SANDBOX_LAUNCH_TEMPLATE_ID": lt_ids["sandbox"],
              "SANDBOX_AMI_ID": "ami-0fa00000000000101", "SANDBOX_AMI_SNAPSHOT_IDS": "snap-0fa00000000000001,snap-0fa00000000000002",
-             "AMI_BUILD_RESULT": "ok", "MAX_PODS_SYSTEM": "118", "MAX_PODS_SANDBOX": "118"}
+             "AMI_BUILD_RESULT": "ok", "MAX_PODS_SYSTEM": "110", "MAX_PODS_SANDBOX": "110",
+             "MAX_PODS_FORMULA_SYSTEM": "118", "MAX_PODS_FORMULA_SANDBOX": "118",
+             "MAX_PODS_CEILING_SYSTEM": "110", "MAX_PODS_CEILING_SANDBOX": "110"}
     if "killed-build" in cases:
         b = f"{CL}-{RUN}-builder"
         bid, sg = "i-0fb00000000000001", "sg-0fc00000000000001"

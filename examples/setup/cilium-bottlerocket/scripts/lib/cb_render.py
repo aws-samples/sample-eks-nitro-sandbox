@@ -256,29 +256,41 @@ def node_labels(group):
     return labels
 
 
-def eni_max_pods(info):
-    """max-pods from the NetworkInfo of describe-instance-types: ENIs x (IPv4 per ENI - 1) + 2,
-    the formula of the Amazon EKS AMIs (58 for m8i.xlarge: 4 ENIs, 15 IPv4 addresses each)."""
+def positive(section, name, key):
+    """A field of describe-instance-types that must be a number above 0."""
+    value = section.get(key) if isinstance(section, dict) else None
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise Unknown(f"{name}.{key} is {value!r}, not a number")
+    require(value > 0, f"{name}.{key} is {value}, want more than 0")
+    return value
+
+
+def derived_max_pods(info):
+    """(max-pods, ENI formula, ceiling, vCPUs) of one describe-instance-types entry. The ENI
+    formula of the Amazon EKS AMIs is ENIs x (IPv4 per ENI - 1) + 2. The ceiling is the one of the
+    Amazon EKS max-pods calculator: Amazon EKS User Guide, "Choose an optimal Amazon EC2 node
+    instance type", section "How maxPods is determined"
+    (https://docs.aws.amazon.com/eks/latest/userguide/choosing-instance-type.html#max-pods-precedence),
+    110 for less than 30 vCPUs and 250 for more. The guide does not place exactly 30 vCPUs; the
+    sample gives it 250. m8i.xlarge (4 vCPUs, 4 ENIs, 30 IPv4 each): formula 118, ceiling 110."""
     net = info.get("NetworkInfo")
     if not isinstance(net, dict):
         raise Unknown("the instance type has no NetworkInfo")
-    values = {}
-    for key in ("MaximumNetworkInterfaces", "Ipv4AddressesPerInterface"):
-        value = net.get(key)
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise Unknown(f"NetworkInfo.{key} is {value!r}, not a number")
-        require(value > 0, f"NetworkInfo.{key} is {value}, want more than 0")
-        values[key] = value
-    return values["MaximumNetworkInterfaces"] * (values["Ipv4AddressesPerInterface"] - 1) + 2
+    formula = (positive(net, "NetworkInfo", "MaximumNetworkInterfaces")
+               * (positive(net, "NetworkInfo", "Ipv4AddressesPerInterface") - 1) + 2)
+    vcpus = positive(info.get("VCpuInfo"), "VCpuInfo", "DefaultVCpus")
+    ceiling = 110 if vcpus < 30 else 250
+    return min(formula, ceiling), formula, ceiling, vcpus
 
 
 def cmd_derive_max_pods(args):
-    """Print the max-pods of an instance type, read with ec2 describe-instance-types."""
+    """Print '<max-pods> <ENI formula> <ceiling> <vCPUs>' of an instance type, all from one
+    ec2 describe-instance-types read."""
     require(INSTANCE_TYPE.fullmatch(args.instance_type) is not None, f"{args.instance_type!r} is not an instance type")
     types = aws("ec2", "describe-instance-types", "--instance-types", args.instance_type).get("InstanceTypes") or []
     if len(types) != 1:
         raise Unknown(f"describe-instance-types gave {len(types)} entries for {args.instance_type}")
-    print(eni_max_pods(types[0]))
+    print(*derived_max_pods(types[0]))
 
 
 def max_pods(group):

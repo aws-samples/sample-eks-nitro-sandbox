@@ -52,8 +52,11 @@ trap 'exit 143' TERM
 # The slot count that setup.sh recorded for the run, not the config file (it can change later).
 SANDBOX_SLOTS="$(state_need SANDBOX_SLOTS)" || exit 1
 export SANDBOX_SLOTS
-# The max-pods that setup.sh derived from the instance type of the sandbox node.
+# The max-pods that setup.sh derived from the instance type of the sandbox node: the ENI formula,
+# capped at the ceiling of its vCPU count.
 MAX_PODS_SANDBOX="$(state_need MAX_PODS_SANDBOX)" || exit 1
+MAX_PODS_FORMULA="$(state_need MAX_PODS_FORMULA_SANDBOX)" || exit 1
+MAX_PODS_CEILING="$(state_need MAX_PODS_CEILING_SANDBOX)" || exit 1
 NS="$NAMESPACE"
 SVC_HOST="cb-server.$NS.svc.cluster.local"
 
@@ -121,8 +124,8 @@ check "pcie_slots in nitro-sandbox.toml equals SANDBOX_SLOTS=$SANDBOX_SLOTS" \
   pyc check-density --shim-toml "$P/nitro-sandbox.toml"
 check "the slot pool: SANDBOX_SLOTS=$SANDBOX_SLOTS is not above pcie_slots_total, and equals the driver's pcie_slots and the node's eks.amazonaws.com/nitro-sandbox capacity" \
   pyc check-slots --driver "$P/slots.txt" --node "$OUT/node-sandbox.json" --journal "$P/journal.log"
-check "the node's capacity pods equals the max-pods derived from $SANDBOX_INSTANCE_TYPE ($MAX_PODS_SANDBOX)" \
-  pyc check-max-pods --want "$MAX_PODS_SANDBOX" --node "$OUT/node-sandbox.json"
+check "the node's capacity pods equals the max-pods derived from $SANDBOX_INSTANCE_TYPE ($MAX_PODS_SANDBOX: ENI formula $MAX_PODS_FORMULA, ceiling $MAX_PODS_CEILING)" \
+  pyc check-max-pods --want "$MAX_PODS_SANDBOX" --formula "$MAX_PODS_FORMULA" --ceiling "$MAX_PODS_CEILING" --node "$OUT/node-sandbox.json"
 # The capacity of the sandbox node, for the page: the slot pool bounds the sandbox pods, max-pods
 # bounds all pods. A value that could not be read prints as "?".
 # shellcheck disable=SC2016
@@ -239,9 +242,7 @@ if eni_in_use; then
   probe_capture "$probe" "$A"
   probe_eni_capture "$probe" "$A/eni.txt"
   save "$A/ciliumnode.json" cilium_node
-  networkd_ok() { pyc check-networkd "$1"; local rc=$?; ((rc == 0)); }   # exit 2 is a failure here
-  check "systemd-networkd leaves each Cilium ENI (eth1 and later) unmanaged" networkd_ok "$A/networkd.txt"
-  check "capture A: each ENI after eth0 has no DHCP or RA address or route, only the routes and rules of Cilium" \
+  check "capture A: systemd-networkd leaves each ENI after eth0 unmanaged; no DHCP or RA address or route, only the routes and rules of Cilium" \
     pyc check-eni-capture --capture "$A/eni.txt" --networkd "$A/networkd.txt" --ciliumnode "$A/ciliumnode.json"
 else
   printf 'ERROR: E_NETWORKD_ENI: no pod on an ENI after eth0 on %s after %d filler pods\n' "$SANDBOX_NODE" "${#fillers[@]}" >&2
@@ -324,7 +325,7 @@ save "$B/ciliumnode.json" cilium_node
 check "capture B: each ENI after eth0 has no DHCP or RA address or route, only the routes and rules of Cilium" \
   pyc check-eni-capture --capture "$B/eni.txt" --networkd "$B/networkd.txt" --ciliumnode "$B/ciliumnode.json"
 check "the addresses, routes and rules of each ENI after eth0 are the same in capture A and capture B" \
-  pyc check-eni-stable --before "$A/eni.txt" --after "$B/eni.txt" --ciliumnode "$B/ciliumnode.json"
+  pyc check-eni-stable --before "$A/eni.txt" --after "$B/eni.txt"
 check "no SELinux denial on the sandbox node from its boot to the end of test.sh (fails closed)" \
   pyc selinux-audit "$B/kernel.log" "$B/journal.log"
 kept=()

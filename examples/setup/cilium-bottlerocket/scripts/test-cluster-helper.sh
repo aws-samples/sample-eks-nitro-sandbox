@@ -159,12 +159,12 @@ full; world_py 's["ec2"]["launch_templates"] = [t for t in s["ec2"]["launch_temp
 config_set 'SANDBOX_SLOTS="20"'
 h "$WORK/lt-mp.log" launch-template sandbox
 python3 -c 'import base64, json, re, sys; d = json.load(open(sys.argv[1])); print("\n".join(re.findall(r"^max-pods = .*$", base64.b64decode(d["UserData"]).decode(), re.M)))' "$RD/lt-sandbox.json" > "$WORK/lt-mp.txt" 2>&1
-[[ "$RC" == 0 && "$(cat "$WORK/lt-mp.txt")" == 'max-pods = 118' ]]
-check "ACCEPT the sandbox user data max-pods: the derived 118 of the run state, not SANDBOX_SLOTS 20" 0 $? "$WORK/lt-mp.txt"
+[[ "$RC" == 0 && "$(cat "$WORK/lt-mp.txt")" == 'max-pods = 110' ]]
+check "ACCEPT the sandbox user data max-pods: the derived 110 of the run state, not SANDBOX_SLOTS 20" 0 $? "$WORK/lt-mp.txt"
 python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); json.dump({"LaunchTemplateVersions": [{"LaunchTemplateData": d}]}, open(sys.argv[2], "w"))' "$RD/lt-sandbox.json" "$WORK/ltv-mp.json"
 sed -i 's/^MAX_PODS_SANDBOX=.*/MAX_PODS_SANDBOX=58/' "$RD/state.env"
 h "$WORK/ud-mp.log" check-user-data sandbox "$WORK/ltv-mp.json"
-check "REJECT sandbox user data whose max-pods (118) is not the run's derived value (58)" 1 "$RC" "$WORK/ud-mp.log" '^ERROR: E_USER_DATA: .*max-pods is 118, want 58'
+check "REJECT sandbox user data whose max-pods (110) is not the run's derived value (58)" 1 "$RC" "$WORK/ud-mp.log" '^ERROR: E_USER_DATA: .*max-pods is 110, want 58'
 sed -i '/^MAX_PODS_SANDBOX=/d' "$RD/state.env"
 h "$WORK/ud-nomp.log" check-user-data sandbox "$WORK/ltv-mp.json"
 check "REJECT check-user-data when the run state has no derived MAX_PODS_SANDBOX, as could not check" 2 "$RC" "$WORK/ud-nomp.log" '^ERROR: E_USER_DATA_UNKNOWN: could not check: the run state has no derived MAX_PODS_SANDBOX'
@@ -173,14 +173,20 @@ sed -i '/^MAX_PODS_SANDBOX=/d' "$RD/state.env"
 h "$WORK/lt-nomp.log" launch-template sandbox
 check "REJECT launch-template sandbox when the run state has no derived MAX_PODS_SANDBOX, as could not check" 2 "$RC" "$WORK/lt-nomp.log" '^ERROR: E_LAUNCH_TEMPLATE_UNKNOWN: could not check: the run state has no derived MAX_PODS_SANDBOX'
 [[ "$(count_calls aws 'ec2 create-launch-template')" == 0 ]]; check "  ... and no launch template was created" 0 $? "$WORK/lt-nomp.log"
-# derive-max-pods: ENIs x (IPv4 per ENI - 1) + 2 from ec2 describe-instance-types (the fake world
-# gives m8i.xlarge 4 x 30 and m8i.4xlarge 8 x 30).
+# derive-max-pods: '<max-pods> <ENI formula> <ceiling> <vCPUs>' from one ec2 describe-instance-types
+# read: the formula ENIs x (IPv4 per ENI - 1) + 2, capped at 110 below 30 vCPUs and 250 from 30
+# (the fake world gives m8i.xlarge 4 vCPUs 4 x 30, m8i.4xlarge 16 vCPUs 8 x 30, m8i.large 2 vCPUs
+# 3 x 10, m8i.16xlarge 64 vCPUs 15 x 50).
 full
 h "$WORK/dmp.log" derive-max-pods m8i.xlarge
-check "ACCEPT derive-max-pods m8i.xlarge (4 ENIs x 30 IPv4): 118" 0 "$RC" "$WORK/dmp.log" '^118$'
+check "ACCEPT derive-max-pods m8i.xlarge (4 vCPUs, 4 ENIs x 30 IPv4): ENI formula 118, ceiling 110, max-pods 110" 0 "$RC" "$WORK/dmp.log" '^110 118 110 4$'
 acc derive-max-pods E_DERIVE_MAX_PODS
 h "$WORK/dmp-4x.log" derive-max-pods m8i.4xlarge
-check "ACCEPT a second shape, m8i.4xlarge (8 ENIs x 30 IPv4): 234" 0 "$RC" "$WORK/dmp-4x.log" '^234$'
+check "ACCEPT m8i.4xlarge (16 vCPUs, 8 ENIs x 30 IPv4): the ENI formula 234 capped at the ceiling 110" 0 "$RC" "$WORK/dmp-4x.log" '^110 234 110 16$'
+h "$WORK/dmp-large.log" derive-max-pods m8i.large
+check "ACCEPT m8i.large (2 vCPUs, 3 ENIs x 10 IPv4): the ENI formula 29 is under the ceiling 110, so the formula wins" 0 "$RC" "$WORK/dmp-large.log" '^29 29 110 2$'
+h "$WORK/dmp-16x.log" derive-max-pods m8i.16xlarge
+check "ACCEPT m8i.16xlarge (64 vCPUs, 15 ENIs x 50 IPv4): the ENI formula 737 capped at the ceiling 250" 0 "$RC" "$WORK/dmp-16x.log" '^250 737 250 64$'
 FAKE_FAIL='aws|ec2 describe-instance-types||UnauthorizedOperation' h "$WORK/dmp-read.log" derive-max-pods m8i.xlarge
 check "REJECT a describe-instance-types read that fails, as could not check" 2 "$RC" "$WORK/dmp-read.log" '^ERROR: E_DERIVE_MAX_PODS_UNKNOWN: '
 h "$WORK/dmp-none.log" derive-max-pods m8i.24xlarge
@@ -199,6 +205,12 @@ t['NetworkInfo'].pop('Ipv4AddressesPerInterface')|2|^ERROR: E_DERIVE_MAX_PODS_UN
 t['NetworkInfo']['Ipv4AddressesPerInterface'] = '30'|2|^ERROR: E_DERIVE_MAX_PODS_UNKNOWN: could not check: NetworkInfo\.Ipv4AddressesPerInterface is '30', not a number$|REJECT a field that is a string, not a number, as could not check
 t['NetworkInfo']['MaximumNetworkInterfaces'] = 0|1|^ERROR: E_DERIVE_MAX_PODS: NetworkInfo\.MaximumNetworkInterfaces is 0, want more than 0$|REJECT MaximumNetworkInterfaces 0
 t['NetworkInfo']['Ipv4AddressesPerInterface'] = 0|1|^ERROR: E_DERIVE_MAX_PODS: NetworkInfo\.Ipv4AddressesPerInterface is 0, want more than 0$|REJECT Ipv4AddressesPerInterface 0
+t['VCpuInfo']['DefaultVCpus'] = 30; t['NetworkInfo'].update(MaximumNetworkInterfaces=15, Ipv4AddressesPerInterface=50)|0|^250 737 250 30$|ACCEPT exactly 30 vCPUs with an ENI formula over 250: the ceiling is 250 at 30 vCPUs
+t['VCpuInfo']['DefaultVCpus'] = 29; t['NetworkInfo'].update(MaximumNetworkInterfaces=15, Ipv4AddressesPerInterface=50)|0|^110 737 110 29$|ACCEPT 29 vCPUs with an ENI formula over 250: the ceiling is 110 below 30 vCPUs
+t.pop('VCpuInfo')|2|^ERROR: E_DERIVE_MAX_PODS_UNKNOWN: could not check: VCpuInfo\.DefaultVCpus is None, not a number$|REJECT an instance type with no VCpuInfo, as could not check
+t['VCpuInfo'].pop('DefaultVCpus')|2|^ERROR: E_DERIVE_MAX_PODS_UNKNOWN: could not check: VCpuInfo\.DefaultVCpus is None, not a number$|REJECT a VCpuInfo with no DefaultVCpus, as could not check
+t['VCpuInfo']['DefaultVCpus'] = '4'|2|^ERROR: E_DERIVE_MAX_PODS_UNKNOWN: could not check: VCpuInfo\.DefaultVCpus is '4', not a number$|REJECT a vCPU count that is a string, not a number, as could not check
+t['VCpuInfo']['DefaultVCpus'] = 0|1|^ERROR: E_DERIVE_MAX_PODS: VCpuInfo\.DefaultVCpus is 0, want more than 0$|REJECT a vCPU count of 0
 CASES
 
 echo "== 4/5 AMIs, names, quota, the builder, the operator role ============================="

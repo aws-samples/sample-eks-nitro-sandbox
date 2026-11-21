@@ -1,5 +1,5 @@
 # A filler pod for the networkd check. test.sh renders one per name (cb-filler-<n>-<run ID>), on
-# the sandbox node only, until Cilium attaches a second ENI to that node, runs check-networkd,
+# the sandbox node only, until Cilium attaches a second ENI to that node, runs check-eni-capture,
 # and then deletes each filler pod by its exact name. An ordinary pod (default runtime) that
 # only sleeps; it uses one pod IP address and no requests or limits.
 apiVersion: v1

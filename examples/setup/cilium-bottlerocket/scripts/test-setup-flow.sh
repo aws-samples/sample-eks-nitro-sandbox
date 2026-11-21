@@ -178,7 +178,7 @@ SYS_NODE=ip-10-0-1-10.us-west-2.compute.internal
 SBX_NODE=ip-10-0-2-20.us-west-2.compute.internal
 # add_node <group> <name> <os image>: the node of a node group, registered and Ready.
 add_node() {
-  world_py "s['k8s']['objects']['nodes/-/$2'] = {'apiVersion': 'v1', 'kind': 'Node', 'metadata': {'name': '$2', 'labels': {'eks.amazonaws.com/nodegroup': '$1', 'kubernetes.io/os': 'linux'}}, 'status': {'conditions': [{'type': 'Ready', 'status': 'True'}], 'nodeInfo': {'osImage': '$3', 'kubeletVersion': 'v1.36.4-eks-fake', 'architecture': 'amd64', 'kernelVersion': '6.18.62'}, 'capacity': {'pods': '118', 'eks.amazonaws.com/nitro-sandbox': '0'}, 'allocatable': {'pods': '118', 'eks.amazonaws.com/nitro-sandbox': '0'}}}"
+  world_py "s['k8s']['objects']['nodes/-/$2'] = {'apiVersion': 'v1', 'kind': 'Node', 'metadata': {'name': '$2', 'labels': {'eks.amazonaws.com/nodegroup': '$1', 'kubernetes.io/os': 'linux'}}, 'status': {'conditions': [{'type': 'Ready', 'status': 'True'}], 'nodeInfo': {'osImage': '$3', 'kubeletVersion': 'v1.36.4-eks-fake', 'architecture': 'amd64', 'kernelVersion': '6.18.62'}, 'capacity': {'pods': '110', 'eks.amazonaws.com/nitro-sandbox': '0'}, 'allocatable': {'pods': '110', 'eks.amazonaws.com/nitro-sandbox': '0'}}}"
 }
 # probe_answers <group>: what the probe pod of that group prints for each capture command.
 probe_answers() {
@@ -198,21 +198,41 @@ check "REJECT the system-node stage when no system node registers" 1 "$RC" "$WOR
 sysnode_world; add_node system ip-10-0-1-11.us-west-2.compute.internal 'Bottlerocket OS 1.70.0 (aws-k8s-1.36)'
 setup "$WORK/sn-two.log" --stop-after system-node
 check "REJECT a system node group with two nodes" 1 "$RC" "$WORK/sn-two.log" '^ERROR: E_NODE_COUNT: node group system has 2 nodes, want exactly 1'
-# max-pods of each node group: derived from ec2 describe-instance-types as ENIs x (IPv4 per ENI - 1)
-# + 2, recorded once per run, and checked against the system node's capacity pods.
+# max-pods of each node group, from one ec2 describe-instance-types read: the ENI formula ENIs x
+# (IPv4 per ENI - 1) + 2, capped at 110 below 30 vCPUs and 250 from 30, recorded with its formula
+# and ceiling, and checked against the system node's capacity pods.
+# state_once <file> <KEY=value>...: each line is in the run state exactly once.
+state_once() { local f="$1" kv; shift; for kv in "$@"; do [[ "$(grep -cx "$kv" "$f")" == 1 ]] || return 1; done; }
 SN_STATE="$WORK/snap-system-node.run/runs/$RUN_ID/state.env"
-grep -qx 'max-pods of the system node: 118 (m8i.xlarge)' "$WORK/sn.log" && grep -qx 'max-pods of the sandbox node: 118 (m8i.xlarge)' "$WORK/sn.log" \
-  && [[ "$(grep -c '^MAX_PODS_SYSTEM=118$' "$SN_STATE")" == 1 && "$(grep -c '^MAX_PODS_SANDBOX=118$' "$SN_STATE")" == 1 ]]
-check "ACCEPT max-pods of both node groups derived from m8i.xlarge (4 ENIs x 30 IPv4): 118, recorded once in the run state" 0 $? "$WORK/sn.log"
+grep -qx 'max-pods of the system node: 110 (m8i.xlarge, 4 vCPUs: ENI formula 118, ceiling 110)' "$WORK/sn.log" \
+  && grep -qx 'max-pods of the sandbox node: 110 (m8i.xlarge, 4 vCPUs: ENI formula 118, ceiling 110)' "$WORK/sn.log" \
+  && state_once "$SN_STATE" MAX_PODS_SYSTEM=110 MAX_PODS_FORMULA_SYSTEM=118 MAX_PODS_CEILING_SYSTEM=110 \
+    MAX_PODS_SANDBOX=110 MAX_PODS_FORMULA_SANDBOX=118 MAX_PODS_CEILING_SANDBOX=110
+check "ACCEPT max-pods of both node groups from m8i.xlarge (4 vCPUs, 4 ENIs x 30 IPv4): ENI formula 118, ceiling 110, max-pods 110, each recorded once in the run state" 0 $? "$WORK/sn.log"
 cover accept E_MAX_PODS E_DERIVE_MAX_PODS
-sysnode_world; sed -i '/^MAX_PODS_/d' "$RD/state.env"; config_set 'SYSTEM_INSTANCE_TYPE="m8i.4xlarge"'
-world_py "s['k8s']['objects']['nodes/-/$SYS_NODE']['status']['capacity']['pods'] = '234'"
-setup "$WORK/mp-shape.log" --stop-after system-node
-grep -qx 'max-pods of the system node: 234 (m8i.4xlarge)' "$WORK/mp-shape.log" && grep -qx 'MAX_PODS_SYSTEM=234' "$RD/state.env"
-check "ACCEPT a second shape: m8i.4xlarge (8 ENIs x 30 IPv4) gives max-pods 234, equal to the node's capacity pods" 0 $(( RC + $? )) "$WORK/mp-shape.log" '^Stopped after stage system-node\.'
+while IFS='|' read -r type pods line why; do
+  [[ -n "$type" ]] || continue
+  sysnode_world; sed -i '/^MAX_PODS_/d' "$RD/state.env"; config_set "SYSTEM_INSTANCE_TYPE=\"$type\""
+  world_py "s['k8s']['objects']['nodes/-/$SYS_NODE']['status']['capacity']['pods'] = '$pods'"
+  setup "$WORK/mp-shape.log" --stop-after system-node
+  grep -qx "max-pods of the system node: $pods ($type, $line)" "$WORK/mp-shape.log" && state_once "$RD/state.env" "MAX_PODS_SYSTEM=$pods"
+  check "$why" 0 $(( RC + $? )) "$WORK/mp-shape.log" '^Stopped after stage system-node\.'
+done <<'CASES'
+m8i.4xlarge|110|16 vCPUs: ENI formula 234, ceiling 110|ACCEPT m8i.4xlarge (16 vCPUs): the ENI formula 234 capped at the ceiling 110, equal to the node's capacity pods
+m8i.large|29|2 vCPUs: ENI formula 29, ceiling 110|ACCEPT m8i.large (2 vCPUs): the ENI formula 29 is under the ceiling 110, so max-pods is 29
+m8i.16xlarge|250|64 vCPUs: ENI formula 737, ceiling 250|ACCEPT m8i.16xlarge (64 vCPUs): the ENI formula 737 capped at the ceiling 250
+CASES
+sysnode_world; world_py "s['k8s']['objects']['nodes/-/$SYS_NODE']['status']['capacity']['pods'] = '118'"
+setup "$WORK/mp-ceiling.log" --stop-after system-node
+check "REJECT a system node whose capacity pods (118, the ENI formula alone) is above the ceiling 110" 1 "$RC" "$WORK/mp-ceiling.log" '^ERROR: E_MAX_PODS: the derived max-pods is 110 \(ENI formula 118, ceiling 110\), but node capacity pods=118, above the ceiling 110$'
 sysnode_world; world_py "s['k8s']['objects']['nodes/-/$SYS_NODE']['status']['capacity']['pods'] = '58'"
 setup "$WORK/mp-node.log" --stop-after system-node
-check "REJECT a system node whose capacity pods (58) is not the derived max-pods (118)" 1 "$RC" "$WORK/mp-node.log" '^ERROR: E_MAX_PODS: the derived max-pods is 118 but node capacity pods=58$'
+check "REJECT a system node whose capacity pods (58) is below the derived max-pods (110)" 1 "$RC" "$WORK/mp-node.log" '^ERROR: E_MAX_PODS: the derived max-pods is 110 \(ENI formula 118, ceiling 110\), but node capacity pods=58$'
+sysnode_world; world_py "s['instance_types']['m8i.xlarge'].pop('VCpuInfo')"
+setup "$WORK/mp-vcpu.log" --stop-after system-node
+grep -qx 'ERROR: E_DERIVE_MAX_PODS_UNKNOWN: could not check: VCpuInfo.DefaultVCpus is None, not a number' "$WORK/mp-vcpu.log"
+check "REJECT an instance type with no VCpuInfo: setup.sh stops before the system node group" 1 $(( RC + $? )) "$WORK/mp-vcpu.log" '^ERROR: E_MAX_PODS: could not derive max-pods of the system node from m8i\.xlarge'
+[[ "$(count_calls eksctl 'create nodegroup')" == 0 ]]; check "  ... and no node group was created" 0 $? "$WORK/mp-vcpu.log"
 sysnode_world; world_py "s['instance_types']['m8i.xlarge'].pop('NetworkInfo')"
 setup "$WORK/mp-missing.log" --stop-after system-node
 check "REJECT an instance type with no NetworkInfo: setup.sh stops before the system node group" 1 "$RC" "$WORK/mp-missing.log" '^ERROR: E_MAX_PODS: could not derive max-pods of the system node from m8i\.xlarge'
@@ -229,12 +249,18 @@ FAKE_FAIL='aws|ec2 describe-instance-types||UnauthorizedOperation' setup "$WORK/
 check "REJECT a describe-instance-types read that fails" 1 "$RC" "$WORK/mp-read.log" '^ERROR: E_MAX_PODS: could not derive max-pods of the system node from m8i\.xlarge'
 [[ "$(count_calls eksctl 'create nodegroup')" == 0 ]]; check "  ... and no node group was created" 0 $? "$WORK/mp-read.log"
 for group in SYSTEM SANDBOX; do
-  sysnode_world; config_set "${group}_INSTANCE_TYPE=\"m8i.4xlarge\""
+  sysnode_world; config_set "${group}_INSTANCE_TYPE=\"m8i.16xlarge\""
   setup "$WORK/mp-changed.log" --stop-after system-node
-  check "REJECT a resume whose $group instance type gives another max-pods (234) than the run recorded (118)" 1 "$RC" "$WORK/mp-changed.log" \
-    "^ERROR: E_MAX_PODS: run $RUN_ID uses max-pods 118 on the ${group,,} node, but m8i\\.4xlarge gives 234; "
-  [[ "$(grep -c "^MAX_PODS_$group=118\$" "$RD/state.env")" == 1 ]]; check "  ... and the run state still has MAX_PODS_$group=118 once" 0 $? "$RD/state.env"
+  check "REJECT a resume whose $group instance type gives another max-pods (250) than the run recorded (110)" 1 "$RC" "$WORK/mp-changed.log" \
+    "^ERROR: E_MAX_PODS: run $RUN_ID uses max-pods 110 on the ${group,,} node, but m8i\\.16xlarge gives 250; "
+  state_once "$RD/state.env" "MAX_PODS_$group=110" "MAX_PODS_FORMULA_$group=118" "MAX_PODS_CEILING_$group=110"
+  check "  ... and the run state still has MAX_PODS_$group=110, its formula 118 and ceiling 110, once each" 0 $? "$RD/state.env"
 done
+# A resume whose instance type gives the same max-pods goes on: m8i.4xlarge also gives 110.
+sysnode_world; config_set 'SANDBOX_INSTANCE_TYPE="m8i.4xlarge"'
+setup "$WORK/mp-same.log" --stop-after system-node
+grep -qx 'max-pods of the sandbox node: 110 (m8i.4xlarge, 16 vCPUs: ENI formula 234, ceiling 110)' "$WORK/mp-same.log"
+check "ACCEPT a resume whose sandbox instance type (m8i.4xlarge) gives the recorded max-pods 110" 0 $(( RC + $? )) "$WORK/mp-same.log" '^Stopped after stage system-node\.'
 sysnode_world
 FAKE_FAIL='kubectl|get nodes|jsonpath|InternalError' setup "$WORK/sn-read.log" --stop-after system-node
 check "REJECT the system-node stage when the nodes of the group cannot be listed" 1 "$RC" "$WORK/sn-read.log" '^ERROR: E_NODE_READ: could not list the nodes of node group system'
@@ -416,7 +442,7 @@ n = sorted({int(m.group(1)) for e in map(json.loads, open(sys.argv[1])) if e["to
 print(f"1-{len(n)}" if n == list(range(1, len(n) + 1)) else n)' "$FAKE_LOG"
 }
 grep -q '^filler pods started: 40 (limit 40); ' "$WORK/t-ok.log" && [[ "$(fillers_made)" == 1-40 ]]
-check "  ... with max-pods 118 it starts the cap of 40 filler pods, cb-filler-1 to cb-filler-40, and no 41st" 0 $? "$WORK/t-ok.log"
+check "  ... with max-pods 110 it starts the cap of 40 filler pods, cb-filler-1 to cb-filler-40, and no 41st" 0 $? "$WORK/t-ok.log"
 free_ok=0; lim=()
 for mp in 30 31; do
   restore sandbox-node; rewind workloads; sed -i "s/^MAX_PODS_SANDBOX=.*/MAX_PODS_SANDBOX=$mp/" "$RD/state.env"
@@ -435,4 +461,7 @@ check "REJECT test.sh on a run that stopped after sandbox-node" 1 "$RC" "$WORK/t
 restore sandbox-node; rewind workloads; sed -i '/^MAX_PODS_SANDBOX=/d' "$RD/state.env"
 run_real "$WORK/t-nomp.log" bash "$SAMPLE_DIR_REAL/test.sh"
 check "REJECT test.sh on a run whose state has no derived MAX_PODS_SANDBOX" 1 "$RC" "$WORK/t-nomp.log" "^ERROR: E_STATE: run $RUN_ID has no MAX_PODS_SANDBOX in "
+restore sandbox-node; rewind workloads; sed -i '/^MAX_PODS_CEILING_SANDBOX=/d' "$RD/state.env"
+run_real "$WORK/t-noceil.log" bash "$SAMPLE_DIR_REAL/test.sh"
+check "REJECT test.sh on a run whose state has no max-pods ceiling (MAX_PODS_CEILING_SANDBOX)" 1 "$RC" "$WORK/t-noceil.log" "^ERROR: E_STATE: run $RUN_ID has no MAX_PODS_CEILING_SANDBOX in "
 finish

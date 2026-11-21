@@ -1,10 +1,12 @@
-"""Shared helpers of scripts/cilium_bottlerocket.py: settings, state, tags, CLI calls.
+"""Shared helpers of scripts/cilium_bottlerocket.py: settings, state, tags, CLI calls, and the
+parsers of the ENI captures.
 
 Exit codes of every check: 0 accept, 1 reject, 2 could not check. Each refusal prints one
 line on stderr that starts with "ERROR: ". The helpers call the aws and kubectl CLIs by bare
 name through PATH, so the offline tests can put stub commands first on PATH.
 """
 
+import ipaddress
 import json
 import os
 import re
@@ -193,3 +195,89 @@ def main_wrapper(command, func, args):
         print(f"ERROR: {tag}_UNKNOWN: could not check: unexpected input shape ({err!r})", file=sys.stderr)
         return 2
     return 0
+
+
+# ---- Parsers of the probe captures that check-eni-capture and check-eni-stable read ----
+def networkd_states(text):
+    """The networkd capture of probe_capture: '==links==', the host `ip -o link` lines, then
+    '==states==', one line per networkd link state file, '<ifindex> ADMIN_STATE=<s> ...'.
+    Returns {interface name: ADMIN_STATE, or None when networkd has no state file for it}."""
+    if "==links==" not in text or "==states==" not in text:
+        raise Unknown("the capture has no ==links== and ==states== sections")
+    links_text, states_text = text.split("==states==", 1)
+    names = {}
+    for line in links_text.split("==links==", 1)[1].splitlines():
+        match = re.match(r"^([0-9]+): ([^:@ ]+)[:@]", line.strip())
+        if match:
+            names[match.group(1)] = match.group(2)
+    if not names:
+        raise Unknown("no interface in the ip -o link capture")
+    states = {}
+    for line in states_text.splitlines():
+        match = re.match(r"^([0-9]+) .*ADMIN_STATE=(\S+)", line.strip())
+        if match:
+            states[match.group(1)] = match.group(2)
+    return {name: states.get(index) for index, name in names.items()}
+
+
+def eni_state(text):
+    """One capture of probe_eni_capture (the iproute2 of the host): '==link==' `ip -o link`,
+    '==addr==' `ip -o addr`, '==route==' `ip -4 route show table all`, '==route6=='
+    `ip -6 route show table all`, '==rule==' `ip -4 rule`. Returns ({name: link}, rules) for
+    eth1 and later. A link has its MAC, its IPv4 and IPv6 addresses, its address lines with the
+    dynamic flag, its IPv4 and IPv6 routes, and the tables of its IPv4 routes. Each line has
+    single spaces and no "expires <n>", so two captures compare line by line."""
+    parts = dict(re.findall(r"^==(link|addr|route|route6|rule)==\n(.*?)(?=^==|\Z)", text, re.M | re.S))
+    if set(parts) != {"link", "addr", "route", "route6", "rule"}:
+        raise Unknown("the capture has no ==link==, ==addr==, ==route==, ==route6== and ==rule== sections")
+
+    def lines(section):
+        return [" ".join(re.sub(r" expires \S+", "", line).split()) for line in parts[section].splitlines() if line.strip()]
+
+    def on_link(section, name):
+        return sorted(line for line in lines(section) if re.search(rf"\bdev {re.escape(name)}\b", line))
+
+    state = {}
+    for line in lines("link"):
+        match = re.match(r"^[0-9]+: (eth[1-9][0-9]*)[:@].*link/ether ([0-9a-f:]{17})", line)
+        if not match:
+            continue
+        name = match.group(1)
+        addr = [f for f in (line.split() for line in lines("addr")) if len(f) > 3 and f[1] == name]
+        routes = on_link("route", name)
+        state[name] = {
+            "mac": match.group(2),
+            "inet": sorted(f[3] for f in addr if f[2] == "inet"),
+            "inet6": sorted(f[3] for f in addr if f[2] == "inet6"),
+            "dynamic": sorted(" ".join(f) for f in addr if "dynamic" in f),
+            "routes": routes,
+            "routes6": on_link("route6", name),
+            "tables": sorted({m.group(1) for r in routes for m in [re.search(r"\btable (\S+)", r)] if m}),
+        }
+    return state, sorted(lines("rule"))
+
+
+def ciliumnode_enis(path):
+    """{MAC: ENI record} of `kubectl get ciliumnode <node> -o json`."""
+    try:
+        enis = read_json(path)["status"]["eni"]["enis"]
+    except (KeyError, TypeError) as err:
+        raise Unknown("the CiliumNode has no status.eni.enis") from err
+    return {e.get("mac", "").lower(): e for e in enis.values()}
+
+
+def in_eni(ip, eni):
+    """True when ip is the primary IP, a secondary IP, or in a delegated prefix of the ENI."""
+    if ip and (ip == eni.get("ip") or ip in (eni.get("addresses") or [])):
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in ipaddress.ip_network(p, strict=False) for p in eni.get("prefixes") or [])
+    except ValueError:
+        return False
+
+
+def rule_source(rule):
+    """The address of 'from <address>' in an ip rule line, or "" for 'from all' and no source."""
+    match = re.search(r"\bfrom (\S+)", rule)
+    return "" if not match or match.group(1) == "all" else match.group(1).split("/")[0]

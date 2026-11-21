@@ -109,6 +109,13 @@ cilium_agent_ready() { # cilium_agent_ready <node>
     -o jsonpath='{.items[*].status.containerStatuses[*].ready}')" || return 1
   [[ -n "$ready" && "$ready" != *false* ]]
 }
+# check_max_pods <group> <input flags>: check-max-pods with the max-pods, ENI formula and ceiling
+# that the run recorded for the group.
+check_max_pods() {
+  local g="${1^^}"; shift
+  python3 "$PY" check-max-pods --want "$(state_need "MAX_PODS_$g")" --formula "$(state_need "MAX_PODS_FORMULA_$g")" \
+    --ceiling "$(state_need "MAX_PODS_CEILING_$g")" "$@"
+}
 
 # ---------------------------------------------------------------------------
 step "1/8 preflight: tools, versions, account, Region, quota and names"
@@ -174,23 +181,24 @@ if should_run preflight; then
   state_set SYSTEM_AMI_ID "$SYSTEM_AMI_ID"
   finish preflight
 fi
-# max-pods of each node group, derived from its instance type (ec2 describe-instance-types:
-# ENIs x (IPv4 per ENI - 1) + 2), never set by hand. A run records each value once
-# (MAX_PODS_SYSTEM, MAX_PODS_SANDBOX); a resume whose instance type gives another value stops.
+# max-pods of each node group, never set by hand: the ENI formula of its instance type (ENIs x
+# (IPv4 per ENI - 1) + 2), capped at 110 below 30 vCPUs and at 250 from 30 vCPUs, all from one
+# ec2 describe-instance-types read (derived_max_pods in scripts/lib/cb_render.py). A run records
+# the formula, the ceiling and the result (MAX_PODS_SYSTEM, MAX_PODS_SANDBOX); a resume whose
+# instance type gives another result stops.
 for group in system sandbox; do
-  type_var="${group^^}_INSTANCE_TYPE"
+  G="${group^^}"; type_var="${G}_INSTANCE_TYPE"
   derived="$(python3 "$PY" derive-max-pods "${!type_var}")" \
     || die E_MAX_PODS "could not derive max-pods of the $group node from ${!type_var} (see the error above)"
-  recorded="$(state_get "MAX_PODS_${group^^}")" || die E_STATE "could not read $RUN_STATE_FILE"
-  if [[ -z "$recorded" ]]; then
-    state_set "MAX_PODS_${group^^}" "$derived"
-  elif [[ "$recorded" != "$derived" ]]; then
-    die E_MAX_PODS "run $RUN_ID uses max-pods $recorded on the $group node, but ${!type_var} gives $derived; restore the instance type, or start a new run"
-  fi
-  echo "max-pods of the $group node: $derived (${!type_var})"
+  read -r max_pods formula ceiling vcpus <<<"$derived"
+  recorded="$(state_get "MAX_PODS_$G")" || die E_STATE "could not read $RUN_STATE_FILE"
+  [[ -z "$recorded" || "$recorded" == "$max_pods" ]] \
+    || die E_MAX_PODS "run $RUN_ID uses max-pods $recorded on the $group node, but ${!type_var} gives $max_pods; restore the instance type, or start a new run"
+  state_set "MAX_PODS_FORMULA_$G" "$formula"
+  state_set "MAX_PODS_CEILING_$G" "$ceiling"
+  state_set "MAX_PODS_$G" "$max_pods"
+  echo "max-pods of the $group node: $max_pods (${!type_var}, $vcpus vCPUs: ENI formula $formula, ceiling $ceiling)"
 done
-mp_system="$(state_need MAX_PODS_SYSTEM)"
-mp_sandbox="$(state_need MAX_PODS_SANDBOX)"
 
 # ---------------------------------------------------------------------------
 if should_run cluster; then
@@ -294,7 +302,7 @@ if should_run system-node; then
     || die E_CILIUM_ROLLOUT "the Cilium operator Deployment did not roll out"
   kc get node "$system_node" -o json >"$RUN_STATE_DIR/node-system.json" \
     || die E_NODE_READ "could not read node $system_node"
-  python3 "$PY" check-max-pods --want "$mp_system" --node "$RUN_STATE_DIR/node-system.json"
+  check_max_pods system --node "$RUN_STATE_DIR/node-system.json"
   python3 "$PY" check-os-image system "$RUN_STATE_DIR/node-system.json"
   python3 "$PY" check-operator-role
   ensure_namespace
@@ -349,7 +357,7 @@ if should_run sandbox-node; then
   aws ec2 describe-launch-template-versions --region "$AWS_REGION" --launch-template-id "$lt" --versions 1 \
     --output json >"$RUN_STATE_DIR/lt-sandbox-v1.json" || die E_LAUNCH_TEMPLATE "could not read version 1 of $lt"
   python3 "$PY" check-user-data sandbox "$RUN_STATE_DIR/lt-sandbox-v1.json"
-  python3 "$PY" check-max-pods --want "$mp_sandbox" --launch-template "$RUN_STATE_DIR/lt-sandbox-v1.json"
+  check_max_pods sandbox --launch-template "$RUN_STATE_DIR/lt-sandbox-v1.json"
   python3 "$PY" render-nodegroup sandbox >/dev/null
   ensure_nodegroup sandbox
   wait_until "$TRIES" "a sandbox node" has_nodes sandbox \
@@ -389,7 +397,7 @@ if should_run node-checks; then
   python3 "$PY" check-containerd-dump "$d/containerd-dump.toml"
   python3 "$PY" check-allocatable "$RUN_STATE_DIR/node-sandbox.json"
   python3 "$PY" check-density --shim-toml "$d/nitro-sandbox.toml"
-  python3 "$PY" check-max-pods --want "$mp_sandbox" --node "$RUN_STATE_DIR/node-sandbox.json"
+  check_max_pods sandbox --node "$RUN_STATE_DIR/node-sandbox.json"
   # The slot pool: SANDBOX_SLOTS not above pcie_slots_total, and equal to the driver's
   # pcie_slots and the node's eks.amazonaws.com/nitro-sandbox capacity.
   python3 "$PY" check-slots --driver "$d/slots.txt" --node "$RUN_STATE_DIR/node-sandbox.json" --journal "$d/journal.log"
