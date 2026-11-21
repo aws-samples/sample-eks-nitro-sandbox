@@ -373,14 +373,29 @@ wait_until() {
 
 # ---- Probe pods (one per node, deleted by exact name) ----
 probe_name() { printf 'cb-probe-%s-%s\n' "$1" "$RUN_ID"; }
+CB_PROBES=()   # the probe pods that this script started and has not deleted yet
 probe_start() { # probe_start <name> <node>
+  CB_PROBES+=("$1")
   python3 "$PY" render-probe --name "$1" --node "$2" | kc create -f - >/dev/null \
     || die E_PROBE "could not create the probe pod $1 on node $2"
   kc -n "$NAMESPACE" wait --for=condition=Ready "pod/$1" --timeout=5m >/dev/null \
     || die E_PROBE "the probe pod $1 did not become Ready"
 }
 probe_exec() { local name="$1"; shift; kc -n "$NAMESPACE" exec "$name" -- "$@"; }
-probe_stop() { kc -n "$NAMESPACE" delete pod "$1" --ignore-not-found --wait=true >/dev/null; }
+probe_stop() {
+  local p kept=()
+  kc -n "$NAMESPACE" delete pod "$1" --ignore-not-found --wait=true >/dev/null || return 1
+  for p in ${CB_PROBES[@]+"${CB_PROBES[@]}"}; do [[ "$p" == "$1" ]] || kept+=("$p"); done
+  CB_PROBES=(${kept[@]+"${kept[@]}"})
+}
+# probe_cleanup: the exit trap of setup.sh and test.sh. It deletes each probe pod that the script
+# started and did not delete, by exact name, so that a failure leaves none behind.
+probe_cleanup() {
+  local p
+  for p in ${CB_PROBES[@]+"${CB_PROBES[@]}"}; do
+    probe_stop "$p" || warn "could not delete the probe pod $p; delete it with: kubectl -n $NAMESPACE delete pod $p"
+  done
+}
 # probe_capture <probe> <out-dir>: the host evidence of one node, one file per item. Each
 # command runs on its own, so an unreadable item is an empty file, which the checks read as
 # "could not check" (exit 2).
@@ -398,6 +413,11 @@ probe_capture() {
     >"$d/domains.txt" 2>"$d/domains.err" || true
   probe_exec "$p" chroot /host /usr/bin/containerd config dump >"$d/containerd-dump.toml" 2>"$d/containerd-dump.err" || true
   probe_exec "$p" cat /host/etc/containerd/nitro-sandbox.toml >"$d/nitro-sandbox.toml" 2>"$d/nitro-sandbox.err" || true
+  # The kubelet kubeconfig that the shim reads: stat only (its size), never its content.
+  probe_exec "$p" sh -c 'f=/host/etc/kubernetes/kubelet/kubeconfig; if [ -e "$f" ]; then echo "KUBECONFIG_BYTES=$(stat -L -c %s "$f")"; else echo KUBECONFIG_ABSENT; fi' \
+    >"$d/kubeconfig.txt" 2>"$d/kubeconfig.err" || : >"$d/kubeconfig.txt"
+  # The version and compressors of the host mkfs.erofs (-V prints them and exits; it writes nothing).
+  probe_exec "$p" chroot /host /usr/bin/mkfs.erofs -V >"$d/mkfs-erofs.txt" 2>"$d/mkfs-erofs.err" || : >"$d/mkfs-erofs.txt"
   probe_exec "$p" sh -c 'echo "==links=="; nsenter -t 1 -n ip -o link || exit 1; echo "==states=="; for f in /host/run/systemd/netif/links/*; do printf "%s " "${f##*/}"; grep -E "^(ADMIN_STATE|OPER_STATE)=" "$f" | tr "\n" " "; echo; done' \
     >"$d/networkd.txt" 2>"$d/networkd.err" || : >"$d/networkd.txt"
   probe_exec "$p" nsenter -t 1 -n ip -o addr >"$d/host-addr.txt" 2>"$d/host-addr.err" || true
@@ -406,12 +426,18 @@ probe_capture() {
     >"$d/dm-verity.txt" 2>"$d/dm-verity.err" || : >"$d/dm-verity.txt"
 }
 
-# probe_eni_capture <probe> <file>: the links, addresses, routes (all tables) and rules of the
-# host network namespace, in the sections that check-eni-stable reads. A failed read leaves an
-# empty file, which the check reads as "could not check" (exit 2).
+# probe_eni_capture <probe> <file>: the links, addresses, IPv4 and IPv6 routes (all tables) and
+# IPv4 rules of the host network namespace, in the sections that check-eni-capture and
+# check-eni-stable read. It runs /usr/sbin/ip of the host (iproute2 of the Bottlerocket release
+# package), because busybox ip prints no route protocol (proto dhcp, proto ra). It makes no D-Bus
+# or systemctl call. A failed read leaves an empty file, which the checks read as "could not
+# check" (exit 2).
+# shellcheck disable=SC2016
 probe_eni_capture() {
-  probe_exec "$1" nsenter -t 1 -n sh -c 'echo "==link=="; ip -o link || exit 1; echo "==addr=="; ip -o addr || exit 1; echo "==route=="; ip route show table all || exit 1; echo "==rule=="; ip rule || exit 1' \
-    >"$2" 2>"$2.err" || : >"$2"
+  probe_exec "$1" sh -c 'hip() { nsenter -t 1 -n chroot /host /usr/sbin/ip "$@"; }
+    echo "==link=="; hip -o link || exit 1; echo "==addr=="; hip -o addr || exit 1
+    echo "==route=="; hip -4 route show table all || exit 1; echo "==route6=="; hip -6 route show table all || exit 1
+    echo "==rule=="; hip -4 rule || exit 1' >"$2" 2>"$2.err" || : >"$2"
 }
 
 # ---- Tallies ----

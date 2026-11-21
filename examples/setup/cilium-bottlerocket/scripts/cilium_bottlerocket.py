@@ -74,6 +74,11 @@ def parser():
     add("check-networkd", cb_checks.cmd_check_networkd, opt_file)
     add("check-eni-stable", cb_checks.cmd_check_eni_stable, (["--before"], {"required": True}),
         (["--after"], {"required": True}), (["--ciliumnode"], {"required": True}))
+    add("check-eni-capture", cb_checks.cmd_check_eni_capture, (["--capture"], {"required": True}),
+        (["--networkd"], {"required": True}), (["--ciliumnode"], {"required": True}))
+    add("check-kubeconfig-path", cb_checks.cmd_check_kubeconfig_path, (["--shim-toml"], {"required": True}),
+        (["--kubeconfig"], {"required": True}))
+    add("check-mkfs-erofs", cb_checks.cmd_check_mkfs_erofs, opt_file)
     add("check-dm-verity", cb_checks.cmd_check_dm_verity, opt_file)
     add("check-network-isolated", cb_checks.cmd_check_network_isolated, opt_file)
     add("pod-in-eni", cb_checks.cmd_pod_in_eni, (["pod_ip"], {}), opt_file)

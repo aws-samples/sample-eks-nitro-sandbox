@@ -17,11 +17,21 @@ OS_IMAGE = {
 }
 SHIM_NAME = "containerd-shim-nitro-sandbox-v2"
 AVC_DENIED = re.compile(r"\bavc:\s+denied\b")
-# shortcut: the reservation line of the Nitro Enclaves driver is not known from a Bottlerocket
-# node yet. This pattern accepts a kernel log line that names nitro_enclaves together with a
-# reservation or the CMA pool. Phase 3 replaces it with the exact line of the live node.
-MEMPOOL_LINE = re.compile(r"nitro_enclaves.*(?:reserv|mempool|cma)|cma: Reserved .*nitro", re.IGNORECASE)
+# The reservation line of the Nitro Enclaves driver, from the kernel patch of the AL2023 SRPM that
+# the Bottlerocket 6.18 kernel uses (0144-nitro_enclaves-Amazon-Nitro-Enclaves-extension-port-.patch):
+#   pr_info("nitro_enclaves: CMA pool: %llu MiB reserved in %d region(s), %llu MiB requested\n")
+# and the lines it prints when it reserves nothing ("EFI table absent, skipping CMA reservation",
+# "mempool=...@<node> resolved to 0, skipping", and "no reserved CMA pool on this boot"). A
+# "CMA region ... not reserved: ...; truncating the pool here" line is not a failure: the driver
+# keeps the regions that it reserved, and the CMA pool line reports them. The kernel's echo of
+# the command line ("Kernel command line: ... nitro_enclaves.mempool=...") matches neither pattern.
+MEMPOOL_RESERVED = re.compile(r"nitro_enclaves: CMA pool: ([0-9]+) MiB reserved in ([0-9]+) region\(s\), ([0-9]+) MiB requested")
+MEMPOOL_SKIPPED = re.compile(
+    r"nitro_enclaves: (?:.*skipping CMA reservation|mempool=\S+ resolved to 0, skipping|no reserved CMA pool on this boot)")
 MEMPOOL_ARG = "nitro_enclaves.mempool=95%-1G"
+KUBELET_KUBECONFIG = "/etc/kubernetes/kubelet/kubeconfig"
+NO_ENTRIES = re.compile(r"^-- No entries --$")
+SECONDARY_ENI = re.compile(r"eth[1-9][0-9]*")
 
 
 def cmd_check_os_image(args):
@@ -44,12 +54,46 @@ def cmd_check_btf(args):
 
 
 def cmd_check_mempool(args):
+    """The build-time parameter is on the command line, and the driver's own reservation line
+    reports more than 0 MiB in at least one region. A skip or a failed region is a rejection."""
     cmdline = read_input(args.cmdline)
     log = read_input(args.kernel_log)
     require(MEMPOOL_ARG in cmdline.split(), f"the kernel command line has no {MEMPOOL_ARG}")
-    lines = [line for line in log.splitlines() if MEMPOOL_LINE.search(line)]
-    require(lines, "the kernel log has no nitro_enclaves memory reservation line")
-    print(f"kernel command line has {MEMPOOL_ARG}; kernel log: {lines[0].strip()}")
+    skipped = [line.strip() for line in log.splitlines() if MEMPOOL_SKIPPED.search(line)]
+    require(not skipped, f"the driver did not reserve the pool: {skipped[:1]}")
+    found = [(line.strip(), m) for line in log.splitlines() for m in [MEMPOOL_RESERVED.search(line)] if m]
+    require(found, "the kernel log has no 'nitro_enclaves: CMA pool: ... MiB reserved' line")
+    m = found[-1][1]
+    require(int(m.group(1)) > 0 and int(m.group(2)) > 0, f"the driver reserved {m.group(1)} MiB in {m.group(2)} region(s)")
+    print(f"kernel command line has {MEMPOOL_ARG}; driver: {m.group(0)}")
+
+
+def cmd_check_kubeconfig_path(args):
+    """The shim reads the kubelet kubeconfig of Bottlerocket: kubeconfig_path in
+    nitro-sandbox.toml is /etc/kubernetes/kubelet/kubeconfig, and that file is on the node and
+    not empty (capture 'KUBECONFIG_BYTES=<n>' or 'KUBECONFIG_ABSENT'; only stat reads it)."""
+    found = re.findall(r'^\s*kubeconfig_path\s*=\s*"([^"]*)"\s*(?:#.*)?$', read_input(args.shim_toml), re.M)
+    require(len(found) == 1, f"nitro-sandbox.toml has {len(found)} kubeconfig_path lines")
+    require(found[0] == KUBELET_KUBECONFIG, f"kubeconfig_path is {found[0]!r}, want {KUBELET_KUBECONFIG}")
+    capture = read_input(args.kubeconfig).strip()
+    require(capture != "KUBECONFIG_ABSENT", f"{KUBELET_KUBECONFIG} is not on the node")
+    size = re.fullmatch(r"KUBECONFIG_BYTES=([0-9]+)", capture)
+    if not size:
+        raise Unknown("the kubeconfig capture is not KUBECONFIG_BYTES=<n> or KUBECONFIG_ABSENT")
+    require(int(size.group(1)) > 0, f"{KUBELET_KUBECONFIG} is empty")
+    print(f"kubeconfig_path {found[0]}: present on the node ({size.group(1)} bytes)")
+
+
+def cmd_check_mkfs_erofs(args):
+    """`mkfs.erofs -V` of the host (erofs-utils) lists zstd in its "available compressors" line."""
+    text = read_input(args.file)
+    version = re.search(r"^mkfs\.erofs \(erofs-utils\) (\S+)$", text, re.M)
+    found = re.search(r"^available compressors: (.*)$", text, re.M)
+    if not version or not found:
+        raise Unknown("the capture is not the 'mkfs.erofs -V' output of erofs-utils")
+    names = [n.strip() for n in found.group(1).split(",") if n.strip()]
+    require("zstd" in names, f"mkfs.erofs {version.group(1)} has no zstd compressor (it has: {', '.join(names) or 'none'})")
+    print(f"mkfs.erofs {version.group(1)} on the host: compressors {', '.join(names)}")
 
 
 def cmd_check_runtime_endpoint(args):
@@ -137,7 +181,11 @@ def cmd_selinux_audit(args):
     exit 2, never a pass."""
     found = []
     for path in (args.avc_file, args.journal_file):
-        found += [line.strip() for line in read_input(path).splitlines() if AVC_DENIED.search(line)]
+        lines = [line for line in read_input(path).splitlines() if line.strip()]
+        # journalctl prints "-- No entries --" when it reads nothing: that is no evidence.
+        if not [line for line in lines if not NO_ENTRIES.match(line.strip())]:
+            raise Unknown(f"{path} has no log entry")
+        found += [line.strip() for line in lines if AVC_DENIED.search(line)]
     require(not found, f"{len(found)} SELinux denial(s), first: {found[0] if found else ''}")
     print("SELinux audit: no AVC denial in the kernel log or the journal")
 
@@ -164,11 +212,10 @@ def cmd_check_selinux_domains(args):
     print(f"SELinux domain runtime_t: CRI proxy ({len(proxies)}) and shim ({len(shims)}): {rows[0][0]}")
 
 
-def cmd_check_networkd(args):
-    """Capture: '==links==', the host `ip -o link` lines, '==states==', one line per networkd
-    link state file, '<ifindex> ADMIN_STATE=<s> OPER_STATE=<s>'. Each eth[1-9]* interface (a
-    secondary ENI that Cilium manages) must be unmanaged by systemd-networkd."""
-    text = read_input(args.file)
+def networkd_states(text):
+    """The networkd capture of probe_capture: '==links==', the host `ip -o link` lines, then
+    '==states==', one line per networkd link state file, '<ifindex> ADMIN_STATE=<s> ...'.
+    Returns {interface name: ADMIN_STATE, or None when networkd has no state file for it}."""
     if "==links==" not in text or "==states==" not in text:
         raise Unknown("the capture has no ==links== and ==states== sections")
     links_text, states_text = text.split("==states==", 1)
@@ -177,86 +224,194 @@ def cmd_check_networkd(args):
         match = re.match(r"^([0-9]+): ([^:@ ]+)[:@]", line.strip())
         if match:
             names[match.group(1)] = match.group(2)
+    if not names:
+        raise Unknown("no interface in the ip -o link capture")
     states = {}
     for line in states_text.splitlines():
         match = re.match(r"^([0-9]+) .*ADMIN_STATE=(\S+)", line.strip())
         if match:
             states[match.group(1)] = match.group(2)
-    if not names:
-        raise Unknown("no interface in the ip -o link capture")
-    secondary = {i: n for i, n in names.items() if re.fullmatch(r"eth[1-9][0-9]*", n)}
+    return {name: states.get(index) for index, name in names.items()}
+
+
+def cmd_check_networkd(args):
+    """Each eth[1-9]* interface (a secondary ENI that Cilium manages) must be unmanaged by
+    systemd-networkd. The capture is the one that networkd_states reads."""
+    admin = networkd_states(read_input(args.file))
+    secondary = sorted(n for n in admin if SECONDARY_ENI.fullmatch(n))
     if not secondary:
         raise Unknown("the node has no secondary ENI (eth1 or later) yet; nothing to check")
-    wrong = [f"{n} is {states.get(i, 'not listed')}" for i, n in sorted(secondary.items()) if states.get(i) != "unmanaged"]
+    wrong = [f"{n} is {admin[n] or 'not listed'}" for n in secondary if admin[n] != "unmanaged"]
     require(not wrong, "systemd-networkd manages a Cilium ENI: " + ", ".join(wrong))
-    print("systemd-networkd: " + ", ".join(f"{n} unmanaged" for n in sorted(secondary.values())))
+    print("systemd-networkd: " + ", ".join(f"{n} unmanaged" for n in secondary))
 
 
 def eni_state(text):
-    """One host capture: '==link==' `ip -o link`, '==addr==' `ip -o addr`, '==route=='
-    `ip route show table all`, '==rule==' `ip rule`. Returns {name: (mac, addrs, routes, tables)}
-    for eth1 and later, and the rule lines."""
-    parts = dict(re.findall(r"^==(link|addr|route|rule)==\n(.*?)(?=^==|\Z)", text, re.M | re.S))
-    if set(parts) != {"link", "addr", "route", "rule"}:
-        raise Unknown("the capture has no ==link==, ==addr==, ==route== and ==rule== sections")
-    links = {}
-    for line in parts["link"].splitlines():
-        m = re.match(r"^[0-9]+: (eth[1-9][0-9]*)[:@].*link/ether ([0-9a-f:]{17})", line.strip())
-        if m:
-            links[m.group(1)] = m.group(2)
+    """One capture of probe_eni_capture (the iproute2 of the host): '==link==' `ip -o link`,
+    '==addr==' `ip -o addr`, '==route==' `ip -4 route show table all`, '==route6=='
+    `ip -6 route show table all`, '==rule==' `ip -4 rule`. Returns ({name: link}, rules) for
+    eth1 and later. A link has its MAC, its IPv4 and IPv6 addresses, its address lines with the
+    dynamic flag, its IPv4 and IPv6 routes, and the tables of its IPv4 routes. Each line has
+    single spaces and no "expires <n>", so two captures compare line by line."""
+    parts = dict(re.findall(r"^==(link|addr|route|route6|rule)==\n(.*?)(?=^==|\Z)", text, re.M | re.S))
+    if set(parts) != {"link", "addr", "route", "route6", "rule"}:
+        raise Unknown("the capture has no ==link==, ==addr==, ==route==, ==route6== and ==rule== sections")
+
+    def lines(section):
+        return [" ".join(re.sub(r" expires \S+", "", line).split()) for line in parts[section].splitlines() if line.strip()]
+
+    def on_link(section, name):
+        return sorted(line for line in lines(section) if re.search(rf"\bdev {re.escape(name)}\b", line))
+
     state = {}
-    for name, mac in links.items():
-        addrs = sorted(line.split()[3] for line in parts["addr"].splitlines()
-                       if len(line.split()) > 3 and line.split()[1] == name and line.split()[2] == "inet")
-        routes = sorted(re.sub(r" expires \S+", "", line.strip()) for line in parts["route"].splitlines()
-                        if re.search(rf"\bdev {name}\b", line))
-        tables = sorted({m.group(1) for line in routes for m in [re.search(r"\btable (\S+)", line)] if m})
-        state[name] = (mac, addrs, routes, tables)
-    rules = sorted(line.strip() for line in parts["rule"].splitlines() if line.strip())
-    return state, rules
+    for line in lines("link"):
+        match = re.match(r"^[0-9]+: (eth[1-9][0-9]*)[:@].*link/ether ([0-9a-f:]{17})", line)
+        if not match:
+            continue
+        name = match.group(1)
+        addr = [f for f in (line.split() for line in lines("addr")) if len(f) > 3 and f[1] == name]
+        routes = on_link("route", name)
+        state[name] = {
+            "mac": match.group(2),
+            "inet": sorted(f[3] for f in addr if f[2] == "inet"),
+            "inet6": sorted(f[3] for f in addr if f[2] == "inet6"),
+            "dynamic": sorted(" ".join(f) for f in addr if "dynamic" in f),
+            "routes": routes,
+            "routes6": on_link("route6", name),
+            "tables": sorted({m.group(1) for r in routes for m in [re.search(r"\btable (\S+)", r)] if m}),
+        }
+    return state, sorted(lines("rule"))
+
+
+def ciliumnode_enis(path):
+    """{MAC: ENI record} of `kubectl get ciliumnode <node> -o json`."""
+    try:
+        enis = read_json(path)["status"]["eni"]["enis"]
+    except (KeyError, TypeError) as err:
+        raise Unknown("the CiliumNode has no status.eni.enis") from err
+    return {e.get("mac", "").lower(): e for e in enis.values()}
+
+
+def in_eni(ip, eni):
+    """True when ip is the primary IP, a secondary IP, or in a delegated prefix of the ENI."""
+    if ip and (ip == eni.get("ip") or ip in (eni.get("addresses") or [])):
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in ipaddress.ip_network(p, strict=False) for p in eni.get("prefixes") or [])
+    except ValueError:
+        return False
+
+
+def rule_source(rule):
+    """The address of 'from <address>' in an ip rule line, or "" for 'from all' and no source."""
+    match = re.search(r"\bfrom (\S+)", rule)
+    return "" if not match or match.group(1) == "all" else match.group(1).split("/")[0]
+
+
+def cmd_check_eni_capture(args):
+    """Capture A, taken once an endpoint uses an ENI after eth0. For each eth1 and later link:
+    networkd lists it as unmanaged; no address has the dynamic flag; each IPv4 address is in the
+    CiliumNode ENI record with that MAC, and each IPv6 address is link-local; no route has proto
+    dhcp or ra; the IPv4 routes are the ones that Cilium 1.20 sets for that ENI
+    (pkg/datapath/linux/routing: table 10 + the ENI number, "<gw> dev <link> scope link" and
+    "default via <gw>", <gw> the first address of the ENI subnet), apart from the kernel routes of
+    an address of the record; each rule that looks up that table is from an address of the ENI,
+    and no rule sends an address of the ENI to the table of another ENI. At least one link must
+    carry the Cilium routes and a rule from one of its addresses, or there is nothing to prove
+    (exit 2)."""
+    state, rules = eni_state(read_input(args.capture))
+    if not state:
+        raise Unknown("no eth1 or later interface in the capture")
+    admin = networkd_states(read_input(args.networkd))
+    by_mac = ciliumnode_enis(args.ciliumnode)
+    wrong, proved = [], []
+    for name, link in sorted(state.items()):
+        if admin.get(name) != "unmanaged":
+            wrong.append(f"{name} is {admin.get(name) or 'not listed'} in networkd")
+        wrong += [f"{name} has a dynamic address: {line[:120]}" for line in link["dynamic"]]
+        wrong += [f"{name} has the IPv6 address {a}, which is not link-local" for a in link["inet6"]
+                  if not ipaddress.ip_interface(a).ip.is_link_local]
+        wrong += [f"{name} has a networkd route: {r}" for r in link["routes"] + link["routes6"]
+                  if re.search(r"\bproto (dhcp|ra|16|9)\b", r)]
+        eni = by_mac.get(link["mac"])
+        if eni is None:
+            wrong.append(f"{name} ({link['mac']}) is not an ENI of the CiliumNode")
+            continue
+        wrong += [f"{name} has the address {a}, which is not in the ENI record {eni.get('id')}"
+                  for a in link["inet"] if not in_eni(a.split("/")[0], eni)]
+        cidr = (eni.get("subnet") or {}).get("cidr")
+        if not cidr:
+            raise Unknown(f"the CiliumNode ENI record {eni.get('id')} has no subnet CIDR")
+        gw = str(ipaddress.ip_network(cidr, strict=False).network_address + 1)
+        table = str(10 + int(eni.get("number") or 0))
+        cilium = {f"default via {gw} dev {name} table {table}", f"{gw} dev {name} table {table} scope link"}
+        seen = set()
+        for route in link["routes"]:
+            base = re.sub(r" proto \S+", "", route)
+            src = re.search(r"\bsrc (\S+)", route)
+            if base in cilium:
+                seen.add(base)
+            elif "table local" in route or (
+                    " table " not in route and "proto kernel" in route and src and in_eni(src.group(1), eni)):
+                continue   # the kernel routes of an address that the record has
+            else:
+                wrong.append(f"{name} has a route that Cilium does not set (table {table}, gateway {gw}): {route}")
+        endpoint = [r for r in rules if re.search(rf"\blookup {table}\b", r)]
+        wrong += [f"{name}: the rule '{r}' looks up table {table}, but its source is not an address of {eni.get('id')}"
+                  for r in endpoint if not in_eni(rule_source(r), eni)]
+        for rule in rules:
+            other = re.search(r"\blookup ([0-9]+)\b", rule)
+            if in_eni(rule_source(rule), eni) and other and int(other.group(1)) >= 10 and other.group(1) != table:
+                wrong.append(f"{name}: the rule '{rule}' sends an address of {eni.get('id')} to another ENI table")
+        # Cilium keeps the routes of a table after its last endpoint goes (routing.Delete removes
+        # only the rules), so both routes and no rule is a Cilium state too; it proves nothing.
+        if seen == cilium and endpoint:
+            proved.append(f"{name} unmanaged, table {table} via {gw}, {len(endpoint)} endpoint rule(s)")
+        elif (seen and seen != cilium) or endpoint:
+            wrong.append(f"{name}: table {table} has {len(seen)} of the 2 Cilium routes and {len(endpoint)} rule(s)")
+    require(not wrong, "; ".join(wrong))
+    if not proved:
+        raise Unknown("no endpoint uses an ENI after eth0, so no link has the Cilium per-ENI routes yet")
+    print("Cilium ENIs as Cilium sets them: " + "; ".join(proved))
 
 
 def cmd_check_eni_stable(args):
-    """For each eth1 and later interface: the same MAC, IPv4 addresses, routes (all tables) and
-    the ip rules that point to its route tables, before and after the event; each IPv4 address
-    is an address of the CiliumNode ENI record with that MAC."""
+    """Capture A against capture B (the end of test.sh): for each eth1 and later link, the same
+    MAC, addresses, IPv4 and IPv6 routes (all tables), and rules that look up its tables; each
+    IPv4 address is in the CiliumNode ENI record with that MAC."""
     before, rules_before = eni_state(read_input(args.before))
     after, rules_after = eni_state(read_input(args.after))
     if not after:
         raise Unknown("no eth1 or later interface in the capture after the event")
-    try:
-        enis = read_json(args.ciliumnode)["status"]["eni"]["enis"]
-    except (KeyError, TypeError) as err:
-        raise Unknown("the CiliumNode has no status.eni.enis") from err
-    by_mac = {e.get("mac", "").lower(): e for e in enis.values()}
+    by_mac = ciliumnode_enis(args.ciliumnode)
     wrong = []
     for name in sorted(set(before) | set(after)):
         if name not in before or name not in after:
             wrong.append(f"{name} is in only one capture")
             continue
-        (mac_b, addr_b, route_b, tab_b), (mac_a, addr_a, route_a, tab_a) = before[name], after[name]
-        if mac_b != mac_a:
-            wrong.append(f"{name} MAC changed {mac_b} -> {mac_a}")
-        if addr_b != addr_a:
-            wrong.append(f"{name} addresses changed {addr_b} -> {addr_a}")
-        if route_b != route_a:
-            wrong.append(f"{name} routes changed: {sorted(set(route_b) ^ set(route_a))[:3]}")
-        tables = set(tab_b) | set(tab_a)
+        b, a = before[name], after[name]
+        for key, what in (("mac", "MAC"), ("inet", "IPv4 addresses"), ("inet6", "IPv6 addresses"),
+                          ("routes", "IPv4 routes"), ("routes6", "IPv6 routes")):
+            if b[key] != a[key]:
+                change = f"{b[key]} -> {a[key]}" if key == "mac" else str(sorted(set(b[key]) ^ set(a[key]))[:3])
+                wrong.append(f"{name} {what} changed: {change}")
+        tables = (set(b["tables"]) | set(a["tables"])) - {"local", "main"}
         rb = [r for r in rules_before if any(re.search(rf"\blookup {re.escape(t)}\b", r) for t in tables)]
         ra = [r for r in rules_after if any(re.search(rf"\blookup {re.escape(t)}\b", r) for t in tables)]
         if rb != ra:
             wrong.append(f"{name} rules for tables {sorted(tables)} changed: {sorted(set(rb) ^ set(ra))[:3]}")
-        eni = by_mac.get(mac_a)
+        eni = by_mac.get(a["mac"])
         if eni is None:
-            wrong.append(f"{name} ({mac_a}) is not an ENI of the CiliumNode")
+            wrong.append(f"{name} ({a['mac']}) is not an ENI of the CiliumNode")
             continue
-        known = set(eni.get("addresses", [])) | {eni.get("ip")}
-        stray = [a for a in addr_a if a.split("/")[0] not in known]
+        stray = [x for x in a["inet"] if not in_eni(x.split("/")[0], eni)]
         if stray:
             wrong.append(f"{name} has addresses {stray} that are not in the ENI record {eni.get('id')}")
     require(not wrong, "; ".join(wrong))
     print("Cilium ENIs unchanged by networkd: " + ", ".join(
-        f"{n} ({len(after[n][1])} addresses, {len(after[n][2])} routes, tables {','.join(after[n][3]) or '-'})" for n in sorted(after)))
+        f"{n} ({len(after[n]['inet'])} addresses, {len(after[n]['routes'])} routes, tables {','.join(after[n]['tables']) or '-'})"
+        for n in sorted(after)))
 
 
 def cmd_check_dm_verity(args):

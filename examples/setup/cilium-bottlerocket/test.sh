@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Prove the claims of the sample on the cluster that ./setup.sh made, read-only except for the
-# probe pods it creates and deletes by exact name, and a scratch folder under /run/cb-probe on
-# the sandbox node for the containerd drop-in test.
+# Prove the claims of the sample on the cluster that ./setup.sh made. It is read-only except for
+# the probe pod and the filler pods that it creates and deletes by exact name, and one scratch
+# folder for each containerd drop-in case under /run/cb-probe on the sandbox node.
 #
 #   RUN_ID=<id> ./test.sh     (RUN_ID defaults to the last run of setup.sh)
 #
-# Each line is PASS, FAIL or SKIP!. A check that could not run (SKIP!) counts as a failure, and
-# the script exits non-zero unless every check passed.
+# Each check prints PASS, FAIL or SKIP!. A check that could not run (SKIP!) counts as a failure,
+# and the script exits non-zero unless every check passed.
 # shellcheck source=../../../scripts/lib/require-bash.sh
 . "$(dirname "$0")/../../../scripts/lib/require-bash.sh"
 set -uo pipefail
@@ -19,6 +19,7 @@ require_region
 require_caller_account
 require_run_id
 check_run_record
+lock_run   # never beside setup.sh or clean.sh of the same run
 [[ "$(state_get STAGE_DONE)" == workloads ]] || die E_RUN_STAGE "run $RUN_ID has not finished setup (STAGE_DONE=$(state_get STAGE_DONE)); run RUN_ID=$RUN_ID ./setup.sh"
 require_sample_cluster
 require_kube_context
@@ -26,6 +27,31 @@ OUT="$EVIDENCE_DIR/test"
 private_dirs "$OUT" || die E_RUN_DIR "could not create $OUT"
 SYSTEM_NODE="$(state_need SYSTEM_NODE)" || exit 1
 SANDBOX_NODE="$(state_need SANDBOX_NODE)" || exit 1
+probe="$(probe_name sandbox)"
+fillers=()
+dropin_started=no
+# dropin_cleanup: remove the scratch folder of each drop-in case on the node (through the probe).
+dropin_cleanup() {
+  probe_exec "$probe" rm -rf /host-run-probe/valid /host-run-probe/missing /host-run-probe/malformed >/dev/null \
+    || warn "could not remove the drop-in case folders under /run/cb-probe on $SANDBOX_NODE"
+}
+# On any exit, also an interrupt: the drop-in case folders, then the filler pods and the probe
+# pod, each by exact name. After a normal end, step 7 has already deleted the pods.
+test_cleanup() {
+  local f
+  if [[ "$dropin_started" == yes && " ${CB_PROBES[*]-} " == *" $probe "* ]]; then dropin_cleanup; fi
+  for f in ${fillers[@]+"${fillers[@]}"}; do
+    kc -n "$NAMESPACE" delete pod "$f" --ignore-not-found --wait=false >/dev/null \
+      || warn "could not delete the filler pod $f; delete it with: kubectl -n $NAMESPACE delete pod $f"
+  done
+  probe_cleanup
+}
+trap test_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# The slot count that setup.sh recorded for the run, not the config file (it can change later).
+SANDBOX_SLOTS="$(state_need SANDBOX_SLOTS)" || exit 1
+export SANDBOX_SLOTS
 NS="$NAMESPACE"
 SVC_HOST="cb-server.$NS.svc.cluster.local"
 
@@ -71,18 +97,20 @@ instance_ami() { # instance_ami <node> <want>
   eq "$ami" "$2"
 }
 check "the system node runs the stock Bottlerocket AMI that setup.sh recorded" instance_ami "$SYSTEM_NODE" "$(state_get SYSTEM_AMI_ID)"
-check "the sandbox node runs the built AMI" instance_ami "$SANDBOX_NODE" "$(state_get SANDBOX_AMI_ID)"
+check "the sandbox node runs the sandbox AMI of the run" instance_ami "$SANDBOX_NODE" "$(state_get SANDBOX_AMI_ID)"
 
 step "3. the sandbox node: runtime, SELinux, networkd, containerd, density"
 save "$OUT/node-sandbox.json" kc get node "$SANDBOX_NODE" -o json
 save "$OUT/configz-sandbox.json" kc get --raw "/api/v1/nodes/$SANDBOX_NODE/proxy/configz"
-probe="$(probe_name sandbox)"
 probe_start "$probe" "$SANDBOX_NODE"
 probe_capture "$probe" "$OUT/probe-sandbox"
 P="$OUT/probe-sandbox"
 check "OS image Bottlerocket $BOTTLEROCKET_VERSION ($SANDBOX_VARIANT)" pyc check-os-image sandbox "$OUT/node-sandbox.json"
 check "/sys/kernel/btf/vmlinux is present" pyc check-btf "$P/btf.txt"
-check "the kernel log shows the nitro_enclaves memory reservation" pyc check-mempool --cmdline "$P/cmdline.txt" --kernel-log "$P/kernel.log"
+check "the nitro_enclaves driver reserved its CMA pool (its own kernel log line)" pyc check-mempool --cmdline "$P/cmdline.txt" --kernel-log "$P/kernel.log"
+check "the shim reads the kubelet kubeconfig at /etc/kubernetes/kubelet/kubeconfig, and the file is there" \
+  pyc check-kubeconfig-path --shim-toml "$P/nitro-sandbox.toml" --kubeconfig "$P/kubeconfig.txt"
+check "mkfs.erofs on the host has the zstd compressor" pyc check-mkfs-erofs "$P/mkfs-erofs.txt"
 check "the kubelet runtime endpoint is $CRI_PROXY_ENDPOINT" pyc check-runtime-endpoint "$OUT/configz-sandbox.json"
 check "the merged containerd config has the isolated-sandbox handler and discard_unpacked_layers = false" \
   pyc check-containerd-dump "$P/containerd-dump.toml"
@@ -99,7 +127,9 @@ check "the root file system is the read-only dm-verity device" pyc check-dm-veri
 
 # The drop-in test: containerd config dump of the node's own containerd with a copy of its
 # config.toml whose imports point at a scratch folder holding the valid drop-in, no drop-in,
-# or a malformed drop-in. The scratch folder is /run/cb-probe on the node, removed after.
+# or a malformed drop-in. Each case uses /run/cb-probe/<case> on the node, removed after the case.
+# The case prints the dump (stdout and stderr of containerd), and "CB_CONTAINERD_RC=<exit>" on
+# its own stderr.
 # shellcheck disable=SC2016
 dropin_case() { # dropin_case <valid|missing|malformed>
   probe_exec "$probe" sh -c '
@@ -111,50 +141,92 @@ dropin_case() { # dropin_case <valid|missing|malformed>
       valid) cp "$src" "$s/config.d/" ;;
       malformed) { cat "$src"; echo "[[[ not toml"; } > "$s/config.d/${src##*/}" ;;
     esac
-    chroot /host /usr/bin/containerd --config "/run/cb-probe/$c/config.toml" config dump 2>&1 || true
-    rm -rf "$s"' sh "$1"
+    rc=0; chroot /host /usr/bin/containerd --config "/run/cb-probe/$c/config.toml" config dump 2>&1 || rc=$?
+    rm -rf "$s"; echo "CB_CONTAINERD_RC=$rc" >&2' sh "$1"
 }
+dropin_started=yes
 for c in valid missing malformed; do save "$OUT/containerd-dump-$c.toml" dropin_case "$c"; done
-not_accepted() { local rc=0; pyc check-containerd-dump "$1" >/dev/null 2>&1 || rc=$?; ((rc == 1)); }
+dropin_cleanup   # a case that stopped part way leaves its folder; remove all three again
+# expect_refusal <tag> <case> <zero|nonzero> <text the dump must have, or ""> <error of the node check>:
+# one negative case fails in the expected way only: containerd exits as expected, its output has
+# the expected text, and check-containerd-dump refuses the dump (exit 1) with the expected error.
+expect_refusal() {
+  local tag="$1" f="$OUT/containerd-dump-$2.toml" crc out rc=0
+  crc="$(sed -n 's/^CB_CONTAINERD_RC=//p' "$f.err")"
+  [[ "$crc" =~ ^[0-9]+$ ]] || { printf 'ERROR: %s_UNKNOWN: the %s case did not run (see %s.err)\n' "$tag" "$2" "$f" >&2; return 2; }
+  if { [[ "$3" == zero ]] && ((crc != 0)); } || { [[ "$3" == nonzero ]] && ((crc == 0)); }; then
+    printf 'ERROR: %s: containerd exited %s in the %s case, want %s\n' "$tag" "$crc" "$2" "$3" >&2; return 1
+  fi
+  if [[ -n "$4" ]] && ! grep -qF -- "$4" "$f"; then
+    printf "ERROR: %s: the %s case has no '%s' in the containerd output\n" "$tag" "$2" "$4" >&2; return 1
+  fi
+  out="$(pyc check-containerd-dump "$f" 2>&1)" || rc=$?
+  if ((rc != 1)) || [[ "$out" != *"ERROR: E_CONTAINERD_DUMP: $5"* ]]; then
+    printf "ERROR: %s: check-containerd-dump of the %s case exited %s, want 1 with '%s'\n" "$tag" "$2" "$rc" "$5" >&2; return 1
+  fi
+}
 check "containerd config dump with the valid drop-in: the handler is there" pyc check-containerd-dump "$OUT/containerd-dump-valid.toml"
-check "containerd config dump with no drop-in: the node check refuses it" not_accepted "$OUT/containerd-dump-missing.toml"
-check "containerd config dump with a malformed drop-in: the node check refuses it" not_accepted "$OUT/containerd-dump-malformed.toml"
+check "containerd config dump with no drop-in: containerd loads it, the node check refuses it for the missing handler (E_DROPIN_MISSING)" \
+  expect_refusal E_DROPIN_MISSING missing zero "" "the merged configuration has no isolated-sandbox runtime handler"
+check "containerd config dump with a malformed drop-in: containerd stops on the TOML error, the node check refuses it (E_DROPIN_MALFORMED)" \
+  expect_refusal E_DROPIN_MALFORMED malformed nonzero "failed to unmarshal TOML" "the input is not a containerd version 3 or 4 configuration dump"
 
 # networkd and the Cilium ENIs. Cilium gives pods the secondary addresses of eth0 first, so a
 # second ENI comes only when the node needs more addresses. test.sh starts ordinary filler
-# pods on the sandbox node, by exact name, until the CiliumNode of the node lists two ENIs (at
-# most 16, and never more than SANDBOX_SLOTS allows), checks networkd, and deletes the filler
-# pods by exact name. No second ENI is a failure (E_NETWORKD_ENI), never a skip.
+# pods on the sandbox node, by exact name (at most 16, and never more than SANDBOX_SLOTS
+# allows), until the CiliumNode lists two ENIs and a pod of the node has an address of an ENI
+# after eth0. Cilium has then set the routes and rules of that ENI. Capture A follows at once:
+# networkd, and the links, addresses, routes and rules that check-eni-capture reads. The probe
+# pod and the filler pods stay until capture B in step 7, because Cilium removes the rule of a
+# pod when the pod goes. No pod on an ENI after eth0 is a failure (E_NETWORKD_ENI), never a skip.
+cilium_node() { kc get ciliumnode "$SANDBOX_NODE" -o json; }
 cilium_enis() { # the number of ENIs in the CiliumNode of the sandbox node
   kc get ciliumnode "$SANDBOX_NODE" -o jsonpath='{.status.eni.enis}' \
     | python3 -c 'import json, sys; t = sys.stdin.read().strip(); print(len(json.loads(t)) if t else 0)'
 }
-two_enis() { local n; n="$(cilium_enis)" || return 1; ((n >= 2)); }
+# eni_in_use: 0 when the CiliumNode lists two ENIs or more, and a pod of the node has a secondary
+# address of an ENI with number 1 or more.
+# shortcut: secondary addresses only; the values do not turn on prefix delegation. With prefix
+# delegation, also match the pod IP against status.eni.enis[].prefixes.
+eni_in_use() {
+  local cn ips
+  cn="$(cilium_node)" || return 1
+  ips="$(kc get pods -A --field-selector "spec.nodeName=$SANDBOX_NODE" -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}')" || return 1
+  python3 -c '
+import json, sys
+enis = ((json.load(sys.stdin).get("status") or {}).get("eni") or {}).get("enis") or {}
+ips = set(sys.argv[1].split())
+used = [e for e in enis.values() if (e.get("number") or 0) >= 1 and ips & set(e.get("addresses") or [])]
+sys.exit(0 if len(enis) >= 2 and used else 1)' "$ips" <<<"$cn"
+}
 pods_on_node="$(kc get pods -A --field-selector "spec.nodeName=$SANDBOX_NODE" -o name | wc -l)"
 filler_max=$((SANDBOX_SLOTS - pods_on_node))
 ((filler_max <= 16)) || filler_max=16
-fillers=()
 for ((i = 1; i <= filler_max; i++)); do
-  two_enis && break
+  eni_in_use && break
   f="cb-filler-$i-$RUN_ID"
   pyc render-filler --name "$f" --node "$SANDBOX_NODE" | kc create -f - >/dev/null || break
   fillers+=("$f")
   kc -n "$NS" wait --for=condition=Ready "pod/$f" --timeout=3m >/dev/null || break
 done
-# The operator attaches the ENI after it sees the demand: wait for it.
-two_enis || wait_until "${CB_WAIT_TRIES:-30}" "a second ENI on $SANDBOX_NODE" two_enis || true
+# The operator attaches the ENI after it sees the demand: wait for it and its first pod.
+eni_in_use || wait_until "${CB_WAIT_TRIES:-30}" "a pod on an ENI after eth0 on $SANDBOX_NODE" eni_in_use || true
 printf 'filler pods started: %d (limit %d); ENIs in the CiliumNode of %s: %s\n' \
   "${#fillers[@]}" "$filler_max" "$SANDBOX_NODE" "$(cilium_enis)"
-if two_enis; then
-  probe_capture "$probe" "$P-networkd"
+A="$OUT/eni-a"
+B="$OUT/eni-b"
+if eni_in_use; then
+  probe_capture "$probe" "$A"
+  probe_eni_capture "$probe" "$A/eni.txt"
+  save "$A/ciliumnode.json" cilium_node
   networkd_ok() { pyc check-networkd "$1"; local rc=$?; ((rc == 0)); }   # exit 2 is a failure here
-  check "systemd-networkd leaves each Cilium ENI (eth1 and later) unmanaged" networkd_ok "$P-networkd/networkd.txt"
+  check "systemd-networkd leaves each Cilium ENI (eth1 and later) unmanaged" networkd_ok "$A/networkd.txt"
+  check "capture A: each ENI after eth0 has no DHCP or RA address or route, only the routes and rules of Cilium" \
+    pyc check-eni-capture --capture "$A/eni.txt" --networkd "$A/networkd.txt" --ciliumnode "$A/ciliumnode.json"
 else
-  printf 'ERROR: E_NETWORKD_ENI: no second ENI on %s after %d filler pods\n' "$SANDBOX_NODE" "${#fillers[@]}" >&2
-  assert "a second Cilium ENI on the sandbox node, for the networkd check (E_NETWORKD_ENI)" 1
+  printf 'ERROR: E_NETWORKD_ENI: no pod on an ENI after eth0 on %s after %d filler pods\n' "$SANDBOX_NODE" "${#fillers[@]}" >&2
+  assert "a pod on a second Cilium ENI of the sandbox node, for the networkd and ENI checks (E_NETWORKD_ENI)" 1
 fi
-for f in "${fillers[@]}"; do kc -n "$NS" delete pod "$f" --ignore-not-found --wait=false >/dev/null; done
-probe_stop "$probe"
 
 step "4. the sandbox pod runs in its own guest"
 sandbox_ip="$(kc -n "$NS" get pod cb-sandbox -o jsonpath='{.status.podIP}')"
@@ -222,5 +294,24 @@ check "no NetworkPolicy" none_of networkpolicies.networking.k8s.io
 check "no CiliumNetworkPolicy" none_of ciliumnetworkpolicies.cilium.io
 check "no CiliumClusterwideNetworkPolicy" none_of ciliumclusterwidenetworkpolicies.cilium.io
 check "every resource of every class carries ManagedBy and RunId" pyc audit-tags --after-build
+
+step "7. the sandbox node at the end: the Cilium ENIs since capture A, and the SELinux audit"
+# Capture B, with the probe pod and the filler pods of capture A still on the node. Then the
+# filler pods and the probe pod go, by exact name.
+probe_capture "$probe" "$B"
+probe_eni_capture "$probe" "$B/eni.txt"
+save "$B/ciliumnode.json" cilium_node
+check "capture B: each ENI after eth0 has no DHCP or RA address or route, only the routes and rules of Cilium" \
+  pyc check-eni-capture --capture "$B/eni.txt" --networkd "$B/networkd.txt" --ciliumnode "$B/ciliumnode.json"
+check "the addresses, routes and rules of each ENI after eth0 are the same in capture A and capture B" \
+  pyc check-eni-stable --before "$A/eni.txt" --after "$B/eni.txt" --ciliumnode "$B/ciliumnode.json"
+check "no SELinux denial on the sandbox node from its boot to the end of test.sh (fails closed)" \
+  pyc selinux-audit "$B/kernel.log" "$B/journal.log"
+kept=()
+for f in ${fillers[@]+"${fillers[@]}"}; do
+  kc -n "$NS" delete pod "$f" --ignore-not-found --wait=false >/dev/null || kept+=("$f")
+done
+fillers=(${kept[@]+"${kept[@]}"})   # the exit trap tries again for any that is left
+probe_stop "$probe" || warn "could not delete the probe pod $probe; the exit trap tries again"
 
 demo_summary "the Cilium on Bottlerocket sample (run $RUN_ID)"
