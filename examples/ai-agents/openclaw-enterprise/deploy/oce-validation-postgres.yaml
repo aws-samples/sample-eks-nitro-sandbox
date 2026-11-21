@@ -99,7 +99,7 @@ spec:
             sizeLimit: 2Gi
         - name: bootstrap
           secret:
-            secretName: oce-validation-only-postgres
+            secretName: oce-validation-only-postgres # pragma: allowlist secret -- Kubernetes Secret name
             defaultMode: 0440
             items:
               - key: init.sql
