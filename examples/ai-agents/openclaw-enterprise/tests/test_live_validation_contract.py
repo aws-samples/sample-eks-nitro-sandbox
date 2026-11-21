@@ -17,6 +17,7 @@ NATIVE_HISTORY_EVALUATOR = ROOT / "scripts" / "lib" / "evaluate-native-tool-hist
 DIGEST = "a" * 64
 RUNTIME_IMAGE = f"registry.example/oce-runtime@sha256:{DIGEST}"
 OCE_SOURCE_REVISION = "86c8c12310f691bb21651118ffffd6bfd460e9ff"
+GIT_REVISION = "d" * 40
 
 
 FAKE_COMMAND = textwrap.dedent(
@@ -1218,6 +1219,31 @@ FAKE_COMMAND = textwrap.dedent(
     """
 )
 
+FAKE_GIT = textwrap.dedent(
+    f"""\
+    #!/usr/bin/env python3
+    import os
+    import sys
+
+    args = sys.argv[1:]
+    if args == ["--version"]:
+        print("git version 2.50.0")
+    elif len(args) >= 3 and args[0] == "-C":
+        operation = args[2:]
+        if operation == ["rev-parse", "--show-toplevel"]:
+            print({str(ROOT)!r})
+        elif operation == ["rev-parse", "--verify", "HEAD^{{commit}}"]:
+            print({GIT_REVISION!r})
+        elif operation == ["status", "--porcelain", "--untracked-files=normal"]:
+            if os.environ.get("FAKE_SCENARIO") == "dirty_worktree":
+                print(" M examples/ai-agents/openclaw-enterprise/README.md")
+        else:
+            raise SystemExit(f"unsupported fake git command: {{args}}")
+    else:
+        raise SystemExit(f"unsupported fake git command: {{args}}")
+    """
+)
+
 
 def _make_fake_commands(tmp_path: Path) -> tuple[Path, Path]:
     fake_bin = tmp_path / "bin"
@@ -1228,6 +1254,9 @@ def _make_fake_commands(tmp_path: Path) -> tuple[Path, Path]:
         command = fake_bin / name
         command.write_text(FAKE_COMMAND)
         command.chmod(0o755)
+    git_command = fake_bin / "git"
+    git_command.write_text(FAKE_GIT)
+    git_command.chmod(0o755)
     return fake_bin, state_dir
 
 
@@ -1664,13 +1693,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         f"EVIDENCE\tvalidator-sha256\t{hashlib.sha256(SCRIPT.read_bytes()).hexdigest()}"
         in evidence
     )
-    git_revision = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "--verify", "HEAD^{commit}"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert f"EVIDENCE\tgit-revision\t{git_revision}" in evidence
+    assert f"EVIDENCE\tgit-revision\t{GIT_REVISION}" in evidence
     cluster_arn = "arn:aws:eks:us-west-2:123456789012:cluster/explicit-cluster"
     assert (
         f"EVIDENCE\tcluster-arn-sha256\t"
@@ -2090,6 +2113,14 @@ def test_rejects_service_key_with_multiple_hard_links(tmp_path: Path) -> None:
     assert not (state_dir / "commands.jsonl").exists()
 
 
+def test_rejects_dirty_worktree_before_creating_evidence(tmp_path: Path) -> None:
+    result = _run(tmp_path, "dirty_worktree")
+
+    assert result.returncode != 0
+    assert "Git worktree must be clean before live validation" in result.stderr
+    assert not (tmp_path / "evidence").exists()
+
+
 @pytest.mark.parametrize(
     ("scenario", "expected_error"),
     [
@@ -2253,7 +2284,15 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     source = SCRIPT.read_text()
     evaluator_source = NATIVE_HISTORY_EVALUATOR.read_text(encoding="utf-8")
 
-    assert source.startswith("#!/usr/bin/env bash\nset +x\n")
+    assert source.startswith(
+        "#!/usr/bin/env bash\n"
+        "# shellcheck source=../../../../scripts/lib/require-bash.sh\n"
+        '. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"\n'
+        "set +x\n"
+    )
+    assert source.index("Git worktree must be clean before live validation") < (
+        source.index('mkdir -m 700 -- "$EVIDENCE_OUTPUT_DIR"')
+    )
     assert 'NATIVE_MODEL_ID="openclaw/default"' in source
     assert 'process.env.OPENCLAW_GATEWAY_PASSWORD || ""' in source
     assert 'hostname: "127.0.0.1"' in source

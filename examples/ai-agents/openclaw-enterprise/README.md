@@ -47,8 +47,9 @@ Editable diagrams:
   build account and Region, with a registry rule that covers
   `openclaw-enterprise/*`.
 - AWS CLI v2 with a named profile whose source credentials remain valid or
-  refresh automatically throughout the image build, Bash, Docker, Git, Go,
-  Helm 3, `jq`, `kubectl`, Node.js 22 or later, OpenSSL, Python 3, and
+  refresh automatically throughout the image build, Bash 4 or later, Docker,
+  Git, Go, Helm 3, `jq`, `kubectl`, Node.js 22 or later, OpenSSL, Python 3,
+  GNU `envsubst` (from `gettext`), and
   [Mike Farah `yq`](https://github.com/mikefarah/yq) `v4.54.3`.
   This sample was tested with Helm `v3.22.1`. The pinned OCE revision predates
   [upstream Helm 4 support](https://github.com/openclaw/openclaw-enterprise/pull/6691).
@@ -142,6 +143,7 @@ when your threat model requires those stronger boundaries.
 | [`scripts/manage-image-build-stack.sh`](scripts/manage-image-build-stack.sh) | Create and delete one receipt-bound image build stack. |
 | [`scripts/setup-storage-class.sh`](scripts/setup-storage-class.sh) | Create or verify the blueprint-owned EKS Auto Mode StorageClass. |
 | [`scripts/setup-agentgateway-pod-identity.sh`](scripts/setup-agentgateway-pod-identity.sh) | Create or verify AgentGateway's IAM role, Bedrock policy, and Pod Identity association. |
+| [`scripts/setup-agentgateway.sh`](scripts/setup-agentgateway.sh) | Create or verify AgentGateway and its private key state. |
 | [`scripts/install-oce.sh`](scripts/install-oce.sh) | Install the exact OCE revision in a terminal-managed topology. |
 | [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Add private AgentGateway CA trust and exact private service egress to one OCE tenant namespace. |
 | [`scripts/validate-live.sh`](scripts/validate-live.sh) | Run the destructive two-tenant validation. |
@@ -163,6 +165,10 @@ export EKS_CLUSTER_NAME='<eks-cluster-name>'
 export PRIVATE_STATE_DIR='<private-directory-outside-the-repository>'
 export BUILDER_REPOSITORY_RECEIPT="$PRIVATE_STATE_DIR/builder-repository.json"
 export IMAGE_BUILD_STACK_RECEIPT="$PRIVATE_STATE_DIR/image-build-stack.json"
+export STORAGE_CLASS_RECEIPT="$PRIVATE_STATE_DIR/storage-class-receipt.json"
+export AGENTGATEWAY_POD_IDENTITY_RECEIPT="$PRIVATE_STATE_DIR/agentgateway-pod-identity-receipt.json"
+export AGENTGATEWAY_STATE_DIR="$PRIVATE_STATE_DIR/agentgateway"
+export AGENTGATEWAY_RECEIPT="$AGENTGATEWAY_STATE_DIR/lifecycle-receipt.json"
 export OCE_SOURCE_REVISION='86c8c12310f691bb21651118ffffd6bfd460e9ff'
 export CERT_MANAGER_VERSION='v1.21.3'
 export YQ_VERSION='v4.54.3'
@@ -527,7 +533,8 @@ Create or verify the non-default, encrypted `gp3` StorageClass:
 ```bash
 export RUNTIME_STORAGE_CLASS="$(
   "$SAMPLE_DIR/scripts/setup-storage-class.sh" \
-    --kube-context "$KUBE_CONTEXT"
+    --kube-context "$KUBE_CONTEXT" \
+    --receipt "$STORAGE_CLASS_RECEIPT"
 )"
 test "$RUNTIME_STORAGE_CLASS" = 'openclaw-enterprise-gp3'
 ```
@@ -567,74 +574,47 @@ only with the `openclaw-enterprise-agw/agentgateway` ServiceAccount:
 }
 ```
 
-Create the AgentGateway namespace and ServiceAccount before the Pod Identity
-association:
+Create or verify the AgentGateway namespace, ServiceAccount, IAM role, policy,
+and Pod Identity association. The script owns the namespace and ServiceAccount
+creation and reuses them when their complete contract already matches:
 
 ```bash
-yq ea '
-  select(
-    .kind == "Namespace" or
-    (.kind == "ServiceAccount" and .metadata.name == "agentgateway")
-  )
-' "$SAMPLE_DIR/deploy/agentgateway.yaml" |
-  kubectl --context "$KUBE_CONTEXT" apply --filename -
-
 "$SAMPLE_DIR/scripts/setup-agentgateway-pod-identity.sh" \
   --aws-region "$AWS_REGION" \
   --aws-account-id "$AWS_ACCOUNT_ID" \
   --eks-cluster-name "$EKS_CLUSTER_NAME" \
-  --kube-context "$KUBE_CONTEXT"
+  --kube-context "$KUBE_CONTEXT" \
+  --receipt "$AGENTGATEWAY_POD_IDENTITY_RECEIPT"
 ```
 
-Record the returned association ID for cleanup:
+Read the association ID from the lifecycle receipt for cleanup:
 
 ```bash
-export POD_IDENTITY_ASSOCIATION_ID='<association-id-from-script-output>'
+export POD_IDENTITY_ASSOCIATION_ID="$(
+  jq -er '.resources.podIdentityAssociation.associationId' \
+    "$AGENTGATEWAY_POD_IDENTITY_RECEIPT"
+)"
 ```
 
-Create distinct tenant keys and the AgentGateway session key. Write the tenant
-keys without a trailing newline so the stored hashes match the submitted keys:
+Create or verify AgentGateway and its private key state:
 
 ```bash
-umask 077
-printf '%s' "$(openssl rand -hex 32)" \
-  >"$PRIVATE_STATE_DIR/tenant-a-agentgateway.key"
-printf '%s' "$(openssl rand -hex 32)" \
-  >"$PRIVATE_STATE_DIR/tenant-b-agentgateway.key"
-openssl dgst -sha256 -r "$PRIVATE_STATE_DIR/tenant-a-agentgateway.key" |
-  awk '{print $1}' >"$PRIVATE_STATE_DIR/tenant-a-sha256"
-openssl dgst -sha256 -r "$PRIVATE_STATE_DIR/tenant-b-agentgateway.key" |
-  awk '{print $1}' >"$PRIVATE_STATE_DIR/tenant-b-sha256"
-printf '%s' "$(openssl rand -hex 32)" \
-  >"$PRIVATE_STATE_DIR/agentgateway-session.key"
-
-kubectl --context "$KUBE_CONTEXT" \
-  --namespace openclaw-enterprise-agw create secret generic agw-client-key \
-  --from-file=tenant-a-sha256="$PRIVATE_STATE_DIR/tenant-a-sha256" \
-  --from-file=tenant-b-sha256="$PRIVATE_STATE_DIR/tenant-b-sha256" \
-  --dry-run=client --output=yaml |
-  kubectl label --local --filename - \
-    app.kubernetes.io/managed-by=openclaw-enterprise-blueprint \
-    app.kubernetes.io/part-of=openclaw-enterprise-blueprint \
-    --dry-run=client --output=yaml |
-  kubectl --context "$KUBE_CONTEXT" apply --filename -
-
-kubectl --context "$KUBE_CONTEXT" \
-  --namespace openclaw-enterprise-agw create secret generic agw-session-key \
-  --from-file=key="$PRIVATE_STATE_DIR/agentgateway-session.key" \
-  --dry-run=client --output=yaml |
-  kubectl label --local --filename - \
-    app.kubernetes.io/managed-by=openclaw-enterprise-blueprint \
-    app.kubernetes.io/part-of=openclaw-enterprise-blueprint \
-    --dry-run=client --output=yaml |
-  kubectl --context "$KUBE_CONTEXT" apply --filename -
-
-kubectl --context "$KUBE_CONTEXT" apply \
-  --filename "$SAMPLE_DIR/deploy/agentgateway.yaml"
-kubectl --context "$KUBE_CONTEXT" \
-  --namespace openclaw-enterprise-agw rollout status \
-  deployment/agentgateway
+"$SAMPLE_DIR/scripts/setup-agentgateway.sh" \
+  --kubeconfig "$KUBECONFIG" \
+  --kube-context "$KUBE_CONTEXT" \
+  --state-dir "$AGENTGATEWAY_STATE_DIR" \
+  --receipt "$AGENTGATEWAY_RECEIPT"
 ```
+
+Ordinary reruns are idempotent: the script preserves the key bytes and verifies
+that existing resources still match. To rotate all AgentGateway keys, rerun the
+same command with `--rotate-keys`. If setup or rotation is forcibly
+interrupted, the script preserves its private journal and setup lock rather than
+guessing whether another writer is active. Confirm that the PID recorded in
+`.setup-agentgateway.lock.active/pid` is no longer running, inspect the journal,
+then remove only `.setup-agentgateway.lock.active`. Rerun the same command with
+the same kubeconfig, context, state directory, and receipt. Do not edit or
+delete the journal.
 
 ```text
 TODO: output from the fresh run
@@ -976,7 +956,7 @@ Set the tenant-specific key path and create the namespace-owned model Secret:
 
 ```bash
 export OCC_NAMESPACE="$NAMESPACE_ID"
-export TENANT_MODEL_KEY_FILE="$PRIVATE_STATE_DIR/$TENANT_NAME-agentgateway.key"
+export TENANT_MODEL_KEY_FILE="$AGENTGATEWAY_STATE_DIR/$TENANT_NAME-agentgateway.key"
 export TENANT_WORK_DIR="$PRIVATE_STATE_DIR/$TENANT_NAME"
 install -d -m 700 "$TENANT_WORK_DIR"
 
@@ -1296,6 +1276,9 @@ python -m pytest \
 
 Then run the destructive two-tenant check:
 
+Commit the sample changes first. The validator refuses a dirty Git worktree so
+the evidence identifies the exact revision tested.
+
 Set `EVIDENCE_DIR` to a path that does not exist. Every existing parent must
 be owned by root or the current user and must not be group- or other-writable,
 except for root-owned sticky directories such as `/tmp`. The validator creates
@@ -1330,6 +1313,10 @@ export EVIDENCE_DIR='<new-private-evidence-directory>'
   --evidence-dir "$EVIDENCE_DIR" \
   --confirm-pod-replacement
 ```
+
+To sign the evidence with an asymmetric AWS KMS key, add
+`--kms-signing-key-id <key-id-or-arn>`. The validator signs and verifies the
+bundle before publishing it.
 
 The validator starts and stops its own loopback API port-forward. It writes
 test markers, replaces tenant A's runtime pod, and removes temporary test
@@ -1399,7 +1386,7 @@ TODO: output from the fresh run
 ## Clean up
 
 Stop every local OCE API port-forward, then run cleanup with the original
-state, receipt, context, tenant namespaces, and Pod Identity values:
+state, receipts, context, tenant namespaces, and Pod Identity values:
 
 ```bash
 "$SAMPLE_DIR/scripts/cleanup.sh" \
@@ -1411,6 +1398,8 @@ state, receipt, context, tenant namespaces, and Pod Identity values:
   --release oce \
   --tenant-namespace '<tenant-a-kubernetes-namespace>' \
   --tenant-namespace '<tenant-b-kubernetes-namespace>' \
+  --storage-class-receipt "$STORAGE_CLASS_RECEIPT" \
+  --agentgateway-pod-identity-receipt "$AGENTGATEWAY_POD_IDENTITY_RECEIPT" \
   --aws-region "$AWS_REGION" \
   --aws-account-id "$AWS_ACCOUNT_ID" \
   --eks-cluster-name "$EKS_CLUSTER_NAME" \
@@ -1439,15 +1428,20 @@ Kubernetes-generated object.
 It preserves any external database. It deletes the blueprint StorageClass only
 when no PVC still references it. Cleanup exits non-zero when a blueprint-owned
 resource must be preserved for safety. It also removes its admission freeze on
-success or failure and reports an error if guarded removal cannot be verified.
-A forced process termination can leave
-`openclaw-enterprise-cleanup-freeze-*` admission resources blocking writes to
-the target namespace; inspect their ownership metadata and remove them before
-retrying cleanup. The stack manager deletes the image build workflow and its
-four ECR repositories, including the sample images, then marks its private
-receipt as deleted. The builder repository manager separately deletes only the
-exact private mirror recorded in its receipt after it verifies the AWS account,
-Region, repository ARN, and random ownership tag.
+success or handled failure and reports an error if guarded removal cannot be
+verified. If the process is forcibly terminated while the freeze is active,
+rerun the same cleanup command with the same private state; cleanup verifies
+and removes its recorded admission resources before continuing. The stack
+manager deletes the image build workflow and its four ECR repositories,
+including the sample images, then marks its private receipt as deleted. The
+builder repository manager separately deletes only the exact private mirror
+recorded in its receipt after it verifies the AWS account, Region, repository
+ARN, and random ownership tag.
+
+The cluster cleanup does not delete the local AgentGateway state directory or
+its receipt. Securely archive them if you need an audit record; otherwise
+delete them after cleanup. Never reuse the generated keys for another
+deployment.
 
 ```text
 TODO: output from the fresh run

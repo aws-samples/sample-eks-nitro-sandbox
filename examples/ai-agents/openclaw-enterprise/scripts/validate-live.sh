@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh"
 set +x
 set -Eeuo pipefail
 
@@ -749,6 +751,15 @@ TENANT_B_CREDENTIAL="$(read_credential "$TENANT_B_CREDENTIAL_FILE")"
   die "tenant credentials must be distinct"
 
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(git -C "$(dirname "$SCRIPT_PATH")" rev-parse --show-toplevel)" ||
+  die "validator must run from a Git checkout"
+GIT_REVISION="$(git -C "$REPO_ROOT" rev-parse --verify 'HEAD^{commit}')" ||
+  die "could not resolve an exact Git revision"
+[[ "$GIT_REVISION" =~ ^[0-9a-f]{40}$ ]] || die "could not resolve an exact Git revision"
+[[ -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]] ||
+  die "Git worktree must be clean before live validation"
+GIT_WORKTREE_STATE="clean"
+VALIDATOR_SHA256="$(sha256_file "$SCRIPT_PATH")"
 EVIDENCE_REQUESTED_DIR="$(
   node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' "$EVIDENCE_DIR"
 )"
@@ -795,15 +806,6 @@ NATIVE_HISTORY_EVALUATOR_B64="$(
 [[ -n "$NATIVE_HISTORY_EVALUATOR_B64" ]] ||
   die "native tool-history evaluator encoding is empty"
 NATIVE_HISTORY_EVALUATOR_SHA256="$(sha256_base64 "$NATIVE_HISTORY_EVALUATOR_B64")"
-REPO_ROOT="$(git -C "$(dirname "$SCRIPT_PATH")" rev-parse --show-toplevel)"
-GIT_REVISION="$(git -C "$REPO_ROOT" rev-parse --verify 'HEAD^{commit}')"
-[[ "$GIT_REVISION" =~ ^[0-9a-f]{40}$ ]] || die "could not resolve an exact Git revision"
-VALIDATOR_SHA256="$(sha256_file "$SCRIPT_PATH")"
-if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]]; then
-  GIT_WORKTREE_STATE="dirty"
-else
-  GIT_WORKTREE_STATE="clean"
-fi
 VALIDATION_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 AWS_VERSION="$(aws --version 2>&1)"
 KUBECTL_VERSION="$(kube version --client -o json | jq -er '

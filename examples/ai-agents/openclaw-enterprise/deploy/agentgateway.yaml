@@ -114,7 +114,6 @@ data:
             aws: {}
           params:
             model: amazon.nova-lite-v1:0
-            awsRegion: us-west-2
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -161,9 +160,17 @@ spec:
             - /config/config.yaml
           env:
             - name: AWS_REGION
-              value: us-west-2
+              valueFrom:
+                configMapKeyRef:
+                  name: agentgateway-aws-region
+                  key: AWS_REGION
+                  optional: false
             - name: AWS_DEFAULT_REGION
-              value: us-west-2
+              valueFrom:
+                configMapKeyRef:
+                  name: agentgateway-aws-region
+                  key: AWS_REGION
+                  optional: false
             - name: AGW_TENANT_A_KEY_SHA256
               valueFrom:
                 secretKeyRef:

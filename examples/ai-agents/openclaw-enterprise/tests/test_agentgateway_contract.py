@@ -13,10 +13,12 @@ SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = SAMPLE / "deploy" / "agentgateway.yaml"
 IAM = SAMPLE / "iam"
 README = SAMPLE / "README.md"
+SETUP = SAMPLE / "scripts" / "setup-agentgateway.sh"
 NAMESPACE = "openclaw-enterprise-agw"
 REGION = "us-west-2"
 MODEL = "amazon.nova-lite-v1:0"
 MODEL_ALIAS = "nova-lite"
+REGION_CONFIG_MAP = "agentgateway-aws-region"
 
 
 def _documents() -> list[dict[str, Any]]:
@@ -148,59 +150,68 @@ def test_client_key_comes_only_from_a_kubernetes_secret():
     assert not any(document["kind"] == "Secret" for document in _documents())
 
 
-def test_readme_labels_agentgateway_secrets_before_apply():
-    readme = README.read_text(encoding="utf-8")
-    unlabelled = []
+def test_setup_labels_agentgateway_secrets_before_any_server_write():
+    setup = SETUP.read_text(encoding="utf-8")
+    build_start = setup.index('create secret generic agw-client-key')
+    plan_end = setup.index('EOF', setup.index('cat >"${destination}/plan"', build_start))
+    build = setup[build_start:plan_end]
 
-    for secret_name in ("agw-client-key", "agw-session-key"):
-        command = re.search(
-            rf"^kubectl\b(?:(?!\n\n).)*?create secret generic {secret_name}\b"
-            r"(?:(?!\n\n).)*",
-            readme,
-            re.MULTILINE | re.DOTALL,
-        )
-        assert command, f"README does not create {secret_name}"
-        pipeline = command.group(0)
-        label = "app.kubernetes.io/managed-by=openclaw-enterprise-blueprint"
-        apply = re.search(r"^ *kubectl\b[^\n]*\bapply\b", pipeline, re.MULTILINE)
-        assert apply, f"README does not apply {secret_name}"
-        before_apply = pipeline[: apply.start()]
-        if not (
-            re.search(
-                r"^ *kubectl\b(?:(?!\n\n).)*?\blabel\b(?:(?!\n\n).)*?--local\b",
-                before_apply,
-                re.MULTILINE | re.DOTALL,
-            )
-            and label in before_apply
-        ):
-            unlabelled.append(secret_name)
-
-    assert not unlabelled, f"README applies secrets before labelling them: {unlabelled}"
-
-
-def test_readme_writes_agentgateway_keys_without_trailing_newlines():
-    readme = README.read_text(encoding="utf-8")
-
-    for key_file in (
-        "tenant-a-agentgateway.key",
-        "tenant-b-agentgateway.key",
-        "agentgateway-session.key",
+    for secret_name, output in (
+        ("agw-client-key", "secret-client.json"),
+        ("agw-session-key", "secret-session.json"),
     ):
-        assert re.search(
-            rf'printf \'%s\' "\$\(openssl rand -hex 32\)"\s*\\?\s*'
-            rf'>"\$PRIVATE_STATE_DIR/{re.escape(key_file)}"',
-            readme,
-        )
+        assert f"create secret generic {secret_name}" in build
+        assert "--dry-run=client --output=json" in build
+        assert f'>"${{destination}}/{output}"' in build
+
+    assert "($owner_label): $owner" in build
+    assert "($part_label): $owner" in build
+    assert "${KUBECTL[@]} replace" not in build
+    assert "${KUBECTL[@]} create --filename" not in build
 
 
-def test_bedrock_model_uses_direct_regional_foundation_model_inference():
+def test_setup_writes_agentgateway_keys_without_trailing_newlines():
+    setup = SETUP.read_text(encoding="utf-8")
+    generator = setup[
+        setup.index("generate_ed25519_seed() {"):
+        setup.index("sha256_value() {")
+    ]
+
+    assert "printf '%s' \"${seed}\" >\"${output_file}\"" in generator
+    assert "openssl genpkey -algorithm ED25519" in generator
+    assert "chmod 600 \"${output_file}\"" in generator
+
+
+def test_bedrock_model_and_sdk_share_the_runtime_region_source():
     config = yaml.safe_load(_one("ConfigMap")["data"]["config.yaml"])
+    _, container = _container()
     model = config["llm"]["models"][0]
 
     assert model["provider"] == "bedrock"
     assert model["auth"] == {"aws": {}}
     assert model["name"] == MODEL_ALIAS
-    assert model["params"] == {"model": MODEL, "awsRegion": REGION}
+    assert model["params"] == {"model": MODEL}
+
+    env = {item["name"]: item for item in container["env"]}
+    expected_region_source = {
+        "configMapKeyRef": {
+            "name": REGION_CONFIG_MAP,
+            "key": "AWS_REGION",
+            "optional": False,
+        }
+    }
+    assert env["AWS_REGION"] == {
+        "name": "AWS_REGION",
+        "valueFrom": expected_region_source,
+    }
+    assert env["AWS_DEFAULT_REGION"] == {
+        "name": "AWS_DEFAULT_REGION",
+        "valueFrom": expected_region_source,
+    }
+
+    manifest = MANIFEST.read_text(encoding="utf-8")
+    assert "us-west-2" not in manifest
+    assert "${AWS_REGION}" not in manifest
 
 
 def test_deployment_uses_an_immutable_image_and_restricted_container():
