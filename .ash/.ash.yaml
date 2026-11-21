@@ -2306,9 +2306,15 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/README.md'
-      line_start: 150
-      line_end: 150
+      line_start: 160
+      line_end: 160
       reason: 'Public pinned upstream OCE Git commit, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/manage-image-build-stack.sh'
+      line_start: 7
+      line_end: 7
+      reason: 'Public pinned upstream OCE Git commit used by the image-build lifecycle, not a credential'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/scripts/install-oce.sh'
@@ -2334,11 +2340,17 @@ global_settings:
       line_end: 13
       reason: 'Public pinned upstream OCE Git commit used to verify live evidence, not a credential'
       expiration: '2027-12-31'
-    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+    - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_build_contract.py'
-      line_start: 189
-      line_end: 189
-      reason: 'Public pinned upstream OCE Git commit used as a test assertion, not a credential'
+      line_start: 739
+      line_end: 739
+      reason: 'Synthetic STS SecretAccessKey field and value used to test credential parsing; no real credential is present'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_image_build_stack_contract.py'
+      line_start: 25
+      line_end: 25
+      reason: 'Public pinned upstream OCE Git commit used as an image-build contract fixture, not a credential'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_cleanup_contract.py'
@@ -2378,15 +2390,21 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 18
-      line_end: 18
+      line_start: 20
+      line_end: 20
       reason: 'Public pinned upstream OCE Git commit used as a live-validation contract fixture, not a credential'
       expiration: '2027-12-31'
     - rule_id: SECRET-SECRET-KEYWORD
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 235
-      line_end: 235
+      line_start: 237
+      line_end: 237
       reason: 'Synthetic Kubernetes Secret volume used to test fail-closed credential-source rejection; it contains no secret value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
+      line_start: 1623
+      line_end: 1623
+      reason: 'Assertion for the synthetic block-device name nvme0n1; no encoded value or secret is present'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_tenant_isolation_contract.py'
