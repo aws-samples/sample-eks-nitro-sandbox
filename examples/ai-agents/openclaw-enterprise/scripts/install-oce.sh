@@ -71,6 +71,14 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing prerequisite: $1."
 }
 
+require_helm_3() {
+  local LC_ALL=C helm_version
+  helm_version=$(helm version --short 2>/dev/null) ||
+    die "could not determine the Helm version."
+  [[ "$helm_version" =~ ^v?3([.+-]|$) ]] ||
+    die "pinned OCE revision requires Helm 3; found $helm_version."
+}
+
 require_input_validator() {
   [[ -f "$INPUT_VALIDATOR" && ! -L "$INPUT_VALIDATOR" && -r "$INPUT_VALIDATOR" ]] ||
     die "missing input validator: $INPUT_VALIDATOR."
@@ -358,6 +366,7 @@ fi
 for prerequisite in aws kubectl helm git go openssl base64 python3 install mktemp sed grep tr stat; do
   require_command "$prerequisite"
 done
+require_helm_3
 
 [[ -d "$oce_source" && ! -L "$oce_source" ]] ||
   die "--oce-source must be a source directory, not a symlink."

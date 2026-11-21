@@ -90,6 +90,8 @@ def test_static_install_contract_is_pinned_and_closed() -> None:
     assert "vcs.revision=" in text
     assert "vcs.modified=false" in text
     assert "wrong AWS account" in text
+    assert "require_helm_3" in text
+    assert "pinned OCE revision requires Helm 3" in text
     assert "kube context endpoint does not match EKS cluster" in text
     assert "refusing to adopt existing" in text
     assert 'VALIDATION_CLUSTER_TAG_KEY="Environment"' in text
@@ -372,6 +374,7 @@ esac
         """#!/usr/bin/env bash
 printf 'helm %s\n' "$*" >>"$TEST_LOG"
 case "$1" in
+  version) printf '%s\n' "${TEST_HELM_VERSION:-v3.22.1+gtest}" ;;
   list) : ;;
   template) printf '%s\n' 'apiVersion: v1' 'kind: List' 'items: []' ;;
   *) exit 2 ;;
@@ -440,6 +443,18 @@ def test_wrong_source_pin_fails_closed(tmp_path: Path) -> None:
     assert "unpinned OCE source" in result.stderr
 
 
+def test_helm_4_fails_before_aws_or_cluster_access(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_HELM_VERSION"] = "v4.3.0+gtest"
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "pinned OCE revision requires Helm 3; found v4.3.0+gtest" in result.stderr
+    calls = (tmp_path / "calls.log").read_text()
+    assert calls.splitlines() == ["helm version --short"]
+    assert not (tmp_path / "state").exists()
+
+
 def test_wrong_aws_account_fails_closed(tmp_path: Path) -> None:
     env, source, kubeconfig, occ = _fake_environment(tmp_path)
     env["TEST_ACCOUNT"] = "999999999999"
@@ -491,7 +506,9 @@ def test_external_database_url_failures_are_safe(
     assert result.returncode != 0
     assert expected_error in result.stderr
     assert "app:secret" not in result.stderr
-    assert not (tmp_path / "calls.log").exists()
+    assert (tmp_path / "calls.log").read_text().splitlines() == [
+        "helm version --short"
+    ]
 
 
 def test_external_database_uses_verified_tls_and_mounted_ca(tmp_path: Path) -> None:

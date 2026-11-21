@@ -48,8 +48,10 @@ Editable diagrams:
   `openclaw-enterprise/*`.
 - AWS CLI v2 with a named profile whose source credentials remain valid or
   refresh automatically throughout the image build, Bash, Docker, Git, Go,
-  Helm, `jq`, `kubectl`, Node.js 22 or later, OpenSSL, Python 3, and
+  Helm 3, `jq`, `kubectl`, Node.js 22 or later, OpenSSL, Python 3, and
   [Mike Farah `yq`](https://github.com/mikefarah/yq) `v4.54.3`.
+  This sample was tested with Helm `v3.22.1`. The pinned OCE revision predates
+  [upstream Helm 4 support](https://github.com/openclaw/openclaw-enterprise/pull/6691).
 - Kubernetes permission to get, create, and delete
   `admissionregistration.k8s.io/v1` admission policies and bindings; create
   server-side dry-run ConfigMaps in each cleanup namespace; create a
@@ -120,6 +122,7 @@ when your threat model requires those stronger boundaries.
 | Component | Version or constraint |
 |---|---|
 | OpenClaw Enterprise | Chart `0.1.0` at commit `86c8c12310f691bb21651118ffffd6bfd460e9ff` |
+| Helm | `v3.22.1`; the installer rejects Helm 4 for the pinned OCE revision |
 | AgentGateway | `v1.7.0`, digest-pinned in `deploy/agentgateway.yaml` |
 | Amazon Bedrock model | `amazon.nova-lite-v1:0` in `us-west-2` |
 | Adapter, controller, ownership helper, runtime | Digest-qualified outputs from one successful CodeBuild run |
