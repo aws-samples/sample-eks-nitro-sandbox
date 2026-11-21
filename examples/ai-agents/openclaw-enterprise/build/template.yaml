@@ -1,0 +1,476 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Build the OpenClaw Enterprise sample images from source in CodeBuild.
+
+Parameters:
+  ValidationRunId:
+    Type: String
+    AllowedPattern: ^[a-f0-9]{24}$
+    ConstraintDescription: Use a 24-character lowercase hexadecimal run identifier.
+    Description: Unique identity for this validation run and its build resources.
+  SampleGitRevision:
+    Type: String
+    AllowedPattern: ^[0-9a-f]{40}$
+    ConstraintDescription: Use the full 40-character lowercase Git commit SHA.
+    Description: Exact sample commit to build the admission adapter from.
+  OceGitRevision:
+    Type: String
+    Default: 86c8c12310f691bb21651118ffffd6bfd460e9ff
+    AllowedPattern: ^[0-9a-f]{40}$
+    ConstraintDescription: Use the full 40-character lowercase Git commit SHA.
+    Description: Exact OpenClaw Enterprise commit for controller and runtime images.
+  ControllerRuntimeBaseImageDigest:
+    Type: String
+    Default: sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a
+    AllowedValues:
+      - sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a
+    AllowedPattern: ^sha256:[0-9a-f]{64}$
+    ConstraintDescription: Use an exact lowercase sha256 image digest.
+    Description: Digest for the allowlisted distroless Node 24 Debian 13 controller base.
+  BuilderImageRepositoryName:
+    Type: String
+    AllowedPattern: ^[a-z0-9]+(?:[._/-][a-z0-9]+)*$
+    ConstraintDescription: Use an ECR repository name in this account and Region.
+    Description: ECR repository containing a reviewed copy of the CodeBuild builder image.
+  BuilderImageDigest:
+    Type: String
+    AllowedValues:
+      - sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660
+    AllowedPattern: ^sha256:[0-9a-f]{64}$
+    ConstraintDescription: Use the reviewed CodeBuild standard 5.0 image digest.
+    Description: Digest of the reviewed privileged builder image in BuilderImageRepositoryName.
+  TrustedBuildInvokerArn:
+    Type: String
+    AllowedPattern: ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:(role|user)/[A-Za-z0-9+=,.@_/-]+$
+    ConstraintDescription: Use the ARN of one trusted same-account IAM role or user.
+    Description: Principal allowed to assume the fixed build invocation role.
+  RepositoryPrefix:
+    Type: String
+    Default: openclaw-enterprise
+    AllowedPattern: ^[a-z0-9]+(?:[._/-][a-z0-9]+)*$
+    Description: Prefix for the four ECR repository names.
+  TargetPlatform:
+    Type: String
+    Default: linux/amd64
+    AllowedValues:
+      - linux/amd64
+      - linux/arm64
+
+Resources:
+  ImageEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts the OpenClaw Enterprise sample ECR repositories.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  BuildEncryptionKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts CodeBuild data and build workflow CloudWatch Logs.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableAccountPermissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: "*"
+          - Sid: AllowCloudWatchLogsEncryption
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.${AWS::URLSuffix}
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey
+              - kms:GenerateDataKeyWithoutPlaintext
+              - kms:ReEncryptFrom
+              - kms:ReEncryptTo
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/vendedlogs/states/openclaw-enterprise-image-build-${ValidationRunId}
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  ImageBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/codebuild/openclaw-enterprise-images-${ValidationRunId}
+      KmsKeyId: !GetAtt BuildEncryptionKey.Arn
+      RetentionInDays: 365
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  ImageBuildStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/vendedlogs/states/openclaw-enterprise-image-build-${ValidationRunId}
+      KmsKeyId: !GetAtt BuildEncryptionKey.Arn
+      RetentionInDays: 365
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  AdapterRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${RepositoryPrefix}/adapter
+      EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: !GetAtt ImageEncryptionKey.Arn
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  ControllerRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${RepositoryPrefix}/controller
+      EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: !GetAtt ImageEncryptionKey.Arn
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  OwnershipHelperRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${RepositoryPrefix}/ownership-helper
+      EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: !GetAtt ImageEncryptionKey.Arn
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  RuntimeRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${RepositoryPrefix}/runtime
+      EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: !GetAtt ImageEncryptionKey.Arn
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  ImageBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BuildAndPushSampleImages
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteBuildLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/openclaw-enterprise-images-${ValidationRunId}:*
+              - Sid: GetEcrAuthorizationToken
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: PullPinnedBuilderImage
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${BuilderImageRepositoryName}
+              - Sid: VerifyEnhancedImageScans
+                Effect: Allow
+                Action:
+                  - ecr:GetRegistryScanningConfiguration
+                  - inspector2:BatchGetAccountStatus
+                  - inspector2:ListCoverage
+                  - inspector2:ListFindings
+                Resource: "*"
+              - Sid: PushAndVerifyImages
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeImages
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource:
+                  - !GetAtt AdapterRepository.Arn
+                  - !GetAtt ControllerRepository.Arn
+                  - !GetAtt OwnershipHelperRepository.Arn
+                  - !GetAtt RuntimeRepository.Arn
+
+  ImageBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub openclaw-enterprise-images-${ValidationRunId}
+      Description: Builds the sample adapter, ownership helper, and pinned OCE images.
+      ServiceRole: !GetAtt ImageBuildRole.Arn
+      QueuedTimeoutInMinutes: 60
+      TimeoutInMinutes: 120
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+            exported-variables:
+              - ADAPTER_IMAGE
+              - CONTROLLER_IMAGE
+              - OWNERSHIP_INIT_IMAGE
+              - RUNTIME_IMAGE
+              - SAMPLE_SOURCE_REVISION
+              - OCE_SOURCE_REVISION
+          phases:
+            build:
+              commands:
+                - set -euo pipefail
+                - export AWS_ACCOUNT_ID='${AWS::AccountId}'; readonly AWS_ACCOUNT_ID
+                - export AWS_DEFAULT_REGION='${AWS::Region}'; readonly AWS_DEFAULT_REGION
+                - export SAMPLE_REPOSITORY_URL='https://github.com/aws-samples/sample-eks-nitro-sandbox.git'; readonly SAMPLE_REPOSITORY_URL
+                - export SAMPLE_GIT_REVISION='${SampleGitRevision}'; readonly SAMPLE_GIT_REVISION
+                - export OCE_GIT_REVISION='${OceGitRevision}'; readonly OCE_GIT_REVISION
+                - export CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST='${ControllerRuntimeBaseImageDigest}'; readonly CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST
+                - export ADAPTER_REPOSITORY='${AdapterRepository}'; readonly ADAPTER_REPOSITORY
+                - export CONTROLLER_REPOSITORY='${ControllerRepository}'; readonly CONTROLLER_REPOSITORY
+                - export OWNERSHIP_HELPER_REPOSITORY='${OwnershipHelperRepository}'; readonly OWNERSHIP_HELPER_REPOSITORY
+                - export RUNTIME_REPOSITORY='${RuntimeRepository}'; readonly RUNTIME_REPOSITORY
+                - export TARGET_PLATFORM='${TargetPlatform}'; readonly TARGET_PLATFORM
+                - export SAMPLE_SOURCE_DIR="$CODEBUILD_SRC_DIR/sample-source"; readonly SAMPLE_SOURCE_DIR
+                - git init "$SAMPLE_SOURCE_DIR"
+                - git -C "$SAMPLE_SOURCE_DIR" remote add origin "$SAMPLE_REPOSITORY_URL"
+                - test "$(git -C "$SAMPLE_SOURCE_DIR" remote get-url origin)" = "$SAMPLE_REPOSITORY_URL"
+                - git -C "$SAMPLE_SOURCE_DIR" fetch --depth 1 origin "$SAMPLE_GIT_REVISION"
+                - test "$(git -C "$SAMPLE_SOURCE_DIR" rev-parse FETCH_HEAD)" = "$SAMPLE_GIT_REVISION"
+                - git -C "$SAMPLE_SOURCE_DIR" checkout --detach "$SAMPLE_GIT_REVISION"
+                - /usr/local/bin/dockerd-entrypoint.sh true
+                - docker info --format 'daemon {{.ServerVersion}}, storage driver {{.Driver}}'
+                - export BUILD_OUTPUT_ENV="$CODEBUILD_SRC_DIR/image-build.env"; readonly BUILD_OUTPUT_ENV
+                - "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/build-images.sh"
+                - source "$BUILD_OUTPUT_ENV"
+                - cat "$CODEBUILD_SRC_DIR/image-digests.json"
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_LARGE
+        Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${BuilderImageRepositoryName}@${BuilderImageDigest}
+        ImagePullCredentialsType: SERVICE_ROLE
+        PrivilegedMode: true
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Sub /aws/codebuild/openclaw-enterprise-images-${ValidationRunId}
+          StreamName: images
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  ImageBuildWorkflowRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StartOnlyTheFixedImageBuild
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: RunFixedBuild
+                Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                  - codebuild:StopBuild
+                Resource: !GetAtt ImageBuildProject.Arn
+              - Sid: ObserveSynchronousBuild
+                Effect: Allow
+                Action:
+                  - events:DescribeRule
+                  - events:PutRule
+                  - events:PutTargets
+                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/StepFunctionsGetEventForCodeBuildStartBuildRule
+              # CloudWatch Logs delivery APIs do not support resource-level permissions.
+              - Sid: DeliverWorkflowLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:CreateLogStream
+                  - logs:DeleteLogDelivery
+                  - logs:DescribeLogGroups
+                  - logs:DescribeResourcePolicies
+                  - logs:GetLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutLogEvents
+                  - logs:PutResourcePolicy
+                  - logs:UpdateLogDelivery
+                Resource: "*"
+              # X-Ray ingestion and sampling APIs do not support resource-level permissions.
+              - Sid: PublishWorkflowTraces
+                Effect: Allow
+                Action:
+                  - xray:GetSamplingRules
+                  - xray:GetSamplingTargets
+                  - xray:PutTelemetryRecords
+                  - xray:PutTraceSegments
+                Resource: "*"
+
+  ImageBuildStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub openclaw-enterprise-image-build-${ValidationRunId}
+      RoleArn: !GetAtt ImageBuildWorkflowRole.Arn
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt ImageBuildStateMachineLogGroup.Arn
+        IncludeExecutionData: false
+        Level: ALL
+      TracingConfiguration:
+        Enabled: true
+      Definition:
+        Comment: Fixed, input-independent invocation of the trusted privileged image build.
+        StartAt: RunTrustedImageBuild
+        States:
+          RunTrustedImageBuild:
+            Type: Task
+            Resource: !Sub arn:${AWS::Partition}:states:::codebuild:startBuild.sync
+            Parameters:
+              ProjectName: !Ref ImageBuildProject
+            End: true
+      Tags:
+        - Key: ManagedBy
+          Value: openclaw-enterprise-sample
+        - Key: OpenClawValidationRun
+          Value: !Ref ValidationRunId
+
+  ImageBuildInvocationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: Assumed by the trusted release principal to invoke only the fixed build workflow.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref TrustedBuildInvokerArn
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeFixedBuildWorkflowOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DenyDirectCodeBuildExecution
+                Effect: Deny
+                Action:
+                  - codebuild:RetryBuild
+                  - codebuild:StartBuild
+                  - codebuild:StartBuildBatch
+                Resource: !GetAtt ImageBuildProject.Arn
+              - Sid: StartFixedBuildWorkflow
+                Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref ImageBuildStateMachine
+              - Sid: ReadFixedBuildWorkflowResult
+                Effect: Allow
+                Action: states:DescribeExecution
+                Resource: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:openclaw-enterprise-image-build-${ValidationRunId}:*
+              - Sid: ReadFixedCodeBuildResult
+                Effect: Allow
+                Action: codebuild:BatchGetBuilds
+                Resource: !GetAtt ImageBuildProject.Arn
+
+Outputs:
+  ValidationRunId:
+    Value: !Ref ValidationRunId
+  ProjectName:
+    Value: !Ref ImageBuildProject
+  BuildStateMachineArn:
+    Value: !Ref ImageBuildStateMachine
+  BuildInvocationRoleArn:
+    Value: !GetAtt ImageBuildInvocationRole.Arn
+  AdapterRepositoryUri:
+    Value: !GetAtt AdapterRepository.RepositoryUri
+  ControllerRepositoryUri:
+    Value: !GetAtt ControllerRepository.RepositoryUri
+  OwnershipHelperRepositoryUri:
+    Value: !GetAtt OwnershipHelperRepository.RepositoryUri
+  RuntimeRepositoryUri:
+    Value: !GetAtt RuntimeRepository.RepositoryUri
+  OceGitRevision:
+    Value: !Ref OceGitRevision

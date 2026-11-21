@@ -1,0 +1,339 @@
+"""Contracts for the per-tenant private model-gateway path."""
+
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import textwrap
+from typing import Any
+
+import pytest
+
+SAMPLE = pathlib.Path(__file__).resolve().parent.parent
+SCRIPT = SAMPLE / "scripts" / "configure-tenant-model-gateway.sh"
+OWNER = "openclaw-enterprise-blueprint"
+CONTEXT = "shared-cluster"
+TENANT = "tenant-a"
+TENANT_RESOURCES = (
+    "configmap/agentgateway-ca",
+    "networkpolicy.networking.k8s.io/oce-private-service-egress",
+)
+CLUSTER_DNS_CIDR = "10.100.0.10/32"
+AGENTGATEWAY_SERVICE_IP = "10.100.42.17"
+
+
+def _write_executable(path: pathlib.Path, source: str) -> None:
+    path.write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
+    path.chmod(0o755)
+
+
+def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
+    source = """
+        #!/usr/bin/env python3
+        import base64
+        import json
+        import os
+        import pathlib
+        import sys
+
+        args = sys.argv[1:]
+        state_path = pathlib.Path(os.environ["FAKE_KUBE_STATE"])
+        state = json.loads(state_path.read_text())
+        stdin = sys.stdin.read()
+        with pathlib.Path(os.environ["FAKE_KUBE_LOG"]).open("a") as log:
+            log.write(json.dumps({"args": args, "stdin": stdin}) + "\\n")
+
+        if args[:2] == ["config", "get-contexts"]:
+            if len(args) > 2 and args[2] == state["context"]:
+                print(state["context"])
+            raise SystemExit(0)
+
+        if args[:2] != ["--context", state["context"]]:
+            print("wrong context", file=sys.stderr)
+            raise SystemExit(40)
+        command = args[2:]
+
+        if command == ["get", "--raw=/readyz"]:
+            print("ok")
+        elif command[:2] == ["get", f"namespace/{state['tenant']}"]:
+            print(
+                f"{state['tenant']}|"
+                f"{state.get('namespace_owner', 'openclaw-enterprise')}"
+            )
+        elif command[:2] == ["wait", "--namespace"]:
+            pass
+        elif command[:3] == ["get", "secret", "agentgateway-ca"]:
+            print(base64.b64encode(b"test-ca").decode())
+        elif (
+            command[:3] == ["get", "service", "agentgateway"]
+            and command[-1] == "--output=jsonpath={.spec.clusterIP}"
+        ):
+            print(state.get("agentgateway_service_ip", "10.100.42.17"))
+        elif command and command[0] == "get":
+            resource = command[1]
+            owner = state.get("resources", {}).get(resource)
+            if owner is not None:
+                print(f"{resource.rsplit('/', 1)[1]}|{owner}")
+        elif command[:2] == ["label", f"namespace/{state['tenant']}"]:
+            pass
+        elif command[:3] == ["create", "configmap", "agentgateway-ca"]:
+            print(
+                json.dumps(
+                    {
+                        "apiVersion": "v1",
+                        "kind": "ConfigMap",
+                        "metadata": {
+                            "name": "agentgateway-ca",
+                            "namespace": state["tenant"],
+                        },
+                        "data": {"ca.crt": "test-ca"},
+                    }
+                )
+            )
+        elif command == ["create", "--filename", "-"]:
+            document = json.loads(stdin)
+            resource = f"configmap/{document['metadata']['name']}"
+            state.setdefault("resources", {})[resource] = document["metadata"][
+                "labels"
+            ]["app.kubernetes.io/managed-by"]
+            state_path.write_text(json.dumps(state))
+        elif command[:1] == ["apply"] and command[-2:] == ["--filename", "-"]:
+            document = json.loads(stdin)
+            resource = (
+                "networkpolicy.networking.k8s.io/"
+                f"{document['metadata']['name']}"
+            )
+            state.setdefault("resources", {})[resource] = document["metadata"][
+                "labels"
+            ]["app.kubernetes.io/managed-by"]
+            state_path.write_text(json.dumps(state))
+        else:
+            print(f"unsupported kubectl call: {args}", file=sys.stderr)
+            raise SystemExit(41)
+        """
+    _write_executable(
+        bin_dir / "kubectl",
+        source.replace("#!/usr/bin/env python3", f"#!{sys.executable}", 1),
+    )
+
+
+def _run_configure(
+    tmp_path: pathlib.Path,
+    *,
+    state: dict[str, Any] | None = None,
+    context: str = CONTEXT,
+) -> tuple[subprocess.CompletedProcess[str], list[dict[str, Any]]]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _install_fake_kubectl(bin_dir)
+    state_path = tmp_path / "kube-state.json"
+    state_path.write_text(
+        json.dumps(
+            state
+            or {
+                "context": CONTEXT,
+                "tenant": TENANT,
+                "resources": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    log_path = tmp_path / "kubectl.log"
+    log_path.write_text("", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(SCRIPT), context, TENANT, CLUSTER_DNS_CIDR],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_KUBE_STATE": str(state_path),
+            "FAKE_KUBE_LOG": str(log_path),
+        },
+    )
+    calls = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    return result, calls
+
+
+def _mutating_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    mutations = {"apply", "create", "label"}
+    return [
+        call
+        for call in calls
+        if any(argument in mutations for argument in call["args"])
+    ]
+
+
+def test_configure_script_copies_public_ca_and_allows_exact_private_services() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    assert "set -euo pipefail" in script
+    assert 'readonly -a KUBECTL=(kubectl --context "${KUBE_CONTEXT}")' in script
+    assert 'kubectl config get-contexts "${KUBE_CONTEXT}"' in script
+    assert "app\\.kubernetes\\.io/managed-by" in script
+    assert "pod-security.kubernetes.io/enforce=baseline" in script
+    assert "pod-security.kubernetes.io/audit=restricted" in script
+    assert "pod-security.kubernetes.io/warn=restricted" in script
+    assert "tls\\.crt" in script
+    assert "tls\\.key" not in script
+    assert "--dry-run=client" in script
+    assert ".immutable = true" in script
+    assert "NetworkPolicy" in script
+    assert "OCE_AGENTGATEWAY_SERVICE_CIDR" not in script
+
+
+def test_configure_marks_the_created_tenant_resource(
+    tmp_path: pathlib.Path,
+) -> None:
+    result, calls = _run_configure(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    created = next(
+        call
+        for call in calls
+        if call["args"][2:] == ["create", "--filename", "-"]
+    )
+    config_map = json.loads(created["stdin"])
+    assert config_map["metadata"]["labels"] == {
+        "app.kubernetes.io/managed-by": OWNER
+    }
+    assert config_map["immutable"] is True
+    applied = next(
+        call
+        for call in calls
+        if call["args"][2:3] == ["apply"]
+        and call["args"][-2:] == ["--filename", "-"]
+    )
+    policy = json.loads(applied["stdin"])
+    assert policy["metadata"] == {
+        "name": "oce-private-service-egress",
+        "namespace": TENANT,
+        "labels": {"app.kubernetes.io/managed-by": OWNER},
+    }
+    assert policy["spec"]["podSelector"]["matchLabels"] == {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/workload-role": "gateway",
+        "openclaw.dev/network-profile": "broad-egress-v1",
+    }
+    assert policy["spec"]["policyTypes"] == ["Egress"]
+    assert policy["spec"]["egress"] == [
+        {
+            "to": [{"ipBlock": {"cidr": CLUSTER_DNS_CIDR}}],
+            "ports": [
+                {"protocol": "UDP", "port": 53},
+                {"protocol": "TCP", "port": 53},
+            ],
+        },
+        {
+            "to": [
+                {
+                    "ipBlock": {
+                        "cidr": f"{AGENTGATEWAY_SERVICE_IP}/32"
+                    }
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 443}],
+        },
+    ]
+    assert "0.0.0.0/0" not in applied["stdin"]
+
+
+@pytest.mark.parametrize("resource", TENANT_RESOURCES)
+def test_configure_refuses_unowned_existing_tenant_resources_before_mutation(
+    tmp_path: pathlib.Path,
+    resource: str,
+) -> None:
+    result, calls = _run_configure(
+        tmp_path,
+        state={
+            "context": CONTEXT,
+            "tenant": TENANT,
+            "resources": {resource: "another-sample"},
+        },
+    )
+
+    assert result.returncode != 0
+    assert "does not carry the exact" in result.stderr
+    assert _mutating_calls(calls) == []
+
+
+def test_configure_rejects_a_context_that_does_not_exist_exactly(
+    tmp_path: pathlib.Path,
+) -> None:
+    result, calls = _run_configure(tmp_path, context="shared-cluster-typo")
+
+    assert result.returncode != 0
+    assert "does not exist exactly" in result.stderr
+    assert _mutating_calls(calls) == []
+
+
+@pytest.mark.parametrize(
+    "cluster_dns_cidr",
+    ["10.100.0.10/24", "fd00::a/128", "not-a-cidr"],
+)
+def test_configure_rejects_invalid_cluster_dns_cidr_before_mutation(
+    tmp_path: pathlib.Path,
+    cluster_dns_cidr: str,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _install_fake_kubectl(bin_dir)
+    state_path = tmp_path / "kube-state.json"
+    state_path.write_text(
+        json.dumps(
+            {"context": CONTEXT, "tenant": TENANT, "resources": {}}
+        ),
+        encoding="utf-8",
+    )
+    log_path = tmp_path / "kubectl.log"
+    log_path.write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), CONTEXT, TENANT, cluster_dns_cidr],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_KUBE_STATE": str(state_path),
+            "FAKE_KUBE_LOG": str(log_path),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "exact IPv4 /32" in result.stderr
+    calls = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert _mutating_calls(calls) == []
+
+
+@pytest.mark.parametrize(
+    "service_ip",
+    ["None", "fd00::17", "not-an-address"],
+)
+def test_configure_rejects_invalid_agentgateway_service_ip_before_mutation(
+    tmp_path: pathlib.Path,
+    service_ip: str,
+) -> None:
+    result, calls = _run_configure(
+        tmp_path,
+        state={
+            "context": CONTEXT,
+            "tenant": TENANT,
+            "agentgateway_service_ip": service_ip,
+            "resources": {},
+        },
+    )
+
+    assert result.returncode != 0
+    assert "AgentGateway Service address must be an IPv4 address" in result.stderr
+    assert _mutating_calls(calls) == []

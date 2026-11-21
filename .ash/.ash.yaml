@@ -4,6 +4,8 @@ project_name: sample-eks-nitro-sandbox
 global_settings:
   severity_threshold: HIGH
   ignore_paths:
+    - path: .ash/**
+      reason: ASH configuration contains detector rule identifiers and suppression metadata, not deployable secrets
     - path: .claude/**
       reason: .claude/skills links to .agents/skills, which is scanned already
     - path: .kiro/**
@@ -22,6 +24,14 @@ global_settings:
   # UID, the poller and autoscaler, and destination pods with no policy of their own.
   # ---------------------------------------------------------------------------------------
   suppressions:
+    - rule_id: IAM_NO_INLINE_POLICY_CHECK
+      path: 'examples/ai-agents/openclaw-enterprise/build/template.yaml'
+      reason: 'These role-specific least-privilege policies are lifecycle-bound to single-purpose sample roles and are not reusable managed permissions'
+      expiration: '2027-12-31'
+    - rule_id: CKV_AWS_111
+      path: 'examples/ai-agents/openclaw-enterprise/build/template.yaml'
+      reason: 'Step Functions log delivery and X-Ray ingestion APIs do not support resource-level permissions; all other write actions remain resource-scoped'
+      expiration: '2027-12-31'
     # Reviewed Box process launches and synthetic credential-path fixture.
     - rule_id: B404
       path: "examples/subagent-security/strands-box/scripts/local_driver.py"
@@ -2168,6 +2178,256 @@ global_settings:
       line_end: 17
       reason: 'The synthetic HTTP fixture must accept requests through its ClusterIP service. It has no real supplier data, API key, or purchasing integration. This sample provides no pod-wide network restriction'
       expiration: '2027-01-31'
+    # OpenClaw Enterprise: exact exceptions for source templates, pre-admission
+    # fixtures, fixed image-build inputs, and Kubernetes object names. Deployable
+    # manifests are rendered with digest-qualified images and the adapter validates
+    # the controller-created runtime before Nitro Pods admits it.
+    - rule_id: B104
+      path: 'examples/ai-agents/openclaw-enterprise/adapter/server.py'
+      line_start: 451
+      line_end: 451
+      reason: 'The admission webhook must listen on the pod interface so the Kubernetes API server can reach its ClusterIP Service; it serves TLS and accepts only bounded admission and health endpoints'
+      expiration: '2027-12-31'
+    - rule_id: B108
+      path: 'examples/ai-agents/openclaw-enterprise/adapter/adapter.py'
+      line_start: 799
+      line_end: 799
+      reason: 'This is a validated in-guest mount path, not a host temporary file or directory'
+      expiration: '2027-12-31'
+    - rule_id: B108
+      path: 'examples/ai-agents/openclaw-enterprise/adapter/adapter.py'
+      line_start: 2178
+      line_end: 2178
+      reason: 'This is a validated in-guest mount path, not a host temporary file or directory'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission test fixture, not a deployed workload; adapter contract tests transform it and verify that the OCE-owned network-profile selector is preserved'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_29
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission OCE controller fixture; the adapter injects the Nitro-compatible security context and tests assert the result'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture preserves the upstream OCE Secret reference so the adapter credential-source rejection can be tested'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_38
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture; the adapter rejects projected service-account tokens and the admitted runtime disables token mounting'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture mirrors upstream OCE; the adapter validates the configured non-root runtime UID before admission'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture; the adapter preserves and validates the OCE liveness probe in the admitted runtime'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/ai-agents/openclaw-enterprise/tests/fixtures/oce-agent-pod.yaml'
+      reason: 'Pre-admission fixture; the adapter preserves and validates the OCE readiness probe in the admitted runtime'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_2
+      path: 'examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile'
+      reason: 'Kubernetes owns controller health through startup, readiness, and liveness probes; a Docker HEALTHCHECK is not consumed by the deployment'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_3
+      path: 'examples/ai-agents/openclaw-enterprise/ownership-helper/Dockerfile'
+      reason: 'Minimal scratch init image must run as root inside the Nitro guest to repair ownership on exact PVC paths, then exits'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_7
+      path: 'examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile'
+      reason: 'Both build arguments are required digest-qualified image references; build-images.sh validates their immutable SHA-256 form'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_7
+      path: 'examples/ai-agents/openclaw-enterprise/ownership-helper/Dockerfile'
+      reason: 'Builder image is pinned to an exact SHA-256 digest; Checkov reports the visible version tag despite the digest'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
+      reason: 'Source template intentionally contains a rejected placeholder; render-adapter-manifest.sh requires and injects exact distinct SHA-256 image digests before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_14
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'Validation-only source template contains a rejected placeholder; install-oce.sh requires and injects the documented digest-pinned PostgreSQL image before apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'The pinned upstream PostgreSQL image uses its documented non-root UID 999; the manifest enforces runAsNonRoot and a restricted container security context'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'The disposable validation database reads its generated password from a Kubernetes Secret reference; no plaintext value is stored in the manifest'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_21
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'The reusable template omits a namespace; install-oce.sh validates the dedicated namespace and applies both resources with that explicit namespace'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
+      reason: 'By design: the admission adapter is an ordinary control-plane Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
+      reason: 'By design: the shared stateless AgentGateway is an ordinary Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
+      reason: 'By design: the disposable validation database is an ordinary Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_35
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
+      reason: 'AgentGateway reads tenant key hashes and its session key from environment variables backed by Kubernetes Secrets; no plaintext secret is stored in this manifest'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/README.md'
+      reason: 'Public pinned upstream OCE Git commit and documented SHA-256 image digests, not credentials'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/manage-image-build-stack.sh'
+      line_start: 7
+      line_end: 7
+      reason: 'Public pinned upstream OCE Git commit used by the image-build lifecycle, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/install-oce.sh'
+      line_start: 6
+      line_end: 6
+      reason: 'Public pinned upstream OCE Git commit used by the installer, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/install-oce.sh'
+      line_start: 14
+      line_end: 14
+      reason: 'Kubernetes Secret object name for the database CA certificate, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/cleanup.sh'
+      line_start: 8
+      line_end: 8
+      reason: 'Public pinned upstream OCE Git commit used to verify cleanup ownership, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/scripts/validate-live.sh'
+      line_start: 13
+      line_end: 13
+      reason: 'Public pinned upstream OCE Git commit used to verify live evidence, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_build_contract.py'
+      line_start: 745
+      line_end: 745
+      reason: 'Synthetic STS SecretAccessKey field and value used to test credential parsing; no real credential is present'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_image_build_stack_contract.py'
+      line_start: 25
+      line_end: 25
+      reason: 'Public pinned upstream OCE Git commit used as an image-build contract fixture, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_cleanup_contract.py'
+      line_start: 20
+      line_end: 20
+      reason: 'Public pinned upstream OCE Git commit used as a cleanup contract fixture, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_cleanup_contract.py'
+      line_start: 134
+      line_end: 134
+      reason: 'Test mapping names the Kubernetes Secret resource type; it contains no credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_install_oce_contract.py'
+      line_start: 19
+      line_end: 19
+      reason: 'Public pinned upstream OCE Git commit used as an installer contract fixture, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASIC-AUTH-CREDENTIALS
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_install_oce_contract.py'
+      line_start: 248
+      line_end: 248
+      reason: 'Synthetic PostgreSQL URL under the reserved example.test domain used only by installer contract tests'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASIC-AUTH-CREDENTIALS
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_install_oce_contract.py'
+      line_start: 252
+      line_end: 252
+      reason: 'Synthetic PostgreSQL URL under the reserved example.test domain used only by installer contract tests'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASIC-AUTH-CREDENTIALS
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_install_oce_contract.py'
+      line_start: 456
+      line_end: 456
+      reason: 'Synthetic invalid PostgreSQL URL under the reserved example.test domain used to test TLS rejection'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
+      line_start: 19
+      line_end: 19
+      reason: 'Public pinned upstream OCE Git commit used as a live-validation contract fixture, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
+      line_start: 252
+      line_end: 252
+      reason: 'Synthetic Kubernetes Secret volume used to test fail-closed credential-source rejection; it contains no secret value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
+      line_start: 1725
+      line_end: 1725
+      reason: 'Assertion for the synthetic block-device name nvme0n1; no encoded value or secret is present'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_tenant_isolation_contract.py'
+      line_start: 196
+      line_end: 196
+      reason: 'Synthetic short gateway identifier used to prove tenant PVC derivation, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
+      line_start: 1764
+      line_end: 1764
+      reason: 'Synthetic Kubernetes Secret object used to test rejection of file-backed AWS credentials; contains no secret value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/adapter/test_adapter.py'
+      line_start: 1793
+      line_end: 1793
+      reason: 'Synthetic Kubernetes Secret object used to test rejection of credential-capable mounts; contains no secret value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
+      line_start: 39
+      line_end: 39
+      reason: 'cert-manager Certificate output Secret name, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
+      line_start: 43
+      line_end: 43
+      reason: 'cert-manager CA Certificate output Secret name, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
+      line_start: 67
+      line_end: 67
+      reason: 'cert-manager serving Certificate output Secret name, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_agentgateway_contract.py'
+      line_start: 78
+      line_end: 78
+      reason: 'Test assertion for a Kubernetes Secret object name, not a credential value'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_agentgateway_contract.py'
+      line_start: 85
+      line_end: 85
+      reason: 'Test assertion for a Kubernetes Secret object name, not a credential value'
+      expiration: '2027-12-31'
     # Coder blueprint (issue #278). Keycloak and PostgreSQL are ordinary control-plane pods
     # behind ClusterIP Services; a new sample ships no network policy (AGENTS.md, Security
     # rules), and the page links the network policy sample instead.

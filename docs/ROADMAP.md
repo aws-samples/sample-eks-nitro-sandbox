@@ -1,6 +1,6 @@
 # Roadmap
 
-These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. A sample whose entry links to its page is ready to run, and is marked "available now" on its entry or in its section heading. The rest are planned.
+These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. Entries marked "available now" are ready to run. Work-in-progress entries state their current status; the rest are planned.
 
 ## Layout
 
@@ -128,7 +128,7 @@ Agent frameworks on Amazon Bedrock:
 Agent harnesses:
 
 - hermes: the Hermes Agent harness, always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and Amazon Bedrock with no API key in the sandbox. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
-- openclaw-enterprise: OpenClaw Enterprise on EKS, each Agent in a Nitro sandbox, with the model call going through agentgateway to Amazon Bedrock. Spec: [#133](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/133).
+- [openclaw-enterprise](../examples/ai-agents/openclaw-enterprise/README.md) (validation pending): OpenClaw Enterprise on EKS with a controller-bound admission trust chain for gateway Deployments, ReplicaSets, and Pods. Upstream tracking is in OCE issues [#4252](https://github.com/openclaw/openclaw-enterprise/issues/4252)-[#4254](https://github.com/openclaw/openclaw-enterprise/issues/4254); merged PRs [#4528](https://github.com/openclaw/openclaw-enterprise/pull/4528) and [#4975](https://github.com/openclaw/openclaw-enterprise/pull/4975) narrow #4254 but do not provide cluster-local HTTP or private-endpoint routing, while #4252 and #4253 lack complete implementation PRs. Closed, unmerged PR [#3893](https://github.com/openclaw/openclaw-enterprise/pull/3893) covers only dedicated Harnesses. Spec: [#133](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/133).
 
 ### Managed agents (`managed-agents`)
 
