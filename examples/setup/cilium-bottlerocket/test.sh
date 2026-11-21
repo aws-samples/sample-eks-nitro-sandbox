@@ -193,7 +193,7 @@ check "containerd config dump with a malformed drop-in: containerd stops on the 
 
 # networkd and the Cilium ENIs. Cilium gives pods the secondary addresses of eth0 first, so a
 # second ENI comes only when the node needs more addresses. test.sh starts ordinary filler
-# pods on the sandbox node, by exact name (at most 16, and never more than the free pods of the
+# pods on the sandbox node, by exact name (at most 40, and never more than the free pods of the
 # derived max-pods), until the CiliumNode lists two ENIs and a pod of the node has an address of an ENI
 # after eth0. Cilium has then set the routes and rules of that ENI. Capture A follows at once:
 # networkd, and the links, addresses, routes and rules that check-eni-capture reads. The probe
@@ -221,7 +221,7 @@ sys.exit(0 if len(enis) >= 2 and used else 1)' "$ips" <<<"$cn"
 }
 pods_on_node="$(kc get pods -A --field-selector "spec.nodeName=$SANDBOX_NODE" -o name | wc -l)"
 filler_max=$((MAX_PODS_SANDBOX - pods_on_node))   # filler pods are ordinary pods: max-pods bounds them
-((filler_max <= 16)) || filler_max=16
+((filler_max <= 40)) || filler_max=40
 for ((i = 1; i <= filler_max; i++)); do
   eni_in_use && break
   f="cb-filler-$i-$RUN_ID"

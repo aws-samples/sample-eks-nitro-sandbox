@@ -191,8 +191,8 @@ def cmd_render_probe(args):
 
 def cmd_render_filler(args):
     """A filler pod for the networkd check of test.sh: cb-filler-<n>-<run ID>, pinned to one node."""
-    require(re.fullmatch(r"cb-filler-([1-9]|1[0-6])-[a-z0-9]{1,20}", args.name) is not None,
-            f"filler name {args.name} is not cb-filler-<1 to 16>-<run ID>")
+    require(re.fullmatch(r"cb-filler-([1-9]|[1-3][0-9]|40)-[a-z0-9]{1,20}", args.name) is not None,
+            f"filler name {args.name} is not cb-filler-<1 to 40>-<run ID>")
     require(re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,252}", args.node) is not None, f"node name {args.node} is not valid")
     print(yaml.safe_dump(fill(load_template("deploy/probe/filler-pod.yaml"),
                               {"FILLER_NAME": args.name, "NODE_NAME": args.node,
