@@ -25,7 +25,8 @@ for pair in "os:$CB_OS_VOLUME_ID:$OS_IMG" "data:$CB_DATA_VOLUME_ID:$DATA_IMG"; d
   [ "$raw" -gt 0 ] && [ "$raw" -le "$size" ] || die "E_BOUNDS: the $name image is $raw bytes; the volume $vol is $size bytes"
   want=$(lz4 -dc "$img" | sha256sum | awk '{print $1}')
   lz4 -dc "$img" | dd of="$dev" bs=4M conv=fsync status=none || die "E_WRITE: writing the $name image failed"
-  got=$(head -c "$raw" "$dev" | sha256sum | awk '{print $1}')
+  # The read-back goes through dd, as the write does: exactly $raw bytes from the device.
+  got=$(dd if="$dev" bs=4M iflag=count_bytes count="$raw" status=none | sha256sum | awk '{print $1}')
   [ "$got" = "$want" ] || die "E_WRITE: the $name volume does not read back the image"
   log "wrote $name image to $vol: bytes=$raw volume_bytes=$size sha256=$want"
 done

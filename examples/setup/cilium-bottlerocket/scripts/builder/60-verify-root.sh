@@ -24,7 +24,7 @@ done < <(sgdisk -p "$dev" | awk '/^ +[0-9]+ /{print $2, $3, $NF}')
 
 part=$(lsblk -nrpo NAME,PARTLABEL "$dev" | awk '$2=="BOTTLEROCKET-ROOT-A"{print $1}')
 [ "$(printf '%s\n' "$part" | grep -c .)" = 1 ] || die "E_ROOT_A: not exactly one BOTTLEROCKET-ROOT-A partition on $dev"
-mnt=/mnt/cilium-bottlerocket-root
+mnt=$SYSROOT/mnt/cilium-bottlerocket-root
 install -d -m 0700 "$mnt"
 mount -t erofs -o ro "$part" "$mnt" || die "E_ROOT_A: could not mount $part read-only as erofs"
 trap 'umount "$mnt" 2>/dev/null || true' EXIT

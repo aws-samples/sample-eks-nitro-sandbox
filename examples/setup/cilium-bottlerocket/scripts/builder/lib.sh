@@ -2,8 +2,9 @@
 # lib.sh: shared helpers of the stage scripts that run on the Amazon Linux 2023 builder.
 # scripts/packer-stage.sh sends each stage as one SSM Run Command, run as root.
 
-OVERLAY=/opt/cilium-bottlerocket/overlay   # the uploaded sample files (stage upload)
-WORK=/work                                 # the work volume (/dev/xvdc), mounted in host-setup
+SYSROOT="${SYSROOT:-}"                     # empty on the builder; a fixture tree in the tests
+OVERLAY=$SYSROOT/opt/cilium-bottlerocket/overlay   # the uploaded sample files (stage upload)
+WORK=$SYSROOT/work                                 # the work volume (/dev/xvdc), mounted in host-setup
 CLONE=$WORK/bottlerocket                   # the Bottlerocket clone
 INPUTS=$WORK/inputs                        # the verified downloads
 TOOLS=$WORK/tools
@@ -35,7 +36,7 @@ need_volume_id() {
 
 # volume_device <volume-id>: the NVMe device of an attached EBS volume, by its serial.
 volume_device() {
-  local p="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${1/-/}"
+  local p="$SYSROOT/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${1/-/}"
   [ -b "$p" ] || die "E_VOLUME_DEVICE: no block device for volume $1"
   readlink -f "$p"
 }

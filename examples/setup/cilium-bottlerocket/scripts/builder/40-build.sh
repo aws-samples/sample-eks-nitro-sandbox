@@ -26,7 +26,10 @@ set +e
 rc=$?
 set -e
 if [ "$rc" != 0 ]; then
-  tail -n 60 "$WORK/build.log" >&2
+  # The useful lines of the log, without the Go stack traces of BuildKit, to stdout (SSM keeps
+  # up to 24,000 characters of stdout and 8,000 of stderr).
+  grep -v -E '^[[:space:]]+(github\.com|google\.golang\.org|golang\.org|/builddir|/usr/lib/golang|runtime\.|sync\.|[0-9]+ +/)' "$WORK/build.log" \
+    | grep -v -E '^[[:space:]]*$' | tail -n 250 | tail -c 20000
   die "E_BUILD: cargo make exited $rc"
 fi
 log "cargo make finished $(date -u +%FT%TZ)"

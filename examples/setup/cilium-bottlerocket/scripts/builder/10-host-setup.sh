@@ -23,10 +23,11 @@ dnf -y -q install docker git lz4 gcc make openssl-devel pkgconf-pkg-config perl-
   || die "E_DNF: the package install failed"
 # The BuildKit client (docker buildx), the pinned release binary: buildsys builds with BuildKit.
 bx_v=$(tool_lock BUILDX_VERSION); bx_sha=$(tool_lock BUILDX_SHA256_LINUX_AMD64)
-install -d -m 0755 /usr/local/lib/docker/cli-plugins
+plugins=$SYSROOT/usr/local/lib/docker/cli-plugins
+install -d -m 0755 "$plugins"
 fetch_verified "https://github.com/docker/buildx/releases/download/$bx_v/buildx-$bx_v.linux-amd64" \
-  /usr/local/lib/docker/cli-plugins/docker-buildx "$bx_sha"
-chmod 0755 /usr/local/lib/docker/cli-plugins/docker-buildx
+  "$plugins/docker-buildx" "$bx_sha"
+chmod 0755 "$plugins/docker-buildx"
 systemctl enable --now docker >/dev/null 2>&1 || die "E_DOCKER: docker did not start"
 docker buildx version | grep -q " $bx_v " || die "E_DOCKER: docker buildx is not $bx_v"
 docker_version=$(docker version --format '{{.Server.Version}}') || die "E_DOCKER: docker does not answer"

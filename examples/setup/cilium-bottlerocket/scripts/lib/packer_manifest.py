@@ -37,6 +37,8 @@ NOT_FOUND = {
     "sg": "InvalidGroup.NotFound",
     "profile": "NoSuchEntity",
     "role": "NoSuchEntity",
+    "image": "InvalidAMIID.NotFound",
+    "snapshot": "InvalidSnapshot.NotFound",
 }
 
 
@@ -300,6 +302,10 @@ def cmd_gone(a):
         need(not out.get("Volumes"), "E_LEFTOVER", "a builder volume remains")
     elif a.kind == "sg":
         need(not out.get("SecurityGroups"), "E_LEFTOVER", "the builder security group remains")
+    elif a.kind == "image":
+        need(not out.get("Images"), "E_LEFTOVER", "an AMI of this run exists")
+    elif a.kind == "snapshot":
+        need(not out.get("Snapshots"), "E_LEFTOVER", "a snapshot of this run exists")
     else:
         raise Refused("E_LEFTOVER", f"the builder {a.kind} remains")
     print(f"{a.kind}=absent")

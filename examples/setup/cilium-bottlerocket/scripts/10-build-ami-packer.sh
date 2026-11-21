@@ -10,7 +10,9 @@
 # instance profile; runs one `packer build` of packer/; deletes the security group, the
 # instance profile and the role; reads back that the builder instance, its volumes, the
 # security group, the instance profile and the role are gone; then reads the AMI from the
-# Packer manifest and checks the image and its two snapshots.
+# Packer manifest and checks the image and its two snapshots. After a failed build, the same run
+# builds again only when one read of each builder part, AMI and snapshot shows it absent
+# (E_RESUME otherwise); the last attempt's files and state keys go to packer.attempt<N>.
 # Exit 0 done; 1 refused or failed (the state file names what exists; run ./clean.sh); 2 could
 # not determine. Each refusal prints one line: ERROR: E_<TAG>: <text>.
 set -euo pipefail
@@ -151,15 +153,70 @@ for v in BUILDER_NAME BUILDER_ROLE_NAME BUILDER_PROFILE_NAME BUILDER_SG_NAME AMI
 done
 VPC_ID=$(state_need VPC_ID); BUILD_SUBNET_ID=$(state_need BUILD_SUBNET_ID)
 [[ "$VPC_ID" =~ ^vpc-[0-9a-f]{8,17}$ && "$BUILD_SUBNET_ID" =~ ^subnet-[0-9a-f]{8,17}$ ]] || die E_INPUT "VPC_ID or BUILD_SUBNET_ID is malformed"
-[ -z "$(state_get BUILDER_SG_ID)" ] || die E_RESUME "this run already started a build; run ./clean.sh, then setup.sh with a new run"
 OS_GIB=$(sed -n 's/^os-image-size-gib = \([0-9][0-9]*\)$/\1/p' "$SAMPLE_DIR/variant/variants/$SANDBOX_VARIANT/Cargo.toml")
 [[ "$OS_GIB" =~ ^[0-9]+$ ]] && [ "$OS_GIB" -ge 2 ] || die E_INPUT "the variant Cargo.toml must set os-image-size-gib once"
 DATA_GIB=$(( (OS_GIB + 1 > 22 ? OS_GIB + 1 : 22) - OS_GIB ))   # pubsys, split partition plan
 PK="$RUN_STATE_DIR/packer"
-[ ! -e "$PK" ] || die E_RESUME "$PK exists; a run never resumes a Packer build"
+EV="$EVIDENCE_DIR/ami-build.txt"
+# The run tags, and the run tags with the builder's Name tag. The system node has the same run
+# tags, so a by-tag read of the builder's instance or volumes also names the builder.
+TAG_FILTERS=("Name=tag:$OWNER_TAG_KEY,Values=$OWNER_TAG_VALUE" "Name=tag:$RUN_TAG_KEY,Values=$RUN_ID")
+BUILDER_FILTERS=("${TAG_FILTERS[@]}" "Name=tag:Name,Values=$BUILDER_NAME")
+
+# ---- a retry after a failed build: only when each part of the last attempt is absent ---------
+# One read for each part: the instance, its volumes, the security group, the instance profile,
+# the role, and the AMIs and snapshots of the run by tag and by name. If one is present or a
+# read fails, stop. Else rename packer/ to packer.attempt<N>, move the evidence file and the
+# attempt's state keys into it, and build again. The retry deletes nothing.
+resume_note=""
+if [ -n "$(state_get BUILDER_SG_ID)" ] || [ -e "$PK" ]; then
+  [ "$(state_get AMI_BUILD_RESULT)" != ok ] || die E_RESUME "this run already built its AMI"
+  for k in BUILDER_ROLE_NAME BUILDER_PROFILE_NAME; do
+    v=$(state_get "$k"); [ -z "$v" ] || [ "$v" = "${!k}" ] || die E_RESUME "the state has $k=$v, not ${!k}"
+  done
+  require_region
+  require_caller_account >/dev/null
+  RP="$PK/private"
+  install -d -m 0700 "$PK" "$RP"
+  absent() { # absent <kind> <name> <aws args...>: one read; the part is terminated or absent
+    local kind="$1" n="$2" rc=0; shift 2
+    aws "$@" --region "$AWS_REGION" --output json >"$RP/resume-$n.json" 2>"$RP/resume-$n.err" || rc=$?
+    "${PM[@]}" gone "$kind" "$rc" "$RP/resume-$n.json" "$RP/resume-$n.err" >>"$RP/resume.txt" \
+      || die E_RESUME "$n of the last attempt is present or could not be read; nothing was changed (run ./clean.sh --dry-run)"
+  }
+  bid=$(state_get BUILDER_INSTANCE_ID); sg=$(state_get BUILDER_SG_ID)
+  [ -z "$bid" ] || absent instance instance ec2 describe-instances --instance-ids "$bid"
+  absent instance instances-by-name ec2 describe-instances --filters "${BUILDER_FILTERS[@]}"
+  for vol in $(state_get BUILDER_VOLUME_IDS | tr ',' ' '); do
+    absent volume "$vol" ec2 describe-volumes --volume-ids "$vol"
+  done
+  absent volume volumes-by-name ec2 describe-volumes --filters "${BUILDER_FILTERS[@]}"
+  [ -z "$sg" ] || absent sg sg ec2 describe-security-groups --group-ids "$sg"
+  absent sg sg-by-name ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=$BUILDER_SG_NAME"
+  absent profile profile iam get-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME"
+  absent role role iam get-role --role-name "$BUILDER_ROLE_NAME"
+  absent image images-by-tag ec2 describe-images --owners self --filters "${TAG_FILTERS[@]}"
+  absent image images-by-name ec2 describe-images --owners self --filters "Name=name,Values=$AMI_NAME"
+  absent snapshot snapshots-by-tag ec2 describe-snapshots --owner-ids self --filters "${TAG_FILTERS[@]}"
+  absent snapshot snapshots-by-name ec2 describe-snapshots --owner-ids self --filters "Name=tag:Name,Values=$AMI_NAME"
+  n=1
+  while [ -e "$PK.attempt$n" ]; do n=$((n + 1)); done
+  OLD="$PK.attempt$n"
+  mv "$PK" "$OLD" || die E_RESUME "could not rename $PK to $OLD"
+  [ ! -e "$EV" ] || mv "$EV" "$OLD/ami-build.txt" || die E_RESUME "could not move $EV to $OLD"
+  # The keys of the attempt go to $OLD/state-cleared.env, then out of the state file
+  # (temp file, then rename, as state_set writes it).
+  keys='^(BUILDER_[A-Z0-9_]+|OS_VOLUME_ID|DATA_VOLUME_ID|PACKER_MANIFEST|PACKER_RUN_UUID|SANDBOX_AMI_ID|SANDBOX_AMI_SNAPSHOT_IDS|SSM_COMMAND_[A-Z0-9_]+)='
+  rc=0; grep -E "$keys" "$RUN_STATE_FILE" >"$OLD/state-cleared.env" || rc=$?
+  [ "$rc" -le 1 ] || die E_STATE "could not read $RUN_STATE_FILE"
+  tmp=$(mktemp "$RUN_STATE_FILE.XXXXXX") || die E_STATE "could not write $RUN_STATE_FILE"
+  rc=0; grep -Ev "$keys" "$RUN_STATE_FILE" >"$tmp" || rc=$?
+  { [ "$rc" -le 1 ] && chmod 600 "$tmp" && mv -f "$tmp" "$RUN_STATE_FILE"; } || { rm -f "$tmp"; die E_STATE "could not write $RUN_STATE_FILE"; }
+  resume_note="resume previous=$(basename "$OLD") reads=$(wc -l <"$OLD/private/resume.txt" | tr -d ' ') all=absent cleared=$(cut -d= -f1 "$OLD/state-cleared.env" | paste -sd, -)"
+fi
 mkdir -m 0700 "$PK" "$PK/private" "$PK/upload"
 PRIV="$PK/private"
-EV="$EVIDENCE_DIR/ami-build.txt"
+[ -z "$resume_note" ] || printf '%s\n' "$resume_note" | tee -a "$EV"
 
 # The overlay the builder receives: this checkout's files, so a reader builds what they edited.
 # One SSM document is at most 64 KB (Systems Manager quotas, "Document size"; SendCommand error
@@ -315,14 +372,13 @@ gone() {
   [ "$r" = 0 ] || "${PM[@]}" gone "$kind" "$rc" "$PRIV/gone-$n.json" "$PRIV/gone-$n.err" || true
   return "$r"
 }
-TAG_FILTERS=("Name=tag:$OWNER_TAG_KEY,Values=$OWNER_TAG_VALUE" "Name=tag:$RUN_TAG_KEY,Values=$RUN_ID")
 bid=$(state_get BUILDER_INSTANCE_ID)
 if [ -n "$bid" ]; then r=0; gone instance instance ec2 describe-instances --instance-ids "$bid" || r=$?; note "$r"; fi
-r=0; gone instance instances-by-tag ec2 describe-instances --filters "${TAG_FILTERS[@]}" || r=$?; note "$r"
+r=0; gone instance instances-by-tag ec2 describe-instances --filters "${BUILDER_FILTERS[@]}" || r=$?; note "$r"
 for vol in $(state_get BUILDER_VOLUME_IDS | tr ',' ' '); do
   r=0; gone volume "$vol" ec2 describe-volumes --volume-ids "$vol" || r=$?; note "$r"
 done
-r=0; gone volume volumes-by-tag ec2 describe-volumes --filters "${TAG_FILTERS[@]}" || r=$?; note "$r"
+r=0; gone volume volumes-by-tag ec2 describe-volumes --filters "${BUILDER_FILTERS[@]}" || r=$?; note "$r"
 # Before each delete, the resource's own tags are read again. The builder's interface can stay
 # attached to the group for a short time after the instance ends (DependencyViolation), so the
 # delete is tried again while the group is still there and still the run's.

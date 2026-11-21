@@ -2,6 +2,13 @@
 # prebuilt releases: the builder verified each one against packages/sources.lock before the
 # build, and buildsys checks the SHA-512 values in Cargo.toml again.
 %global debug_package %{nil}
+# The shim and Firecracker are prebuilt release binaries that use aws-lc-rs with no FIPS build,
+# and this variant is not a FIPS variant: the SDK check that each Rust binary in /usr/bin has a
+# /usr/fips/bin twin does not apply to them.
+%undefine cross_check_fips
+# Keep the binaries byte for byte as released: the SDK strip rewrites their section headers,
+# and the builder then checks the installed files against the SHA-256 values in sources.lock.
+%global __strip /bin/true
 %global runtime_version 0.1.4274.0
 %global firecracker_version 1.18.0
 
@@ -82,6 +89,7 @@ install -p -m 0644 %{S:16} %{buildroot}%{_cross_libdir}/modules-load.d/nitro-san
 
 %files
 %license LICENSE ATTRIBUTION LICENSE-firecracker NOTICE-firecracker
+%{_cross_attribution_file}
 %{_cross_bindir}/containerd-shim-nitro-sandbox-v2
 %{_cross_bindir}/nitro-sandbox-shim-logger-wrapper
 %{_cross_bindir}/firecracker
