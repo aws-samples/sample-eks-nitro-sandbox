@@ -13,7 +13,9 @@ need_volume_id CB_OS_VOLUME_ID
 dev=$(volume_device "$CB_OS_VOLUME_ID")
 not_in_use "$dev"
 
-partx -u "$dev" 2>/dev/null || partprobe "$dev" || die "E_GPT: could not read the partition table of $dev"
+blockdev --rereadpt "$dev" || die "E_GPT: could not read the partition table of $dev"
+udevadm settle
+modprobe erofs 2>/dev/null || true
 sgdisk -v "$dev" | grep -q '^No problems found' || die "E_GPT: sgdisk -v reports a problem on $dev"
 sectors=$(( $(blockdev --getsize64 "$dev") / 512 ))
 while read -r start end name; do

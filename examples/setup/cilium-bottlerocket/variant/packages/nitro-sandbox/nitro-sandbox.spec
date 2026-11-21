@@ -48,7 +48,7 @@ mv release-v%{firecracker_version}-x86_64/NOTICE NOTICE-firecracker
 # The build must not run with the template value: scripts/builder/30-overlay.sh writes the
 # sandbox slot count into nitro-sandbox.toml first.
 grep -Eq '^pcie_slots += [1-9][0-9]*$' %{S:10}
-! grep -q '@' %{S:10}
+if grep -q '@' %{S:10}; then exit 1; fi
 
 %install
 install -d %{buildroot}%{_cross_bindir}

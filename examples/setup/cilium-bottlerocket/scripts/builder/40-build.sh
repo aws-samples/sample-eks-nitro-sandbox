@@ -36,6 +36,12 @@ for img in "$OS_IMG" "$DATA_IMG"; do
   bytes=$(lz4 -dc "$img" | wc -c)
   log "image $(basename "$img") compressed=$(stat -c %s "$img") raw=$bytes"
 done
-# rpm2img prints the use of each partition as JSON; ROOT-A is the measurement.
-grep -o '{"ROOT-A":[^}]*}' "$WORK/build.log" | tail -n 1 | sed 's/^/builder: partition-use /' || true
+# rpm2img records the use of each partition in artifact-metadata.json; ROOT-A is the
+# measurement for os-image-size-gib.
+python3 -I -c 'import json, sys
+d = json.load(open(sys.argv[1]))["disk_usage"]
+for k in sorted(d):
+    v = d[k]
+    print("builder: partition-use %s bytes_used=%s bytes_total=%s percent=%s" % (k, v["bytes_used"], v["bytes_total"], v["percentage_bytes"]))' \
+  "$IMG_DIR/artifact-metadata.json" || die "E_BUILD: no partition use in $IMG_DIR/artifact-metadata.json"
 log "build ok"

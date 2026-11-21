@@ -11,6 +11,7 @@ LOCK=$OVERLAY/packages/sources.lock
 TOOLS_LOCK=$OVERLAY/packer/tools.lock
 VARIANT=aws-k8s-1.36-nitro-sandbox
 export RUSTUP_HOME=$TOOLS/rustup CARGO_HOME=$TOOLS/cargo
+export HOME="${HOME:-/root}"   # SSM Run Command may start the script with no HOME
 export PATH=$CARGO_HOME/bin:$PATH
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -51,14 +52,13 @@ fetch_verified() {
   mv "$2.part" "$2"
 }
 
-# images: the OS and data images of the build (exactly one each).
+# find_images: the OS and data images of the build. Twoliter's imghelper writes one file per
+# image and three links to it; the link without a version names it.
 find_images() {
-  local dir="$CLONE/build/images/x86_64-$VARIANT/latest" n
-  [ -d "$dir" ] || die "E_IMAGES: no $dir"
-  n=$(find "$dir" -maxdepth 1 -name "bottlerocket-$VARIANT-x86_64*-data.img.lz4" | wc -l)
-  [ "$n" = 1 ] || die "E_IMAGES: $n data images, expected one"
-  DATA_IMG=$(readlink -f "$(find "$dir" -maxdepth 1 -name "bottlerocket-$VARIANT-x86_64*-data.img.lz4")")
-  n=$(find "$dir" -maxdepth 1 -name "bottlerocket-$VARIANT-x86_64*.img.lz4" ! -name '*-data.img.lz4' | wc -l)
-  [ "$n" = 1 ] || die "E_IMAGES: $n OS images, expected one"
-  OS_IMG=$(readlink -f "$(find "$dir" -maxdepth 1 -name "bottlerocket-$VARIANT-x86_64*.img.lz4" ! -name '*-data.img.lz4')")
+  IMG_DIR="$CLONE/build/images/x86_64-$VARIANT/latest"
+  local os="$IMG_DIR/bottlerocket-$VARIANT-x86_64.img.lz4" data="$IMG_DIR/bottlerocket-$VARIANT-x86_64-data.img.lz4"
+  [ -d "$IMG_DIR" ] || die "E_IMAGES: no $IMG_DIR"
+  [ -f "$os" ] && [ -f "$data" ] || die "E_IMAGES: the build has no $(basename "$os") or $(basename "$data")"
+  OS_IMG=$(readlink -f "$os"); DATA_IMG=$(readlink -f "$data")
+  [ "$OS_IMG" != "$DATA_IMG" ] || die "E_IMAGES: the OS and data images are the same file"
 }

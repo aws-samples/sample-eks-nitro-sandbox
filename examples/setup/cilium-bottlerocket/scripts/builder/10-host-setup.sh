@@ -19,9 +19,16 @@ install -d -m 0700 "$TOOLS" "$INPUTS"
 log "work volume $CB_WORK_VOLUME_ID ($dev) mounted at $WORK, $(df -h --output=size "$WORK" | tail -n 1 | tr -d ' ')"
 
 # --- packages from the Amazon Linux 2023 repositories (signed repository metadata) ---------
-dnf -y -q install docker git lz4 gcc make openssl-devel perl-FindBin perl-lib gdisk xfsprogs \
+dnf -y -q install docker git lz4 gcc make openssl-devel pkgconf-pkg-config perl-FindBin perl-lib gdisk xfsprogs \
   || die "E_DNF: the package install failed"
+# The BuildKit client (docker buildx), the pinned release binary: buildsys builds with BuildKit.
+bx_v=$(tool_lock BUILDX_VERSION); bx_sha=$(tool_lock BUILDX_SHA256_LINUX_AMD64)
+install -d -m 0755 /usr/local/lib/docker/cli-plugins
+fetch_verified "https://github.com/docker/buildx/releases/download/$bx_v/buildx-$bx_v.linux-amd64" \
+  /usr/local/lib/docker/cli-plugins/docker-buildx "$bx_sha"
+chmod 0755 /usr/local/lib/docker/cli-plugins/docker-buildx
 systemctl enable --now docker >/dev/null 2>&1 || die "E_DOCKER: docker did not start"
+docker buildx version | grep -q " $bx_v " || die "E_DOCKER: docker buildx is not $bx_v"
 docker_version=$(docker version --format '{{.Server.Version}}') || die "E_DOCKER: docker does not answer"
 case "$docker_version" in
   [2-9][0-9].*) ;;

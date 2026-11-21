@@ -24,6 +24,10 @@ HASHICORP_KEY_FPR=C874011F0AB405110D02105534365D9472D7468F
 # The release's own .sha256 file gives the same digest.
 TWOLITER_VERSION=v0.27.0
 TWOLITER_SHA256_X86_64=3c0571467304fe0dd9d7a1d0855437cb071103e80a7e9695c57c63f4da772d73
+# docker buildx (the BuildKit client that buildsys needs): the digest that the release's
+# checksums.txt lists for buildx-<version>.linux-amd64.
+BUILDX_VERSION=v0.39.1
+BUILDX_SHA256_LINUX_AMD64=903090816da68f8bc1a2ff5346dd163a5adacfce4548d003c75df42cd47a9bf4
 # rustup-init: the digest of the published rustup-init.sha256 file. rustup then checks each
 # toolchain component against the SHA-256 values in the Rust channel manifest.
 RUSTUP_VERSION=1.29.3

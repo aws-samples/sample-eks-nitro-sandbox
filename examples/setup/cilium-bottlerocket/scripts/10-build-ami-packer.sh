@@ -125,7 +125,27 @@ fi
 [ -z "${PACKER_LOG+x}" ] && [ -z "${PACKER_LOG_PATH+x}" ] || die E_PACKER_LOG "PACKER_LOG or PACKER_LOG_PATH is set; unset both"
 require_run_id
 check_run_record
-lock_run
+# The run lock. setup.sh holds it on fd 9 and this script inherits that fd: lock the same open
+# file again (which succeeds only for the holder). Run alone, take the lock as setup.sh does.
+lrc=0
+python3 -c 'import errno, fcntl, os, sys
+try:
+    st = os.fstat(9)
+except OSError:
+    sys.exit(5)
+lk = os.stat(sys.argv[1])
+if (st.st_dev, st.st_ino) != (lk.st_dev, lk.st_ino):
+    sys.exit(6)
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError as e:
+    sys.exit(3 if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES) else 4)' "$RUN_STATE_DIR/run.lock" || lrc=$?
+case "$lrc" in
+  0) ;;
+  5) lock_run ;;
+  3) die E_RUN_LOCK "run $RUN_ID is in use: another process holds $RUN_STATE_DIR/run.lock" ;;
+  *) die E_RUN_LOCK "could not lock $RUN_STATE_DIR/run.lock (fd 9 is another file, or flock failed)" ;;
+esac
 for v in BUILDER_NAME BUILDER_ROLE_NAME BUILDER_PROFILE_NAME BUILDER_SG_NAME AMI_NAME; do
   [ -n "${!v:-}" ] || die E_INPUT "$v is not set by derive_names"
 done
@@ -303,11 +323,18 @@ for vol in $(state_get BUILDER_VOLUME_IDS | tr ',' ' '); do
   r=0; gone volume "$vol" ec2 describe-volumes --volume-ids "$vol" || r=$?; note "$r"
 done
 r=0; gone volume volumes-by-tag ec2 describe-volumes --filters "${TAG_FILTERS[@]}" || r=$?; note "$r"
-# Before each delete, the resource's own tags are read again.
-if aws ec2 describe-security-groups --region "$AWS_REGION" --group-ids "$SG_ID" --output json >"$PRIV/sg-before-delete.json" 2>/dev/null \
-   && "${PM[@]}" owned sg "$PRIV/sg-before-delete.json" --run-id "$RUN_ID" --managed-by "$OWNER_TAG_VALUE" >/dev/null; then
-  aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$SG_ID" || note 1
-fi
+# Before each delete, the resource's own tags are read again. The builder's interface can stay
+# attached to the group for a short time after the instance ends (DependencyViolation), so the
+# delete is tried again while the group is still there and still the run's.
+for _ in $(seq 1 "${CB_WAIT_TRIES:-20}"); do
+  if ! aws ec2 describe-security-groups --region "$AWS_REGION" --group-ids "$SG_ID" --output json >"$PRIV/sg-before-delete.json" 2>/dev/null \
+     || ! "${PM[@]}" owned sg "$PRIV/sg-before-delete.json" --run-id "$RUN_ID" --managed-by "$OWNER_TAG_VALUE" >/dev/null; then
+    break
+  fi
+  aws ec2 delete-security-group --region "$AWS_REGION" --group-id "$SG_ID" 2>"$PRIV/sg-delete.err" && break
+  grep -q 'DependencyViolation' "$PRIV/sg-delete.err" || { note 1; break; }
+  sleep "${CB_SLEEP_SECONDS:-15}"
+done
 r=0; gone sg sg ec2 describe-security-groups --group-ids "$SG_ID" || r=$?; note "$r"
 if aws iam get-instance-profile --instance-profile-name "$BUILDER_PROFILE_NAME" --output json >"$PRIV/profile-before-delete.json" 2>/dev/null \
    && "${PM[@]}" owned profile "$PRIV/profile-before-delete.json" --run-id "$RUN_ID" --managed-by "$OWNER_TAG_VALUE" --role "$BUILDER_ROLE_NAME" >/dev/null; then
