@@ -36,6 +36,9 @@ ExclusiveArch: x86_64
 Requires: %{_cross_os}glibc
 Requires: %{_cross_os}libgcc
 Requires: %{_cross_os}containerd
+# The shim builds each container's EROFS with mkfs.erofs and zstd, with no fallback. The
+# core kit builds erofs-utils --with-libzstd, and erofs-utils requires libzstd.
+Requires: %{_cross_os}erofs-utils
 
 %description
 %{summary}.
