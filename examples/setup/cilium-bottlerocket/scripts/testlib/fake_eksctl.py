@@ -20,6 +20,10 @@ log, and changes the world state (fakelib.py) as eksctl would:
                           marked with it. Like CloudFormation, it fails (exit 1, "DELETE_FAILED")
                           when the VPC still holds something the stack did not create: a live
                           instance, an ENI or a non-default security group (#281 M9).
+                          It records the stack events (cloudformation.events) as CloudFormation
+                          does. A cluster with "DeleteRefusals": N is refused by EKS on the
+                          first N deletes with the 409 of an update in progress; a cluster with
+                          "DeleteFailReason" fails each delete with that ControlPlane reason.
 
 Set state["eksctl"]["fail"] to {"<verb> <noun>": "message"} to make one verb fail after it logs.
 Environment: FAKE_EKSCTL_VERSION (default 0.232.0), plus FAKE_STATE, FAKE_LOG, FAKE_FAIL.
@@ -158,6 +162,16 @@ def create_pia(state, cfg, acct):
     return 0
 
 
+def stack_event(state, stack, logical, rtype, status, reason=""):
+    """Append one CloudFormation stack event (cloudformation.events, oldest first)."""
+    cfn = state.setdefault("cloudformation", {})
+    n = cfn["event_seq"] = cfn.get("event_seq", 0) + 1
+    cfn.setdefault("events", {}).setdefault(stack, []).append({
+        "EventId": f"fake-event-{n:06d}", "LogicalResourceId": logical, "ResourceType": rtype,
+        "ResourceStatus": status, "ResourceStatusReason": reason,
+        "Timestamp": f"2026-01-01T{n // 3600:02d}:{n // 60 % 60:02d}:{n % 60:02d}.000000+00:00"})
+
+
 def delete_cluster(state, name):
     clusters = state.setdefault("eks", {}).setdefault("clusters", {})
     if name not in clusters:
@@ -170,6 +184,23 @@ def delete_cluster(state, name):
     for aid in [a for a, v in state["eks"].get("pod_identity", {}).items() if v.get("clusterName") == name]:
         del state["eks"]["pod_identity"][aid]
     stacks = state.setdefault("cloudformation", {}).setdefault("stacks", {})
+    stack_event(state, stack, stack, "AWS::CloudFormation::Stack", "DELETE_IN_PROGRESS", "User Initiated")
+    cl = clusters[name]
+    refusals = int(cl.get("DeleteRefusals", 0))
+    reason = cl.get("DeleteFailReason", "")
+    if refusals > 0:
+        # As EKS answered in Phase 3b of #281: CloudFormation tries DeleteCluster, EKS refuses it.
+        cl["DeleteRefusals"] = refusals - 1
+        reason = (f"Cannot delete because cluster {name} currently has an update in progress (Service: Eks, "
+                  f"Status Code: 409, Request ID: 00000000-0000-4000-8000-feed{refusals:08x}) (SDK Attempt Count: 1)")
+    if reason:
+        stack_event(state, stack, "ControlPlane", "AWS::EKS::Cluster", "DELETE_FAILED", reason)
+        stack_event(state, stack, stack, "AWS::CloudFormation::Stack", "DELETE_FAILED",
+                    "The following resource(s) failed to delete: [ControlPlane]. ")
+        stacks[stack]["StackStatus"] = "DELETE_FAILED"
+        print("1 error(s) occurred while deleting cluster with nodegroup(s)\nwaiter state transitioned to Failure\n"
+              "Error: failed to delete cluster with nodegroup(s)", file=sys.stderr)
+        return 1
     prefix = f"eksctl-{name}-"
     mine = lambda x: str(x.get("Stack", "")).startswith(prefix)  # noqa: E731
     blockers = [x["InstanceId"] for x in ec2(state, "instances")
@@ -178,6 +209,10 @@ def delete_cluster(state, name):
     blockers += [x["GroupId"] for x in ec2(state, "security_groups") if x.get("VpcId") == vpc and not mine(x)]
     if blockers:
         stacks[stack]["StackStatus"] = "DELETE_FAILED"
+        stack_event(state, stack, "VPC", "AWS::EC2::VPC", "DELETE_FAILED",
+                    f"The vpc '{vpc}' has dependencies and cannot be deleted.")
+        stack_event(state, stack, stack, "AWS::CloudFormation::Stack", "DELETE_FAILED",
+                    "The following resource(s) failed to delete: [VPC]. ")
         print(f"Error: failed to delete cluster stack {stack}: DELETE_FAILED, the VPC {vpc} has dependencies: "
               f"{' '.join(blockers)}", file=sys.stderr)
         return 1

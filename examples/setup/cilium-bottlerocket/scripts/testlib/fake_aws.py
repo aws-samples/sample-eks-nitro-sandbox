@@ -27,6 +27,7 @@ State shape (every key optional):
                                  "roleArn", "tags"}}
   iam.roles, iam.profiles       as in ubuntu-ami (roles: Trust, Tags, Attached, Inline)
   cloudformation.stacks         {name: {"StackStatus", "Tags"}}
+  cloudformation.events         {stack name: [event, ...] oldest first}, written by fake_eksctl.py
 
 Environment:
   FAKE_AWS_VERSION   the version `aws --version` prints (default 2.31.0)
@@ -235,7 +236,8 @@ def visible(obj, by_id):
     o = json.loads(json.dumps(obj))
     if "RecheckTags" in o and ((by_id and "ChangeAfterCall" not in o) or fakelib.happened(o.get("ChangeAfterCall"))):
         o["TagSet" if "TagSet" in o else "tags" if "tags" in o and "Tags" not in o else "Tags"] = o["RecheckTags"]
-    for k in ("RecheckTags", "StaysAfterDelete", "DeleteFails", "Stack", "ChangeAfterCall", "AgedOut", "Statuses"):
+    for k in ("RecheckTags", "StaysAfterDelete", "DeleteFails", "Stack", "ChangeAfterCall", "AgedOut", "Statuses",
+              "DeleteRefusals", "DeleteFailReason"):
         o.pop(k, None)
     return o
 
@@ -823,6 +825,13 @@ def handle_cfn(state, op, sub, opts):
                         del objs[n]
                 s["StackStatus"] = "DELETE_COMPLETE"
         return None
+    if op == "describe-stack-events":
+        # The events that fake_eksctl.py records (cloudformation.events), newest first, as CloudFormation
+        # lists them. A stack that never existed is a ValidationError.
+        if name not in stacks:
+            raise ApiError("ValidationError", "DescribeStackEvents", f"Stack [{name}] does not exist")
+        events = state.get("cloudformation", {}).get("events", {}).get(name, [])
+        return {"StackEvents": [dict(e, StackName=name) for e in reversed(events)]}
     if op == "wait" and sub == "stack-delete-complete":
         s = stacks.get(name)
         if s and s.get("StackStatus") != "DELETE_COMPLETE":

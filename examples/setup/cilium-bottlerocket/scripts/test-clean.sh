@@ -385,4 +385,53 @@ full; world_py "s['iam']['roles']['$ROLE'].pop('Stack')"
 clean "$WORK/s4b-found.log"
 check "ACCEPT an operator role of the run that outlives its stack: read again, then deleted" 0 "$RC" "$WORK/s4b-found.log" "^deleted iam-role $ROLE\$"
 grep -q ' failures=0 verdict=clean$' "$V/verdict.txt"; check "  ... verdict failures=0 clean" 0 $? "$V/verdict.txt"
+
+echo "== the cluster delete that EKS refuses with 409 \"update in progress\" ==================="
+# After the last node group and the Pod Identity association went, EKS can refuse DeleteCluster
+# with 409 "currently has an update in progress" for minutes (#281, live). clean.sh runs eksctl
+# delete cluster again only on that ControlPlane reason, at most 4 tries (no wait here:
+# CB_SLEEP_SECONDS=0). Any other reason keeps the cluster at once.
+CL='s["eks"]["clusters"]["cb-offline-test"]'
+RETRY='^CLEAN RETRY E_CLUSTER_DELETE_BUSY: eksctl delete cluster, try '
+full; world_py "$CL[\"DeleteRefusals\"] = 1"
+clean "$WORK/busy-once.log"
+check "ACCEPT a cluster delete that EKS refuses once with 409 update in progress: tried again, nothing left" 0 "$RC" "$WORK/busy-once.log" '^CLEAN: run r1 .*nothing left behind\.$'
+cover accept E_CLUSTER_DELETE_BUSY
+[[ "$(count_calls eksctl 'delete cluster')" == 2 && "$(grep -c "$RETRY" "$WORK/busy-once.log")" == 1 ]] \
+  && grep -q "${RETRY}2 of 4 in 0 s; EKS answered: Cannot delete because cluster cb-offline-test currently has an update in progress (Service: Eks, Status Code: 409" "$WORK/busy-once.log" \
+  && ! alive '"cb-offline-test" in s["eks"]["clusters"]' && grep -q ' failures=0 verdict=clean$' "$V/verdict.txt" \
+  && grep -q '"ControlPlane"' "$V/cluster-stack-events-1.json"
+check "  ... one CLEAN RETRY line (try 2 of 4) with the reason, two eksctl delete cluster calls, the stack events kept, verdict failures=0 clean" 0 $? "$WORK/busy-once.log"
+full; world_py "$CL[\"DeleteRefusals\"] = 99"
+clean "$WORK/busy-always.log"
+check "REJECT a cluster delete that EKS refuses on every try: the named error after 4 tries" 1 "$RC" "$WORK/busy-always.log" \
+  '^ERROR: E_CLUSTER_DELETE_BUSY: EKS still refused DeleteCluster with 409 "update in progress" after 4 tries in [0-9]+ s; run \./clean\.sh again later$'
+[[ "$(count_calls eksctl 'delete cluster')" == 4 && "$(grep -c "$RETRY" "$WORK/busy-always.log")" == 3 ]] \
+  && grep -qx 'CLEAN FAILED: eksctl delete cluster cb-offline-test' "$WORK/busy-always.log" && alive '"cb-offline-test" in s["eks"]["clusters"]' \
+  && grep -q ' keep_cluster=0 failures=[1-9][0-9]* verdict=incomplete$' "$V/verdict.txt" && grep -qx 'eksctl delete cluster cb-offline-test' "$V/failures.txt"
+check "  ... 4 eksctl delete cluster calls, 3 CLEAN RETRY lines, then the failure line of today; the cluster stays; verdict incomplete" 0 $? "$WORK/busy-always.log"
+full; world_py "$CL[\"DeleteFailReason\"] = \"Resource handler returned message: User is not authorized to perform: eks:DeleteCluster (Service: Eks, Status Code: 403)\""
+clean "$WORK/busy-other.log"
+check "REJECT a cluster delete that fails for another ControlPlane reason: no retry, the cluster stays" 1 "$RC" "$WORK/busy-other.log" '^CLEAN FAILED: eksctl delete cluster cb-offline-test$'
+[[ "$(count_calls eksctl 'delete cluster')" == 1 ]] && ! grep -q '^CLEAN RETRY' "$WORK/busy-other.log" \
+  && grep -q 'not authorized to perform: eks:DeleteCluster (Service: Eks, Status Code: 403)' "$WORK/busy-other.log" \
+  && alive '"cb-offline-test" in s["eks"]["clusters"]' && grep -q ' verdict=incomplete$' "$V/verdict.txt"
+check "  ... one eksctl delete cluster call, no CLEAN RETRY line, the reason under the failure line, verdict incomplete" 0 $? "$WORK/busy-other.log"
+full; world_py 'v = s["eks"]["clusters"]["cb-offline-test"]["resourcesVpcConfig"]["vpcId"]
+s["ec2"]["network_interfaces"].append({"NetworkInterfaceId": "eni-0fd00000000000777", "VpcId": v, "Status": "in-use", "TagSet": []})'
+clean "$WORK/busy-vpc.log"
+check "REJECT a cluster stack delete that fails on the VPC (DELETE_FAILED, not the 409): no retry" 1 "$RC" "$WORK/busy-vpc.log" '^CLEAN FAILED: eksctl delete cluster cb-offline-test$'
+[[ "$(count_calls eksctl 'delete cluster')" == 1 ]] && ! grep -q '^CLEAN RETRY' "$WORK/busy-vpc.log" && alive '"cb-offline-test" in s["eks"]["clusters"]'
+check "  ... one eksctl delete cluster call, no CLEAN RETRY line, the cluster stays" 0 $? "$WORK/busy-vpc.log"
+full; world_py "$CL[\"DeleteRefusals\"] = 1"
+FAKE_FAIL='aws|cloudformation describe-stack-events||Throttling' clean "$WORK/busy-unread.log"
+check "REJECT a refused cluster delete whose stack events cannot be read: no retry" 1 "$RC" "$WORK/busy-unread.log" '^CLEAN FAILED: eksctl delete cluster cb-offline-test$'
+[[ "$(count_calls eksctl 'delete cluster')" == 1 ]] && ! grep -q '^CLEAN RETRY' "$WORK/busy-unread.log" \
+  && grep -q 'could not read the events of stack eksctl-cb-offline-test-cluster: .*Throttling' "$WORK/busy-unread.log"
+check "  ... one eksctl delete cluster call, no CLEAN RETRY line, the read error under the failure line" 0 $? "$WORK/busy-unread.log"
+full; world_py "$CL[\"DeleteRefusals\"] = 1"
+FAKE_FAIL='eksctl|delete cluster||Timeout||1' clean "$WORK/busy-stale.log"
+check "REJECT a retry that fails before a new stack delete (no new ControlPlane event): no further retry" 1 "$RC" "$WORK/busy-stale.log" '^CLEAN FAILED: eksctl delete cluster cb-offline-test$'
+[[ "$(count_calls eksctl 'delete cluster')" == 2 && "$(grep -c "$RETRY" "$WORK/busy-stale.log")" == 1 ]] && alive '"cb-offline-test" in s["eks"]["clusters"]'
+check "  ... two eksctl delete cluster calls and one CLEAN RETRY line: the old refusal is not retried again" 0 $? "$WORK/busy-stale.log"
 finish

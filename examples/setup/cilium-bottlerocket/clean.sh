@@ -12,7 +12,8 @@
 # resource again. Order (issue #281): (1) workloads, node groups, Cilium ENIs; (2) builder
 # instances, their volumes, the builder security group, instance profile and role; (3) launch
 # templates; (4) the AMI and its snapshots, unless --keep-ami; (5) the Pod Identity association
-# and the cluster stacks (VPC, NAT gateway, Elastic IP address, roles). Then it reads every
+# and the cluster stacks (VPC, NAT gateway, Elastic IP address, roles); a cluster delete that EKS
+# refuses with 409 "update in progress" runs again, up to 4 tries (CLEAN RETRY). Then it reads every
 # resource class and every ID of the state file again, and writes its verdict to
 # evidence/clean/verdict.txt. It exits non-zero when a resource remains or a lookup fails.
 # shellcheck source=../../../scripts/lib/require-bash.sh
@@ -265,6 +266,58 @@ delete_stack() {
   aws cloudformation delete-stack --region "$AWS_REGION" --stack-name "$1" \
     && aws cloudformation wait stack-delete-complete --region "$AWS_REGION" --stack-name "$1"
 }
+# The cluster delete is tried again only while EKS refuses DeleteCluster with HTTP 409
+# "currently has an update in progress". In a live run (#281), after the last node group and the
+# Pod Identity association went, EKS refused it from 39 s to at least 2 min 54 s after the
+# association delete, list-updates showed no update, and a delete 13 min 27 s after it passed.
+# A refused try takes about 4 min (CloudFormation tries DeleteCluster for about 2 min 15 s), so
+# 4 tries with 120 s between them reach about 16 min after the first try; no retry starts when it
+# would start more than 25 min after the first try. Each wait is 12 x CB_SLEEP_SECONDS (10 s).
+CLUSTER_DELETE_TRIES=4 CLUSTER_DELETE_BUDGET=1500
+# cluster_delete_refusal <try>: "<event ID> <reason>" of the ControlPlane DELETE_FAILED event of the
+# last delete of the cluster stack, or nothing. Non-zero when the events cannot be read.
+cluster_delete_refusal() {
+  local f="$OUT/cluster-stack-events-$1.json"
+  aws cloudformation describe-stack-events --region "$AWS_REGION" --stack-name "eksctl-$CLUSTER_NAME-cluster" \
+    --output json >"$f" 2>"$f.err" || return 2
+  python3 -c 'import json, sys
+events = sorted(json.load(open(sys.argv[1]))["StackEvents"], key=lambda e: e.get("Timestamp", ""), reverse=True)
+for e in events:
+    if e.get("ResourceType") == "AWS::CloudFormation::Stack" and e.get("ResourceStatus") == "DELETE_IN_PROGRESS":
+        break
+    if e.get("LogicalResourceId") == "ControlPlane" and e.get("ResourceStatus") == "DELETE_FAILED":
+        print(e.get("EventId", ""), " ".join(str(e.get("ResourceStatusReason", "")).split()))
+        break' "$f" 2>>"$f.err"
+}
+# delete_cluster: eksctl delete cluster, again after each new 409 "update in progress" refusal,
+# within the bounds above. Any other failure, or events that cannot be read, is not retried.
+delete_cluster() {
+  local try start=$SECONDS wait=$((12 * ${CB_SLEEP_SECONDS:-10})) refusal="" last="" r
+  for ((try = 1; try <= CLUSTER_DELETE_TRIES; try++)); do
+    if ((try > 1)); then
+      printf 'CLEAN RETRY E_CLUSTER_DELETE_BUSY: eksctl delete cluster, try %d of %d in %d s; EKS answered: %s\n' \
+        "$try" "$CLUSTER_DELETE_TRIES" "$wait" "${refusal#* }"
+      sleep "$wait"
+    fi
+    eksctl delete cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --disable-nodegroup-eviction --wait && return 0
+    r=0; refusal="$(cluster_delete_refusal "$try")" || r=$?
+    if ((r != 0)); then
+      fail "eksctl delete cluster $CLUSTER_NAME" "could not read the events of stack eksctl-$CLUSTER_NAME-cluster: $(tail -n 1 "$OUT/cluster-stack-events-$try.json.err")"
+      return 1
+    fi
+    if [[ "$refusal" != *"currently has an update in progress"* || "$refusal" != *"Status Code: 409"* \
+      || ( -n "$last" && "${refusal%% *}" == "$last" ) ]]; then
+      fail "eksctl delete cluster $CLUSTER_NAME" "${refusal#* }"
+      return 1
+    fi
+    last="${refusal%% *}"
+    if ((try == CLUSTER_DELETE_TRIES || SECONDS - start + wait > CLUSTER_DELETE_BUDGET)); then
+      fail "eksctl delete cluster $CLUSTER_NAME" "${refusal#* }"
+      printf 'ERROR: E_CLUSTER_DELETE_BUSY: EKS still refused DeleteCluster with 409 "update in progress" after %d tries in %d s; run ./clean.sh again later\n' "$try" "$((SECONDS - start))" >&2
+      return 1
+    fi
+  done
+}
 if ((sg_left)); then
   keep_cluster=1
   fail "the cluster and its VPC are kept, because $left_why"
@@ -288,8 +341,7 @@ elif [[ "$state" != NONE ]]; then
     fail "the cluster $CLUSTER_NAME and its VPC are kept, because a resource in it is not this run's or could not be read"
   else
     require_sample_cluster
-    eksctl delete cluster --region "$AWS_REGION" --name "$CLUSTER_NAME" --disable-nodegroup-eviction --wait \
-      || fail "eksctl delete cluster $CLUSTER_NAME"
+    delete_cluster
   fi
 else
   # The cluster is gone, but its eksctl stacks can remain (a run that stopped during eksctl
