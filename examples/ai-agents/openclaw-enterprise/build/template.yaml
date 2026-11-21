@@ -30,14 +30,12 @@ Parameters:
     Type: String
     AllowedPattern: ^[a-z0-9]+(?:[._/-][a-z0-9]+)*$
     ConstraintDescription: Use an ECR repository name in this account and Region.
-    Description: ECR repository containing a reviewed copy of the CodeBuild builder image.
+    Description: Run-owned private ECR repository containing the scanned CodeBuild builder image.
   BuilderImageDigest:
     Type: String
-    AllowedValues:
-      - sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660
     AllowedPattern: ^sha256:[0-9a-f]{64}$
-    ConstraintDescription: Use the reviewed CodeBuild standard 5.0 image digest.
-    Description: Digest of the reviewed privileged builder image in BuilderImageRepositoryName.
+    ConstraintDescription: Use an exact lowercase sha256 image digest.
+    Description: Digest of the scanned private builder image in BuilderImageRepositoryName.
   TrustedBuildInvokerArn:
     Type: String
     AllowedPattern: ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:(role|user)/[A-Za-z0-9+=,.@_/-]+$

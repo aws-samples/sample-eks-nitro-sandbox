@@ -5,7 +5,6 @@ umask 077
 
 readonly MANAGED_BY="openclaw-enterprise-sample"
 readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff" # pragma: allowlist secret -- public source revision
-readonly BUILDER_IMAGE_DIGEST="sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
 error_file=""
 scan_dir=""
 operation_lock=""
@@ -286,8 +285,6 @@ if [[ "$action" == create ]]; then
     die "--sample-revision must be a full lowercase Git SHA."
   valid_digest "$builder_digest" ||
     die "--builder-digest must be an exact lowercase sha256 digest."
-  [[ "$builder_digest" == "$BUILDER_IMAGE_DIGEST" ]] ||
-    die "--builder-digest must match the reviewed privileged builder image."
   [[ "$builder_repository" =~ ^[a-z0-9]+([._/-][a-z0-9]+)*$ ]] ||
     die "--builder-repository is not a valid ECR repository name."
   [[ "$trusted_invoker_arn" =~ ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:(role|user)/[A-Za-z0-9+=,.@_/-]+$ ]] ||

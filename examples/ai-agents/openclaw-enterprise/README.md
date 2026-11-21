@@ -44,7 +44,7 @@ Editable diagrams:
   for a new installation, or an existing installation that serves the
   `cert-manager.io/v1` `Issuer` and `Certificate` APIs. The adapter and
   AgentGateway manifests create these resources.
-- A reviewed, digest-pinned CodeBuild builder image in private Amazon ECR.
+- A scanned, digest-pinned CodeBuild builder image in private Amazon ECR.
 - Amazon Inspector enhanced scanning for Amazon ECR already enabled in the
   build account and Region, with a registry rule that covers
   `openclaw-enterprise/*`.
@@ -159,6 +159,7 @@ when your threat model requires those stronger boundaries.
 
 | Path | Purpose |
 |---|---|
+| [`build/codebuild-builder.Dockerfile`](build/codebuild-builder.Dockerfile) | Derive the privileged builder from a pinned CodeBuild image without its unused legacy ECS CLI. |
 | [`build/template.yaml`](build/template.yaml) | Build and scan the four deployable images. |
 | [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml) | Define the admission adapter; adjacent manifests define AgentGateway and storage settings. |
 | [`scripts/manage-builder-repository.sh`](scripts/manage-builder-repository.sh) | Create and delete one receipt-bound private builder repository. |
@@ -309,13 +310,15 @@ to images covered by the rule.
 
 **Step 2: Build and scan the images**
 
-Mirror the pinned CodeBuild standard 5.0 builder into private ECR. The build
-project selects the private copy by digest because this image runs privileged
-Docker and can write the four release images.
+Build a minimal overlay on the pinned CodeBuild standard 5.0 image and push it
+to private ECR. The overlay removes the unused legacy ECS CLI that otherwise
+adds an unnecessary vulnerable binary to the privileged builder. The build
+project selects the private image by digest, and the stack manager waits for
+Amazon Inspector to report no active HIGH or CRITICAL package findings before
+creating the build resources.
 
 ```bash
-export BUILDER_SOURCE_IMAGE='public.ecr.aws/codebuild/amazonlinux-x86_64-standard@sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660'
-export BUILDER_TAG='codebuild-5.0-20261102'
+export BUILDER_TAG='codebuild-5.0-without-legacy-ecs-cli'
 export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
 "$SAMPLE_DIR/scripts/manage-builder-repository.sh" create \
@@ -327,9 +330,12 @@ export BUILDER_REPOSITORY="$(
 
 aws ecr get-login-password --region "$AWS_REGION" |
   docker login --username AWS --password-stdin "$ECR_REGISTRY"
-docker pull --platform linux/amd64 "$BUILDER_SOURCE_IMAGE"
-docker tag "$BUILDER_SOURCE_IMAGE" \
-  "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
+docker build \
+  --platform linux/amd64 \
+  --pull \
+  --file "$SAMPLE_DIR/build/codebuild-builder.Dockerfile" \
+  --tag "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG" \
+  "$SAMPLE_DIR/build"
 docker push "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
 export BUILDER_DIGEST="$(
   aws ecr describe-images \
@@ -340,8 +346,6 @@ export BUILDER_DIGEST="$(
     --output text
 )"
 [[ "$BUILDER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-expected_builder_digest="${BUILDER_SOURCE_IMAGE##*@}"
-test "$BUILDER_DIGEST" = "$expected_builder_digest"
 
 export SAMPLE_GIT_REVISION="$(git -C ../../.. rev-parse HEAD)"
 "$SAMPLE_DIR/scripts/manage-image-build-stack.sh" create \
@@ -1434,7 +1438,7 @@ and volume is gone. If the process is forcibly terminated while a freeze is
 active, rerun the same cleanup command with the same private state. The stack
 manager deletes the image build workflow and its four ECR repositories,
 including the sample images, then marks its private receipt as deleted. The
-builder repository manager separately deletes only the exact private mirror
+builder repository manager separately deletes only the exact private builder
 recorded in its receipt after it verifies the AWS account, Region, repository
 ARN, and random ownership tag.
 

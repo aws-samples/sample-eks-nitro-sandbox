@@ -150,16 +150,26 @@ def test_readme_requires_nodejs_22_or_later_for_live_validation() -> None:
     ), "README prerequisites must require Node.js 22 or later"
 
 
-def test_readme_mirrors_a_pinned_builder_and_resolves_the_trusted_principal() -> None:
+def test_readme_builds_a_pinned_scanned_builder_and_resolves_the_principal() -> None:
     readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
     build_step = readme.split("**Step 2: Build and scan the images**", 1)[1].split(
         "**Step 3:", 1
     )[0]
     stack_manager = STACK_MANAGER.read_text(encoding="utf-8")
+    builder_dockerfile = (BUILD / "codebuild-builder.Dockerfile").read_text(
+        encoding="utf-8"
+    )
 
-    assert re.search(r"BUILDER_SOURCE_IMAGE='[^']+@sha256:[0-9a-f]{64}'", build_step)
-    assert "docker pull --platform linux/amd64" in build_step
-    assert 'test "$BUILDER_DIGEST" = "$expected_builder_digest"' in build_step
+    assert re.search(
+        r"^FROM public\.ecr\.aws/codebuild/[^@\s]+@sha256:[0-9a-f]{64}$",
+        builder_dockerfile,
+        re.MULTILINE,
+    )
+    assert "rm /usr/local/bin/ecs-cli" in builder_dockerfile
+    assert 'docker build \\' in build_step
+    assert "--platform linux/amd64" in build_step
+    assert "--pull" in build_step
+    assert 'build/codebuild-builder.Dockerfile"' in build_step
     assert 'manage-builder-repository.sh" create' in build_step
     assert "BUILDER_REPOSITORY_RECEIPT" in build_step
     assert '--builder-repository "$BUILDER_REPOSITORY"' in build_step
@@ -167,7 +177,7 @@ def test_readme_mirrors_a_pinned_builder_and_resolves_the_trusted_principal() ->
     assert '--trusted-build-invoker-arn "$TRUSTED_BUILD_INVOKER_ARN"' in build_step
     assert '"BuilderImageRepositoryName=$builder_repository"' in stack_manager
     assert '"BuilderImageDigest=$builder_digest"' in stack_manager
-    assert "must match the reviewed privileged builder image" in stack_manager
+    assert "verify_builder_scan" in stack_manager
     assert '"TrustedBuildInvokerArn=$trusted_invoker_arn"' in stack_manager
     assert "aws iam get-role" in readme
 

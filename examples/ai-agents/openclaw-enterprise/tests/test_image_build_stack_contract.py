@@ -288,7 +288,10 @@ def test_template_scopes_named_resources_to_a_validation_run() -> None:
             "${ValidationRunId}" in resources[logical_id]["Properties"]["LogGroupName"]
         )
     assert template["Outputs"]["ValidationRunId"]["Value"] == "ValidationRunId"
-    assert parameters["BuilderImageDigest"]["AllowedValues"] == [BUILDER_DIGEST]
+    assert parameters["BuilderImageDigest"]["AllowedPattern"] == (
+        "^sha256:[0-9a-f]{64}$"
+    )
+    assert "AllowedValues" not in parameters["BuilderImageDigest"]
     assert (
         "MaxSessionDuration" not in resources["ImageBuildInvocationRole"]["Properties"]
     )
