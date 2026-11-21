@@ -81,11 +81,12 @@ delete_if_ours() {
   local kind="$1" ident="$2" rc=0 out err="$OUT/recheck-$1-$2.err"
   shift 2
   python3 "$PY" recheck "$kind" "$ident" >/dev/null 2>"$err" || rc=$?
+  # Returns 0 when it deleted, 3 when the resource was already gone, 1 otherwise.
   case "$rc" in
-    0) if out="$("$@" 2>&1)"; then echo "deleted $kind $ident"; else fail "delete $kind $ident" "$out"; fi ;;
-    3) echo "$kind $ident: already gone" ;;
-    1) fail "$kind $ident is not tagged for run $RUN_ID; skipped" "$(cat "$err")" ;;
-    *) fail "could not read $kind $ident before the delete" "$(cat "$err")" ;;
+    0) if out="$("$@" 2>&1)"; then echo "deleted $kind $ident"; else fail "delete $kind $ident" "$out"; return 1; fi ;;
+    3) echo "$kind $ident: already gone"; return 3 ;;
+    1) fail "$kind $ident is not tagged for run $RUN_ID; skipped" "$(cat "$err")"; return 1 ;;
+    *) fail "could not read $kind $ident before the delete" "$(cat "$err")"; return 1 ;;
   esac
 }
 eks_tags_ours() { # eks_tags_ours <describe-args...>: 0 ours, 1 not, 2 unknown
@@ -191,12 +192,15 @@ done
 
 step "2/5 builder instances, their volumes, the builder security group, instance profile and role"
 builders="$(candidates "$OUT/after-1.jsonl" builder-instance BUILDER_INSTANCE_ID)"
+# Wait only for the instances that this run terminated now: one that is already gone never
+# reaches "terminated" in a waiter (EC2 stops listing it about an hour after it ends).
+builder_list=()
 for i in $builders; do
-  delete_if_ours instance "$i" aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$i"
+  r=0; delete_if_ours instance "$i" aws ec2 terminate-instances --region "$AWS_REGION" --instance-ids "$i" || r=$?
+  ((r != 0)) || builder_list+=("$i")
 done
-[[ -z "$builders" ]] || read -r -a builder_list <<<"$(tr '\n' ' ' <<<"$builders")"
-[[ -z "$builders" ]] || aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids "${builder_list[@]}" \
-  || fail "builder instances did not reach terminated: $(tr '\n' ' ' <<<"$builders")"
+((${#builder_list[@]} == 0)) || aws ec2 wait instance-terminated --region "$AWS_REGION" --instance-ids "${builder_list[@]}" \
+  || fail "builder instances did not reach terminated: ${builder_list[*]}"
 inventory "$OUT/after-2a.jsonl" || { fail "could not list the resources after the builder instances; no further delete" "$(cat "$OUT/after-2a.jsonl.err")"; finish_clean; }
 for v in $(candidates "$OUT/after-2a.jsonl" builder-volume BUILDER_VOLUME_IDS); do
   delete_if_ours volume "$v" aws ec2 delete-volume --region "$AWS_REGION" --volume-id "$v"
@@ -262,6 +266,7 @@ delete_stack() {
     && aws cloudformation wait stack-delete-complete --region "$AWS_REGION" --stack-name "$1"
 }
 if ((sg_left)); then
+  keep_cluster=1
   fail "the cluster and its VPC are kept, because $left_why"
 elif [[ "$state" != NONE ]]; then
   # An association that is not the run's, or that cannot be read, keeps the cluster too.
@@ -301,7 +306,8 @@ if [[ "$(cluster_state)" == NONE ]]; then
   if ((r == 0)); then
     delete_if_ours iam-role "$OPERATOR_ROLE_NAME" delete_role "$OPERATOR_ROLE_NAME"
   elif ! grep -q NoSuchEntity <<<"$out"; then
-    fail "could not read role $OPERATOR_ROLE_NAME"
+    printf '%s\n' "$out" >"$OUT/oprole-read.err"
+    fail "could not read role $OPERATOR_ROLE_NAME" "$out"
   fi
 fi
 finish_clean

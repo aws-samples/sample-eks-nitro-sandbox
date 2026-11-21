@@ -51,7 +51,11 @@ def describe(kind, ident):
     try:
         item = pick(doc)
     except (KeyError, IndexError) as err:
-        if kind == "image" and not doc.get("Images"):
+        # A deregistered image, and an instance that was terminated about an hour ago or more,
+        # come back as an empty list with exit 0, not as a NotFound error (live S4, 05:36Z:
+        # describe-instances answered {"Reservations": []} for the builder of the run).
+        empty = {"image": "Images", "instance": "Reservations"}
+        if kind in empty and isinstance(doc.get(empty[kind]), list) and not doc[empty[kind]]:
             return False, None, None
         raise Unknown(f"{kind} {ident}: unexpected answer") from err
     if kind == "instance" and item["State"]["Name"] == "terminated":
