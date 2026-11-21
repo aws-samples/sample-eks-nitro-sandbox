@@ -116,11 +116,11 @@ def test_client_key_comes_only_from_a_kubernetes_secret():
     }
     assert api_key["keys"] == [
         {
-            "keyHash": "${AGW_TENANT_A_KEY_SHA256}",
+            "keyHash": "sha256:${AGW_TENANT_A_KEY_SHA256}",
             "allowedModels": [MODEL_ALIAS],
         },
         {
-            "keyHash": "${AGW_TENANT_B_KEY_SHA256}",
+            "keyHash": "sha256:${AGW_TENANT_B_KEY_SHA256}",
             "allowedModels": [MODEL_ALIAS],
         },
     ]

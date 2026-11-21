@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_DIR
 readonly OWNER_LABEL_KEY="app.kubernetes.io/managed-by"
 readonly OWNER_LABEL_VALUE="openclaw-enterprise-blueprint"
 readonly OCE_OWNER_LABEL_VALUE="openclaw-enterprise"

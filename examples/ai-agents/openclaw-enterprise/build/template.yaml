@@ -20,10 +20,12 @@ Parameters:
     Description: Exact OpenClaw Enterprise commit for controller and runtime images.
   ControllerRuntimeBaseImageDigest:
     Type: String
-    Default: sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
+    Default: sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a
+    AllowedValues:
+      - sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a
     AllowedPattern: ^sha256:[0-9a-f]{64}$
     ConstraintDescription: Use an exact lowercase sha256 image digest.
-    Description: Digest for the allowlisted public Node 24 Bookworm slim controller base.
+    Description: Digest for the allowlisted distroless Node 24 Debian 13 controller base.
   BuilderImageRepositoryName:
     Type: String
     AllowedPattern: ^[a-z0-9]+(?:[._/-][a-z0-9]+)*$

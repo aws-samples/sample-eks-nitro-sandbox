@@ -123,9 +123,10 @@ when your threat model requires those stronger boundaries.
 | AgentGateway | `v1.7.0`, digest-pinned in `deploy/agentgateway.yaml` |
 | Amazon Bedrock model | `amazon.nova-lite-v1:0` in `us-west-2` |
 | Adapter, controller, ownership helper, runtime | Digest-qualified outputs from one successful CodeBuild run |
+| Controller runtime base | Allowlisted, digest-pinned distroless Node.js 24 on Debian 13 (`nonroot`); the build verifies Node.js 24.22.1+, UID and GID 1000, and the absence of shell and package-manager tools. |
 | cert-manager | `v1.21.3` |
 | Validation PostgreSQL | `16.16-bookworm`, digest-pinned in Step 6 |
-| Node.js | `22` or later |
+| Local Node.js tooling | `22` or later |
 | `yq` | Mike Farah `yq` `v4.54.3` |
 
 ## Files
@@ -1340,10 +1341,11 @@ The command exits zero only after it verifies:
    partition, and all three boot identities differ.
 6. AgentGateway rejects missing and incorrect tenant keys and accepts the
    matching tenant key over verified TLS.
-7. Each native OpenClaw gateway rejects an unauthenticated request, returns its
-   requested nonce through AgentGateway and Amazon Bedrock, and records one
-   unique `exec` tool call, at least one correlated successful result, and
-   exactly one requested final reply.
+7. Each native OpenClaw gateway rejects an unauthenticated request, returns the
+   exact nonce-bound answer to a freshly generated random arithmetic challenge
+   through AgentGateway and Amazon Bedrock, and records one unique `exec` tool
+   call, at least one correlated successful result, and exactly one requested
+   final reply.
 8. Each validator key reads its own OCE namespace and agent; both cross-tenant
    reads return HTTP `403` with code `FORBIDDEN`.
 9. Tenant A's `.openclaw` marker and model path survive controller-driven pod

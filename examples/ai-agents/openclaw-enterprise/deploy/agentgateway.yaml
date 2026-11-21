@@ -103,9 +103,9 @@ data:
               name: authorization
               prefix: "Bearer "
           keys:
-            - keyHash: ${AGW_TENANT_A_KEY_SHA256}
+            - keyHash: sha256:${AGW_TENANT_A_KEY_SHA256}
               allowedModels: ["nova-lite"]
-            - keyHash: ${AGW_TENANT_B_KEY_SHA256}
+            - keyHash: sha256:${AGW_TENANT_B_KEY_SHA256}
               allowedModels: ["nova-lite"]
       models:
         - name: nova-lite

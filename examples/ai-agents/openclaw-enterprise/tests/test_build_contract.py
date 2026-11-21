@@ -849,14 +849,19 @@ def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() 
     assert "ARG NODE_BUILD_BASE_IMAGE" in dockerfile
     assert "ARG NODE_RUNTIME_BASE_IMAGE" in dockerfile
     assert "FROM ${NODE_BUILD_BASE_IMAGE} AS dependencies" in dockerfile
-    assert dockerfile.count("FROM ${NODE_RUNTIME_BASE_IMAGE}") == 2
+    assert "FROM ${NODE_BUILD_BASE_IMAGE} AS console-build" in dockerfile
+    assert "FROM ${NODE_BUILD_BASE_IMAGE} AS runtime-prepared" in dockerfile
+    assert dockerfile.count("FROM ${NODE_RUNTIME_BASE_IMAGE}") == 1
     runtime = dockerfile.split(
         "FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime", maxsplit=1
     )[1]
     assert "FROM ${NODE_BUILD_BASE_IMAGE}" not in runtime
+    prepared = dockerfile.split(
+        "FROM ${NODE_BUILD_BASE_IMAGE} AS runtime-prepared", maxsplit=1
+    )[1].split("FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime", maxsplit=1)[0]
     assert (
-        "COPY --from=runtime-dependencies --chown=node:node "
-        "/app/node_modules node_modules" in runtime
+        "COPY --from=runtime-dependencies --chown=1000:1000 "
+        "/app/node_modules node_modules" in prepared
     )
     for workspace in (
         "apps/controller",
@@ -866,20 +871,34 @@ def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() 
         "packages/occ",
     ):
         assert (
-            "COPY --from=runtime-dependencies --chown=node:node "
-            f"/app/{workspace}/node_modules {workspace}/node_modules" in runtime
+            "COPY --from=runtime-dependencies --chown=1000:1000 "
+            f"/app/{workspace}/node_modules {workspace}/node_modules" in prepared
         )
     assert "COPY --from=dependencies" not in runtime
     assert (
         "RUN --mount=type=bind,source=pnpm-lock.yaml,"
-        "target=/app/pnpm-lock.yaml,readonly" in runtime
+        "target=/app/pnpm-lock.yaml,readonly" in prepared
     )
     assert "COPY --chown=node:node pnpm-lock.yaml" not in runtime
-    assert "delete packageJson.devDependencies" in runtime
-    assert "delete packageJson.scripts" in runtime
-    assert "delete packageJson.packageManager" in runtime
-    assert "/usr/local/lib/node_modules/npm" in runtime
-    assert "/usr/local/lib/node_modules/corepack" in runtime
+    assert "delete packageJson.devDependencies" in prepared
+    assert "delete packageJson.scripts" in prepared
+    assert "delete packageJson.packageManager" in prepared
+    runtime_run_lines = [
+        line for line in runtime.splitlines() if line.startswith("RUN ")
+    ]
+    assert runtime_run_lines == [
+        next(
+            line
+            for line in runtime.splitlines()
+            if line.startswith('RUN ["/nodejs/bin/node", "-e",')
+        )
+    ]
+    assert "RUN apt-get" not in runtime
+    assert "/usr/local/lib/node_modules/npm" not in runtime
+    assert "/usr/local/lib/node_modules/corepack" not in runtime
+    assert "COPY --from=runtime-prepared --chown=1000:1000 /app /app" in runtime
+    assert 'ENV PATH="/nodejs/bin:${PATH}"' in runtime
+    assert "USER 1000:1000" in runtime
     for package in (
         "esbuild@*",
         "@esbuild+*",
@@ -888,7 +907,7 @@ def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() 
         "drizzle-kit@*",
     ):
         assert package in dockerfile
-    assert 'ENTRYPOINT ["node"]' in runtime
+    assert 'ENTRYPOINT ["/nodejs/bin/node"]' in runtime
     assert 'CMD ["apps/controller/src/server.mjs"]' in runtime
 
 
@@ -896,17 +915,44 @@ def test_controller_runtime_base_has_an_allowlisted_repository_and_exact_digest(
     None
 ):
     script = SCRIPT.read_text(encoding="utf-8")
+    template = _template()
+    parameter = template["Parameters"]["ControllerRuntimeBaseImageDigest"]
+    digest = "sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a"
+
+    assert parameter["Default"] == digest
+    assert parameter["AllowedValues"] == [digest]
     assert (
         'readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="'
-        'public.ecr.aws/docker/library/node"' in script
+        'gcr.io/distroless/nodejs24-debian13"' in script
     )
-    assert 'readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="24-bookworm-slim"' in script
+    assert 'readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="nonroot"' in script
+    assert (
+        f'readonly CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST="{digest}"'
+        in script
+    )
+    assert (
+        '"$CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST" == '
+        '"$CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST"' in script
+    )
     assert (
         'readonly CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY}:'
         "${CONTROLLER_RUNTIME_BASE_IMAGE_TAG}@"
         '${CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST}"' in script
     )
     assert "${CONTROLLER_RUNTIME_BASE_IMAGE:-" not in script
+
+
+def test_controller_runtime_verifies_final_image_security_properties() -> None:
+    dockerfile = CONTROLLER_DOCKERFILE.read_text(encoding="utf-8")
+    runtime = dockerfile.split(" AS runtime\n", 1)[1]
+
+    assert runtime.count('RUN ["/nodejs/bin/node", "-e",') == 1
+    assert "process.versions.node" in runtime
+    assert "process.getuid() !== 1000 || process.getgid() !== 1000" in runtime
+    for path in ("/bin/sh", "/bin/bash", "/usr/bin/apt", "/usr/bin/apt-get", "/usr/bin/dpkg"):
+        assert path in runtime
+    assert 'ENTRYPOINT ["/nodejs/bin/node"]' in runtime
+    assert 'CMD ["apps/controller/src/server.mjs"]' in runtime
 
 
 def test_build_outputs_are_verified_digest_references() -> None:

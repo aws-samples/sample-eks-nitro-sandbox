@@ -1957,10 +1957,10 @@ verify_agentgateway_key_contract() {
     if (!key) process.exit(70);
     const ca = fs.readFileSync("/etc/agentgateway-ca/ca.crt");
 
-    function request(token, nonce) {
+    function request(token, prompt) {
       const body = JSON.stringify({
         model: "nova-lite",
-        input: `Reply with exactly this nonce and no other text: ${nonce}`
+        input: prompt
       });
       const headers = {
         "content-type": "application/json",
@@ -1970,7 +1970,7 @@ verify_agentgateway_key_contract() {
       return new Promise((resolve, reject) => {
         const operation = https.request({
           hostname: "agentgateway.openclaw-enterprise-agw.svc.cluster.local",
-          port: 4000,
+          port: 443,
           path: "/v1/responses",
           method: "POST",
           ca,
@@ -2008,20 +2008,24 @@ verify_agentgateway_key_contract() {
     const normalize = value => value.normalize("NFKC").trim();
 
     (async () => {
-      const nonce = `AGW_KEY_${crypto.randomBytes(12).toString("hex")}`;
-      const noKey = await request(null, nonce);
+      const nonce = crypto.randomBytes(12).toString("hex");
+      const left = crypto.randomInt(100, 500);
+      const right = crypto.randomInt(100, 500);
+      const expected = `${nonce}:${left + right}`;
+      const prompt = `The verification nonce is ${nonce}. Calculate ${left} + ${right}. Reply in exactly this form: ${nonce}:<answer>.`;
+      const noKey = await request(null, prompt);
       const wrongKey = await request(
         `wrong-${crypto.randomBytes(24).toString("hex")}`,
-        nonce
+        prompt
       );
       if (![401, 403].includes(noKey.status)) process.exit(71);
       if (![401, 403].includes(wrongKey.status)) process.exit(72);
-      const accepted = await request(key, nonce);
+      const accepted = await request(key, prompt);
       let parsed;
       try { parsed = JSON.parse(accepted.body); } catch { process.exit(73); }
       if (
         accepted.status !== 200
-        || normalize(outputText(parsed)) !== normalize(nonce)
+        || normalize(outputText(parsed)) !== expected
       ) {
         process.exit(74);
       }
@@ -2030,7 +2034,7 @@ verify_agentgateway_key_contract() {
         noKeyStatus: noKey.status,
         wrongKeyStatus: wrongKey.status,
         acceptedStatus: accepted.status,
-        nonceMatch: true
+        challengeMatch: true
       }));
     })().catch(() => process.exit(75));
   ' >"$output_file"
@@ -2039,7 +2043,7 @@ verify_agentgateway_key_contract() {
     and (.noKeyStatus == 401 or .noKeyStatus == 403)
     and (.wrongKeyStatus == 401 or .wrongKeyStatus == 403)
     and .acceptedStatus == 200
-    and .nonceMatch == true
+    and .challengeMatch == true
   ' "$output_file" >/dev/null ||
     die "AgentGateway key authorization did not deny both invalid cases and accept the tenant key"
 }
@@ -2109,7 +2113,10 @@ call_native_openclaw_model() {
       }, false);
       if (![401, 403].includes(denied.status)) process.exit(50);
 
-      const nonce = `OPENCLAW_LIVE_${crypto.randomBytes(12).toString("hex")}`;
+      const nonce = crypto.randomBytes(12).toString("hex");
+      const left = crypto.randomInt(100, 500);
+      const right = crypto.randomInt(100, 500);
+      const expected = `${nonce}:${left + right}`;
       const traceId = crypto.randomBytes(16).toString("hex");
       const parentSpanId = crypto.randomBytes(8).toString("hex");
       const traceparent = `00-${traceId}-${parentSpanId}-01`;
@@ -2118,7 +2125,7 @@ call_native_openclaw_model() {
         stream: false,
         messages: [{
           role: "user",
-          content: `Reply with exactly this nonce and no other text: ${nonce}`
+          content: `The verification nonce is ${nonce}. Calculate ${left} + ${right}. Reply in exactly this form: ${nonce}:<answer>.`
         }]
       }, true, traceparent);
       let parsed;
@@ -2128,7 +2135,7 @@ call_native_openclaw_model() {
       if (
         response.status !== 200
         || typeof text !== "string"
-        || normalize(text) !== normalize(nonce)
+        || normalize(text) !== expected
       ) {
         process.exit(52);
       }
@@ -2138,7 +2145,7 @@ call_native_openclaw_model() {
         model: parsed.model,
         requestId: parsed.id,
         traceId,
-        nonceMatch: true
+        challengeMatch: true
       }));
     })().catch(() => process.exit(53));
   ' >"$output_file"
@@ -2148,7 +2155,7 @@ call_native_openclaw_model() {
     and .model == $model
     and (.requestId | type == "string" and test("^chatcmpl_[A-Za-z0-9_-]{8,}$"))
     and (.traceId | type == "string" and test("^[0-9a-f]{32}$"))
-    and .nonceMatch == true
+    and .challengeMatch == true
   ' "$output_file" >/dev/null ||
     die "native OpenClaw gateway authentication or model response did not match the contract"
 }
@@ -2419,7 +2426,7 @@ CURRENT_CHECK="agentgateway-model-telemetry"
 capture_agentgateway_model_evidence \
   "$WORK_DIR/model-response-b.json" "tenant-b" "$MODEL_STARTED_AT"
 record_pass "native-openclaw-model-turn" \
-  "both native OpenClaw gateways rejected anonymous access and returned only their requested nonce"
+  "both native OpenClaw gateways rejected anonymous access and answered their random arithmetic challenge"
 record_pass "agentgateway-model-telemetry" \
   "both native requests matched one AgentGateway Bedrock model invocation and request ID"
 CURRENT_CHECK="native-openclaw-tool-execution"

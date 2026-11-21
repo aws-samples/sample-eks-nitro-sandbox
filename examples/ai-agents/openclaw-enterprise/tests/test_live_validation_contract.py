@@ -832,7 +832,7 @@ FAKE_COMMAND = textwrap.dedent(
                 "noKeyStatus": no_key_status,
                 "wrongKeyStatus": wrong_key_status,
                 "acceptedStatus": accepted_status,
-                "nonceMatch": scenario != "agw_key_nonce_mismatch",
+                "challengeMatch": scenario != "agw_key_challenge_mismatch",
             }})
             sys.exit(0)
         if "LIVE_NATIVE_TOOL_EXECUTION" in joined:
@@ -984,7 +984,7 @@ FAKE_COMMAND = textwrap.dedent(
                 ),
                 "requestId": "chatcmpl_" + format(model_call_count, "032x"),
                 "traceId": format(model_call_count, "032x"),
-                "nonceMatch": scenario != "nonce_suffix",
+                "challengeMatch": scenario != "challenge_mismatch",
             }})
             sys.exit(0)
         if "persistent-ok" in joined and remote[:3] == ["sh", "-eu", "-c"]:
@@ -2150,7 +2150,7 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
         ("cross_tenant_pvc_mounted", "tenant-storage-isolation"),
         ("post_create_uid_failure", "tenant-storage-isolation"),
         ("uid_precondition_rejected", "controller-driven-persistence"),
-        ("nonce_suffix", "native-openclaw-model-turn"),
+        ("challenge_mismatch", "native-openclaw-model-turn"),
         ("wrong_native_model", "native-openclaw-model-turn"),
         ("wrong_agw_model", "agentgateway-model-telemetry"),
         ("missing_agw_trace", "agentgateway-model-telemetry"),
@@ -2173,7 +2173,7 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
         ("agw_correct_key_denied", "agentgateway-key-authorization"),
         ("agw_tenant_b_correct_key_denied", "agentgateway-key-authorization"),
         ("agw_key_marker_missing", "agentgateway-key-authorization"),
-        ("agw_key_nonce_mismatch", "agentgateway-key-authorization"),
+        ("agw_key_challenge_mismatch", "agentgateway-key-authorization"),
         ("agw_key_malformed_output", "agentgateway-key-authorization"),
         ("native_tool_marker_missing", "native-openclaw-tool-execution"),
         ("native_tool_malformed_output", "native-openclaw-tool-execution"),
@@ -2260,13 +2260,15 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert 'process.env.OPENCLAW_GATEWAY_PASSWORD || ""' in source
     assert 'hostname: "127.0.0.1"' in source
     assert 'path: "/v1/chat/completions"' in source
-    assert "OPENCLAW_LIVE_" in source
+    assert "crypto.randomInt(100, 500)" in source
+    assert source.count('crypto.randomBytes(12).toString("hex")') == 2
+    assert source.count("const expected = `${nonce}:${left + right}`;") == 2
+    assert source.count("${nonce}:<answer>") == 2
     assert 'value.normalize("NFKC").trim()' in source
-    assert "normalize(text) !== normalize(nonce)" in source
-    assert "!text.includes(nonce)" not in source
+    assert "normalize(text) !== expected" in source
     assert "model: parsed.model" in source
     assert "requestId: parsed.id" in source
-    assert "nonceMatch: true" in source
+    assert "challengeMatch: true" in source
     assert "headers.traceparent = traceparent" in source
     assert 'AGW_MODEL_ID="nova-lite"' in source
     assert 'BEDROCK_MODEL_ID="amazon.nova-lite-v1:0"' in source
@@ -2320,13 +2322,15 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "export TENANT_B_CREDENTIAL" not in source
     assert """printf '%s\\0%s' "$request_url" "$credential" |""" in source
     assert 'const separator = input.indexOf("\\0");' in source
+    assert 'hostname: "agentgateway.openclaw-enterprise-agw.svc.cluster.local"' in source
+    assert "port: 443" in source
     assert 'path: "/v1/responses"' in source
     assert "if (token !== null) headers.authorization = `Bearer ${token}`;" in source
     assert 'marker: "LIVE_AGENTGATEWAY_KEY_CONTRACT"' in source
     assert ".noKeyStatus == 401 or .noKeyStatus == 403" in source
     assert ".wrongKeyStatus == 401 or .wrongKeyStatus == 403" in source
     assert ".acceptedStatus == 200" in source
-    assert ".nonceMatch == true" in source
+    assert ".challengeMatch == true" in source
     assert "verify_agentgateway_key_contract" in source
     assert 'operation.destroy(new Error("response too large"))' in source
     assert 'response.on("data", chunk => { responseBody += chunk; });' not in source

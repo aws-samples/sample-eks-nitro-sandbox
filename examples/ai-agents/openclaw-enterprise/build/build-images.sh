@@ -30,8 +30,9 @@ require_digest() {
 }
 
 readonly OCE_REPOSITORY_URL="https://github.com/openclaw/openclaw-enterprise.git"
-readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="public.ecr.aws/docker/library/node"
-readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="24-bookworm-slim"
+readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="gcr.io/distroless/nodejs24-debian13"
+readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="nonroot"
+readonly CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST="sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a"
 
 require_value CODEBUILD_BUILD_ARN
 require_value CODEBUILD_SRC_DIR
@@ -46,6 +47,8 @@ require_value BUILD_OUTPUT_ENV
 require_sha SAMPLE_GIT_REVISION
 require_sha OCE_GIT_REVISION
 require_digest CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST
+[[ "$CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST" == "$CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST" ]] ||
+  die "CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST is not the reviewed distroless Node runtime"
 
 [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || die "AWS_ACCOUNT_ID must be 12 digits"
 [[ "${TARGET_PLATFORM:-linux/amd64}" =~ ^linux/(amd64|arm64)$ ]] ||
