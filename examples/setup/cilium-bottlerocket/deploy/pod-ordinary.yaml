@@ -3,6 +3,11 @@
 #   node kernel, the node uptime and the nvme disks of the instance.
 #   cb-ordinary-system-node runs on the system node.
 # test.sh runs the same pod-to-pod, ClusterIP Service and DNS checks from both.
+# What the comparison needs: no runtimeClassName, so the pod runs on the node kernel; the same
+# image, command, user, probes and hardening as cb-sandbox (default seccomp filter, no service
+# account token, no capabilities, read-only root file system), so the runtime class is the only
+# difference; and, for cb-ordinary-sandbox-node, the sandbox node. Reading uname, /proc/uptime,
+# /sys/block and /sys/class/dmi needs no write and no capability.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -14,6 +19,7 @@ metadata:
 spec:
   nodeSelector:
     eks.amazonaws.com/nodegroup: sandbox
+  automountServiceAccountToken: false
   tolerations:
     - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
       operator: Equal
@@ -23,12 +29,25 @@ spec:
     runAsNonRoot: true
     runAsUser: 65534
     runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
       command: ["sleep", "86400"]
+      # The same exec probes as cb-sandbox: kill -0 1 checks the main process.
+      readinessProbe:
+        exec:
+          command: ["kill", "-0", "1"]
+        timeoutSeconds: 5
+      livenessProbe:
+        exec:
+          command: ["kill", "-0", "1"]
+        periodSeconds: 30
+        timeoutSeconds: 5
       securityContext:
         allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
         capabilities:
           drop: ["ALL"]
 ---
@@ -43,15 +62,28 @@ metadata:
 spec:
   nodeSelector:
     eks.amazonaws.com/nodegroup: system
+  automountServiceAccountToken: false
   securityContext:
     runAsNonRoot: true
     runAsUser: 65534
     runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
       command: ["sleep", "86400"]
+      readinessProbe:
+        exec:
+          command: ["kill", "-0", "1"]
+        timeoutSeconds: 5
+      livenessProbe:
+        exec:
+          command: ["kill", "-0", "1"]
+        periodSeconds: 30
+        timeoutSeconds: 5
       securityContext:
         allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
         capabilities:
           drop: ["ALL"]

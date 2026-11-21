@@ -1,7 +1,8 @@
 # The network-isolated sandbox pod. The annotation sandbox.amazonaws.com/network-isolated: "true"
 # boots the guest with loopback only: no network interface, no route and no DNS. kubectl exec
 # still operates, because it uses the internal control channel of the guest. test.sh shows each
-# of these three results.
+# of these three results. The pod has the same hardening as cb-sandbox: what test.sh runs in it
+# (ip -o addr, ip route, nslookup) writes no file.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -14,6 +15,7 @@ metadata:
     sandbox.amazonaws.com/network-isolated: "true"
 spec:
   runtimeClassName: isolated-sandbox
+  automountServiceAccountToken: false
   tolerations:
     - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
       operator: Equal
@@ -23,11 +25,25 @@ spec:
     runAsNonRoot: true
     runAsUser: 65534
     runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: main
       image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
       command: ["sleep", "86400"]
+      # The same exec probes as cb-sandbox: kill -0 1 checks the main process. They need no
+      # network: kubelet runs them through the guest's internal control channel, as kubectl exec.
+      readinessProbe:
+        exec:
+          command: ["kill", "-0", "1"]
+        timeoutSeconds: 5
+      livenessProbe:
+        exec:
+          command: ["kill", "-0", "1"]
+        periodSeconds: 30
+        timeoutSeconds: 5
       securityContext:
         allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
         capabilities:
           drop: ["ALL"]
