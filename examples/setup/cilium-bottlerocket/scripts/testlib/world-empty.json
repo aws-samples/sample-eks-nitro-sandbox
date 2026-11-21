@@ -1,0 +1,50 @@
+{
+ "account": "111122223333",
+ "availability_zones": [
+  {"ZoneName": "us-west-2b", "State": "available", "RegionName": "us-west-2"},
+  {"ZoneName": "us-west-2c", "State": "available", "RegionName": "us-west-2"}
+ ],
+ "instance_types": {
+  "m8i.xlarge": {"NitroEnclavesSupport": "supported", "VCpuInfo": {"DefaultVCpus": 4},
+   "NetworkInfo": {"MaximumNetworkInterfaces": 4, "Ipv4AddressesPerInterface": 30}},
+  "m8i.4xlarge": {"NitroEnclavesSupport": "supported", "VCpuInfo": {"DefaultVCpus": 16},
+   "NetworkInfo": {"MaximumNetworkInterfaces": 8, "Ipv4AddressesPerInterface": 30}},
+  "m8i.large": {"NitroEnclavesSupport": "unsupported", "VCpuInfo": {"DefaultVCpus": 2},
+   "NetworkInfo": {"MaximumNetworkInterfaces": 3, "Ipv4AddressesPerInterface": 10}}
+ },
+ "quotas": {
+  "vpc/L-F678F1CE": 10.0,
+  "vpc/L-A4707A72": 10.0,
+  "vpc/L-FE5A380F": 5.0,
+  "ec2/L-0263D0A3": 5.0
+ },
+ "ssm": {
+  "parameters": {
+   "/aws/service/bottlerocket/aws-k8s-1.36/x86_64/1.70.0/image_id": "ami-0fa00000000000001",
+   "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64": "ami-0fa00000000000002"
+  },
+  "online": true,
+  "results": [],
+  "commands": {}
+ },
+ "ec2": {
+  "images": [
+   {"ImageId": "ami-0fa00000000000001", "Name": "bottlerocket-aws-k8s-1.36-x86_64-v1.70.0-59b0684a",
+    "State": "available", "Architecture": "x86_64", "Public": true, "ImageOwnerAlias": "amazon",
+    "VirtualizationType": "hvm", "BootMode": "uefi-preferred", "RootDeviceName": "/dev/xvda",
+    "BlockDeviceMappings": [], "Tags": []},
+   {"ImageId": "ami-0fa00000000000002", "Name": "al2023-ami-2023.9.20261110.0-kernel-6.12-x86_64",
+    "State": "available", "Architecture": "x86_64", "Public": true,
+    "VirtualizationType": "hvm", "BlockDeviceMappings": [], "Tags": []}
+  ],
+  "instances": [], "volumes": [], "snapshots": [], "security_groups": [], "launch_templates": [],
+  "network_interfaces": [], "vpcs": [], "subnets": [], "nat_gateways": [], "addresses": [],
+  "internet_gateways": [], "key_pairs": [], "route_tables": []
+ },
+ "eks": {"clusters": {}, "nodegroups": {}, "addons": {}, "pod_identity": {}},
+ "iam": {"roles": {}, "profiles": {}},
+ "cloudformation": {"stacks": {}},
+ "k8s": {"objects": {}, "answers": [], "exec": []},
+ "helm": {"releases": {}},
+ "packer": {"manifest": "one-ami", "snapshots": 2, "leftovers": [], "hang": "", "build_rc": 0}
+}

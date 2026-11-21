@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""A small fake of eksctl, for this sample's offline tests only.
+
+It reads the rendered ClusterConfig that the real script passes with -f, records it in the call
+log, and changes the world state (fakelib.py) as eksctl would:
+
+  create cluster -f       an ACTIVE cluster with the config's metadata.tags, its cluster stack,
+                          a VPC, two private and two public subnets, an internet gateway, one NAT
+                          gateway and one Elastic IP address, each marked with the stack name and
+                          the config's tags; writes the kubeconfig named by --kubeconfig
+  create nodegroup -f     each managedNodeGroups entry: a node group and its stack
+  create podidentityassociation -f
+                          each iam.podIdentityAssociations entry: an association and its role
+  utils write-kubeconfig  writes a placeholder kubeconfig at --kubeconfig
+  get cluster             the cluster, as eksctl lists it
+  delete nodegroup        the node group and its stack
+  delete podidentityassociation
+                          the association and the role eksctl made for it
+  delete cluster          node groups, associations, then the cluster stack and every resource
+                          marked with it. Like CloudFormation, it fails (exit 1, "DELETE_FAILED")
+                          when the VPC still holds something the stack did not create: a live
+                          instance, an ENI or a non-default security group (#281 M9).
+
+Set state["eksctl"]["fail"] to {"<verb> <noun>": "message"} to make one verb fail after it logs.
+Environment: FAKE_EKSCTL_VERSION (default 0.232.0), plus FAKE_STATE, FAKE_LOG, FAKE_FAIL.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import fakelib  # noqa: E402
+from fakelib import taglist  # noqa: E402
+
+try:
+    import yaml
+except ImportError:
+    sys.stderr.write("fake_eksctl.py: the offline tests need PyYAML (requirements-test.txt)\n")
+    sys.exit(98)
+
+
+def opts_of(argv):
+    pos, opts, i = [], {}, 0
+    while i < len(argv):
+        t = argv[i]
+        if t.startswith("--") and "=" in t:
+            k, v = t[2:].split("=", 1)
+            opts[k] = v
+        elif t.startswith("-") and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            opts[t.lstrip("-")] = argv[i + 1]
+            i += 1
+        elif t.startswith("-"):
+            opts[t.lstrip("-")] = "true"
+        else:
+            pos.append(t)
+        i += 1
+    return pos, opts
+
+
+def write_kubeconfig(path, name):
+    if not path:
+        return
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(f"apiVersion: v1\nkind: Config\ncurrent-context: fake@{name}\nclusters: []\ncontexts: []\nusers: []\n")
+    os.chmod(path, 0o600)
+
+
+def ec2(state, kind):
+    return state.setdefault("ec2", {}).setdefault(kind, [])
+
+
+def create_cluster(state, cfg, opts):
+    meta = cfg["metadata"]
+    name, tags = meta["name"], dict(meta.get("tags") or {})
+    clusters = state.setdefault("eks", {}).setdefault("clusters", {})
+    if name in clusters:
+        print(f"Error: creating CloudFormation stack \"eksctl-{name}-cluster\": AlreadyExistsException", file=sys.stderr)
+        return 1
+    stack = f"eksctl-{name}-cluster"
+    n = len(ec2(state, "vpcs")) + 1
+    vpc = f"vpc-0fa{n:014d}"
+    mark = dict(tags, **{"alpha.eksctl.io/cluster-name": name, "aws:cloudformation:stack-name": stack})
+    ec2(state, "vpcs").append({"VpcId": vpc, "Tags": taglist(mark), "Stack": stack})
+    subnets = []
+    for j, kind in enumerate(("Private", "Private", "Public", "Public"), 1):
+        sid = f"subnet-0fa{n:06d}{j:08d}"
+        subnets.append(sid)
+        ec2(state, "subnets").append({"SubnetId": sid, "VpcId": vpc, "MapPublicIpOnLaunch": kind == "Public",
+                                      "Tags": taglist(dict(mark, **{"kubernetes.io/role/internal-elb" if kind == "Private"
+                                                                    else "kubernetes.io/role/elb": "1"})),
+                                      "AvailabilityZone": f"us-west-2{'bc'[j % 2]}", "Stack": stack})
+    ec2(state, "internet_gateways").append({"InternetGatewayId": f"igw-0fa{n:014d}", "Attachments": [{"VpcId": vpc}],
+                                            "Tags": taglist(mark), "Stack": stack})
+    ec2(state, "addresses").append({"AllocationId": f"eipalloc-0fa{n:014d}", "Domain": "vpc", "Tags": taglist(mark),
+                                    "Stack": stack})
+    ec2(state, "nat_gateways").append({"NatGatewayId": f"nat-0fa{n:014d}", "VpcId": vpc, "State": "available",
+                                       "Tags": taglist(mark), "Stack": stack})
+    ec2(state, "security_groups").append({"GroupId": f"sg-0fa{n:014d}", "GroupName": "default", "VpcId": vpc,
+                                          "IpPermissions": [], "Tags": [], "Stack": stack})
+    # EKS makes the cluster security group itself, with no tag of the sample.
+    ec2(state, "security_groups").append({"GroupId": f"sg-0fe{n:014d}", "GroupName": f"eks-cluster-sg-{name}", "VpcId": vpc,
+                                          "IpPermissions": [], "Tags": [], "Stack": stack})
+    service_role = f"{stack}-ServiceRole"
+    state.setdefault("iam", {}).setdefault("roles", {}).setdefault(service_role, {
+        "Tags": taglist(mark), "Attached": [], "Inline": {}, "Stack": stack})
+    clusters[name] = {"status": "ACTIVE", "version": cfg.get("metadata", {}).get("version"), "tags": mark,
+                      "roleArn": f"arn:aws:iam::{state.get('account', '')}:role/{service_role}",
+                      "endpoint": f"https://FAKE{n:04d}.gr7.us-west-2.eks.amazonaws.com",
+                      "certificateAuthority": {"data": "RkFLRS1DQQ=="},
+                      "kubernetesNetworkConfig": {"serviceIpv4Cidr": "10.100.0.0/16"},
+                      "resourcesVpcConfig": {"vpcId": vpc, "subnetIds": subnets,
+                                             "clusterSecurityGroupId": f"sg-0fe{n:014d}"}}
+    state.setdefault("cloudformation", {}).setdefault("stacks", {})[stack] = {
+        "StackStatus": "CREATE_COMPLETE", "Tags": taglist(mark)}
+    write_kubeconfig(opts.get("kubeconfig"), name)
+    print(f"EKS cluster \"{name}\" in \"{meta.get('region')}\" region is ready")
+    return 0
+
+
+def create_nodegroups(state, cfg):
+    name = cfg["metadata"]["name"]
+    ngs = state.setdefault("eks", {}).setdefault("nodegroups", {})
+    for ng in cfg.get("managedNodeGroups", []):
+        key = f"{name}/{ng['name']}"
+        if key in ngs:
+            print(f"nodegroup {ng['name']} exists, skipping")
+            continue
+        tags = dict(cfg["metadata"].get("tags") or {}, **(ng.get("tags") or {}))
+        # The node instance role eksctl makes in the node group stack, with the attachPolicyARNs.
+        ngstack = f"eksctl-{name}-nodegroup-{ng['name']}"
+        role = f"{ngstack}-NodeInstanceRole"
+        state.setdefault("iam", {}).setdefault("roles", {}).setdefault(role, {
+            "Tags": taglist(tags), "Attached": list((ng.get("iam") or {}).get("attachPolicyARNs") or []),
+            "Inline": {}, "Stack": ngstack})
+        ngs[key] = {"status": "ACTIVE", "tags": tags, "labels": ng.get("labels") or {},
+                    "nodeRole": f"arn:aws:iam::{state.get('account', '')}:role/{role}",
+                    "taints": ng.get("taints") or [], "scalingConfig": {"desiredSize": ng.get("desiredCapacity")},
+                    "launchTemplate": ng.get("launchTemplate") or {}, "amiType": ng.get("amiFamily", "CUSTOM")}
+        state.setdefault("cloudformation", {}).setdefault("stacks", {})[f"eksctl-{name}-nodegroup-{ng['name']}"] = {
+            "StackStatus": "CREATE_COMPLETE", "Tags": taglist(dict(tags, **{"alpha.eksctl.io/cluster-name": name}))}
+    return 0
+
+
+def create_pia(state, cfg, acct):
+    name = cfg["metadata"]["name"]
+    pia = state.setdefault("eks", {}).setdefault("pod_identity", {})
+    roles = state.setdefault("iam", {}).setdefault("roles", {})
+    for a in (cfg.get("iam") or {}).get("podIdentityAssociations", []):
+        rn = a.get("roleName") or f"eksctl-{name}-podidentityrole-{a['serviceAccountName']}"
+        roles.setdefault(rn, {"Trust": {}, "Tags": taglist(dict(cfg["metadata"].get("tags") or {}, **(a.get("tags") or {}))),
+                              "Attached": list(a.get("permissionPolicyARNs") or []),
+                              "Inline": {"inline": a["permissionPolicy"]} if a.get("permissionPolicy") else {},
+                              "MadeByEksctl": True})
+        aid = f"a-fake{len(pia) + 1:012d}"
+        pia[aid] = {"clusterName": name, "namespace": a["namespace"], "serviceAccount": a["serviceAccountName"],
+                    "roleArn": f"arn:aws:iam::{acct}:role/{rn}", "roleName": rn,
+                    "tags": dict(cfg["metadata"].get("tags") or {}, **(a.get("tags") or {}))}
+    return 0
+
+
+def delete_cluster(state, name):
+    clusters = state.setdefault("eks", {}).setdefault("clusters", {})
+    if name not in clusters:
+        print(f"Error: unable to describe cluster control plane: ResourceNotFoundException: No cluster found for name: {name}.", file=sys.stderr)
+        return 1
+    stack = f"eksctl-{name}-cluster"
+    vpc = clusters[name]["resourcesVpcConfig"]["vpcId"]
+    for ng in [k.split("/", 1)[1] for k in list(state["eks"].get("nodegroups", {})) if k.startswith(name + "/")]:
+        delete_nodegroup(state, name, ng)
+    for aid in [a for a, v in state["eks"].get("pod_identity", {}).items() if v.get("clusterName") == name]:
+        del state["eks"]["pod_identity"][aid]
+    stacks = state.setdefault("cloudformation", {}).setdefault("stacks", {})
+    prefix = f"eksctl-{name}-"
+    mine = lambda x: str(x.get("Stack", "")).startswith(prefix)  # noqa: E731
+    blockers = [x["InstanceId"] for x in ec2(state, "instances")
+                if x.get("VpcId") == vpc and (x.get("State") or {}).get("Name") != "terminated" and not mine(x)]
+    blockers += [x["NetworkInterfaceId"] for x in ec2(state, "network_interfaces") if x.get("VpcId") == vpc and not mine(x)]
+    blockers += [x["GroupId"] for x in ec2(state, "security_groups") if x.get("VpcId") == vpc and not mine(x)]
+    if blockers:
+        stacks[stack]["StackStatus"] = "DELETE_FAILED"
+        print(f"Error: failed to delete cluster stack {stack}: DELETE_FAILED, the VPC {vpc} has dependencies: "
+              f"{' '.join(blockers)}", file=sys.stderr)
+        return 1
+    for kind in list(state.get("ec2", {})):
+        if isinstance(state["ec2"][kind], list):
+            state["ec2"][kind] = [x for x in state["ec2"][kind] if not mine(x)]
+    for coll in ("roles", "profiles"):
+        objs = state.setdefault("iam", {}).setdefault(coll, {})
+        for n in [n for n, v in objs.items() if mine(v)]:
+            del objs[n]
+    for k in [k for k in state["eks"].get("addons", {}) if k.startswith(name + "/")]:
+        del state["eks"]["addons"][k]
+    del clusters[name]
+    for s in [s for s in stacks if s.startswith(prefix)]:
+        stacks[s]["StackStatus"] = "DELETE_COMPLETE"
+    print("all cluster resources were deleted")
+    return 0
+
+
+def delete_nodegroup(state, cluster, ng):
+    """A managed node group goes with its instances (and the volumes and primary ENIs they delete on
+    termination), its Auto Scaling group, its launch template copy and its node instance profile;
+    a secondary ENI that Cilium attached stays, available (as EC2 leaves it)."""
+    ngs = state.setdefault("eks", {}).setdefault("nodegroups", {})
+    key = f"{cluster}/{ng}"
+    if ngs.get(key, {}).get("StaysAfterDelete"):
+        return
+    ngs.pop(key, None)
+    stack = f"eksctl-{cluster}-nodegroup-{ng}"
+    for inst in ec2(state, "instances"):
+        tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
+        if tags.get("eks:nodegroup-name") != ng or (inst.get("State") or {}).get("Name") == "terminated":
+            continue
+        inst["State"] = {"Name": "terminated"}
+        iid = inst["InstanceId"]
+        state["ec2"]["volumes"] = [v for v in ec2(state, "volumes")
+                                   if not ((v.get("Attachment") or {}).get("InstanceId") == iid and v.get("DeleteOnTermination", True))]
+        for e in list(ec2(state, "network_interfaces")):
+            att = e.get("Attachment") or {}
+            if att.get("InstanceId") != iid:
+                continue
+            if att.get("DeviceIndex") == 0 or att.get("DeleteOnTermination"):
+                state["ec2"]["network_interfaces"].remove(e)
+            else:
+                e["Status"] = "available"
+                e.pop("Attachment", None)
+    for kind in ("launch_templates",):
+        state["ec2"][kind] = [x for x in ec2(state, kind) if x.get("Stack") != stack]
+    groups = state.setdefault("autoscaling", {}).setdefault("groups", {})
+    for n in [n for n, g in groups.items() if g.get("Stack") == stack]:
+        del groups[n]
+    for coll in ("profiles", "roles"):
+        objs = state.setdefault("iam", {}).setdefault(coll, {})
+        for n in [n for n, p in objs.items() if p.get("Stack") == stack]:
+            del objs[n]
+    stacks = state.setdefault("cloudformation", {}).setdefault("stacks", {})
+    if stack in stacks:
+        stacks[stack]["StackStatus"] = "DELETE_COMPLETE"
+
+
+def main(argv):
+    if argv[:1] == ["version"]:
+        print(os.environ.get("FAKE_EKSCTL_VERSION", "0.232.0"))
+        return 0
+    fakelib.require_state("eksctl")
+    pos, opts = opts_of(argv)
+    call = " ".join(pos[:2])
+    cfg_text = None
+    if opts.get("f") or opts.get("config-file"):
+        path = opts.get("f") or opts.get("config-file")
+        cfg_text = sys.stdin.read() if path == "-" else open(path).read()
+    fakelib.log_call("eksctl", call, argv, {"config": cfg_text} if cfg_text else None)
+    code = fakelib.injected_failure("eksctl", call, argv)
+    if code:
+        print(f"Error: {code}: injected by the test", file=sys.stderr)
+        return 1
+    cfg = yaml.safe_load(cfg_text) if cfg_text else None
+    with fakelib.world() as (state, _):
+        fail = (state.get("eksctl") or {}).get("fail", {}).get(call)
+        if fail:
+            print(f"Error: {fail}", file=sys.stderr)
+            return 1
+        acct = state.get("account", "")
+        if call == "create cluster":
+            return create_cluster(state, cfg, opts)
+        if call == "create nodegroup":
+            return create_nodegroups(state, cfg)
+        if call == "create podidentityassociation":
+            return create_pia(state, cfg, acct)
+        if call == "utils write-kubeconfig":
+            write_kubeconfig(opts.get("kubeconfig"), opts.get("cluster", ""))
+            return 0
+        if call == "get cluster":
+            name = opts.get("name") or opts.get("cluster")
+            cl = state.get("eks", {}).get("clusters", {})
+            if name and name not in cl:
+                print(f"Error: unable to describe cluster control plane: ResourceNotFoundException: No cluster found for name: {name}.", file=sys.stderr)
+                return 1
+            for n in ([name] if name else sorted(cl)):
+                print(f"{n}\t{cl[n].get('status')}")
+            return 0
+        if call == "delete nodegroup":
+            key = f"{opts.get('cluster')}/{opts.get('name')}"
+            if key not in state.get("eks", {}).get("nodegroups", {}):
+                print(f"Error: nodegroup {opts.get('name')} not found", file=sys.stderr)
+                return 1
+            delete_nodegroup(state, opts.get("cluster"), opts.get("name"))
+            return 0
+        if call == "delete podidentityassociation":
+            pia = state.get("eks", {}).get("pod_identity", {})
+            hit = [a for a, v in pia.items() if v.get("clusterName") == opts.get("cluster")
+                   and v.get("namespace") == opts.get("namespace")
+                   and v.get("serviceAccount") == opts.get("service-account-name")]
+            for a in hit:
+                rn = pia[a].get("roleName")
+                role = state.get("iam", {}).get("roles", {}).get(rn)
+                if role and role.get("MadeByEksctl"):
+                    del state["iam"]["roles"][rn]
+                del pia[a]
+            return 0
+        if call == "delete cluster":
+            return delete_cluster(state, opts.get("name") or opts.get("cluster"))
+    print(f"FAKE eksctl: unexpected call not modelled by the test: {' '.join(argv)}", file=sys.stderr)
+    return 97
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
