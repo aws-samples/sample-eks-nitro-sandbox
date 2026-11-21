@@ -50,7 +50,8 @@ def blocks(text):
 def tools_lock(sample, key):
     text = open(os.path.join(sample, "packer", "tools.lock")).read()
     found = re.findall(rf"^{key}=(.*)$", text, re.M)
-    assert len(found) == 1, f"tools.lock must set {key} once"
+    if len(found) != 1:
+        raise SystemExit(f"tools.lock must set {key} once")
     return found[0]
 
 
@@ -102,13 +103,16 @@ def main(sample, sysroot, files, repo, case="good"):
     fixture_inputs.main(files, lock, case)
     parts = open(lock).read().split("\n\n")
     src = [p for p in real_text.split("\n\n") if p.startswith("id=bottlerocket-source\n")]
-    assert len(src) == 1, "the sample lock must have one bottlerocket-source block"
+    if len(src) != 1:
+        raise SystemExit("the sample lock must have one bottlerocket-source block")
     block = src[0]
     for key, value in (("source", "file://" + repo), ("commit", commit), ("tag_object", tag_object)):
         block, n = re.subn(rf"(?m)^{key}=.*$", f"{key}={value}", block)
-        assert n == 1, f"the bottlerocket-source block must have one {key}="
+        if n != 1:
+            raise SystemExit(f"the bottlerocket-source block must have one {key}=")
     idx = [i for i, p in enumerate(parts) if p.startswith("id=bottlerocket-source\n")]
-    assert len(idx) == 1, "the fixture lock must have one bottlerocket-source block"
+    if len(idx) != 1:
+        raise SystemExit("the fixture lock must have one bottlerocket-source block")
     parts[idx[0]] = block
     with open(lock, "w") as f:
         f.write("\n\n".join(parts))
@@ -120,7 +124,8 @@ def main(sample, sysroot, files, repo, case="good"):
         for key in ("path", "sha512"):
             lock_key = "file" if key == "path" else "sha512"
             old, new = f'{key} = "{real[i][lock_key]}"', f'{key} = "{fixture[i][lock_key]}"'
-            assert text.count(old) == 1, f"{cargo}: expected one {key} line for {i}"
+            if text.count(old) != 1:
+                raise SystemExit(f"{cargo}: expected one {key} line for {i}")
             text = text.replace(old, new)
     with open(cargo, "w") as f:
         f.write(text)

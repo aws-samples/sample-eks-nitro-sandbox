@@ -41,7 +41,8 @@ def main(sample, clone, lock_out):
     size = re.search(r"^os-image-size-gib = ([0-9]+)$", tracked, re.M).group(1)
     stock = tracked
     for old, new in reversed(rv.variant_edits(size)):
-        assert stock.count(new) == 1, f"the tracked variant does not hold the edit {new.splitlines()[0]!r} once"
+        if stock.count(new) != 1:
+            raise SystemExit(f"the tracked variant does not hold the edit {new.splitlines()[0]!r} once")
         stock = stock.replace(new, old)
     files = {
         f"variants/{rv.BASE}/Cargo.toml": stock,
