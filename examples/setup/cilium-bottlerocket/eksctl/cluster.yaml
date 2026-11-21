@@ -1,0 +1,47 @@
+# Stage 2: the cluster, with no CNI, no kube-proxy and no nodes.
+#
+# setup.sh fills in the ${...} values and writes the result to the run folder under the
+# repository's gitignored tmp/, then runs:
+#
+#   eksctl create cluster -f <run folder>/cluster.yaml --without-nodegroup --write-kubeconfig=false
+#
+# The node groups come later, after Cilium is installed, so that no node joins without a CNI.
+# The cluster is new and only for this sample. The sample never changes the CNI of a cluster
+# that it did not create.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+  version: "1.36"
+  # eksctl gives these tags to each CloudFormation stack, and CloudFormation copies them to the
+  # VPC, subnets, route tables, gateways, Elastic IP address, security groups and IAM roles.
+  tags:
+    ManagedBy: cilium-bottlerocket-sample
+    RunId: ${RUN_ID}
+
+# A new VPC for this cluster: public and private subnets in two zones, one NAT gateway. The
+# nodes and the AMI builder use the private subnet of the first zone.
+availabilityZones: ${AVAILABILITY_ZONES}
+vpc:
+  cidr: 10.44.0.0/16
+  nat:
+    gateway: Single
+
+# No vpc-cni and no kube-proxy. Cilium is the only CNI (cilium-values.yaml) and replaces
+# kube-proxy. CoreDNS and the EKS Pod Identity agent are added as managed add-ons. The agent
+# gives the Cilium operator its AWS credentials (pod-identity.yaml).
+autoModeConfig:
+  enabled: false
+addonsConfig:
+  disableDefaultAddons: true
+addons:
+  - name: coredns
+    tags:
+      ManagedBy: cilium-bottlerocket-sample
+      RunId: ${RUN_ID}
+  - name: eks-pod-identity-agent
+    tags:
+      ManagedBy: cilium-bottlerocket-sample
+      RunId: ${RUN_ID}

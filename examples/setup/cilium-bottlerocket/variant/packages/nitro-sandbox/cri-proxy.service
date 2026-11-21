@@ -1,0 +1,12 @@
+[Unit]
+Description=Nitro Sandbox CRI proxy
+After=containerd.service
+Requires=containerd.service
+
+[Service]
+Slice=runtime.slice
+RuntimeDirectory=nitro-sandbox
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/containerd-shim-nitro-sandbox-v2 cri-proxy --listen /run/nitro-sandbox/cri-proxy.sock --containerd /run/containerd/containerd.sock
+Restart=always
+RestartSec=5
