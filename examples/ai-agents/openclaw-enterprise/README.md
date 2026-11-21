@@ -936,15 +936,21 @@ namespace:
 kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
   create rolebinding openclaw-enterprise-worker \
   --clusterrole oce-openclaw-tenant-worker \
-  --serviceaccount openclaw-system:openclaw-enterprise-worker
+  --serviceaccount openclaw-system:openclaw-enterprise-worker \
+  --dry-run=client --output=yaml |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
 kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
   create rolebinding openclaw-enterprise-api-secrets \
   --clusterrole oce-openclaw-tenant-api \
-  --serviceaccount openclaw-system:openclaw-enterprise-api
+  --serviceaccount openclaw-system:openclaw-enterprise-api \
+  --dry-run=client --output=yaml |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
 kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
   create rolebinding openclaw-enterprise-api-configuration \
   --clusterrole oce-openclaw-tenant-configuration \
-  --serviceaccount openclaw-system:openclaw-enterprise-api
+  --serviceaccount openclaw-system:openclaw-enterprise-api \
+  --dry-run=client --output=yaml |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
 
 "$SAMPLE_DIR/scripts/configure-tenant-model-gateway.sh" \
   "$KUBE_CONTEXT" \

@@ -261,6 +261,16 @@ def test_sample_adds_only_required_service_connectivity_network_policies() -> No
     )
 
 
+def test_tenant_rolebindings_are_rerunnable() -> None:
+    sample = (SAMPLE / "README.md").read_text(encoding="utf-8")
+
+    assert sample.count("create rolebinding openclaw-enterprise-") == 3
+    assert sample.count("--dry-run=client --output=yaml |") == 3
+    assert sample.count(
+        'kubectl --context "$KUBE_CONTEXT" apply --filename -'
+    ) >= 3
+
+
 def test_central_gateway_has_separate_tenant_slots_and_one_bedrock_identity() -> None:
     documents = _yaml_documents(AGENTGATEWAY_MANIFEST)
     config_map = _one(documents, "ConfigMap", "agentgateway-config")
