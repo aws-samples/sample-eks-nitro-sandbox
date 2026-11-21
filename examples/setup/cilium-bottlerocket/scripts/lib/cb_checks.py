@@ -143,9 +143,67 @@ def lt_max_pods(doc):
     return int(found[0])
 
 
+def cmd_check_max_pods(args):
+    """The max-pods that setup.sh derived from the instance type (--want) against each input
+    given: the launch template max-pods and the node's capacity pods."""
+    seen = {}
+    if args.launch_template:
+        seen["launch template max-pods"] = lt_max_pods(read_json(args.launch_template))
+    if args.node:
+        raw = read_json(args.node).get("status", {}).get("capacity", {}).get("pods")
+        if raw is None or re.fullmatch(r"[0-9]+", str(raw)) is None:
+            raise Unknown(f"the node capacity pods is {raw!r}, not a number")
+        seen["node capacity pods"] = int(raw)
+    if not seen:
+        raise Unknown("check-max-pods got no input to compare")
+    wrong = [f"{k}={v!r}" for k, v in seen.items() if v != args.want]
+    require(not wrong, f"the derived max-pods is {args.want} but " + ", ".join(wrong))
+    print(f"max-pods: derived {args.want} equals " + ", ".join(f"{k} ({v})" for k, v in seen.items()))
+
+
+SLOT_LINE = re.compile(r"^(pcie_slots_total|pcie_slots|max_pcie_devices)=([0-9]+)$")
+ADVERTISED = re.compile(r"advertising ([0-9]+) nitro-sandbox slots \(target=([0-9]+)\)")
+
+
+def cmd_check_slots(args):
+    """SANDBOX_SLOTS against the slot pool: it must not be above the driver's pcie_slots_total,
+    and the driver's pcie_slots and the node's eks.amazonaws.com/nitro-sandbox capacity must both
+    equal it. The runtime's own "advertising N nitro-sandbox slots (target=M)" line, when the
+    journal has one, must say N = SANDBOX_SLOTS. An unreadable value is exit 2."""
+    slots = int_setting("SANDBOX_SLOTS", 1, 250)
+    driver = dict(m.groups() for line in read_input(args.driver).splitlines() for m in [SLOT_LINE.match(line.strip())] if m)
+    missing = [k for k in ("pcie_slots_total", "pcie_slots", "max_pcie_devices") if k not in driver]
+    if missing:
+        raise Unknown(f"the driver capture has no {', '.join(missing)}")
+    total, current = int(driver["pcie_slots_total"]), int(driver["pcie_slots"])
+    node = read_json(args.node).get("status", {})
+    raw = (node.get("capacity") or {}).get("eks.amazonaws.com/nitro-sandbox")
+    if raw is None or re.fullmatch(r"[0-9]+", str(raw)) is None:
+        raise Unknown(f"the node capacity eks.amazonaws.com/nitro-sandbox is {raw!r}, not a number")
+    capacity = int(raw)
+    wrong = []
+    if slots > total:
+        wrong.append(f"SANDBOX_SLOTS={slots} is above the slot pool of the instance, pcie_slots_total={total}")
+    if current != slots:
+        wrong.append(f"the driver's pcie_slots is {current}")
+    if capacity != slots:
+        wrong.append(f"the node capacity eks.amazonaws.com/nitro-sandbox is {capacity}")
+    runtime = ""
+    if args.journal:
+        found = [m for line in read_input(args.journal).splitlines() for m in [ADVERTISED.search(line)] if m]
+        if found:
+            n, target = found[-1].groups()
+            runtime = f", runtime: advertising {n} (target={target})"
+            if int(n) != slots:
+                wrong.append(f"the runtime advertised {n} slots")
+    require(not wrong, f"SANDBOX_SLOTS={slots}, but " + "; ".join(wrong))
+    print(f"slots: SANDBOX_SLOTS={slots}, pcie_slots_total={total}, driver pcie_slots={current}, "
+          f"node capacity eks.amazonaws.com/nitro-sandbox={capacity}, max_pcie_devices={driver['max_pcie_devices']}{runtime}")
+
+
 def cmd_check_density(args):
-    """SANDBOX_SLOTS against each input given: the AMI tag, the launch template max-pods, the
-    allocatable pods of the node, and pcie_slots in the shim configuration of the node."""
+    """SANDBOX_SLOTS against each input given: the SandboxSlots tag of the AMI and pcie_slots in
+    the shim configuration of the node. max-pods is check-max-pods; the slot pool is check-slots."""
     slots = args.slots if args.slots is not None else int_setting("SANDBOX_SLOTS", 1, 250)
     seen = {}
     if args.ami_tags:
@@ -153,10 +211,6 @@ def cmd_check_density(args):
         require(len(images) == 1, f"expected one image, got {len(images)}")
         tags = {t["Key"]: t["Value"] for t in images[0].get("Tags", [])}
         seen["AMI tag SandboxSlots"] = tags.get("SandboxSlots")
-    if args.launch_template:
-        seen["launch template max-pods"] = lt_max_pods(read_json(args.launch_template))
-    if args.node:
-        seen["node allocatable pods"] = read_json(args.node).get("status", {}).get("allocatable", {}).get("pods")
     if args.shim_toml:
         found = re.findall(r"^\s*pcie_slots\s*=\s*([0-9]+)\s*(?:#.*)?$", read_input(args.shim_toml), re.M)
         require(len(found) == 1, f"nitro-sandbox.toml has {len(found)} pcie_slots lines")

@@ -174,6 +174,23 @@ if should_run preflight; then
   state_set SYSTEM_AMI_ID "$SYSTEM_AMI_ID"
   finish preflight
 fi
+# max-pods of each node group, derived from its instance type (ec2 describe-instance-types:
+# ENIs x (IPv4 per ENI - 1) + 2), never set by hand. A run records each value once
+# (MAX_PODS_SYSTEM, MAX_PODS_SANDBOX); a resume whose instance type gives another value stops.
+for group in system sandbox; do
+  type_var="${group^^}_INSTANCE_TYPE"
+  derived="$(python3 "$PY" derive-max-pods "${!type_var}")" \
+    || die E_MAX_PODS "could not derive max-pods of the $group node from ${!type_var} (see the error above)"
+  recorded="$(state_get "MAX_PODS_${group^^}")" || die E_STATE "could not read $RUN_STATE_FILE"
+  if [[ -z "$recorded" ]]; then
+    state_set "MAX_PODS_${group^^}" "$derived"
+  elif [[ "$recorded" != "$derived" ]]; then
+    die E_MAX_PODS "run $RUN_ID uses max-pods $recorded on the $group node, but ${!type_var} gives $derived; restore the instance type, or start a new run"
+  fi
+  echo "max-pods of the $group node: $derived (${!type_var})"
+done
+mp_system="$(state_need MAX_PODS_SYSTEM)"
+mp_sandbox="$(state_need MAX_PODS_SANDBOX)"
 
 # ---------------------------------------------------------------------------
 if should_run cluster; then
@@ -277,6 +294,7 @@ if should_run system-node; then
     || die E_CILIUM_ROLLOUT "the Cilium operator Deployment did not roll out"
   kc get node "$system_node" -o json >"$RUN_STATE_DIR/node-system.json" \
     || die E_NODE_READ "could not read node $system_node"
+  python3 "$PY" check-max-pods --want "$mp_system" --node "$RUN_STATE_DIR/node-system.json"
   python3 "$PY" check-os-image system "$RUN_STATE_DIR/node-system.json"
   python3 "$PY" check-operator-role
   ensure_namespace
@@ -331,7 +349,7 @@ if should_run sandbox-node; then
   aws ec2 describe-launch-template-versions --region "$AWS_REGION" --launch-template-id "$lt" --versions 1 \
     --output json >"$RUN_STATE_DIR/lt-sandbox-v1.json" || die E_LAUNCH_TEMPLATE "could not read version 1 of $lt"
   python3 "$PY" check-user-data sandbox "$RUN_STATE_DIR/lt-sandbox-v1.json"
-  python3 "$PY" check-density --launch-template "$RUN_STATE_DIR/lt-sandbox-v1.json"
+  python3 "$PY" check-max-pods --want "$mp_sandbox" --launch-template "$RUN_STATE_DIR/lt-sandbox-v1.json"
   python3 "$PY" render-nodegroup sandbox >/dev/null
   ensure_nodegroup sandbox
   wait_until "$TRIES" "a sandbox node" has_nodes sandbox \
@@ -370,7 +388,11 @@ if should_run node-checks; then
   python3 "$PY" check-runtime-endpoint "$RUN_STATE_DIR/configz-sandbox.json"
   python3 "$PY" check-containerd-dump "$d/containerd-dump.toml"
   python3 "$PY" check-allocatable "$RUN_STATE_DIR/node-sandbox.json"
-  python3 "$PY" check-density --node "$RUN_STATE_DIR/node-sandbox.json" --shim-toml "$d/nitro-sandbox.toml"
+  python3 "$PY" check-density --shim-toml "$d/nitro-sandbox.toml"
+  python3 "$PY" check-max-pods --want "$mp_sandbox" --node "$RUN_STATE_DIR/node-sandbox.json"
+  # The slot pool: SANDBOX_SLOTS not above pcie_slots_total, and equal to the driver's
+  # pcie_slots and the node's eks.amazonaws.com/nitro-sandbox capacity.
+  python3 "$PY" check-slots --driver "$d/slots.txt" --node "$RUN_STATE_DIR/node-sandbox.json" --journal "$d/journal.log"
   python3 "$PY" check-selinux-mode "$d/selinux-enforce.txt"
   # No SELinux denial since the boot of the sandbox node, before any workload starts. An empty,
   # unreadable or "-- No entries --" log is "could not check" (exit 2), which stops the run too.

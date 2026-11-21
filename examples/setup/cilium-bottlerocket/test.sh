@@ -52,6 +52,8 @@ trap 'exit 143' TERM
 # The slot count that setup.sh recorded for the run, not the config file (it can change later).
 SANDBOX_SLOTS="$(state_need SANDBOX_SLOTS)" || exit 1
 export SANDBOX_SLOTS
+# The max-pods that setup.sh derived from the instance type of the sandbox node.
+MAX_PODS_SANDBOX="$(state_need MAX_PODS_SANDBOX)" || exit 1
 NS="$NAMESPACE"
 SVC_HOST="cb-server.$NS.svc.cluster.local"
 
@@ -115,8 +117,26 @@ check "the kubelet runtime endpoint is $CRI_PROXY_ENDPOINT" pyc check-runtime-en
 check "the merged containerd config has the isolated-sandbox handler and discard_unpacked_layers = false" \
   pyc check-containerd-dump "$P/containerd-dump.toml"
 check "allocatable eks.amazonaws.com/nitro-sandbox is more than 0" pyc check-allocatable "$OUT/node-sandbox.json"
-check "max-pods and pcie_slots equal SANDBOX_SLOTS=$SANDBOX_SLOTS" \
-  pyc check-density --node "$OUT/node-sandbox.json" --shim-toml "$P/nitro-sandbox.toml"
+check "pcie_slots in nitro-sandbox.toml equals SANDBOX_SLOTS=$SANDBOX_SLOTS" \
+  pyc check-density --shim-toml "$P/nitro-sandbox.toml"
+check "the slot pool: SANDBOX_SLOTS=$SANDBOX_SLOTS is not above pcie_slots_total, and equals the driver's pcie_slots and the node's eks.amazonaws.com/nitro-sandbox capacity" \
+  pyc check-slots --driver "$P/slots.txt" --node "$OUT/node-sandbox.json" --journal "$P/journal.log"
+check "the node's capacity pods equals the max-pods derived from $SANDBOX_INSTANCE_TYPE ($MAX_PODS_SANDBOX)" \
+  pyc check-max-pods --want "$MAX_PODS_SANDBOX" --node "$OUT/node-sandbox.json"
+# The capacity of the sandbox node, for the page: the slot pool bounds the sandbox pods, max-pods
+# bounds all pods. A value that could not be read prints as "?".
+# shellcheck disable=SC2016
+python3 -c '
+import json, sys
+slots = dict(l.strip().split("=", 1) for l in open(sys.argv[1]) if "=" in l)
+try:
+    cap = json.load(open(sys.argv[2]))["status"]["capacity"]
+except (OSError, ValueError, KeyError):
+    cap = {}
+print("sandbox node capacity: pcie_slots_total=%s, driver pcie_slots=%s, node eks.amazonaws.com/nitro-sandbox=%s, "
+      "max-pods derived=%s, node capacity pods=%s" % (slots.get("pcie_slots_total", "?"), slots.get("pcie_slots", "?"),
+      cap.get("eks.amazonaws.com/nitro-sandbox", "?"), sys.argv[3], cap.get("pods", "?")))' \
+  "$P/slots.txt" "$OUT/node-sandbox.json" "$MAX_PODS_SANDBOX"
 shim_file() { probe_exec "$probe" test -x "/host$SHIM_PATH"; }
 check "the shim is at $SHIM_PATH" shim_file
 check "SELinux is enforcing" pyc check-selinux-mode "$P/selinux-enforce.txt"
@@ -173,8 +193,8 @@ check "containerd config dump with a malformed drop-in: containerd stops on the 
 
 # networkd and the Cilium ENIs. Cilium gives pods the secondary addresses of eth0 first, so a
 # second ENI comes only when the node needs more addresses. test.sh starts ordinary filler
-# pods on the sandbox node, by exact name (at most 16, and never more than SANDBOX_SLOTS
-# allows), until the CiliumNode lists two ENIs and a pod of the node has an address of an ENI
+# pods on the sandbox node, by exact name (at most 16, and never more than the free pods of the
+# derived max-pods), until the CiliumNode lists two ENIs and a pod of the node has an address of an ENI
 # after eth0. Cilium has then set the routes and rules of that ENI. Capture A follows at once:
 # networkd, and the links, addresses, routes and rules that check-eni-capture reads. The probe
 # pod and the filler pods stay until capture B in step 7, because Cilium removes the rule of a
@@ -200,7 +220,7 @@ used = [e for e in enis.values() if (e.get("number") or 0) >= 1 and ips & set(e.
 sys.exit(0 if len(enis) >= 2 and used else 1)' "$ips" <<<"$cn"
 }
 pods_on_node="$(kc get pods -A --field-selector "spec.nodeName=$SANDBOX_NODE" -o name | wc -l)"
-filler_max=$((SANDBOX_SLOTS - pods_on_node))
+filler_max=$((MAX_PODS_SANDBOX - pods_on_node))   # filler pods are ordinary pods: max-pods bounds them
 ((filler_max <= 16)) || filler_max=16
 for ((i = 1; i <= filler_max; i++)); do
   eni_in_use && break

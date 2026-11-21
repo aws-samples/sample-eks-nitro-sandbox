@@ -67,7 +67,12 @@ def parser():
     add("check-containerd-dump", cb_checks.cmd_check_containerd_dump, opt_file)
     add("check-allocatable", cb_checks.cmd_check_allocatable, opt_file)
     add("check-density", cb_checks.cmd_check_density, (["--slots"], {"type": int}), (["--ami-tags"], {}),
-        (["--launch-template"], {}), (["--node"], {}), (["--shim-toml"], {}))
+        (["--shim-toml"], {}))
+    add("derive-max-pods", cb_render.cmd_derive_max_pods, (["instance_type"], {}))
+    add("check-max-pods", cb_checks.cmd_check_max_pods, (["--want"], {"type": int, "required": True}),
+        (["--launch-template"], {}), (["--node"], {}))
+    add("check-slots", cb_checks.cmd_check_slots, (["--driver"], {"required": True}), (["--node"], {"required": True}),
+        (["--journal"], {}))
     add("check-selinux-mode", cb_checks.cmd_check_selinux_mode, opt_file)
     add("selinux-audit", cb_checks.cmd_selinux_audit, (["avc_file"], {}), (["journal_file"], {}))
     add("check-selinux-domains", cb_checks.cmd_check_selinux_domains, opt_file)

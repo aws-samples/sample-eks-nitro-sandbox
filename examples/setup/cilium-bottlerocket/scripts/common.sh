@@ -57,7 +57,7 @@ if [[ -f "$CB_LOCAL_CONFIG" ]]; then
 fi
 export AWS_ACCOUNT_ID AWS_REGION CLUSTER_NAME AVAILABILITY_ZONES SYSTEM_INSTANCE_TYPE \
   SANDBOX_INSTANCE_TYPE BUILD_INSTANCE_TYPE BUILD_WORK_VOLUME_GIB AMI_WAIT_SECONDS SANDBOX_SLOTS \
-  SYSTEM_MAX_PODS SYSTEM_DATA_VOLUME_GIB SANDBOX_DATA_VOLUME_GIB SYSTEM_AMI_ID REUSE_SANDBOX_AMI_ID \
+  SYSTEM_DATA_VOLUME_GIB SANDBOX_DATA_VOLUME_GIB SYSTEM_AMI_ID REUSE_SANDBOX_AMI_ID \
   CB_LOCAL_CONFIG REPO_ROOT SAMPLE_DIR
 
 # Pins. The README Versions table states the same values.
@@ -418,6 +418,9 @@ probe_capture() {
     >"$d/kubeconfig.txt" 2>"$d/kubeconfig.err" || : >"$d/kubeconfig.txt"
   # The version and compressors of the host mkfs.erofs (-V prints them and exits; it writes nothing).
   probe_exec "$p" chroot /host /usr/bin/mkfs.erofs -V >"$d/mkfs-erofs.txt" 2>"$d/mkfs-erofs.err" || : >"$d/mkfs-erofs.txt"
+  # The slot values of the Nitro Enclaves driver (sysfs reads; a failed read leaves the file empty).
+  probe_exec "$p" sh -c 'n=/host/sys/class/misc/nitro_enclaves; for f in pcie_slots_total pcie_slots; do v=$(cat "$n/$f") || exit 1; echo "$f=$v"; done; v=$(cat /host/sys/module/nitro_enclaves/parameters/max_pcie_devices) || exit 1; echo "max_pcie_devices=$v"' \
+    >"$d/slots.txt" 2>"$d/slots.err" || : >"$d/slots.txt"
   probe_exec "$p" sh -c 'echo "==links=="; nsenter -t 1 -n ip -o link || exit 1; echo "==states=="; for f in /host/run/systemd/netif/links/*; do printf "%s " "${f##*/}"; grep -E "^(ADMIN_STATE|OPER_STATE)=" "$f" | tr "\n" " "; echo; done' \
     >"$d/networkd.txt" 2>"$d/networkd.err" || : >"$d/networkd.txt"
   probe_exec "$p" nsenter -t 1 -n ip -o addr >"$d/host-addr.txt" 2>"$d/host-addr.err" || true

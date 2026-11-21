@@ -61,7 +61,6 @@ def cmd_check_config(_):
     for name in ("SYSTEM_INSTANCE_TYPE", "SANDBOX_INSTANCE_TYPE", "BUILD_INSTANCE_TYPE"):
         require(INSTANCE_TYPE.fullmatch(setting(name)) is not None, f"{name}={setting(name)} is not an instance type")
     int_setting("SANDBOX_SLOTS", 1, 250)
-    int_setting("SYSTEM_MAX_PODS", 1, 250)
     int_setting("SYSTEM_DATA_VOLUME_GIB", 20, 200)
     int_setting("SANDBOX_DATA_VOLUME_GIB", 20, 500)
     int_setting("BUILD_WORK_VOLUME_GIB", 100, 400)
@@ -257,14 +256,48 @@ def node_labels(group):
     return labels
 
 
+def eni_max_pods(info):
+    """max-pods from the NetworkInfo of describe-instance-types: ENIs x (IPv4 per ENI - 1) + 2,
+    the formula of the Amazon EKS AMIs (58 for m8i.xlarge: 4 ENIs, 15 IPv4 addresses each)."""
+    net = info.get("NetworkInfo")
+    if not isinstance(net, dict):
+        raise Unknown("the instance type has no NetworkInfo")
+    values = {}
+    for key in ("MaximumNetworkInterfaces", "Ipv4AddressesPerInterface"):
+        value = net.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise Unknown(f"NetworkInfo.{key} is {value!r}, not a number")
+        require(value > 0, f"NetworkInfo.{key} is {value}, want more than 0")
+        values[key] = value
+    return values["MaximumNetworkInterfaces"] * (values["Ipv4AddressesPerInterface"] - 1) + 2
+
+
+def cmd_derive_max_pods(args):
+    """Print the max-pods of an instance type, read with ec2 describe-instance-types."""
+    require(INSTANCE_TYPE.fullmatch(args.instance_type) is not None, f"{args.instance_type!r} is not an instance type")
+    types = aws("ec2", "describe-instance-types", "--instance-types", args.instance_type).get("InstanceTypes") or []
+    if len(types) != 1:
+        raise Unknown(f"describe-instance-types gave {len(types)} entries for {args.instance_type}")
+    print(eni_max_pods(types[0]))
+
+
+def max_pods(group):
+    """The max-pods of a node group, as setup.sh derived and recorded it (MAX_PODS_SYSTEM or
+    MAX_PODS_SANDBOX in the run state)."""
+    value = state_get(f"MAX_PODS_{group.upper()}")
+    if not re.fullmatch(r"[1-9][0-9]{0,3}", value):
+        raise Unknown(f"the run state has no derived MAX_PODS_{group.upper()} (got {value!r}); run setup.sh")
+    return int(value)
+
+
 def user_data(group, info):
-    max_pods = int_setting("SANDBOX_SLOTS" if group == "sandbox" else "SYSTEM_MAX_PODS", 1, 250)
+    max_pods_value = max_pods(group)
     lines = ["[settings.kubernetes]",
              f"cluster-name = {toml_str(info['name'])}",
              f"api-server = {toml_str(info['endpoint'])}",
              f"cluster-certificate = {toml_str(info['ca'])}",
              f"cluster-dns-ip = {toml_str(info['dns'])}",
-             f"max-pods = {max_pods}"]
+             f"max-pods = {max_pods_value}"]
     if group == "sandbox":
         lines.append(f"container-runtime-endpoint = {toml_str(CRI_PROXY_ENDPOINT)}")
     lines += ["", "[settings.kubernetes.node-labels]"]
@@ -339,7 +372,7 @@ def user_data_problems(group, data):
         return wrong + ["the user data is not base64 TOML"]
     kube = doc.get("settings.kubernetes", {})
     labels = doc.get("settings.kubernetes.node-labels", {})
-    want_pods = int_setting("SANDBOX_SLOTS" if group == "sandbox" else "SYSTEM_MAX_PODS", 1, 250)
+    want_pods = max_pods(group)
     if kube.get("cluster-name") != setting("CLUSTER_NAME"):
         wrong.append(f"cluster-name is {kube.get('cluster-name')!r}")
     if kube.get("max-pods") != want_pods:
