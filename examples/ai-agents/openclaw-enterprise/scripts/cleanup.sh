@@ -179,10 +179,34 @@ context=$("${KC[@]}" config get-contexts "$kube_context" --no-headers --output=n
 cluster_config=$(mktemp)
 namespace_inventory_dir=$(mktemp -d)
 aws_error=""
+freeze_name=""
+freeze_token=""
+freeze_namespace=""
+freeze_namespace_uid=""
+freeze_denial_message=""
+freeze_policy_uid=""
+freeze_binding_uid=""
+freeze_policy_created=false
+freeze_binding_created=false
 cleanup_temporary_files() {
+  local exit_status=$? freeze_cleanup_failed=0
+  if (
+    [[ "$freeze_policy_created" == true || "$freeze_binding_created" == true ]] &&
+    declare -F remove_namespace_freeze >/dev/null
+  ); then
+    if ! remove_namespace_freeze; then
+      printf 'cleanup: failed to remove the namespace admission freeze.\n' >&2
+      freeze_cleanup_failed=1
+    fi
+  fi
   rm -f -- "${cluster_config:-}" "${aws_error:-}"
   [[ -z "${namespace_inventory_dir:-}" ]] ||
     rm -rf -- "$namespace_inventory_dir"
+  if ((exit_status == 0 && freeze_cleanup_failed)); then
+    exit_status=1
+  fi
+  trap - EXIT
+  exit "$exit_status"
 }
 trap cleanup_temporary_files EXIT
 chmod 600 "$cluster_config"
@@ -348,6 +372,375 @@ parse_record() {
     die "Kubernetes returned an incomplete resource identity."
 }
 
+namespace_freeze_manifest() {
+  local kind=$1
+  python3 -I -c '
+import json
+import sys
+
+(
+    kind,
+    name,
+    token,
+    namespace,
+    namespace_uid,
+    attempt,
+    owner,
+    release,
+    message,
+) = sys.argv[1:]
+metadata = {
+    "name": name,
+    "labels": {
+        "app.kubernetes.io/managed-by": owner,
+        "app.kubernetes.io/instance": release,
+    },
+    "annotations": {
+        "openclaw-enterprise.aws/cleanup-token": token,
+        "openclaw-enterprise.aws/cleanup-attempt": attempt,
+        "openclaw-enterprise.aws/target-namespace": namespace,
+        "openclaw-enterprise.aws/target-namespace-uid": namespace_uid,
+    },
+}
+if kind == "policy":
+    document = {
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingAdmissionPolicy",
+        "metadata": metadata,
+        "spec": {
+            "failurePolicy": "Fail",
+            "matchConstraints": {
+                "matchPolicy": "Equivalent",
+                "resourceRules": [{
+                    "apiGroups": ["*"],
+                    "apiVersions": ["*"],
+                    "operations": ["CREATE", "UPDATE"],
+                    "resources": ["*/*"],
+                    "scope": "Namespaced",
+                }],
+            },
+            "matchConditions": [{
+                "name": "target-namespace",
+                "expression": f"request.namespace == {json.dumps(namespace)}",
+            }],
+            "validations": [{"expression": "false", "message": message}],
+        },
+    }
+elif kind == "binding":
+    document = {
+        "apiVersion": "admissionregistration.k8s.io/v1",
+        "kind": "ValidatingAdmissionPolicyBinding",
+        "metadata": metadata,
+        "spec": {
+            "policyName": name,
+            "validationActions": ["Deny"],
+        },
+    }
+else:
+    raise SystemExit("invalid namespace freeze manifest kind")
+print(json.dumps(document, separators=(",", ":")))
+' "$kind" "$freeze_name" "$freeze_token" "$freeze_namespace" \
+    "$freeze_namespace_uid" "$receipt_attempt" "$OWNER" "$release" \
+    "$freeze_denial_message"
+}
+
+validate_namespace_freeze_json() {
+  local mode=$1 kind=$2 expected_uid=$3
+  python3 -I -c '
+import json
+import sys
+
+(
+    mode,
+    kind,
+    expected_uid,
+    name,
+    token,
+    namespace,
+    namespace_uid,
+    attempt,
+    owner,
+    release,
+    message,
+) = sys.argv[1:]
+
+def fail(reason):
+    sys.stderr.write(f"cleanup: namespace admission freeze {reason}.\n")
+    raise SystemExit(1)
+
+try:
+    document = json.load(sys.stdin)
+except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    fail(f"is not valid JSON: {error}")
+if not isinstance(document, dict):
+    fail("is not an object")
+expected_kind = {
+    "policy": "ValidatingAdmissionPolicy",
+    "binding": "ValidatingAdmissionPolicyBinding",
+}.get(kind)
+if expected_kind is None:
+    fail("has an invalid expected kind")
+if (
+    document.get("apiVersion") != "admissionregistration.k8s.io/v1"
+    or document.get("kind") != expected_kind
+):
+    fail("has an unexpected API identity")
+metadata = document.get("metadata")
+if not isinstance(metadata, dict) or metadata.get("name") != name:
+    fail("has an unexpected name")
+if metadata.get("labels") != {
+    "app.kubernetes.io/managed-by": owner,
+    "app.kubernetes.io/instance": release,
+}:
+    fail("does not carry the exact ownership labels")
+if metadata.get("annotations") != {
+    "openclaw-enterprise.aws/cleanup-token": token,
+    "openclaw-enterprise.aws/cleanup-attempt": attempt,
+    "openclaw-enterprise.aws/target-namespace": namespace,
+    "openclaw-enterprise.aws/target-namespace-uid": namespace_uid,
+}:
+    fail("does not carry the exact cleanup identity annotations")
+uid = metadata.get("uid")
+resource_version = metadata.get("resourceVersion")
+if not isinstance(uid, str) or not uid:
+    fail("has no UID")
+if not isinstance(resource_version, str) or not resource_version:
+    fail("has no resourceVersion")
+if expected_uid and uid != expected_uid:
+    fail("was replaced; the replacement was preserved")
+if mode == "spec":
+    if kind == "policy":
+        expected_spec = {
+            "failurePolicy": "Fail",
+            "matchConstraints": {
+                "matchPolicy": "Equivalent",
+                "resourceRules": [{
+                    "apiGroups": ["*"],
+                    "apiVersions": ["*"],
+                    "operations": ["CREATE", "UPDATE"],
+                    "resources": ["*/*"],
+                    "scope": "Namespaced",
+                }],
+            },
+            "matchConditions": [{
+                "name": "target-namespace",
+                "expression": f"request.namespace == {json.dumps(namespace)}",
+            }],
+            "validations": [{"expression": "false", "message": message}],
+        }
+    else:
+        expected_spec = {
+            "policyName": name,
+            "validationActions": ["Deny"],
+        }
+    if document.get("spec") != expected_spec:
+        fail("does not match the exact fail-closed specification")
+elif mode != "identity":
+    fail("has an invalid validation mode")
+print(f"{uid}|{resource_version}")
+' "$mode" "$kind" "$expected_uid" "$freeze_name" "$freeze_token" \
+    "$freeze_namespace" "$freeze_namespace_uid" "$receipt_attempt" "$OWNER" \
+    "$release" "$freeze_denial_message"
+}
+
+remove_freeze_resource() {
+  local resource=$1 kind=$2 expected_uid=$3
+  local object identity live_uid live_version extra options replacement
+  if ! object=$("${K[@]}" get "$resource" --ignore-not-found --output=json); then
+    printf 'cleanup: could not inspect temporary %s.\n' "$resource" >&2
+    return 1
+  fi
+  [[ -n "$object" ]] || return 0
+  if ! identity=$(
+    printf '%s' "$object" |
+      validate_namespace_freeze_json identity "$kind" "$expected_uid"
+  ); then
+    return 1
+  fi
+  IFS='|' read -r live_uid live_version extra <<<"$identity"
+  if [[ -n "${extra:-}" || -z "$live_uid" || -z "$live_version" ]]; then
+    printf 'cleanup: temporary %s returned an incomplete identity.\n' \
+      "$resource" >&2
+    return 1
+  fi
+  options=$(python3 -I -c '
+import json
+import sys
+print(json.dumps({
+    "apiVersion": "v1",
+    "kind": "DeleteOptions",
+    "propagationPolicy": "Foreground",
+    "preconditions": {
+        "uid": sys.argv[1],
+        "resourceVersion": sys.argv[2],
+    },
+}, separators=(",", ":")))
+' "$live_uid" "$live_version")
+  if ! printf '%s' "$options" |
+    "${K[@]}" delete --raw="$(api_path "$resource" "")" -f - >/dev/null; then
+    printf 'cleanup: guarded deletion failed for temporary %s.\n' \
+      "$resource" >&2
+    return 1
+  fi
+  if ! replacement=$(
+    "${K[@]}" get "$resource" --ignore-not-found --output=json
+  ); then
+    printf 'cleanup: could not verify temporary %s deletion.\n' \
+      "$resource" >&2
+    return 1
+  fi
+  if [[ -n "$replacement" ]]; then
+    printf '%s' "$replacement" |
+      validate_namespace_freeze_json identity "$kind" "$live_uid" >/dev/null ||
+      return 1
+    printf 'cleanup: temporary %s still exists after deletion.\n' \
+      "$resource" >&2
+    return 1
+  fi
+}
+
+remove_namespace_freeze() {
+  local failed=0
+  local policy_resource binding_resource
+  policy_resource="validatingadmissionpolicies.admissionregistration.k8s.io/$freeze_name"
+  binding_resource="validatingadmissionpolicybindings.admissionregistration.k8s.io/$freeze_name"
+  if [[ "$freeze_binding_created" == true ]]; then
+    if remove_freeze_resource \
+      "$binding_resource" binding "$freeze_binding_uid"; then
+      freeze_binding_created=false
+      freeze_binding_uid=""
+    else
+      failed=1
+    fi
+  fi
+  if [[ "$freeze_policy_created" == true ]]; then
+    if remove_freeze_resource "$policy_resource" policy "$freeze_policy_uid"; then
+      freeze_policy_created=false
+      freeze_policy_uid=""
+    else
+      failed=1
+    fi
+  fi
+  if ((failed == 0)); then
+    freeze_name=""
+    freeze_token=""
+    freeze_namespace=""
+    freeze_namespace_uid=""
+    freeze_denial_message=""
+  fi
+  ((failed == 0))
+}
+
+establish_namespace_freeze() {
+  local namespace=$1 namespace_uid=$2 suffix
+  local policy_resource binding_resource policy_manifest binding_manifest
+  local created identity live probe_manifest probe_output
+  local live_uid live_version extra freeze_verified=false
+  [[ "$freeze_policy_created" == false && "$freeze_binding_created" == false ]] ||
+    die "a namespace admission freeze is already active."
+  suffix=$(
+    python3 -I -c '
+import hashlib
+import sys
+print(hashlib.sha256("\0".join(sys.argv[1:]).encode()).hexdigest()[:20])
+' "$namespace" "$namespace_uid" "$receipt_attempt"
+  ) || die "could not derive the namespace admission freeze identity."
+  freeze_name="openclaw-enterprise-cleanup-freeze-$suffix"
+  freeze_token=$(
+    python3 -I -c 'import secrets; print(secrets.token_hex(16))'
+  ) || die "could not derive the namespace admission freeze ownership token."
+  freeze_namespace=$namespace
+  freeze_namespace_uid=$namespace_uid
+  freeze_denial_message="OpenClaw Enterprise cleanup admission freeze is active for namespace/$namespace."
+  policy_resource="validatingadmissionpolicies.admissionregistration.k8s.io/$freeze_name"
+  binding_resource="validatingadmissionpolicybindings.admissionregistration.k8s.io/$freeze_name"
+  [[ -z "$(resource_record "$policy_resource" "")" ]] ||
+    die "temporary $policy_resource already exists; refusing to replace it."
+  [[ -z "$(resource_record "$binding_resource" "")" ]] ||
+    die "temporary $binding_resource already exists; refusing to replace it."
+
+  policy_manifest=$(namespace_freeze_manifest policy) ||
+    die "could not build the namespace admission freeze policy."
+  freeze_policy_created=true
+  if ! created=$(
+    printf '%s' "$policy_manifest" |
+      "${K[@]}" create -f - --output=json
+  ); then
+    die "could not create the namespace admission freeze policy."
+  fi
+  identity=$(
+    printf '%s' "$created" |
+      validate_namespace_freeze_json spec policy ""
+  ) || die "could not validate the created namespace admission freeze policy."
+  IFS='|' read -r freeze_policy_uid live_version extra <<<"$identity"
+  [[ -z "${extra:-}" && -n "$freeze_policy_uid" && -n "$live_version" ]] ||
+    die "created namespace admission freeze policy has an incomplete identity."
+
+  binding_manifest=$(namespace_freeze_manifest binding) ||
+    die "could not build the namespace admission freeze binding."
+  freeze_binding_created=true
+  if ! created=$(
+    printf '%s' "$binding_manifest" |
+      "${K[@]}" create -f - --output=json
+  ); then
+    die "could not create the namespace admission freeze binding."
+  fi
+  identity=$(
+    printf '%s' "$created" |
+      validate_namespace_freeze_json spec binding ""
+  ) || die "could not validate the created namespace admission freeze binding."
+  IFS='|' read -r freeze_binding_uid live_version extra <<<"$identity"
+  [[ -z "${extra:-}" && -n "$freeze_binding_uid" && -n "$live_version" ]] ||
+    die "created namespace admission freeze binding has an incomplete identity."
+
+  for kind in policy binding; do
+    if [[ "$kind" == policy ]]; then
+      policy_resource="validatingadmissionpolicies.admissionregistration.k8s.io/$freeze_name"
+      live_uid=$freeze_policy_uid
+    else
+      policy_resource="validatingadmissionpolicybindings.admissionregistration.k8s.io/$freeze_name"
+      live_uid=$freeze_binding_uid
+    fi
+    live=$("${K[@]}" get "$policy_resource" --ignore-not-found --output=json) ||
+      die "could not read back the namespace admission freeze $kind."
+    [[ -n "$live" ]] ||
+      die "namespace admission freeze $kind disappeared after creation."
+    printf '%s' "$live" |
+      validate_namespace_freeze_json spec "$kind" "$live_uid" >/dev/null ||
+      die "namespace admission freeze $kind changed after creation."
+  done
+
+  probe_manifest=$(
+    python3 -I -c '
+import json
+import sys
+print(json.dumps({
+    "apiVersion": "v1",
+    "kind": "ConfigMap",
+    "metadata": {
+        "name": sys.argv[2],
+        "namespace": sys.argv[1],
+    },
+}, separators=(",", ":")))
+' "$namespace" "$freeze_name-probe"
+  ) || die "could not build the namespace admission freeze probe."
+  for _ in {1..10}; do
+    if probe_output=$(
+      printf '%s' "$probe_manifest" |
+        "${K[@]}" create --dry-run=server -f - --output=name 2>&1
+    ); then
+      sleep 1
+      continue
+    fi
+    [[ "$probe_output" == *"$freeze_denial_message"* ]] ||
+      die "namespace admission freeze verification did not return its exact denial."
+    freeze_verified=true
+    break
+  done
+  [[ "$freeze_verified" == true ]] ||
+    die "namespace admission freeze verification repeatedly accepted object creation."
+}
+
 declare -a delete_targets=() verify_targets=()
 declare -a release_guards=() orphan_release_resources=()
 declare -a namespace_inventory_types=()
@@ -378,7 +771,14 @@ load_namespace_inventory_types() {
 }
 
 verify_namespace_descendants() {
-  local namespace=$1 allowed_owners=${2:-$OWNER} resource_type ownership_failures
+  local namespace=$1 allowed_owners=${2:-$OWNER}
+  local refresh_types=${3:-false} resource_type ownership_failures
+  if [[ "$refresh_types" == true ]]; then
+    namespace_inventory_types=()
+    namespace_inventory_types_loaded=false
+  elif [[ "$refresh_types" != false ]]; then
+    die "invalid namespace inventory refresh mode."
+  fi
   load_namespace_inventory_types
   for resource_type in "${namespace_inventory_types[@]}"; do
     "${K[@]}" get "$resource_type" --namespace "$namespace" --output=json \
@@ -862,7 +1262,7 @@ for namespace in "${tenant_namespaces[@]}"; do
     record_exact "$resource" "$namespace"
   done
   delete_targets+=(
-    "$(api_path "namespace/$namespace" "")|$tenant_uid|$tenant_version|namespace/$namespace|"
+    "$(api_path "namespace/$namespace" "")|$tenant_uid|$tenant_version|namespace/$namespace||$OWNER,$OCE_OWNER|$OCE_OWNER"
   )
   verify_targets+=("namespace/$namespace||$tenant_uid")
 done
@@ -884,14 +1284,14 @@ for namespace in openclaw-enterprise-adapter "$AGW_NAMESPACE"; do
     die "namespace/$namespace does not carry the exact $OWNER_KEY=$OWNER ownership label."
   verify_namespace_descendants "$namespace"
   delete_targets+=(
-    "$(api_path "namespace/$namespace" "")|$R_UID|$R_VERSION|namespace/$namespace|"
+    "$(api_path "namespace/$namespace" "")|$R_UID|$R_VERSION|namespace/$namespace||$OWNER|$OWNER"
   )
   verify_targets+=("namespace/$namespace||$R_UID")
 done
 if [[ -n "$system_record" ]]; then
   parse_record "$system_record"
   delete_targets+=(
-    "$(api_path "namespace/$system_namespace" "")|$R_UID|$R_VERSION|namespace/$system_namespace|"
+    "$(api_path "namespace/$system_namespace" "")|$R_UID|$R_VERSION|namespace/$system_namespace||$OWNER|$OWNER"
   )
   verify_targets+=("namespace/$system_namespace||$R_UID")
 fi
@@ -987,8 +1387,10 @@ if ((CLEAN_AWS)); then
 fi
 
 delete_guarded() {
-  local path uid version display namespace extra options
-  IFS='|' read -r path uid version display namespace extra <<<"$1"
+  local path uid version display namespace descendant_owners namespace_owner
+  local extra options namespace_name record froze_namespace=false
+  IFS='|' read -r path uid version display namespace descendant_owners \
+    namespace_owner extra <<<"$1"
   [[ -z "${extra:-}" ]] || die "invalid deletion target."
   options=$(python3 -c '
 import json, sys
@@ -998,8 +1400,35 @@ print(json.dumps({
   "preconditions": {"uid": sys.argv[1], "resourceVersion": sys.argv[2]},
 }, separators=(",", ":")))
 ' "$uid" "$version")
+  if [[ -n "$descendant_owners" || -n "$namespace_owner" ]]; then
+    [[ -n "$descendant_owners" && -n "$namespace_owner" &&
+      -z "$namespace" && "$display" == namespace/* ]] ||
+      die "invalid namespace deletion target."
+    namespace_name=${display#namespace/}
+
+    # Namespace resourceVersions do not change when descendants change. Freeze
+    # namespaced CREATE/UPDATE admission (PATCH is admitted as UPDATE) first so
+    # the final ownership inventory and namespace DELETE form one
+    # server-enforced critical section. DELETE remains allowed for cleanup and
+    # namespace finalization.
+    establish_namespace_freeze "$namespace_name" "$uid"
+    froze_namespace=true
+    verify_namespace_descendants "$namespace_name" "$descendant_owners" true
+    record=$(resource_record "namespace/$namespace_name" "")
+    [[ -n "$record" ]] ||
+      die "namespace/$namespace_name disappeared after descendant validation."
+    parse_record "$record"
+    [[ "$R_NAME" == "$namespace_name" && "$R_UID" == "$uid" &&
+      "$R_VERSION" == "$version" && "$R_OWNER" == "$namespace_owner" ]] ||
+      die "namespace/$namespace_name changed after preflight; refusing deletion."
+  elif [[ "$display" == namespace/* ]]; then
+    die "namespace deletion target has no descendant ownership guard."
+  fi
   printf '%s' "$options" | "${K[@]}" delete --raw="$path" -f - >/dev/null ||
     die "guarded deletion failed for $display${namespace:+ in $namespace}; it changed after preflight."
+  if [[ "$froze_namespace" == true ]] && ! remove_namespace_freeze; then
+    die "could not remove the namespace admission freeze after deleting $display."
+  fi
 }
 
 verify_absent() {

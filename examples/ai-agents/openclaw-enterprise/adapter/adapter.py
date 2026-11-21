@@ -112,6 +112,13 @@ AWS_CREDENTIAL_ENV_NAMES = frozenset(
         "BOTO_CONFIG",
     }
 )
+HARNESS_CREDENTIAL_ENV_NAMES = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "OCE_MODEL_API_KEY",
+        "OPENAI_API_KEY",
+    }
+)
 IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 GATEWAY_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
 OCE_RESOURCE_ID_PATTERN = re.compile(
@@ -152,24 +159,70 @@ LINK_SCRIPT = r"""
 const fs = require("node:fs");
 const path = require("node:path");
 const links = JSON.parse(process.env.OCE_STATE_LINKS || "[]");
+const root = "/gateway-state";
+const descriptorRoot = "/proc/self/fd";
+if (!fs.existsSync(descriptorRoot)) {
+  throw new Error(`secure state-link traversal requires ${descriptorRoot}`);
+}
+const directoryFlags =
+  fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW;
+
+function openDirectoryNoFollow(directory) {
+  const relative = path.posix.relative(root, directory);
+  if (relative === ".." || relative.startsWith("../") || path.posix.isAbsolute(relative)) {
+    throw new Error(`state-link parent escapes ${root}: ${directory}`);
+  }
+  const components = relative === "" ? [] : relative.split("/");
+  let descriptor = fs.openSync(root, directoryFlags);
+  try {
+    for (const component of components) {
+      const child = `${descriptorRoot}/${descriptor}/${component}`;
+      let next;
+      try {
+        next = fs.openSync(child, directoryFlags);
+      } catch (error) {
+        if (error.code !== "ENOENT") {
+          throw new Error(`refusing unsafe state-link parent ${directory}`, {
+            cause: error,
+          });
+        }
+        fs.mkdirSync(child, {mode: 0o700});
+        next = fs.openSync(child, directoryFlags);
+      }
+      fs.closeSync(descriptor);
+      descriptor = next;
+    }
+    return descriptor;
+  } catch (error) {
+    fs.closeSync(descriptor);
+    throw error;
+  }
+}
+
 for (const item of links) {
   if (item.link === item.target) continue;
-  const link = path.posix.join("/gateway-state", item.link);
-  const target = path.posix.join("/gateway-state", item.target);
-  fs.mkdirSync(path.posix.dirname(link), {recursive: true});
-  let current;
+  const link = path.posix.join(root, item.link);
+  const target = path.posix.join(root, item.target);
+  const parent = path.posix.dirname(link);
+  const descriptor = openDirectoryNoFollow(parent);
   try {
-    current = fs.lstatSync(link);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (current === undefined) {
-    fs.symlinkSync(path.posix.relative(path.posix.dirname(link), target), link);
-  } else if (
-    !current.isSymbolicLink() ||
-    path.posix.resolve(path.posix.dirname(link), fs.readlinkSync(link)) !== target
-  ) {
-    throw new Error(`refusing to replace ${link}`);
+    const descriptorLink = `${descriptorRoot}/${descriptor}/${path.posix.basename(link)}`;
+    let current;
+    try {
+      current = fs.lstatSync(descriptorLink);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (current === undefined) {
+      fs.symlinkSync(path.posix.relative(parent, target), descriptorLink);
+    } else if (
+      !current.isSymbolicLink() ||
+      path.posix.resolve(parent, fs.readlinkSync(descriptorLink)) !== target
+    ) {
+      throw new Error(`refusing to replace ${link}`);
+    }
+  } finally {
+    fs.closeSync(descriptor);
   }
 }
 """.strip()
@@ -400,29 +453,29 @@ def _validate_runtime_credential_mounts(
             _is_empty_dir_volume(volume)
             or _is_gateway_state_volume(volume, gateway_id)
             or (
-            mount.get("name") == OCE_CONFIGURATION_VOLUME
-            and mount
-            == {
-                "name": OCE_CONFIGURATION_VOLUME,
-                "mountPath": OCE_CONFIGURATION_MOUNT_PATH,
-                "readOnly": True,
-            }
-            and _is_oce_configuration_volume(volume, gateway_id)
+                mount.get("name") == OCE_CONFIGURATION_VOLUME
+                and mount
+                == {
+                    "name": OCE_CONFIGURATION_VOLUME,
+                    "mountPath": OCE_CONFIGURATION_MOUNT_PATH,
+                    "readOnly": True,
+                }
+                and _is_oce_configuration_volume(volume, gateway_id)
             )
             or (
-            mount.get("name") == OCE_SERVICE_PRINCIPAL_VOLUME
-            and mount
-            == {
-                "name": OCE_SERVICE_PRINCIPAL_VOLUME,
-                "mountPath": OCE_SERVICE_PRINCIPAL_MOUNT_PATH,
-                "readOnly": True,
-            }
-            and _is_oce_service_principal_volume(volume)
+                mount.get("name") == OCE_SERVICE_PRINCIPAL_VOLUME
+                and mount
+                == {
+                    "name": OCE_SERVICE_PRINCIPAL_VOLUME,
+                    "mountPath": OCE_SERVICE_PRINCIPAL_MOUNT_PATH,
+                    "readOnly": True,
+                }
+                and _is_oce_service_principal_volume(volume)
             )
             or (
-            mount.get("name") == AGW_CA_VOLUME
-            and _is_agentgateway_ca_mount(mount)
-            and _is_agentgateway_ca_volume(volume)
+                mount.get("name") == AGW_CA_VOLUME
+                and _is_agentgateway_ca_mount(mount)
+                and _is_agentgateway_ca_volume(volume)
             )
         )
         if not approved:
@@ -487,6 +540,48 @@ def _runtime_environment(
         and _is_nonempty_string(entry.get("value"))
     ]
     harness_credential_name = credential_names[0] if credential_names else None
+    if harness_credential_name is not None:
+        if (
+            harness_credential_name.startswith("LD_")
+            or harness_credential_name in UNSAFE_BOOTSTRAP_ENV_NAMES
+        ):
+            raise AdmissionError(
+                f"{location} configures unsafe bootstrap environment "
+                f"{harness_credential_name}"
+            )
+        if harness_credential_name in AWS_CREDENTIAL_ENV_NAMES:
+            raise AdmissionError(
+                f"{location} configures prohibited AWS credential environment "
+                f"{harness_credential_name}"
+            )
+        if harness_credential_name not in HARNESS_CREDENTIAL_ENV_NAMES:
+            raise AdmissionError(
+                f"{location} selects unsupported harness credential environment "
+                f"{harness_credential_name}"
+            )
+        expected_credential = {
+            "name": harness_credential_name,
+            "valueFrom": {
+                "secretKeyRef": {
+                    "key": harness_credential_name,
+                    "name": (f"harness-secrets-{gateway_id}-{revision_hash}"),
+                }
+            },
+        }
+        credential_entries = [
+            entry
+            for entry in environment
+            if isinstance(entry, dict) and entry.get("name") == harness_credential_name
+        ]
+        if (
+            gateway_id is None
+            or revision_hash is None
+            or credential_entries != [expected_credential]
+        ):
+            raise AdmissionError(
+                f"{location} must source the selected harness credential "
+                "from its revision-bound Secret"
+            )
     for entry in environment:
         if not isinstance(entry, dict):
             raise AdmissionError(f"{location}.env entries must be objects")
@@ -535,9 +630,7 @@ def _runtime_environment(
                 "valueFrom": {
                     "secretKeyRef": {
                         "key": harness_credential_name,
-                        "name": (
-                            f"harness-secrets-{gateway_id}-{revision_hash}"
-                        ),
+                        "name": (f"harness-secrets-{gateway_id}-{revision_hash}"),
                     }
                 },
             }
@@ -1496,9 +1589,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
                     if (
                         group_name == "containers"
                         and index == designated_index
-                        and _mount_paths_overlap(
-                            mount_path, AWS_CREDENTIAL_DIRECTORY
-                        )
+                        and _mount_paths_overlap(mount_path, AWS_CREDENTIAL_DIRECTORY)
                     ):
                         raise AdmissionError(
                             f"spec.{group_name}[{index}] has a mount that can "
@@ -1861,8 +1952,7 @@ def validate_pod(pod: dict[str, Any]) -> None:
     labels = pod["metadata"]["labels"]
     if labels.get(NETWORK_PROFILE_LABEL) != OCE_BROAD_EGRESS_PROFILE:
         raise AdmissionError(
-            f"final OCE Pod must use {NETWORK_PROFILE_LABEL} "
-            f"{OCE_BROAD_EGRESS_PROFILE}"
+            f"final OCE Pod must use {NETWORK_PROFILE_LABEL} {OCE_BROAD_EGRESS_PROFILE}"
         )
     if spec.get("runtimeClassName") != "isolated-sandbox":
         raise AdmissionError("final OCE Pod must use runtimeClassName isolated-sandbox")

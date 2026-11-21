@@ -5,10 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import stat
 import subprocess
 import textwrap
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -31,6 +31,7 @@ ROLE_NAME = "openclaw-enterprise-agentgateway"
 POLICY_NAME = "openclaw-enterprise-bedrock-invoke"
 ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/{ROLE_NAME}"
 ASSOCIATION_ARN = f"arn:aws:eks:{REGION}:{ACCOUNT}:podidentityassociation/{CONTEXT}/{ASSOCIATION_ID}"
+FREEZE_PREFIX = "openclaw-enterprise-cleanup-freeze-"
 CLUSTER = {"certificate-authority-data": "dGVzdA==", "server": "https://cluster.example.test"}
 TENANT_ROLE_BINDINGS = (
     "openclaw-enterprise-worker",
@@ -38,14 +39,22 @@ TENANT_ROLE_BINDINGS = (
     "openclaw-enterprise-api-configuration",
 )
 CLUSTER_RESOURCES = (
-    "validatingadmissionpolicies.admissionregistration.k8s.io/"
-    "protect-openclaw-enterprise-namespace-label",
-    "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
-    "protect-openclaw-enterprise-namespace-label",
-    "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
-    "openclaw-enterprise-nitro-adapter",
-    "validatingwebhookconfigurations.admissionregistration.k8s.io/"
-    "openclaw-enterprise-nitro-policy",
+    (
+        "validatingadmissionpolicies.admissionregistration.k8s.io/"
+        "protect-openclaw-enterprise-namespace-label"
+    ),
+    (
+        "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
+        "protect-openclaw-enterprise-namespace-label"
+    ),
+    (
+        "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
+        "openclaw-enterprise-nitro-adapter"
+    ),
+    (
+        "validatingwebhookconfigurations.admissionregistration.k8s.io/"
+        "openclaw-enterprise-nitro-policy"
+    ),
 )
 RELEASE_RESOURCES = (
     *(f"clusterrole.rbac.authorization.k8s.io/{RELEASE}-{name}" for name in (
@@ -81,7 +90,11 @@ tool = Path(sys.argv[0]).name
 args = sys.argv[1:]
 state_path = Path(os.environ["FAKE_STATE"])
 state = json.loads(state_path.read_text())
-stdin = sys.stdin.read() if tool == "kubectl" and "delete" in args else ""
+stdin = (
+    sys.stdin.read()
+    if tool == "kubectl" and ({"create", "delete"} & set(args))
+    else ""
+)
 with Path(os.environ["FAKE_LOG"]).open("a") as log:
     log.write(json.dumps({"tool": tool, "args": args, "stdin": stdin}) + "\n")
 
@@ -122,6 +135,72 @@ def api_resource_name(resource):
         "serviceaccount": "serviceaccounts",
     }.get(resource, resource)
 
+def object_from_record(record, namespace=""):
+    labels = record.get("labels")
+    if labels is None:
+        labels = {
+            "app.kubernetes.io/managed-by": record["owner"],
+            "app.kubernetes.io/instance": record["instance"],
+        }
+    metadata = {
+        "name": record["name"],
+        "labels": labels,
+        "annotations": record.get("annotations", {}),
+        "ownerReferences": record.get("ownerReferences", []),
+        "uid": record["uid"],
+        "resourceVersion": record["version"],
+    }
+    if namespace:
+        metadata["namespace"] = namespace
+    item = {"metadata": metadata}
+    item.update(record.get("objectFields", {}))
+    return item
+
+def freeze_denial(namespace):
+    if state.get("ignoreFreeze"):
+        return None
+    for key, binding in state["resources"].items():
+        if binding["resource"] != (
+            "validatingadmissionpolicybindings.admissionregistration.k8s.io"
+        ):
+            continue
+        binding_spec = binding.get("objectFields", {}).get("spec", {})
+        if binding_spec.get("validationActions") != ["Deny"]:
+            continue
+        policy_name = binding_spec.get("policyName")
+        policy = state["resources"].get(
+            resource_key(
+                "validatingadmissionpolicies.admissionregistration.k8s.io/"
+                f"{policy_name}"
+            )
+        )
+        if not policy:
+            continue
+        policy_spec = policy.get("objectFields", {}).get("spec", {})
+        conditions = policy_spec.get("matchConditions", [])
+        rules = policy_spec.get("matchConstraints", {}).get(
+            "resourceRules", []
+        )
+        validations = policy_spec.get("validations", [])
+        if (
+            policy_spec.get("failurePolicy") == "Fail"
+            and conditions == [{
+                "name": "target-namespace",
+                "expression": (
+                    f"request.namespace == {json.dumps(namespace)}"
+                ),
+            }]
+            and any(
+                "CREATE" in rule.get("operations", [])
+                and rule.get("scope") == "Namespaced"
+                for rule in rules
+            )
+            and validations
+            and validations[0].get("expression") == "false"
+        ):
+            return validations[0].get("message")
+    return None
+
 if tool == "kubectl":
     command = kube_command()
     if command[:2] == ["config", "get-contexts"]:
@@ -145,6 +224,13 @@ if tool == "kubectl":
             if "--namespace" in command else ""
         )
         if "--output=json" in command:
+            if "/" in resource:
+                record = state["resources"].get(
+                    resource_key(resource, namespace)
+                )
+                if record:
+                    print(json.dumps(object_from_record(record, namespace)))
+                raise SystemExit(0)
             if resource in state.get("inventoryErrors", []):
                 print(f"cannot list {resource}", file=sys.stderr)
                 raise SystemExit(1)
@@ -155,25 +241,7 @@ if tool == "kubectl":
                     record_namespace == namespace
                     and api_resource_name(record["resource"]) == resource
                 ):
-                    labels = record.get("labels")
-                    if labels is None:
-                        labels = {
-                            "app.kubernetes.io/managed-by": record["owner"],
-                            "app.kubernetes.io/instance": record["instance"],
-                        }
-                    item = {
-                        "metadata": {
-                            "name": record["name"],
-                            "namespace": namespace,
-                            "labels": labels,
-                            "annotations": record.get("annotations", {}),
-                            "ownerReferences": record.get("ownerReferences", []),
-                            "uid": record["uid"],
-                            "resourceVersion": record["version"],
-                        }
-                    }
-                    item.update(record.get("objectFields", {}))
-                    items.append(item)
+                    items.append(object_from_record(record, namespace))
             print(json.dumps({"apiVersion": "v1", "kind": "List", "items": items}))
         else:
             record = state["resources"].get(resource_key(resource, namespace))
@@ -182,6 +250,68 @@ if tool == "kubectl":
                     record["name"], record["owner"], record["instance"],
                     record["uid"], record["version"],
                 ]))
+    elif command[:1] == ["create"]:
+        document = json.loads(stdin)
+        kind = document["kind"]
+        metadata = document["metadata"]
+        namespace = metadata.get("namespace", "")
+        if kind == "ConfigMap" and "--dry-run=server" in command:
+            denial = freeze_denial(namespace)
+            if denial:
+                state.setdefault("freezeDenials", []).append(namespace)
+                save()
+                print(f"admission webhook denied the request: {denial}", file=sys.stderr)
+                raise SystemExit(1)
+            state.setdefault("acceptedFreezeProbes", []).append(namespace)
+            save()
+            print(f"configmap/{metadata['name']}")
+            raise SystemExit(0)
+        resource_kind = {
+            "ValidatingAdmissionPolicy":
+                "validatingadmissionpolicies.admissionregistration.k8s.io",
+            "ValidatingAdmissionPolicyBinding":
+                "validatingadmissionpolicybindings.admissionregistration.k8s.io",
+        }.get(kind)
+        if resource_kind is None:
+            raise SystemExit(f"unsupported create kind: {kind}")
+        if (
+            kind == "ValidatingAdmissionPolicyBinding"
+            and state.get("failFreezeBindingCreate")
+        ):
+            print("injected binding creation failure", file=sys.stderr)
+            raise SystemExit(1)
+        resource = f"{resource_kind}/{metadata['name']}"
+        key = resource_key(resource)
+        if key in state["resources"]:
+            print("AlreadyExists", file=sys.stderr)
+            raise SystemExit(1)
+        serial = state.setdefault("createdResourceSerial", 0) + 1
+        state["createdResourceSerial"] = serial
+        labels = metadata.get("labels", {})
+        record = {
+            "resource": resource_kind,
+            "name": metadata["name"],
+            "owner": labels.get("app.kubernetes.io/managed-by", ""),
+            "instance": labels.get("app.kubernetes.io/instance", ""),
+            "annotations": metadata.get("annotations", {}),
+            "labels": labels,
+            "objectFields": {
+                "apiVersion": document["apiVersion"],
+                "kind": kind,
+                "spec": document["spec"],
+            },
+            "ownerReferences": [],
+            "uid": f"uid-created-{serial}",
+            "version": str(10000 + serial),
+            "path": (
+                "/apis/admissionregistration.k8s.io/v1/"
+                f"{resource_kind.split('.', 1)[0]}/{metadata['name']}"
+            ),
+            "helm": False,
+        }
+        state["resources"][key] = record
+        save()
+        print(json.dumps(object_from_record(record)))
     elif command[:1] == ["delete"] and command[1].startswith("--raw="):
         path = command[1].split("=", 1)[1]
         match = next(
@@ -194,6 +324,15 @@ if tool == "kubectl":
             if state.get("race") == key:
                 record["version"] = str(int(record["version"]) + 1)
                 state["race"] = None
+                save()
+            if (
+                state.get("freezeDeleteRace")
+                and record["resource"].startswith(
+                    "validatingadmissionpolicybindings."
+                )
+            ):
+                record["version"] = str(int(record["version"]) + 1)
+                state["freezeDeleteRace"] = False
                 save()
             preconditions = json.loads(stdin)["preconditions"]
             if preconditions != {
@@ -231,6 +370,9 @@ elif tool == "helm":
             key: value for key, value in state["resources"].items()
             if not value.get("helm")
         }
+        injected = state.pop("injectAfterHelm", None)
+        if injected:
+            state["resources"][injected["key"]] = injected["record"]
         save()
     else:
         raise SystemExit(f"unsupported helm call: {command}")
@@ -440,6 +582,8 @@ def _base_state(*, include_sample: bool = True) -> dict[str, Any]:
         "attempt": ATTEMPT,
         "race": None,
         "sticky": None,
+        "freezeDenials": [],
+        "acceptedFreezeProbes": [],
         "externalDatabase": "customer-managed-rds",
         "pvcs": [],
         "aws": {
@@ -599,9 +743,18 @@ def _mutations(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         call for call in calls
         if "delete" in call["args"]
+        or "create" in call["args"]
         or "patch" in call["args"]
         or "uninstall" in call["args"]
     ]
+
+
+def _freeze_resources(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        record for record in state["resources"].values()
+        if record["name"].startswith(FREEZE_PREFIX)
+    ]
+
 
 def test_requires_explicit_receipt_bound_target_arguments() -> None:
     result = subprocess.run(
@@ -627,9 +780,98 @@ def test_complete_cleanup_removes_tenant_and_preserves_external_state(
         )
     assert f"|storageclass.storage.k8s.io/{STORAGE_CLASS}" not in final["resources"]
     assert final["release"] is False
+    assert _freeze_resources(final) == []
+    assert set(final["freezeDenials"]) == {
+        "tenant-a",
+        "openclaw-enterprise-adapter",
+        "openclaw-enterprise-agw",
+        SYSTEM_NAMESPACE,
+    }
+    assert final["acceptedFreezeProbes"] == []
+
+    freeze_creates = [
+        (index, json.loads(call["stdin"]))
+        for index, call in enumerate(calls)
+        if call["tool"] == "kubectl"
+        and "create" in call["args"]
+        and call["stdin"]
+    ]
+    policies = [
+        (index, document)
+        for index, document in freeze_creates
+        if document["kind"] == "ValidatingAdmissionPolicy"
+    ]
+    bindings = [
+        document for _, document in freeze_creates
+        if document["kind"] == "ValidatingAdmissionPolicyBinding"
+    ]
+    probes = [
+        (index, document)
+        for index, document in freeze_creates
+        if document["kind"] == "ConfigMap"
+    ]
+    assert len(policies) == len(bindings) == len(probes) == 4
+    policy_annotations = {
+        policy["metadata"]["name"]: policy["metadata"]["annotations"]
+        for _, policy in policies
+    }
+    for _, policy in policies:
+        token = policy["metadata"]["annotations"][
+            "openclaw-enterprise.aws/cleanup-token"
+        ]
+        assert len(token) == 32
+        assert set(token) <= set("0123456789abcdef")
+        namespace = policy["metadata"]["annotations"][
+            "openclaw-enterprise.aws/target-namespace"
+        ]
+        assert policy["metadata"]["labels"] == {
+            "app.kubernetes.io/managed-by": OWNER,
+            "app.kubernetes.io/instance": RELEASE,
+        }
+        assert policy["spec"]["failurePolicy"] == "Fail"
+        assert policy["spec"]["matchConditions"] == [{
+            "name": "target-namespace",
+            "expression": f"request.namespace == {json.dumps(namespace)}",
+        }]
+        assert policy["spec"]["matchConstraints"] == {
+            "matchPolicy": "Equivalent",
+            "resourceRules": [{
+                "apiGroups": ["*"],
+                "apiVersions": ["*"],
+                "operations": ["CREATE", "UPDATE"],
+                "resources": ["*/*"],
+                "scope": "Namespaced",
+            }],
+        }
+        assert "DELETE" not in policy["spec"]["matchConstraints"][
+            "resourceRules"
+        ][0]["operations"]
+    for binding in bindings:
+        assert binding["metadata"]["annotations"] == policy_annotations[
+            binding["metadata"]["name"]
+        ]
+        assert binding["spec"] == {
+            "policyName": binding["metadata"]["name"],
+            "validationActions": ["Deny"],
+        }
+
+    probe_by_namespace = {
+        document["metadata"]["namespace"]: index
+        for index, document in probes
+    }
+    for namespace, probe_index in probe_by_namespace.items():
+        namespace_delete = next(
+            index for index, call in enumerate(calls)
+            if call["tool"] == "kubectl"
+            and f"--raw={_api_path(f'namespace/{namespace}')}" in call["args"]
+        )
+        assert probe_index < namespace_delete
+
     raw_deletes = [
         call for call in calls
-        if call["tool"] == "kubectl" and call["stdin"]
+        if call["tool"] == "kubectl"
+        and "delete" in call["args"]
+        and call["stdin"]
     ]
     assert raw_deletes
     for call in raw_deletes:
@@ -660,14 +902,125 @@ def test_unowned_tenant_descendant_blocks_cleanup_before_mutation(
     assert _mutations(calls) == []
 
 
+def test_new_unowned_descendant_after_helm_blocks_namespace_deletion(
+    tmp_path: Path,
+) -> None:
+    state = _base_state()
+    injected_resources: dict[str, dict[str, Any]] = {}
+    _add_resource(
+        injected_resources,
+        "secret/customer-created-during-cleanup",
+        "tenant-a",
+        owner="customer",
+    )
+    key, record = next(iter(injected_resources.items()))
+    state["injectAfterHelm"] = {"key": key, "record": record}
+
+    result, final, calls = _run(tmp_path, state)
+
+    assert result.returncode != 0
+    assert "descendants without exact sample ownership metadata" in result.stderr
+    assert "secrets/customer-created-during-cleanup" in result.stderr
+    assert final["release"] is False
+    assert key in final["resources"]
+    assert "|namespace/tenant-a" in final["resources"]
+    assert final["freezeDenials"] == ["tenant-a"]
+    assert final["acceptedFreezeProbes"] == []
+    assert _freeze_resources(final) == []
+    assert not any(
+        call["tool"] == "kubectl"
+        and f"--raw={_api_path('namespace/tenant-a')}" in call["args"]
+        for call in calls
+    )
+    assert sum(
+        call["tool"] == "kubectl" and "api-resources" in call["args"]
+        for call in calls
+    ) >= 2
+
+
+def test_freeze_verification_failure_is_closed_and_cleaned(
+    tmp_path: Path,
+) -> None:
+    state = _base_state()
+    state["ignoreFreeze"] = True
+
+    result, final, calls = _run(tmp_path, state)
+
+    assert result.returncode != 0
+    assert "repeatedly accepted object creation" in result.stderr
+    assert final["acceptedFreezeProbes"] == ["tenant-a"] * 10
+    assert "|namespace/tenant-a" in final["resources"]
+    assert _freeze_resources(final) == []
+    assert not any(
+        call["tool"] == "kubectl"
+        and f"--raw={_api_path('namespace/tenant-a')}" in call["args"]
+        for call in calls
+    )
+
+
+def test_partial_freeze_setup_removes_created_policy(
+    tmp_path: Path,
+) -> None:
+    state = _base_state()
+    state["failFreezeBindingCreate"] = True
+
+    result, final, calls = _run(tmp_path, state)
+
+    assert result.returncode != 0
+    assert "could not create the namespace admission freeze binding" in (
+        result.stderr
+    )
+    assert "|namespace/tenant-a" in final["resources"]
+    assert _freeze_resources(final) == []
+    policy_delete = next(
+        call for call in calls
+        if call["tool"] == "kubectl"
+        and "delete" in call["args"]
+        and "validatingadmissionpolicies" in " ".join(call["args"])
+    )
+    assert set(json.loads(policy_delete["stdin"])["preconditions"]) == {
+        "uid",
+        "resourceVersion",
+    }
+
+
+def test_freeze_cleanup_retries_with_fresh_resource_version_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    state = _base_state()
+    state["freezeDeleteRace"] = True
+
+    result, final, calls = _run(tmp_path, state)
+
+    assert result.returncode != 0
+    assert "could not remove the namespace admission freeze" in result.stderr
+    assert _freeze_resources(final) == []
+    binding_deletes = [
+        call for call in calls
+        if call["tool"] == "kubectl"
+        and "delete" in call["args"]
+        and "validatingadmissionpolicybindings" in " ".join(call["args"])
+    ]
+    assert len(binding_deletes) == 2
+    versions = [
+        json.loads(call["stdin"])["preconditions"]["resourceVersion"]
+        for call in binding_deletes
+    ]
+    assert int(versions[1]) == int(versions[0]) + 1
+
+
 @pytest.mark.parametrize(
     "resource",
     [
         f"namespace/{SYSTEM_NAMESPACE}",
-        "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
-        "openclaw-enterprise-nitro-adapter",
-        f"clusterrole.rbac.authorization.k8s.io/"
-        f"{RELEASE}-openclaw-namespace-observer",
+        (
+            "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
+            "openclaw-enterprise-nitro-adapter"
+        ),
+        (
+            f"clusterrole.rbac.authorization.k8s.io/"
+            f"{RELEASE}-openclaw-namespace-observer"
+        ),
         f"storageclass.storage.k8s.io/{STORAGE_CLASS}",
     ],
 )

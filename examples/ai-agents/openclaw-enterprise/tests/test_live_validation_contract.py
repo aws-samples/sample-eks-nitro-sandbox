@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "validate-live.sh"
 NATIVE_HISTORY_EVALUATOR = ROOT / "scripts" / "lib" / "evaluate-native-tool-history.mjs"
@@ -95,6 +94,12 @@ FAKE_COMMAND = textwrap.dedent(
                         "capabilities": {{"drop": ["ALL"]}},
                     }},
                     "env": [
+                        {{"name": "OPENCLAW_POD_UID", "valueFrom": {{
+                            "fieldRef": {{
+                                "apiVersion": "v1",
+                                "fieldPath": "metadata.uid",
+                            }}
+                        }}}},
                         {{"name": "OPENAI_API_KEY", "valueFrom": {{
                             "secretKeyRef": {{"name": "gateway-key", "key": "key"}}
                         }}}},
@@ -200,12 +205,22 @@ FAKE_COMMAND = textwrap.dedent(
         "agt_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "rs-a",
         "rev_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "pvc-a",
     )
+    if scenario == "replacement_wrong_revision":
+        pod_a_new["metadata"]["labels"]["openclaw.dev/revision"] = (
+            "rev_cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        )
     pod_b = pod(
         "tenant-b-k8s", "tenant-b-pod", "uid-b", "gateway-bbbbbbbbbbbb",
         "ns_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         "agt_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "rs-b",
         "rev_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "pvc-b",
     )
+    if scenario == "missing_pod_uid_downward_api":
+        pod_a["spec"]["containers"][0]["env"] = [
+            item
+            for item in pod_a["spec"]["containers"][0]["env"]
+            if item["name"] != "OPENCLAW_POD_UID"
+        ]
 
     if scenario == "sidecar_aws_environment":
         pod_a["spec"]["containers"].append({{
@@ -444,6 +459,12 @@ FAKE_COMMAND = textwrap.dedent(
                 "SigningAlgorithms": ["RSASSA_PSS_SHA_256"],
             }})
         elif args[:2] == ["kms", "sign"]:
+            if scenario == "evidence_directory_replaced":
+                evidence_dir = state_dir.parent / "evidence"
+                displaced_dir = state_dir.parent / "evidence-displaced"
+                evidence_dir.rename(displaced_dir)
+                evidence_dir.mkdir(mode=0o700)
+                (evidence_dir / "replacement-sentinel").write_text("untrusted")
             emit({{
                 "KeyId": "arn:aws:kms:us-west-2:123456789012:key/fake-evidence-key",
                 "Signature": base64.b64encode(b"fake-kms-signature").decode(),
@@ -525,7 +546,19 @@ FAKE_COMMAND = textwrap.dedent(
         if name == "oce-live-validation-spoof":
             sys.exit(1)
         if name == "tenant-a-pod":
-            emit(pod_a)
+            get_count_file = state_dir / "tenant_a_get_count"
+            get_count = (
+                int(get_count_file.read_text())
+                if get_count_file.exists()
+                else 0
+            ) + 1
+            get_count_file.write_text(str(get_count))
+            if scenario == "pod_uid_changed_before_exec" and get_count > 1:
+                changed_pod = json.loads(json.dumps(pod_a))
+                changed_pod["metadata"]["uid"] = "uid-a-substituted"
+                emit(changed_pod)
+            else:
+                emit(pod_a)
         elif name == "tenant-a-replacement":
             emit(pod_a_new)
         elif name == "tenant-b-pod":
@@ -741,6 +774,28 @@ FAKE_COMMAND = textwrap.dedent(
     if args[:1] == ["exec"]:
         pod_name = args[2] if args[1] == "-i" else args[1]
         remote = args[args.index("--") + 1:]
+        if "__OCE_EXACT_POD_COMMAND__" in remote:
+            expected_uid_argument = next(
+                (
+                    value
+                    for value in remote
+                    if value.startswith("OCE_EXPECTED_POD_UID=")
+                ),
+                "",
+            )
+            expected_uid = expected_uid_argument.partition("=")[2]
+            actual_uids = {{
+                "tenant-a-pod": "uid-a-old",
+                "tenant-a-replacement": "uid-a-new",
+                "tenant-b-pod": "uid-b",
+            }}
+            if scenario == "pod_uid_changed_inside_exec" and pod_name == "tenant-a-pod":
+                actual_uids[pod_name] = "uid-a-substituted"
+            if expected_uid != actual_uids.get(pod_name):
+                print("pod UID changed inside container", file=sys.stderr)
+                sys.exit(91)
+            command_index = remote.index("__OCE_EXACT_POD_COMMAND__")
+            remote = remote[command_index + 1:]
         joined = " ".join(remote)
         if "LIVE_AGENTGATEWAY_KEY_CONTRACT" in joined:
             if (
@@ -1523,6 +1578,54 @@ def test_requires_an_explicit_unprivileged_loopback_port(tmp_path: Path) -> None
     assert not (tmp_path / "evidence").exists()
 
 
+def test_refused_rerun_preserves_existing_evidence_and_signatures(
+    tmp_path: Path,
+) -> None:
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    original_artifacts = {
+        "live-validation-evidence.txt": (
+            b"PASS\tprior-run\tpreserve me\n"
+            b"FAIL\tprior-check\toriginal failure row\n"
+        ),
+        "live-validation-manifest.sha256": b"prior manifest\n",
+        "live-validation-evidence.sig.b64": b"prior signature\n",
+    }
+    for name, content in original_artifacts.items():
+        (evidence_dir / name).write_bytes(content)
+
+    result = _run(tmp_path)
+
+    assert result.returncode != 0
+    assert "evidence directory already exists" in result.stderr
+    for name, content in original_artifacts.items():
+        assert (evidence_dir / name).read_bytes() == content
+    assert not list(evidence_dir.glob(".live-validation-*"))
+
+
+def test_rejects_group_or_other_writable_evidence_parent(tmp_path: Path) -> None:
+    fake_bin, state_dir = _make_fake_commands(tmp_path)
+    arguments = _arguments(tmp_path)
+    tmp_path.chmod(0o777)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    env["FAKE_STATE_DIR"] = str(state_dir)
+
+    result = subprocess.run(
+        [str(SCRIPT), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+
+    assert result.returncode != 0
+    assert "evidence parent directory is not private" in result.stderr
+    assert not (tmp_path / "evidence").exists()
+    assert not (state_dir / "commands.jsonl").exists()
+
+
 def test_accepts_raw_one_line_service_keys_for_secret_manager_exports(
     tmp_path: Path,
 ) -> None:
@@ -1664,6 +1767,12 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         RUNTIME_IMAGE,
     )
     assert not any(value in evidence for value in sensitive_values)
+    evidence_dir = tmp_path / "evidence"
+    assert (evidence_dir.stat().st_mode & 0o777) == 0o700
+    for artifact in evidence_dir.iterdir():
+        if artifact.is_file():
+            assert (artifact.stat().st_mode & 0o777) == 0o600
+
 
     state_dir = tmp_path / "state"
     assert (state_dir / "deleted").read_text() == "tenant-a-pod"
@@ -1790,35 +1899,102 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
 
 
 @pytest.mark.parametrize(
+    ("scenario", "failed_check", "expected_error"),
+    [
+        (
+            "missing_pod_uid_downward_api",
+            "tenant-runtime-contract",
+            "tenant-a security context check failed",
+        ),
+        (
+            "pod_uid_changed_before_exec",
+            "guest-vm-evidence",
+            "pod identity changed before exec",
+        ),
+        (
+            "pod_uid_changed_inside_exec",
+            "guest-vm-evidence",
+            "pod UID changed inside container",
+        ),
+    ],
+)
+def test_exact_pod_exec_fails_closed_on_uid_contract_changes(
+    tmp_path: Path,
+    scenario: str,
+    failed_check: str,
+    expected_error: str,
+) -> None:
+    result = _run(tmp_path, scenario)
+
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
+    assert f"FAIL\t{failed_check}\t" in evidence
+    assert "RESULT\tPASS" not in evidence
+
+
+def test_evidence_directory_replacement_aborts_without_writing_replacement(
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        tmp_path,
+        "evidence_directory_replaced",
+        kms_key_id="alias/evidence-test",
+    )
+
+    assert result.returncode != 0
+    assert "evidence directory identity changed during the run" in result.stderr
+    replacement_dir = tmp_path / "evidence"
+    assert [path.name for path in replacement_dir.iterdir()] == [
+        "replacement-sentinel"
+    ]
+    displaced_dir = tmp_path / "evidence-displaced"
+    evidence = (displaced_dir / "live-validation-evidence.txt").read_text()
+    assert "FAIL\tevidence-signing\t" in evidence
+    assert "RESULT\tPASS" not in evidence
+    assert not list(displaced_dir.glob(".live-validation-*"))
+
+
+@pytest.mark.parametrize(
     ("scenario", "expected_detail"),
     [
         (
             "sidecar_aws_environment",
-            'spec.containers[1] ("credential-sidecar") defines prohibited '
-            'AWS credential environment "AWS_ACCESS_KEY_ID"',
+            (
+                'spec.containers[1] ("credential-sidecar") defines prohibited '
+                'AWS credential environment "AWS_ACCESS_KEY_ID"'
+            ),
         ),
         (
             "init_aws_environment",
-            'spec.initContainers[1] ("credential-init") defines prohibited '
-            'AWS credential environment "AWS_WEB_IDENTITY_TOKEN_FILE"',
+            (
+                'spec.initContainers[1] ("credential-init") defines prohibited '
+                'AWS credential environment "AWS_WEB_IDENTITY_TOKEN_FILE"'
+            ),
         ),
         (
             "ephemeral_aws_environment",
-            'spec.ephemeralContainers[0] ("credential-debugger") defines '
-            "prohibited AWS credential environment "
-            '"AWS_CONTAINER_CREDENTIALS_FULL_URI"',
+            (
+                'spec.ephemeralContainers[0] ("credential-debugger") defines '
+                "prohibited AWS credential environment "
+                '"AWS_CONTAINER_CREDENTIALS_FULL_URI"'
+            ),
         ),
         (
             "secret_aws_mount",
-            'spec.containers[1] ("credential-sidecar").volumeMounts[0] mounts '
-            'Secret volume "aws-credentials" at credential-like path '
-            '"/home/node/.aws"',
+            (
+                'spec.containers[1] ("credential-sidecar").volumeMounts[0] mounts '
+                'Secret volume "aws-credentials" at credential-like path '
+                '"/home/node/.aws"'
+            ),
         ),
         (
             "sidecar_state_pvc_mount",
-            'spec.containers[1] ("state-sidecar").volumeMounts[0] uses '
-            "unapproved PersistentVolumeClaim volume "
-            '"openclaw-gateway-state" at "/home/node/.openclaw"',
+            (
+                'spec.containers[1] ("state-sidecar").volumeMounts[0] uses '
+                "unapproved PersistentVolumeClaim volume "
+                '"openclaw-gateway-state" at "/home/node/.openclaw"'
+            ),
         ),
         (
             "csi_credential_mount",
@@ -1826,8 +2002,10 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         ),
         (
             "pvc_credential_mount",
-            'uses unapproved PersistentVolumeClaim volume "credential-pvc" '
-            'at "/mnt/identity"',
+            (
+                'uses unapproved PersistentVolumeClaim volume "credential-pvc" '
+                'at "/mnt/identity"'
+            ),
         ),
         (
             "hostpath_credential_mount",
@@ -1937,6 +2115,28 @@ def test_whole_disk_rows_do_not_count_as_partition_evidence(
     evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
     assert "FAIL\tguest-vm-evidence\t" in evidence
     assert "RESULT\tPASS" not in evidence
+
+
+def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
+    tmp_path: Path,
+) -> None:
+    result = _run(tmp_path, "replacement_wrong_revision")
+
+    assert result.returncode != 0
+    assert "replacement pod did not preserve the exact OCE revision" in result.stderr
+    commands = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "commands.jsonl").read_text().splitlines()
+    ]
+    replacement_cleanup_calls = [
+        command
+        for command in commands
+        if command["tool"] == "kubectl"
+        and "tenant-a-replacement" in command["args"]
+        and "rm" in command["args"]
+        and "-f" in command["args"]
+    ]
+    assert replacement_cleanup_calls == []
 
 
 @pytest.mark.parametrize(
@@ -2128,6 +2328,8 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert ".acceptedStatus == 200" in source
     assert ".nonceMatch == true" in source
     assert "verify_agentgateway_key_contract" in source
+    assert 'operation.destroy(new Error("response too large"))' in source
+    assert 'response.on("data", chunk => { responseBody += chunk; });' not in source
     assert "const { GatewayClient } = await import(" in source
     assert "evaluateNativeToolHistory" in source
     assert "OCE_NATIVE_HISTORY_EVALUATOR_B64" in source

@@ -60,9 +60,14 @@ WORK_DIR=""
 EVIDENCE_FILE=""
 MANIFEST_FILE=""
 SIGNATURE_FILE=""
+EVIDENCE_LOCK_DIR=""
+EVIDENCE_OWNED="false"
+EVIDENCE_OUTPUT_DIR=""
+EVIDENCE_DIRECTORY_IDENTITY=""
 CURRENT_CHECK="argument-validation"
 MARKERS_CREATED="false"
 REPLACEMENT_POD=""
+REPLACEMENT_POD_CANDIDATE=""
 CROSS_TENANT_PVC_POD=""
 CROSS_TENANT_PVC_POD_UID=""
 ORDINARY_CONTROL_POD=""
@@ -79,6 +84,13 @@ EVIDENCE_PREPASS_BACKUP=""
 NATIVE_HISTORY_EVALUATOR_PATH=""
 NATIVE_HISTORY_EVALUATOR_B64=""
 NATIVE_HISTORY_EVALUATOR_SHA256=""
+TENANT_A_POD_UID=""
+TENANT_B_POD_UID=""
+REPLACEMENT_POD_UID=""
+FINAL_EVIDENCE_IDENTITY=""
+FINAL_MANIFEST_IDENTITY=""
+FINAL_SIGNATURE_IDENTITY=""
+FINAL_EVIDENCE_FD=""
 
 usage() {
   printf '%s\n' \
@@ -129,6 +141,116 @@ sha256_file() {
   digest="${digest_output%% *}"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "hash command returned an invalid SHA-256 digest"
   printf '%s' "$digest"
+}
+
+portable_file_identity() {
+  local path="$1"
+  local metadata
+  if metadata="$(stat -Lc '%d %i %u %h %a %s' "$path" 2>/dev/null)" &&
+    [[ "$metadata" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-7]{3,4}\ [0-9]+$ ]]; then
+    :
+  elif metadata="$(stat -f '%d %i %u %l %Lp %z' "$path" 2>/dev/null)" &&
+    [[ "$metadata" =~ ^[0-9]+\ [0-9]+\ [0-9]+\ [0-9]+\ [0-7]{3,4}\ [0-9]+$ ]]; then
+    :
+  else
+    die "could not inspect a validation evidence file"
+  fi
+  printf '%s' "$metadata"
+}
+
+private_regular_file_identity() {
+  local path="$1"
+  local metadata device inode owner links mode size
+  [[ -f "$path" && ! -L "$path" ]] ||
+    die "validation evidence path must be a regular, non-symlink file"
+  metadata="$(portable_file_identity "$path")"
+  read -r device inode owner links mode size <<<"$metadata"
+  [[ "$owner" == "$(id -u)" && "$links" == "1" && "$mode" == "600" ]] ||
+    die "validation evidence files must be user-owned mode 0600 with one hard link"
+  printf '%s:%s:%s:%s:%s:%s' "$device" "$inode" "$owner" "$links" "$mode" "$size"
+}
+
+private_directory_identity() {
+  local path="$1"
+  local metadata device inode owner links mode size
+  [[ -d "$path" && ! -L "$path" ]] ||
+    die "validation evidence directory must be a non-symlink directory"
+  metadata="$(portable_file_identity "$path")"
+  read -r device inode owner links mode size <<<"$metadata"
+  [[ "$owner" == "$(id -u)" && "$mode" == "700" ]] ||
+    die "validation evidence directory must be user-owned mode 0700"
+  printf '%s:%s:%s:%s' "$device" "$inode" "$owner" "$mode"
+}
+
+assert_private_file_identity() {
+  local path="$1"
+  local expected_identity="$2"
+  local actual_identity
+  actual_identity="$(private_regular_file_identity "$path")"
+  [[ "$actual_identity" == "$expected_identity" ]] ||
+    die "validation evidence file identity changed during signing"
+}
+
+assert_open_file_matches_path() {
+  local fd="$1"
+  local path="$2"
+  node - "$fd" "$path" <<'NODE'
+const fs = require("node:fs");
+const fd = Number(process.argv[2]);
+const path = process.argv[3];
+const opened = fs.fstatSync(fd);
+const named = fs.lstatSync(path);
+const fields = ["dev", "ino", "uid", "nlink", "size"];
+if (!named.isFile() || named.isSymbolicLink() ||
+    fields.some(field => opened[field] !== named[field])) {
+  process.exit(1);
+}
+NODE
+}
+
+assert_evidence_directory_identity() {
+  local actual_identity
+  actual_identity="$(private_directory_identity "$EVIDENCE_OUTPUT_DIR")"
+  [[ "$actual_identity" == "$EVIDENCE_DIRECTORY_IDENTITY" ]] ||
+    die "validation evidence directory identity changed during the run"
+}
+
+opened_file_path() {
+  local fd="$1"
+  if [[ -e "/proc/self/fd/$fd" ]]; then
+    printf '/proc/self/fd/%s' "$fd"
+  else
+    printf '/dev/fd/%s' "$fd"
+  fi
+}
+
+validate_evidence_parent() {
+  local requested_parent="$1"
+  node - "$requested_parent" <<'NODE'
+const fs = require("node:fs");
+const path = require("node:path");
+
+const effectiveUid = process.geteuid();
+let current = fs.realpathSync(process.argv[2]);
+const resolvedParent = current;
+for (;;) {
+  const stat = fs.lstatSync(current);
+  const mode = stat.mode & 0o7777;
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error(`evidence parent component is not a directory: ${current}`);
+  }
+  if (stat.uid !== 0 && stat.uid !== effectiveUid) {
+    throw new Error(`evidence parent component has an untrusted owner: ${current}`);
+  }
+  if ((mode & 0o022) !== 0 && !(stat.uid === 0 && (mode & 0o1000) !== 0)) {
+    throw new Error(`evidence parent component is group/other writable: ${current}`);
+  }
+  const parent = path.dirname(current);
+  if (parent === current) break;
+  current = parent;
+}
+process.stdout.write(resolvedParent);
+NODE
 }
 
 sha256_text() {
@@ -264,12 +386,65 @@ stop_oce_api_port_forward() {
 
 cleanup_markers() {
   [[ "$MARKERS_CREATED" == "true" ]] || return 0
-  local pod
-  for pod in "$TENANT_A_POD" "$REPLACEMENT_POD"; do
-    [[ -n "$pod" ]] || continue
-    kube -n "$TENANT_A_NAMESPACE" exec "$pod" -c "$TENANT_A_CONTAINER" -- \
+  local pod pod_uid
+  while IFS=$'\t' read -r pod pod_uid; do
+    [[ -n "$pod" && -n "$pod_uid" ]] || continue
+    exec_in_exact_pod \
+      "$TENANT_A_NAMESPACE" "$pod" "$TENANT_A_CONTAINER" "$pod_uid" \
       rm -f -- "$PERSISTENT_MARKER" "$EPHEMERAL_MARKER" >/dev/null 2>&1 || true
-  done
+  done < <(
+    printf '%s\t%s\n%s\t%s\n' \
+      "$TENANT_A_POD" "$TENANT_A_POD_UID" \
+      "$REPLACEMENT_POD" "$REPLACEMENT_POD_UID"
+  )
+}
+
+assert_pod_uid() {
+  local namespace="$1"
+  local pod="$2"
+  local expected_uid="$3"
+  local actual_uid
+  [[ "$expected_uid" =~ ^[A-Za-z0-9._:-]+$ ]] || die "expected pod UID is invalid"
+  actual_uid="$(
+    kube -n "$namespace" get pod "$pod" -o json |
+      jq -er '.metadata.uid | select(type == "string" and length > 0)'
+  )" || die "could not re-read pod identity before exec"
+  [[ "$actual_uid" == "$expected_uid" ]] ||
+    die "pod identity changed before exec; refusing a name-reused workload"
+}
+
+exec_in_exact_pod() {
+  local namespace="$1"
+  local pod="$2"
+  local container="$3"
+  local expected_uid="$4"
+  shift 4
+  (($# > 0)) || die "exact-pod exec requires a command"
+
+  assert_pod_uid "$namespace" "$pod" "$expected_uid"
+  # OPENCLAW_POD_UID comes from the Downward API. Checking it inside the
+  # container closes the remaining name-reuse race between the GET and exec.
+  # shellcheck disable=SC2016 # The variables and positional arguments expand in the guest.
+  kube -n "$namespace" exec "$pod" -c "$container" -- \
+    env "OCE_EXPECTED_POD_UID=$expected_uid" \
+    sh -eu -c '
+      [ "${OPENCLAW_POD_UID:-}" = "$OCE_EXPECTED_POD_UID" ] || exit 91
+      shift
+      exec "$@"
+    ' sh "__OCE_EXACT_POD_COMMAND__" "$@"
+}
+
+exec_runtime_command() {
+  local namespace="$1"
+  local pod="$2"
+  local container="$3"
+  local expected_uid="$4"
+  shift 4
+  if [[ -n "$expected_uid" ]]; then
+    exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" "$@"
+  else
+    kube -n "$namespace" exec "$pod" -c "$container" -- "$@"
+  fi
 }
 
 delete_pod_with_uid() {
@@ -370,12 +545,15 @@ cleanup_ordinary_control_pod() {
 
 on_exit() {
   local status=$?
-  trap - EXIT
+  trap - EXIT HUP INT TERM
   set +e
   stop_oce_api_port_forward >/dev/null 2>&1
   cleanup_markers
   cleanup_cross_tenant_pvc_probe >/dev/null 2>&1
   cleanup_ordinary_control_pod >/dev/null 2>&1
+  if [[ -n "$FINAL_EVIDENCE_FD" ]]; then
+    exec {FINAL_EVIDENCE_FD}<&- 2>/dev/null || true
+  fi
   if [[ -n "$FINAL_EVIDENCE_CANDIDATE" ]]; then
     rm -f -- "$FINAL_EVIDENCE_CANDIDATE"
   fi
@@ -385,7 +563,8 @@ on_exit() {
   if [[ -n "$FINAL_SIGNATURE_CANDIDATE" ]]; then
     rm -f -- "$FINAL_SIGNATURE_CANDIDATE"
   fi
-  if [[ $status -ne 0 && -n "$EVIDENCE_FILE" && -f "$EVIDENCE_FILE" ]]; then
+  if [[ $status -ne 0 && "$EVIDENCE_OWNED" == "true" &&
+    -n "$EVIDENCE_FILE" && -f "$EVIDENCE_FILE" ]]; then
     rm -f -- "$SIGNATURE_FILE" "$MANIFEST_FILE"
     if [[ -n "$EVIDENCE_PREPASS_BACKUP" && -f "$EVIDENCE_PREPASS_BACKUP" ]]; then
       cp -- "$EVIDENCE_PREPASS_BACKUP" "$EVIDENCE_FILE"
@@ -397,9 +576,11 @@ on_exit() {
   if [[ -n "$WORK_DIR" && -d "$WORK_DIR" ]]; then
     rm -rf -- "$WORK_DIR"
   fi
+  if [[ -n "$EVIDENCE_LOCK_DIR" && -d "$EVIDENCE_LOCK_DIR" ]]; then
+    rmdir -- "$EVIDENCE_LOCK_DIR"
+  fi
   exit "$status"
 }
-trap on_exit EXIT
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -495,8 +676,8 @@ for pod_name in "$TENANT_A_POD" "$TENANT_B_POD"; do
 done
 
 for command_name in \
-  awk aws basename cat chmod cp date git grep id jq kubectl mkdir mktemp node openssl rm sed sleep \
-  stat uname; do
+  awk aws basename cat chmod cp date dirname git grep id jq kubectl mkdir mktemp node openssl rm \
+  sed sleep stat uname; do
   command -v "$command_name" >/dev/null 2>&1 || die "required command is unavailable: $command_name"
 done
 
@@ -567,19 +748,42 @@ TENANT_B_CREDENTIAL="$(read_credential "$TENANT_B_CREDENTIAL_FILE")"
 [[ "$TENANT_A_CREDENTIAL" != "$TENANT_B_CREDENTIAL" ]] ||
   die "tenant credentials must be distinct"
 
-if [[ -e "$EVIDENCE_DIR" && -L "$EVIDENCE_DIR" ]]; then
-  die "evidence directory must not be a symlink"
-fi
-mkdir -p -- "$EVIDENCE_DIR"
-[[ -d "$EVIDENCE_DIR" ]] || die "evidence path is not a directory"
-EVIDENCE_FILE="$EVIDENCE_DIR/live-validation-evidence.txt"
-MANIFEST_FILE="$EVIDENCE_DIR/live-validation-manifest.sha256"
-SIGNATURE_FILE="$EVIDENCE_DIR/live-validation-evidence.sig.b64"
-[[ ! -e "$EVIDENCE_FILE" ]] || die "evidence file already exists; choose a fresh directory"
-[[ ! -e "$MANIFEST_FILE" && ! -e "$SIGNATURE_FILE" ]] ||
-  die "evidence manifest or signature already exists; choose a fresh directory"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-live-validation.XXXXXX")"
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+EVIDENCE_REQUESTED_DIR="$(
+  node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' "$EVIDENCE_DIR"
+)"
+EVIDENCE_REQUESTED_PARENT="$(dirname -- "$EVIDENCE_REQUESTED_DIR")"
+EVIDENCE_BASENAME="$(basename -- "$EVIDENCE_REQUESTED_DIR")"
+[[ "$EVIDENCE_BASENAME" != "." && "$EVIDENCE_BASENAME" != ".." ]] ||
+  die "evidence directory name is invalid"
+EVIDENCE_PARENT="$(
+  validate_evidence_parent "$EVIDENCE_REQUESTED_PARENT"
+)" || die "evidence parent directory is not private"
+EVIDENCE_OUTPUT_DIR="$EVIDENCE_PARENT/$EVIDENCE_BASENAME"
+[[ ! -e "$EVIDENCE_OUTPUT_DIR" && ! -L "$EVIDENCE_OUTPUT_DIR" ]] ||
+  die "evidence directory already exists; choose a fresh directory"
+mkdir -m 700 -- "$EVIDENCE_OUTPUT_DIR"
+EVIDENCE_OWNED="true"
+trap on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cd -- "$EVIDENCE_OUTPUT_DIR"
+EVIDENCE_DIRECTORY_IDENTITY="$(private_directory_identity ".")"
+assert_evidence_directory_identity
+EVIDENCE_FILE="./live-validation-evidence.txt"
+MANIFEST_FILE="./live-validation-manifest.sha256"
+SIGNATURE_FILE="./live-validation-evidence.sig.b64"
+EVIDENCE_LOCK_DIR="./.live-validation.lock"
+if ! mkdir -m 700 -- "$EVIDENCE_LOCK_DIR" 2>/dev/null; then
+  EVIDENCE_LOCK_DIR=""
+  die "evidence directory is already in use by another validation run"
+fi
+if ! (set -o noclobber; : >"$EVIDENCE_FILE") 2>/dev/null; then
+  die "evidence file already exists; choose a fresh directory"
+fi
+chmod 600 "$EVIDENCE_FILE"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-live-validation.XXXXXX")"
 NATIVE_HISTORY_EVALUATOR_PATH="$(dirname "$SCRIPT_PATH")/lib/evaluate-native-tool-history.mjs"
 [[ -f "$NATIVE_HISTORY_EVALUATOR_PATH" &&
   ! -L "$NATIVE_HISTORY_EVALUATOR_PATH" &&
@@ -1147,6 +1351,11 @@ verify_runtime_pod() {
       and $runtime.securityContext.runAsGroup == 1000
       and $runtime.securityContext.seccompProfile.type == "RuntimeDefault"
       and ($runtime.securityContext.capabilities.drop | index("ALL") != null)
+      and (($runtime.env // []) | any(
+        .name == "OPENCLAW_POD_UID"
+        and .valueFrom.fieldRef.apiVersion == "v1"
+        and .valueFrom.fieldRef.fieldPath == "metadata.uid"
+      ))
   ' "$output_file" >/dev/null || die "$tenant_alias security context check failed"
 
   assert_no_aws_credential_paths "$tenant_alias" "$output_file" "$container"
@@ -1443,6 +1652,7 @@ guest_evidence() {
   local container="$3"
   local output_file="$4"
   local expected_kind="$5"
+  local expected_uid="${6:-}"
   local evidence_line block_name partition_name
   local saw_block="false"
   local saw_partition="false"
@@ -1451,7 +1661,7 @@ guest_evidence() {
   local saw_nvme_block="false"
   local saw_nvme_partition="false"
   # shellcheck disable=SC2016 # This program expands inside the guest, not locally.
-  kube -n "$namespace" exec "$pod" -c "$container" -- sh -eu -c '
+  exec_runtime_command "$namespace" "$pod" "$container" "$expected_uid" sh -eu -c '
     printf "LIVE_GUEST_EVIDENCE\n"
     cat /proc/sys/kernel/random/boot_id
     uname -r
@@ -1607,9 +1817,9 @@ jq -e \
 ' "$WORK_DIR/ordinary-control-pod.json" >/dev/null ||
   die "ordinary control pod did not preserve its non-sandboxed contract"
 guest_evidence "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
-  "$WORK_DIR/tenant-a-guest.txt" "sandbox"
+  "$WORK_DIR/tenant-a-guest.txt" "sandbox" "$TENANT_A_POD_UID"
 guest_evidence "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
-  "$WORK_DIR/tenant-b-guest.txt" "sandbox"
+  "$WORK_DIR/tenant-b-guest.txt" "sandbox" "$TENANT_B_POD_UID"
 guest_evidence "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" \
   "$WORK_DIR/ordinary-control-guest.txt" "ordinary"
 GUEST_BOOT_IDS=(
@@ -1736,9 +1946,10 @@ verify_agentgateway_key_contract() {
   local namespace="$1"
   local pod="$2"
   local container="$3"
-  local output_file="$4"
+  local expected_uid="$4"
+  local output_file="$5"
   # shellcheck disable=SC2016 # This JavaScript reads credentials only inside the guest.
-  kube -n "$namespace" exec "$pod" -c "$container" -- node -e '
+  exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" node -e '
     const crypto = require("node:crypto");
     const fs = require("node:fs");
     const https = require("node:https");
@@ -1835,10 +2046,10 @@ verify_agentgateway_key_contract() {
 
 CURRENT_CHECK="agentgateway-key-authorization"
 verify_agentgateway_key_contract \
-  "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
+  "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" "$TENANT_A_POD_UID" \
   "$WORK_DIR/agentgateway-key-tenant-a.json"
 verify_agentgateway_key_contract \
-  "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
+  "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" "$TENANT_B_POD_UID" \
   "$WORK_DIR/agentgateway-key-tenant-b.json"
 record_pass "agentgateway-key-authorization" \
   "missing and incorrect keys were denied; each tenant key completed one Responses API turn"
@@ -1847,9 +2058,10 @@ call_native_openclaw_model() {
   local namespace="$1"
   local pod="$2"
   local container="$3"
-  local output_file="$4"
+  local expected_uid="$4"
+  local output_file="$5"
   # shellcheck disable=SC2016 # This JavaScript reads the guest environment.
-  kube -n "$namespace" exec "$pod" -c "$container" -- node -e '
+  exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" node -e '
     const crypto = require("node:crypto");
     const http = require("node:http");
     const password = process.env.OPENCLAW_GATEWAY_PASSWORD || "";
@@ -1873,7 +2085,12 @@ call_native_openclaw_model() {
         }, response => {
           let responseBody = "";
           response.setEncoding("utf8");
-          response.on("data", chunk => { responseBody += chunk; });
+          response.on("data", chunk => {
+            responseBody += chunk;
+            if (responseBody.length > 1048576) {
+              operation.destroy(new Error("response too large"));
+            }
+          });
           response.on("end", () => resolve({
             status: response.statusCode,
             body: responseBody
@@ -2190,14 +2407,14 @@ capture_agentgateway_model_evidence() {
 CURRENT_CHECK="native-openclaw-model-turn"
 MODEL_STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 call_native_openclaw_model "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
-  "$WORK_DIR/model-response-a.json"
+  "$TENANT_A_POD_UID" "$WORK_DIR/model-response-a.json"
 CURRENT_CHECK="agentgateway-model-telemetry"
 capture_agentgateway_model_evidence \
   "$WORK_DIR/model-response-a.json" "tenant-a" "$MODEL_STARTED_AT"
 CURRENT_CHECK="native-openclaw-model-turn"
 MODEL_STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 call_native_openclaw_model "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
-  "$WORK_DIR/model-response-b.json"
+  "$TENANT_B_POD_UID" "$WORK_DIR/model-response-b.json"
 CURRENT_CHECK="agentgateway-model-telemetry"
 capture_agentgateway_model_evidence \
   "$WORK_DIR/model-response-b.json" "tenant-b" "$MODEL_STARTED_AT"
@@ -2465,7 +2682,9 @@ ORIGINAL_DEPLOYMENT="$(controller_for_pod "$TENANT_A_NAMESPACE" "$WORK_DIR/tenan
   "$WORK_DIR/original-replicaset.json")"
 [[ -n "$ORIGINAL_DEPLOYMENT" ]] || die "runtime pod ReplicaSet is not controller-owned by a Deployment"
 
-kube -n "$TENANT_A_NAMESPACE" exec "$TENANT_A_POD" -c "$TENANT_A_CONTAINER" -- sh -eu -c \
+exec_in_exact_pod \
+  "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" "$TENANT_A_POD_UID" \
+  sh -eu -c \
   "printf '%s' 'persistent-ok' > '$PERSISTENT_MARKER'; printf '%s' 'ephemeral-old' > '$EPHEMERAL_MARKER'"
 MARKERS_CREATED="true"
 delete_pod_with_uid \
@@ -2479,7 +2698,7 @@ attempts=$((TIMEOUT_SECONDS / 2))
 for ((attempt = 0; attempt < attempts; attempt += 1)); do
   kube -n "$TENANT_A_NAMESPACE" get pods \
     -l "app.kubernetes.io/name=${POD_SELECTOR_VALUE}" -o json >"$WORK_DIR/replacement-candidates.json"
-  REPLACEMENT_POD="$(
+  REPLACEMENT_POD_CANDIDATE="$(
     jq -r --arg uid "$ORIGINAL_POD_UID" --arg container "$TENANT_A_CONTAINER" '
       first(
         .items[]
@@ -2494,14 +2713,15 @@ for ((attempt = 0; attempt < attempts; attempt += 1)); do
       ) // empty
     ' "$WORK_DIR/replacement-candidates.json"
   )"
-  [[ -n "$REPLACEMENT_POD" ]] && break
+  [[ -n "$REPLACEMENT_POD_CANDIDATE" ]] && break
   sleep 2
 done
-[[ -n "$REPLACEMENT_POD" ]] || die "controller did not create a ready replacement pod before timeout"
+[[ -n "$REPLACEMENT_POD_CANDIDATE" ]] ||
+  die "controller did not create a ready replacement pod before timeout"
 kube -n "$TENANT_A_NAMESPACE" rollout status "deployment/$ORIGINAL_DEPLOYMENT" \
   "--timeout=${TIMEOUT_SECONDS}s" >/dev/null
 
-verify_runtime_pod "tenant-a-replacement" "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" \
+verify_runtime_pod "tenant-a-replacement" "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD_CANDIDATE" \
   "$TENANT_A_CONTAINER" "$TENANT_A_OCE_NAMESPACE" "$TENANT_A_AGENT_ID" \
   "$WORK_DIR/replacement-pod.json"
 REPLACEMENT_POD_UID="$(jq -er '.metadata.uid' "$WORK_DIR/replacement-pod.json")"
@@ -2521,16 +2741,19 @@ REPLACEMENT_DEPLOYMENT="$(controller_for_pod "$TENANT_A_NAMESPACE" "$WORK_DIR/re
   "$WORK_DIR/replacement-replicaset.json")"
 [[ "$REPLACEMENT_DEPLOYMENT" == "$ORIGINAL_DEPLOYMENT" ]] ||
   die "replacement pod was not created by the original Deployment"
-[[ "$(kube -n "$TENANT_A_NAMESPACE" exec "$REPLACEMENT_POD" -c "$TENANT_A_CONTAINER" -- \
+REPLACEMENT_POD="$REPLACEMENT_POD_CANDIDATE"
+[[ "$(exec_in_exact_pod \
+  "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" "$TENANT_A_CONTAINER" "$REPLACEMENT_POD_UID" \
   cat "$PERSISTENT_MARKER")" == "persistent-ok" ]] ||
   die "persistent marker did not survive controller-driven replacement"
-if kube -n "$TENANT_A_NAMESPACE" exec "$REPLACEMENT_POD" -c "$TENANT_A_CONTAINER" -- \
+if exec_in_exact_pod \
+  "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" "$TENANT_A_CONTAINER" "$REPLACEMENT_POD_UID" \
   test -e "$EPHEMERAL_MARKER"; then
   die "ephemeral home marker unexpectedly survived replacement"
 fi
 MODEL_STARTED_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 call_native_openclaw_model \
-  "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" "$TENANT_A_CONTAINER" \
+  "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" "$TENANT_A_CONTAINER" "$REPLACEMENT_POD_UID" \
   "$WORK_DIR/replacement-model-response.json"
 CURRENT_CHECK="agentgateway-model-telemetry"
 capture_agentgateway_model_evidence \
@@ -2545,9 +2768,11 @@ record_pass "controller-driven-persistence" \
   "persistent state survived replacement; ephemeral state did not; native model turn still passed"
 
 CURRENT_CHECK="temporary-artifact-cleanup"
-kube -n "$TENANT_A_NAMESPACE" exec "$REPLACEMENT_POD" -c "$TENANT_A_CONTAINER" -- \
+exec_in_exact_pod \
+  "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" "$TENANT_A_CONTAINER" "$REPLACEMENT_POD_UID" \
   rm -f -- "$PERSISTENT_MARKER" "$EPHEMERAL_MARKER"
-if ! kube -n "$TENANT_A_NAMESPACE" exec "$REPLACEMENT_POD" -c "$TENANT_A_CONTAINER" -- \
+if ! exec_in_exact_pod \
+  "$TENANT_A_NAMESPACE" "$REPLACEMENT_POD" "$TENANT_A_CONTAINER" "$REPLACEMENT_POD_UID" \
   test ! -e "$PERSISTENT_MARKER" -a ! -e "$EPHEMERAL_MARKER"; then
   die "validation markers could not be removed"
 fi
@@ -2565,8 +2790,9 @@ CURRENT_CHECK="evidence-signing"
 VALIDATION_ENDED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 EVIDENCE_PREPASS_BACKUP="$WORK_DIR/live-validation-evidence-prepass.txt"
 cp -- "$EVIDENCE_FILE" "$EVIDENCE_PREPASS_BACKUP"
-FINAL_EVIDENCE_CANDIDATE="$(mktemp "$EVIDENCE_DIR/.live-validation-evidence.XXXXXX")"
-FINAL_MANIFEST_CANDIDATE="$(mktemp "$EVIDENCE_DIR/.live-validation-manifest.XXXXXX")"
+assert_evidence_directory_identity
+FINAL_EVIDENCE_CANDIDATE="$(mktemp "./.live-validation-evidence.XXXXXX")"
+FINAL_MANIFEST_CANDIDATE="$(mktemp "./.live-validation-manifest.XXXXXX")"
 chmod 600 "$FINAL_EVIDENCE_CANDIDATE" "$FINAL_MANIFEST_CANDIDATE"
 cp -- "$EVIDENCE_FILE" "$FINAL_EVIDENCE_CANDIDATE"
 if [[ -n "$KMS_SIGNING_KEY_ID" ]]; then
@@ -2599,9 +2825,15 @@ else
     printf 'RESULT\tPASS\tall live validation checks passed\n'
   } >>"$FINAL_EVIDENCE_CANDIDATE"
 fi
+FINAL_EVIDENCE_IDENTITY="$(private_regular_file_identity "$FINAL_EVIDENCE_CANDIDATE")"
+exec {FINAL_EVIDENCE_FD}<"$FINAL_EVIDENCE_CANDIDATE"
+FINAL_EVIDENCE_FD_PATH="$(opened_file_path "$FINAL_EVIDENCE_FD")"
+assert_open_file_matches_path "$FINAL_EVIDENCE_FD" "$FINAL_EVIDENCE_CANDIDATE" ||
+  die "opened evidence does not match the final evidence candidate"
+FINAL_EVIDENCE_SHA256="$(sha256_file "$FINAL_EVIDENCE_FD_PATH")"
 
 if [[ -n "$KMS_SIGNING_KEY_ID" ]]; then
-  openssl dgst -sha256 -binary "$FINAL_EVIDENCE_CANDIDATE" \
+  openssl dgst -sha256 -binary "$FINAL_EVIDENCE_FD_PATH" \
     >"$WORK_DIR/evidence-digest.bin"
   aws kms sign \
     --region "$AWS_REGION" \
@@ -2629,28 +2861,47 @@ if [[ -n "$KMS_SIGNING_KEY_ID" ]]; then
     .KeyId == $key_id and .SignatureValid == true
   ' "$WORK_DIR/kms-verification.json" >/dev/null ||
     die "KMS did not verify the evidence signature"
+  [[ "$(sha256_file "$FINAL_EVIDENCE_FD_PATH")" == "$FINAL_EVIDENCE_SHA256" ]] ||
+    die "validation evidence content changed during signing"
+  assert_private_file_identity "$FINAL_EVIDENCE_CANDIDATE" "$FINAL_EVIDENCE_IDENTITY"
   FINAL_SIGNATURE_CANDIDATE="$(
-    mktemp "$EVIDENCE_DIR/.live-validation-signature.XXXXXX"
+    mktemp "./.live-validation-signature.XXXXXX"
   )"
   jq -er '.Signature' "$WORK_DIR/kms-signature.json" >"$FINAL_SIGNATURE_CANDIDATE"
   chmod 600 "$FINAL_SIGNATURE_CANDIDATE"
+  FINAL_SIGNATURE_IDENTITY="$(private_regular_file_identity "$FINAL_SIGNATURE_CANDIDATE")"
 fi
 
+assert_evidence_directory_identity
+assert_private_file_identity "$FINAL_EVIDENCE_CANDIDATE" "$FINAL_EVIDENCE_IDENTITY"
 write_manifest_to \
   "$FINAL_MANIFEST_CANDIDATE" \
   "$FINAL_EVIDENCE_CANDIDATE" \
   "$FINAL_SIGNATURE_CANDIDATE"
+FINAL_MANIFEST_IDENTITY="$(private_regular_file_identity "$FINAL_MANIFEST_CANDIDATE")"
+assert_private_file_identity "$FINAL_EVIDENCE_CANDIDATE" "$FINAL_EVIDENCE_IDENTITY"
+if [[ -n "$FINAL_SIGNATURE_CANDIDATE" ]]; then
+  assert_private_file_identity "$FINAL_SIGNATURE_CANDIDATE" "$FINAL_SIGNATURE_IDENTITY"
+fi
+assert_evidence_directory_identity
 if [[ -n "$FINAL_SIGNATURE_CANDIDATE" ]]; then
   mv -- "$FINAL_SIGNATURE_CANDIDATE" "$SIGNATURE_FILE"
   FINAL_SIGNATURE_CANDIDATE=""
+  assert_private_file_identity "$SIGNATURE_FILE" "$FINAL_SIGNATURE_IDENTITY"
 fi
 mv -- "$FINAL_EVIDENCE_CANDIDATE" "$EVIDENCE_FILE"
 FINAL_EVIDENCE_CANDIDATE=""
+assert_private_file_identity "$EVIDENCE_FILE" "$FINAL_EVIDENCE_IDENTITY"
+exec {FINAL_EVIDENCE_FD}<&-
+FINAL_EVIDENCE_FD=""
 mv -- "$FINAL_MANIFEST_CANDIDATE" "$MANIFEST_FILE"
 FINAL_MANIFEST_CANDIDATE=""
+assert_private_file_identity "$MANIFEST_FILE" "$FINAL_MANIFEST_IDENTITY"
+assert_evidence_directory_identity
 
-printf 'Validation passed. Sanitized evidence: %s\n' "$EVIDENCE_FILE"
-printf 'SHA-256 manifest: %s\n' "$MANIFEST_FILE"
+printf 'Validation passed. Sanitized evidence: %s\n' \
+  "$EVIDENCE_OUTPUT_DIR/$(basename "$EVIDENCE_FILE")"
+printf 'SHA-256 manifest: %s\n' "$EVIDENCE_OUTPUT_DIR/$(basename "$MANIFEST_FILE")"
 if [[ -f "$SIGNATURE_FILE" ]]; then
-  printf 'KMS signature: %s\n' "$SIGNATURE_FILE"
+  printf 'KMS signature: %s\n' "$EVIDENCE_OUTPUT_DIR/$(basename "$SIGNATURE_FILE")"
 fi

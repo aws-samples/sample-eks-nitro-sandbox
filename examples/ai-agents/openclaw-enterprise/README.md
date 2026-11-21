@@ -50,8 +50,10 @@ Editable diagrams:
   refresh automatically throughout the image build, Bash, Docker, Git, Go,
   Helm, `jq`, `kubectl`, Node.js 22 or later, OpenSSL, Python 3, and
   [Mike Farah `yq`](https://github.com/mikefarah/yq) `v4.54.3`.
-- Kubernetes permission to create cluster-scoped admission resources and a
-  StorageClass and create `pods/portforward` requests.
+- Kubernetes permission to get, create, and delete
+  `admissionregistration.k8s.io/v1` admission policies and bindings; create
+  server-side dry-run ConfigMaps in each cleanup namespace; create a
+  StorageClass; and create `pods/portforward` requests.
 - AWS permission to manage the blueprint IAM role and EKS Pod Identity
   association.
 
@@ -1284,6 +1286,12 @@ python -m pytest \
 
 Then run the destructive two-tenant check:
 
+Set `EVIDENCE_DIR` to a path that does not exist. Every existing parent must
+be owned by root or the current user and must not be group- or other-writable,
+except for root-owned sticky directories such as `/tmp`. The validator creates
+the evidence directory with mode `0700` and its files with mode `0600`. It
+refuses a reused or replaced path.
+
 ```bash
 export EVIDENCE_DIR='<new-private-evidence-directory>'
 
@@ -1319,7 +1327,10 @@ resources on exit. Run it only against retained validation tenants.
 
 The command exits zero only after it verifies:
 
-1. Both non-root runtimes use `isolated-sandbox` and the expected image.
+1. Both non-root runtimes use `isolated-sandbox` and the expected image. Each
+   runtime exposes `OPENCLAW_POD_UID` from Downward API `metadata.uid`, and the
+   validator rechecks it before managed-runtime commands to reject pod-name
+   reuse.
 2. Each sandbox has a distinct kernel, boot identity, PVC, and PV.
 3. Neither runtime receives an AWS credential path.
 4. A cross-tenant PVC mount, forged pod, forged revision ConfigMap, and
@@ -1360,6 +1371,8 @@ TODO: output from the fresh run
   claim database-level tenant isolation.
 - The adapter supports only the pinned OCE revision and expected pod shape. A
   different revision needs a new compatibility review and live validation.
+  Harness credentials may select only `ANTHROPIC_API_KEY`,
+  `OCE_MODEL_API_KEY`, or `OPENAI_API_KEY`.
 - The blueprint does not enable Kubernetes NetworkPolicy. Add network controls
   with the [dedicated network-policy sample](../../isolation/network-policy/README.md).
   The pinned OCE revision's generated egress policy excludes private service
@@ -1404,16 +1417,25 @@ Cleanup verifies the installation receipt and resource ownership before it
 uninstalls the OCE release, deletes the blueprint-owned system, adapter,
 AgentGateway, and supplied tenant namespaces, and deletes the verified Pod
 Identity and IAM resources. Before deleting a namespace, it inventories every
-descendant and stops if it finds a resource that is neither OCE-owned,
-blueprint-owned, nor a narrow expected Kubernetes-generated object.
+descendant, temporarily denies namespaced `CREATE` and `UPDATE` requests, and
+verifies that admission rejects a server-side dry-run ConfigMap. It then
+refreshes the inventory and deletes the namespace while leaving `DELETE`
+requests available for cleanup. It stops if it finds a resource that is
+neither OCE-owned, blueprint-owned, nor a narrow expected
+Kubernetes-generated object.
 
 It preserves any external database. It deletes the blueprint StorageClass only
 when no PVC still references it. Cleanup exits non-zero when a blueprint-owned
-resource must be preserved for safety. The stack manager deletes the image
-build workflow and its four ECR repositories, including the sample images, then
-marks its private receipt as deleted. The builder repository manager separately
-deletes only the exact private mirror recorded in its receipt after it verifies
-the AWS account, Region, repository ARN, and random ownership tag.
+resource must be preserved for safety. It also removes its admission freeze on
+success or failure and reports an error if guarded removal cannot be verified.
+A forced process termination can leave
+`openclaw-enterprise-cleanup-freeze-*` admission resources blocking writes to
+the target namespace; inspect their ownership metadata and remove them before
+retrying cleanup. The stack manager deletes the image build workflow and its
+four ECR repositories, including the sample images, then marks its private
+receipt as deleted. The builder repository manager separately deletes only the
+exact private mirror recorded in its receipt after it verifies the AWS account,
+Region, repository ARN, and random ownership tag.
 
 ```text
 TODO: output from the fresh run

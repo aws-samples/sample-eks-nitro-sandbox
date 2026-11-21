@@ -4,6 +4,8 @@ import copy
 import json
 import os
 import pathlib
+import subprocess
+import tempfile
 import unittest
 from unittest import mock
 
@@ -15,6 +17,7 @@ from adapter import (
     HOME_ENV,
     HOME_MOUNT_PATH,
     LINK_INIT_NAME,
+    LINK_SCRIPT,
     NODE_CA_ENV,
     OCE_CONFIGURATION_MOUNT_PATH,
     OCE_CONFIGURATION_VOLUME,
@@ -73,6 +76,30 @@ UNSAFE_SHELL_ENV_NAMES = (
     "SHELLOPTS",
     "ZDOTDIR",
 )
+
+
+def run_link_script(
+    state_root: pathlib.Path,
+    links: list[dict[str, str]],
+) -> subprocess.CompletedProcess[str]:
+    root_declaration = 'const root = "/gateway-state";'
+    if LINK_SCRIPT.count(root_declaration) != 1:
+        raise AssertionError("LINK_SCRIPT state root declaration changed")
+    script = LINK_SCRIPT.replace(
+        root_declaration,
+        f"const root = {json.dumps(str(state_root))};",
+        1,
+    )
+    environment = os.environ.copy()
+    environment["OCE_STATE_LINKS"] = json.dumps(links)
+    return subprocess.run(
+        ["node", "-e", script],
+        capture_output=True,
+        check=False,
+        env=environment,
+        text=True,
+        timeout=10,
+    )
 
 
 def runtime_security_context() -> dict:
@@ -374,8 +401,7 @@ class BuildPatchTests(unittest.TestCase):
         )
         self.assertFalse(
             any(
-                operation["path"]
-                == "/metadata/labels/openclaw.dev~1network-profile"
+                operation["path"] == "/metadata/labels/openclaw.dev~1network-profile"
                 for operation in build_patch(pod)
             )
         )
@@ -928,11 +954,7 @@ class BuildPatchTests(unittest.TestCase):
             zip(ownership_init["args"][2::2], ownership_init["args"][3::2])
         )
         self.assertEqual(
-            {
-                path
-                for flag, path in allowlists
-                if flag == "--optional-dir"
-            },
+            {path for flag, path in allowlists if flag == "--optional-dir"},
             {".openclaw/control"},
         )
         self.assertTrue(
@@ -941,13 +963,7 @@ class BuildPatchTests(unittest.TestCase):
                 ".openclaw",
                 ".openclaw/agents",
                 ".openclaw/sessions",
-            }.issubset(
-                {
-                    path
-                    for flag, path in allowlists
-                    if flag == "--dir"
-                }
-            )
+            }.issubset({path for flag, path in allowlists if flag == "--dir"})
         )
 
     def test_patches_prepare_private_state_for_relocated_runtime_root(self) -> None:
@@ -1151,38 +1167,94 @@ class BuildPatchTests(unittest.TestCase):
                 with self.assertRaises(AdmissionError):
                     build_patch(pod)
 
-    def test_rejects_state_mounts_on_non_designated_containers(self) -> None:
-        mounts = (
+    def test_rejects_state_mounts_in_sidecars_before_rewrite(self) -> None:
+        pod = target_pod()
+        sidecar = copy.deepcopy(pod["spec"]["containers"][0])
+        sidecar["name"] = "unexpected-state-consumer"
+        sidecar["volumeMounts"] = [
             {
-                "name": "runtime-state",
-                "mountPath": "/home/node",
+                "name": RUNTIME_VOLUME,
+                "mountPath": HOME_MOUNT_PATH,
                 "subPath": "home",
-            },
-            {
-                "name": "openclaw-gateway-state",
-                "mountPath": "/home/node/.openclaw/sessions",
-                "subPath": "sessions",
-            },
-        )
-        for mount in mounts:
-            with self.subTest(volume=mount["name"]):
-                pod = target_pod()
-                pod["spec"]["containers"][0]["volumeMounts"] = [mount]
-                with self.assertRaises(AdmissionError):
-                    build_patch(pod)
+            }
+        ]
+        pod["spec"]["containers"].append(sidecar)
 
-    def test_rejects_state_mounts_on_non_designated_init_containers(self) -> None:
-        for volume, mount_path in (
-            ("runtime-state", "/runtime-state"),
-            ("openclaw-gateway-state", "/gateway-state"),
+        with self.assertRaisesRegex(
+            AdmissionError,
+            "embedded gateway contract permits no sidecars",
         ):
-            with self.subTest(volume=volume):
-                pod = target_pod()
-                pod["spec"]["initContainers"][0]["volumeMounts"] = [
-                    {"name": volume, "mountPath": mount_path}
-                ]
-                with self.assertRaises(AdmissionError):
-                    build_patch(pod)
+            build_patch(pod)
+
+    def test_rejects_state_mounts_in_additional_init_containers_before_rewrite(
+        self,
+    ) -> None:
+        pod = target_pod()
+        extra_init = copy.deepcopy(pod["spec"]["initContainers"][0])
+        extra_init["name"] = "unexpected-state-consumer"
+        extra_init["volumeMounts"] = [
+            {
+                "name": STATE_VOLUME,
+                "mountPath": "/gateway-state",
+            }
+        ]
+        pod["spec"]["initContainers"].append(extra_init)
+
+        with self.assertRaisesRegex(
+            AdmissionError,
+            "embedded gateway contract permits only its two OCE init containers",
+        ):
+            build_patch(pod)
+
+    @unittest.skipUnless(
+        pathlib.Path("/proc/self/fd").is_dir(),
+        "secure descriptor traversal requires Linux /proc",
+    )
+    def test_link_script_creates_nested_links_without_following_parents(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            state_root = pathlib.Path(temporary_directory) / "gateway-state"
+            state_root.mkdir()
+            (state_root / "agent").mkdir()
+
+            result = run_link_script(
+                state_root,
+                [{"link": "nested/state/agent", "target": "agent"}],
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            link = state_root / "nested" / "state" / "agent"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), state_root / "agent")
+
+    @unittest.skipUnless(
+        pathlib.Path("/proc/self/fd").is_dir(),
+        "secure descriptor traversal requires Linux /proc",
+    )
+    def test_link_script_rejects_symlinked_parent_without_writing_through_it(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root = pathlib.Path(temporary_directory)
+            state_root = temporary_root / "gateway-state"
+            outside = temporary_root / "outside"
+            state_root.mkdir()
+            outside.mkdir()
+            (state_root / "nested").mkdir()
+            (state_root / "nested" / "hostile").symlink_to(
+                outside,
+                target_is_directory=True,
+            )
+
+            result = run_link_script(
+                state_root,
+                [{"link": "nested/hostile/state/agent", "target": "agent"}],
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("refusing unsafe state-link parent", result.stderr)
+            self.assertFalse((outside / "state").exists())
 
     def test_rejects_read_only_gateway_state_rewrites(self) -> None:
         for field, value in (
@@ -1423,8 +1495,7 @@ class BuildPatchTests(unittest.TestCase):
                             "valueFrom": {
                                 "secretKeyRef": {
                                     "name": (
-                                        "harness-secrets-"
-                                        "a1b2c3d4e5f6-012345abcdef"
+                                        "harness-secrets-a1b2c3d4e5f6-012345abcdef"
                                     ),
                                     "key": name,
                                 }
@@ -1488,60 +1559,158 @@ class BuildPatchTests(unittest.TestCase):
                     build_patch(pod)
 
     def test_accepts_exact_oce_environment_value_sources(self) -> None:
-        pod = target_pod()
-        pod["spec"]["volumes"].append(
-            {
-                "name": OCE_CONFIGURATION_VOLUME,
-                "configMap": {
-                    "name": "gateway-a1b2c3d4e5f6-rev-012345abcdef",
-                    "items": [{"key": "openclaw.json", "path": "openclaw.json"}],
-                },
-            }
-        )
-        pod["spec"]["containers"][-1].setdefault("env", []).extend(
-            [
-                {
-                    "name": "OPENCLAW_POD_UID",
-                    "valueFrom": {
-                        "fieldRef": {
-                            "apiVersion": "v1",
-                            "fieldPath": "metadata.uid",
-                        }
-                    },
-                },
-                {
-                    "name": "OPENCLAW_GATEWAY_PASSWORD",
-                    "valueFrom": {
-                        "secretKeyRef": {
-                            "name": "gateway-password-a1b2c3d4e5f6",
-                            "key": "gateway-password",
-                        }
-                    },
-                },
-                {
-                    "name": "OPENAI_API_KEY",
-                    "valueFrom": {
-                        "secretKeyRef": {
-                            "name": (
-                                "harness-secrets-a1b2c3d4e5f6-012345abcdef"
-                            ),
-                            "key": "OPENAI_API_KEY",
-                        }
-                    },
-                },
-                {
-                    "name": "OPENCLAW_HARNESS_CREDENTIAL_ENV",
-                    "value": "OPENAI_API_KEY",
-                },
-            ]
-        )
+        for credential_name in (
+            "ANTHROPIC_API_KEY",
+            "OCE_MODEL_API_KEY",
+            "OPENAI_API_KEY",
+        ):
+            with self.subTest(credential_name=credential_name):
+                pod = target_pod()
+                pod["spec"]["volumes"].append(
+                    {
+                        "name": OCE_CONFIGURATION_VOLUME,
+                        "configMap": {
+                            "name": "gateway-a1b2c3d4e5f6-rev-012345abcdef",
+                            "items": [
+                                {"key": "openclaw.json", "path": "openclaw.json"}
+                            ],
+                        },
+                    }
+                )
+                pod["spec"]["containers"][-1].setdefault("env", []).extend(
+                    [
+                        {
+                            "name": "OPENCLAW_POD_UID",
+                            "valueFrom": {
+                                "fieldRef": {
+                                    "apiVersion": "v1",
+                                    "fieldPath": "metadata.uid",
+                                }
+                            },
+                        },
+                        {
+                            "name": "OPENCLAW_GATEWAY_PASSWORD",
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": "gateway-password-a1b2c3d4e5f6",
+                                    "key": "gateway-password",
+                                }
+                            },
+                        },
+                        {
+                            "name": credential_name,
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": (
+                                        "harness-secrets-a1b2c3d4e5f6-012345abcdef"
+                                    ),
+                                    "key": credential_name,
+                                }
+                            },
+                        },
+                        {
+                            "name": "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+                            "value": credential_name,
+                        },
+                    ]
+                )
 
-        rendered = apply_patch(pod, build_patch(pod))
-        validate_pod(rendered)
+                rendered = apply_patch(pod, build_patch(pod))
+                validate_pod(rendered)
+
+    def test_rejects_bootstrap_environment_as_harness_credential(self) -> None:
+        for credential_name in (
+            "PATH",
+            "NODE_PATH",
+            "PYTHONPATH",
+            "OPENSSL_CONF",
+        ):
+            with self.subTest(credential_name=credential_name):
+                pod = target_pod()
+                pod["spec"]["volumes"].append(
+                    {
+                        "name": OCE_CONFIGURATION_VOLUME,
+                        "configMap": {
+                            "name": "gateway-a1b2c3d4e5f6-rev-012345abcdef",
+                            "items": [
+                                {"key": "openclaw.json", "path": "openclaw.json"}
+                            ],
+                        },
+                    }
+                )
+                pod["spec"]["containers"][-1].setdefault("env", []).extend(
+                    [
+                        {
+                            "name": credential_name,
+                            "valueFrom": {
+                                "secretKeyRef": {
+                                    "name": (
+                                        "harness-secrets-a1b2c3d4e5f6-012345abcdef"
+                                    ),
+                                    "key": credential_name,
+                                }
+                            },
+                        },
+                        {
+                            "name": "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+                            "value": credential_name,
+                        },
+                    ]
+                )
+
+                with self.assertRaisesRegex(
+                    AdmissionError,
+                    (
+                        "selects unsupported harness credential environment "
+                        f"{credential_name}"
+                    ),
+                ):
+                    build_patch(pod)
 
     def test_rejects_oce_secret_reference_not_bound_to_gateway_revision(
         self,
     ) -> None:
+        invalid_credentials = (
+            {"name": "OPENAI_API_KEY", "value": "literal-secret"},
+            {
+                "name": "OPENAI_API_KEY",
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": "harness-secrets-other-tenant-deadbeefcafe",
+                        "key": "OPENAI_API_KEY",
+                    }
+                },
+            },
+            None,
+        )
+        for credential in invalid_credentials:
+            with self.subTest(credential=credential):
+                pod = target_pod()
+                pod["spec"]["volumes"].append(
+                    {
+                        "name": OCE_CONFIGURATION_VOLUME,
+                        "configMap": {
+                            "name": "gateway-a1b2c3d4e5f6-rev-012345abcdef",
+                            "items": [
+                                {"key": "openclaw.json", "path": "openclaw.json"}
+                            ],
+                        },
+                    }
+                )
+                environment = pod["spec"]["containers"][-1].setdefault("env", [])
+                if credential is not None:
+                    environment.append(credential)
+                environment.append(
+                    {
+                        "name": "OPENCLAW_HARNESS_CREDENTIAL_ENV",
+                        "value": "OPENAI_API_KEY",
+                    }
+                )
+
+                with self.assertRaisesRegex(AdmissionError, "revision-bound Secret"):
+                    build_patch(pod)
+
+    def test_rejects_oce_secret_reference_from_another_revision(self) -> None:
         pod = target_pod()
         pod["spec"]["volumes"].append(
             {
@@ -1558,7 +1727,7 @@ class BuildPatchTests(unittest.TestCase):
                     "name": "OPENAI_API_KEY",
                     "valueFrom": {
                         "secretKeyRef": {
-                            "name": "harness-secrets-other-tenant-deadbeefcafe",
+                            "name": "harness-secrets-a1b2c3d4e5f6-deadbeefcafe",
                             "key": "OPENAI_API_KEY",
                         }
                     },
@@ -1570,9 +1739,7 @@ class BuildPatchTests(unittest.TestCase):
             ]
         )
 
-        with self.assertRaisesRegex(
-            AdmissionError, "unsupported environment value source"
-        ):
+        with self.assertRaisesRegex(AdmissionError, "revision-bound Secret"):
             build_patch(pod)
 
     def test_rejects_duplicate_environment_names(self) -> None:
@@ -1619,11 +1786,7 @@ class BuildPatchTests(unittest.TestCase):
         for volume_source in (
             {"secret": {"secretName": "tenant-bootstrap"}},
             {"configMap": {"name": "tenant-bootstrap"}},
-            {
-                "projected": {
-                    "sources": [{"secret": {"name": "tenant-bootstrap"}}]
-                }
-            },
+            {"projected": {"sources": [{"secret": {"name": "tenant-bootstrap"}}]}},
             {"csi": {"driver": "secrets-store.csi.k8s.io"}},
             {
                 "persistentVolumeClaim": {
