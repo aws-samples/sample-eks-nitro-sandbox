@@ -22,8 +22,15 @@ while read -r start end name; do
   [ "$end" -lt "$sectors" ] && [ "$start" -le "$end" ] || die "E_BOUNDS: partition $name ($start-$end) is outside the volume"
 done < <(sgdisk -p "$dev" | awk '/^ +[0-9]+ /{print $2, $3, $NF}')
 
-part=$(lsblk -nrpo NAME,PARTLABEL "$dev" | awk '$2=="BOTTLEROCKET-ROOT-A"{print $1}')
-[ "$(printf '%s\n' "$part" | grep -c .)" = 1 ] || die "E_ROOT_A: not exactly one BOTTLEROCKET-ROOT-A partition on $dev"
+# ROOT-A by its GPT name, read from the disk (sgdisk) and from the partition itself (blkid -p).
+# lsblk takes PARTLABEL from the udev database, which can lag behind the re-read above.
+n=$(sgdisk -p "$dev" | awk '/^ +[0-9]+ / && $NF=="BOTTLEROCKET-ROOT-A"{print $1}')
+[ "$(printf '%s\n' "$n" | grep -c .)" = 1 ] || die "E_ROOT_A: not exactly one BOTTLEROCKET-ROOT-A partition on $dev"
+case "$dev" in *[0-9]) part="${dev}p$n" ;; *) part="$dev$n" ;; esac
+if [ "$(blkid -p -o value -s PART_ENTRY_NAME "$part" 2>/dev/null)" != BOTTLEROCKET-ROOT-A ]; then
+  lsblk -nrpo NAME,PARTLABEL "$dev" >&2 || true   # what the kernel and udev show, for the log
+  die "E_ROOT_A: $part is not the BOTTLEROCKET-ROOT-A partition of $dev"
+fi
 mnt=$SYSROOT/mnt/cilium-bottlerocket-root
 install -d -m 0700 "$mnt"
 mount -t erofs -o ro "$part" "$mnt" || die "E_ROOT_A: could not mount $part read-only as erofs"
