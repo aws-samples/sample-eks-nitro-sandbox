@@ -51,6 +51,12 @@ ARGS = (
 )
 
 
+def test_script_avoids_jq_16_reserved_label_variable() -> None:
+    source = SCRIPT.read_text()
+    assert "--arg label " not in source
+    assert re.search(r"\$label\b", source) is None
+
+
 def _trust_policy(region: str = REGION) -> dict[str, Any]:
     return {
         "Version": "2012-10-17",

@@ -162,6 +162,7 @@ def kubectl():
             save()
             log(True)
             os.kill(os.getppid(), signal.SIGKILL)
+            raise SystemExit(0)
         save()
         log(True)
         print(json.dumps(document))

@@ -505,16 +505,16 @@ ensure_kube() {
     die "${resource} has a foreign or unexpected contract."
   resource_uid="$(jq -er '.metadata.uid | strings | select(length > 0)' \
     <<<"${resource_document}")" || die "${resource} has no UID."
-  invocation_matches="$(jq -r --arg label "${INVOCATION_LABEL}" \
+  invocation_matches="$(jq -r --arg label_key "${INVOCATION_LABEL}" \
     --arg invocation "${invocation_id}" \
-    '.metadata.labels[$label] == $invocation' <<<"${resource_document}")"
+    '.metadata.labels[$label_key] == $invocation' <<<"${resource_document}")"
   reconcile_step "${key}" "${state}" "${invocation_matches}"
 }
 
 namespace_file="${work_dir}/namespace.json"
 service_account_file="${work_dir}/service-account.json"
 region_config_map_file="${work_dir}/region-config-map.json"
-jq -n --arg owner "${OWNER}" --arg label "${INVOCATION_LABEL}" \
+jq -n --arg owner "${OWNER}" --arg label_key "${INVOCATION_LABEL}" \
   --arg invocation "${invocation_id}" '{
   apiVersion:"v1",kind:"Namespace",metadata:{
     name:"openclaw-enterprise-agw",labels:{
@@ -522,21 +522,21 @@ jq -n --arg owner "${OWNER}" --arg label "${INVOCATION_LABEL}" \
       "app.kubernetes.io/managed-by":$owner,
       "pod-security.kubernetes.io/enforce":"restricted",
       "pod-security.kubernetes.io/audit":"restricted",
-      "pod-security.kubernetes.io/warn":"restricted",($label):$invocation}}
+      "pod-security.kubernetes.io/warn":"restricted",($label_key):$invocation}}
 }' >"${namespace_file}"
-jq -n --arg label "${INVOCATION_LABEL}" \
+jq -n --arg label_key "${INVOCATION_LABEL}" \
   --arg invocation "${invocation_id}" '{
   apiVersion:"v1",kind:"ServiceAccount",
   metadata:{namespace:"openclaw-enterprise-agw",name:"agentgateway",
-    labels:{($label):$invocation}},
+    labels:{($label_key):$invocation}},
   automountServiceAccountToken:false
 }' >"${service_account_file}"
-jq -n --arg label "${INVOCATION_LABEL}" \
+jq -n --arg label_key "${INVOCATION_LABEL}" \
   --arg invocation "${invocation_id}" --arg region "${AWS_REGION}" '{
   apiVersion:"v1",kind:"ConfigMap",
   metadata:{namespace:"openclaw-enterprise-agw",
     name:"agentgateway-aws-region",
-    labels:{($label):$invocation}},
+    labels:{($label_key):$invocation}},
   immutable:true,data:{AWS_REGION:$region}
 }' >"${region_config_map_file}"
 

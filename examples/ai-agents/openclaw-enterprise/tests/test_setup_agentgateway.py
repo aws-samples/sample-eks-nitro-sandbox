@@ -235,7 +235,7 @@ elif args[:1] == ["delete"] and any(
         else:
             resource_map = {
                 "serviceaccounts": "serviceaccount",
-                "secrets": "secret",
+                "secrets": "secret",  # pragma: allowlist secret -- Kubernetes API resource
                 "configmaps": "configmap",
                 "services": "service",
             }
