@@ -402,7 +402,7 @@ def helm():
         print(json.dumps([{"name": "oce"}] if state["helm"] else []))
         return
     if command[:2] == ["get", "values"]:
-        print(json.dumps({"installationAttempt": state["attempt"]}))
+        print(json.dumps({"installation": {"attemptId": state["attempt"]}}))
         return
     if command[:2] == ["uninstall", "oce"]:
         changed = state["helm"]

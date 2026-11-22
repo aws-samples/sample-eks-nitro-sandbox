@@ -151,6 +151,30 @@ print(f"{network.network_address + 10}/32")
     die "could not derive the EKS cluster DNS service address."
 }
 
+derive_eks_cluster_api_service_cidr() {
+  local service_cidr=$1
+  python3 -I -c '
+import ipaddress
+import sys
+
+try:
+    network = ipaddress.ip_network(sys.argv[1], strict=True)
+except ValueError:
+    sys.stderr.write(
+        "install-oce: EKS cluster service IPv4 CIDR is invalid.\n"
+    )
+    raise SystemExit(1)
+if network.version != 4 or network.num_addresses <= 1:
+    sys.stderr.write(
+        "install-oce: EKS cluster service IPv4 CIDR must contain the "
+        "Kubernetes API service address.\n"
+    )
+    raise SystemExit(1)
+print(f"{network.network_address + 1}/32")
+' "$service_cidr" ||
+    die "could not derive the Kubernetes API service address."
+}
+
 require_private_file() {
   local flag=$1 path=$2 mode
   [[ -f "$path" && ! -L "$path" && -r "$path" ]] ||
@@ -637,7 +661,14 @@ require_deployed_release_attempt() {
     --namespace "$namespace" --output json) ||
     die "could not inspect Helm values for deployed release $release."
   live_attempt=$(jq -er \
-    '.installationAttempt | select(type == "string" and length > 0)' \
+    '[
+      (.installation.attemptId? // empty),
+      (.installationAttempt? // empty)
+    ]
+    | map(select(type == "string" and length > 0))
+    | unique
+    | select(length == 1)
+    | .[0]' \
     <<<"$helm_values") ||
     die "deployed release $release has no OCC installation attempt."
   [[ "$live_attempt" == "$occ_receipt_attempt" ]] ||
@@ -1014,7 +1045,22 @@ cluster_service_ipv4_cidr=$(aws eks describe-cluster --region "$aws_region" \
   --name "$eks_cluster_name" \
   --query cluster.kubernetesNetworkConfig.serviceIpv4Cidr --output text)
 cluster_dns_cidr=$(derive_eks_cluster_dns_cidr "$cluster_service_ipv4_cidr")
+cluster_api_service_cidr=$(
+  derive_eks_cluster_api_service_cidr "$cluster_service_ipv4_cidr"
+)
+cluster_api_service_cidr_present=false
+for cidr in "${cluster_api_cidrs[@]}"; do
+  if [[ "$cidr" == "$cluster_api_service_cidr" ]]; then
+    cluster_api_service_cidr_present=true
+    break
+  fi
+done
+if [[ "$cluster_api_service_cidr_present" != true ]]; then
+  cluster_api_cidrs+=("$cluster_api_service_cidr")
+fi
 write_private_text "$state_dir/cluster-dns-cidr" "$cluster_dns_cidr"
+write_private_text \
+  "$state_dir/cluster-api-service-cidr" "$cluster_api_service_cidr"
 if [[ "$validation_postgres" == true ]]; then
   cluster_tags=$(aws eks list-tags-for-resource --region "$aws_region" \
     --resource-arn "$cluster_arn" --query tags --output json)

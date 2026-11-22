@@ -1456,7 +1456,18 @@ class Cleanup:
             *self.h, "get", "values", self.a.release,
             "--namespace", self.a.namespace, "--output=json",
         ]))
-        if values.get("installationAttempt") != self.attempt:
+        installation = values.get("installation")
+        nested_attempt = (
+            installation.get("attemptId")
+            if isinstance(installation, dict)
+            else None
+        )
+        attempts = {
+            attempt
+            for attempt in (nested_attempt, values.get("installationAttempt"))
+            if isinstance(attempt, str) and attempt
+        }
+        if attempts != {self.attempt}:
             fail("live Helm release does not match the OCC receipt attempt.")
         return True
 

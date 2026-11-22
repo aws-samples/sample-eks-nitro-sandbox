@@ -459,7 +459,7 @@ case "$1" in
     if [[ -z "$attempt" && -f "$TEST_KUBE_STATE/release-attempt" ]]; then
       attempt=$(<"$TEST_KUBE_STATE/release-attempt")
     fi
-    printf '{"installationAttempt":"%s"}\n' "$attempt"
+    printf '{"installation":{"attemptId":"%s"}}\n' "$attempt"
     ;;
   template) printf '%s\n' 'apiVersion: v1' 'kind: List' 'items: []' ;;
   *) exit 2 ;;
@@ -948,8 +948,10 @@ def test_fake_cluster_contract_dispatches_occ_with_explicit_inputs(tmp_path: Pat
     assert "gatewayRouting:\n  enabled: false" in values
     assert "agentNativeAdmin:\n  enabled: false" in values
     assert "10.100.169.63/32" in values
+    assert "10.100.0.1/32" in values
     assert "10.2.3.4/32" not in values
     assert (state / "cluster-dns-cidr").read_text() == "10.100.0.10/32"
+    assert (state / "cluster-api-service-cidr").read_text() == "10.100.0.1/32"
     dns_policy = yaml.safe_load(
         (state / "eks-cluster-dns-network-policy.yaml").read_text()
     )
