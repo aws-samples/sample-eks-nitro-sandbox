@@ -9,6 +9,7 @@ readonly OWNER="openclaw-enterprise-blueprint"
 readonly PART_LABEL="app.kubernetes.io/part-of"
 readonly KEYSET_ANNOTATION="openclaw-enterprise.aws.dev/keyset-id"
 readonly SETUP_ANNOTATION="openclaw-enterprise.aws.dev/setup-token"
+readonly POD_IDENTITY_INVOCATION_LABEL="openclaw.enterprise/setup-invocation"
 readonly DER_PREFIX="302e020100300506032b657004220420"
 readonly STATE_FILES=(
   tenant-a-agentgateway.key tenant-b-agentgateway.key
@@ -471,6 +472,7 @@ inspect() {
   local check="${7:-any}" row
   row="$(jq -r --slurpfile old "$old" --slurpfile new "$new" --slurpfile receipt "$RECEIPT_DATA" \
     --arg ownerKey "$OWNER_LABEL" --arg owner "$OWNER" --arg tokenKey "$SETUP_ANNOTATION" \
+    --arg podIdentityInvocationKey "$POD_IDENTITY_INVOCATION_LABEL" \
     --arg resource "$resource" --arg namespace "$namespace" --arg name "$name" \
     --arg setup "$SETUP_ID" --arg check "$check" '
     def drop($p;$v): if getpath($p)==$v then delpaths([$p]) else . end;
@@ -482,8 +484,10 @@ inspect() {
           ."kubectl.kubernetes.io/last-applied-configuration",."openclaw-enterprise.aws.dev/setup-token"))
       | if .metadata.annotations=={} then del(.metadata.annotations) else . end
       | if .kind=="Namespace" then drop(["metadata","labels","kubernetes.io/metadata.name"];.metadata.name)
+          | del(.metadata.labels[$podIdentityInvocationKey])
           | drop(["spec","finalizers"];["kubernetes"]) else . end
-      | if .kind=="ServiceAccount" then del(.secrets) else . end
+      | if .kind=="ServiceAccount" then del(.metadata.labels[$podIdentityInvocationKey],.secrets)
+          else . end
       | if .kind=="Certificate" then drop(["spec","issuerRef","group"];"cert-manager.io")
           | drop(["spec","duration"];"2160h0m0s") | drop(["spec","renewBefore"];"720h0m0s")
           | drop(["spec","isCA"];false) | drop(["spec","privateKey"];{"rotationPolicy":"Always"}) else . end

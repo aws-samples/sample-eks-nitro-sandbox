@@ -719,6 +719,47 @@ def test_second_run_preserves_key_bytes_and_creates_no_resources(
     assert len(_mutations(all_calls)) == first_mutation_count
 
 
+def test_setup_accepts_pod_identity_resources_in_documented_order(
+    tmp_path: Path,
+) -> None:
+    first, state, _, state_dir = _run(tmp_path)
+    assert first.returncode == 0, first.stderr
+    invocation_label = "openclaw.enterprise/setup-invocation"
+    shared_resource_keys = (
+        f"_|namespace|{NAMESPACE}",
+        f"{NAMESPACE}|serviceaccount|agentgateway",
+    )
+    shared_resources = {}
+    for resource_key in shared_resource_keys:
+        resource = state["objects"][resource_key]
+        resource["metadata"]["annotations"].pop(
+            "openclaw-enterprise.aws.dev/setup-token"
+        )
+        resource["metadata"]["labels"][
+            invocation_label
+        ] = "pod-identity-setup"
+        shared_resources[resource_key] = resource
+    state_path = tmp_path / "kube-state.json"
+    state_path.write_text(
+        json.dumps({"context": CONTEXT, "objects": shared_resources})
+    )
+    shutil.rmtree(state_dir)
+    (tmp_path / "kubectl-calls.jsonl").write_text("")
+
+    result, final_state, calls, _ = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert len(final_state["objects"]) == 12
+    for resource_key in shared_resource_keys:
+        assert (
+            final_state["objects"][resource_key]["metadata"]["labels"][
+                invocation_label
+            ]
+            == "pod-identity-setup"
+        )
+    assert len(_mutations(calls)) == 10
+
+
 def test_rerun_rejects_hard_linked_seed_without_mutating_resources(
     tmp_path: Path,
 ) -> None:
