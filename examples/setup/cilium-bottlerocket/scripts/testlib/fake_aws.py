@@ -599,7 +599,12 @@ def handle_eks(state, op, sub, opts):
     if op in ("list-access-entries", "describe-access-entry", "list-fargate-profiles", "describe-fargate-profile",
               "list-identity-provider-configs", "describe-identity-provider-config") and cl not in clusters:
         raise ApiError("ResourceNotFoundException", op, f"No cluster found for name: {cl}.")
-    entries = k.setdefault("access_entries", {})
+    # EKS creates the access entry of its service-linked role with every cluster (STANDARD, group
+    # eks:managed, no tag) and deletes it with the cluster: each cluster that exists has it, unless the
+    # world stores an entry under the same key.
+    slr = f"arn:aws:iam::{state.get('account', '')}:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS"
+    entries = {**{f"{c}|{slr}": {"type": "STANDARD", "kubernetesGroups": ["eks:managed"], "tags": {}} for c in clusters},
+               **k.setdefault("access_entries", {})}
     if op == "list-access-entries":
         return {"accessEntries": sorted(x.split("|", 1)[1] for x in entries if x.split("|", 1)[0] == cl)}
     if op == "describe-access-entry":

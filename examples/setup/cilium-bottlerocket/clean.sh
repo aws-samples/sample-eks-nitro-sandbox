@@ -348,10 +348,11 @@ delete_cluster() {
 # of the cluster, the IAM OIDC provider of its issuer (the sample makes none), and the load balancers
 # of its LoadBalancer Services, Ingresses and Gateways; EKS deletes the add-ons, Pod Identity
 # associations, access entries and identity provider configs with it. Each must be this run's and
-# readable, else it prints why and returns 1, and the cluster is kept. EKS makes two access entry
+# readable, else it prints why and returns 1, and the cluster is kept. EKS makes three access entry
 # kinds with no tag: the creator's (STANDARD), the run's when its principal is the role of the caller
-# read at the start; and one per managed node group (EC2_LINUX), the run's only when its principal
-# is an exact ARN in NODE_ROLE_ARNS (record_node_role), whether that role is live or gone.
+# read at the start; one per managed node group (EC2_LINUX), the run's only when its principal
+# is an exact ARN in NODE_ROLE_ARNS (record_node_role), whether that role is live or gone; and the
+# entry of the EKS service-linked role (STANDARD), passed only by its exact ARN.
 cascade_children() {
   local bad=0 kind name t list role="" creator="" p ty names n r roles rec=0
   foreign() { bad=1; fail "$1 is not this run's; eksctl delete cluster would delete it with the cluster, so the cluster is kept"; }
@@ -431,6 +432,13 @@ for x in json.load(open(sys.argv[2]))["OpenIDConnectProviderList"]:
       fi
       if [[ "$ty" == STANDARD && ( ( -n "$role" && "$n" == "$role" ) || ( -n "$creator" && "$p" == "$creator" ) ) ]]; then
         continue   # the creator entry, for the caller of this clean up
+      fi
+      # The entry of the EKS service-linked role, by its exact ARN: EKS creates it with the cluster,
+      # no caller can create an access entry that names a service-linked role (Amazon EKS User Guide,
+      # "Create access entries", https://docs.aws.amazon.com/eks/latest/userguide/creating-access-entries.html),
+      # and EKS deletes it with the cluster.
+      if [[ "$ty" == STANDARD && "$p" == "arn:aws:iam::$AWS_ACCOUNT_ID:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS" ]]; then
+        continue
       fi
       foreign "access entry $p (type $ty)"
     done

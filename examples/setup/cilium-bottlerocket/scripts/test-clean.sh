@@ -484,8 +484,9 @@ echo "== the children that eksctl delete cluster deletes with the cluster ======
 # Before the cluster delete, every node group, add-on, Fargate profile, Pod Identity association
 # (all namespaces), identity provider config, access entry and eksctl stack of the cluster must be
 # the run's, and no Service of type LoadBalancer, Ingress or Gateway may be in the cluster.
-# EKS makes two access entries with no tag on every cluster (world_full.py): the creator's
-# (STANDARD, the role of the stub caller) and the node role entry of each managed node group (EC2_LINUX).
+# EKS makes three access entry kinds with no tag on every cluster: the creator's (STANDARD, the role
+# of the stub caller) and the node role entry of each managed node group (EC2_LINUX), both in
+# world_full.py, and the entry of its service-linked role (STANDARD), which fake_aws.py models.
 # A node role entry is the run's only when its principal is an exact ARN that clean.sh recorded in
 # NODE_ROLE_ARNS before it deleted that node group (eksctl deletes the role with the node group stack).
 CHILD='eksctl delete cluster would delete it with the cluster, so the cluster is kept$'
@@ -502,6 +503,16 @@ check "ACCEPT the cluster children of a finished run, with the creator and node 
 check "  ... it read the access entries, Fargate profiles and identity provider configs once, and found no child that is not the run's" 0 $? "$WORK/child-ok.log"
 recorded && ! alive "'$SR' in s['iam']['roles'] or '$YR' in s['iam']['roles']"
 check "  ... both node roles were recorded in NODE_ROLE_ARNS and went with their node groups; their access entries passed on the record" 0 $? "$WORK/child-ok.log"
+# The access entry that EKS creates for its service-linked role with the cluster (fake_aws.py models
+# it on every cluster): STANDARD, no tag, passed only by its exact ARN.
+SLR="$(nr aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS)"
+full; [[ "$(world_get 's["eks"]["access_entries"].get("cb-offline-test|'"$SLR"'")')" == null ]]
+check "  ... the world stores no entry for the EKS service-linked role, so the one clean.sh reads is the one that EKS makes" 0 $? "$WORK/child-ok.log"
+clean "$WORK/child-slr.log"
+check "ACCEPT the STANDARD access entry of the EKS service-linked role, by its exact ARN: the cluster goes" 0 "$RC" "$WORK/child-slr.log" '^CLEAN: run r1 .*nothing left behind\.$'
+[[ "$(count_calls aws 'eks describe-access-entry' "--principal-arn $SLR")" -ge 1 && "$(count_calls eksctl 'delete cluster')" == 1 ]] \
+  && ! alive '"cb-offline-test" in s["eks"]["clusters"]' && grep -Eq ' failures=0 verdict=clean$' "$V/verdict.txt"
+check "  ... clean.sh read that entry, eksctl delete cluster ran once, the cluster is gone, and the verdict is clean" 0 $? "$WORK/child-slr.log"
 i=0
 while IFS='#' read -r what code pat; do
   [[ -n "$what" ]] || continue
@@ -518,6 +529,11 @@ identity provider config#s["eks"]["identity_provider_configs"]["cb-offline-test/
 access entry of another principal#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/someone-else"] = {"type": "STANDARD", "tags": {}}#access entry arn:aws:iam::[0-9]+:role/someone-else \(type STANDARD\) is not this run's;
 EC2_LINUX access entry of a live role of someone else#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/someone-else-node"] = {"type": "EC2_LINUX", "tags": {}}; s["iam"]["roles"]["someone-else-node"] = {"Tags": [{"Key": "team", "Value": "someone-else"}]}#access entry arn:aws:iam::[0-9]+:role/someone-else-node \(type EC2_LINUX, not in the node role record NODE_ROLE_ARNS\) is not this run's;
 creator access entry, cleaned by another caller#s["caller_arn"] = "arn:aws:sts::" + s["account"] + ":assumed-role/another-admin/session"#access entry arn:aws:iam::[0-9]+:role/test \(type STANDARD\) is not this run's;
+access entry of a role named AWSServiceRoleForAmazonEKS without the service-linked path#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/AWSServiceRoleForAmazonEKS"] = {"type": "STANDARD", "tags": {}}#access entry arn:aws:iam::[0-9]+:role/AWSServiceRoleForAmazonEKS \(type STANDARD\) is not this run's;
+access entry of the EKS service-linked role path of another account (the fake account plus one, whose last digit is 4)#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + str(int(s["account"]) + 1) + ":role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS"] = {"type": "STANDARD", "tags": {}}#access entry arn:aws:iam::[0-9]{11}4:role/aws-service-role/eks\.amazonaws\.com/AWSServiceRoleForAmazonEKS \(type STANDARD\) is not this run's;
+access entry of the EKS node group service-linked role#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"] = {"type": "STANDARD", "tags": {}}#access entry arn:aws:iam::[0-9]+:role/aws-service-role/eks-nodegroup\.amazonaws\.com/AWSServiceRoleForAmazonEKSNodegroup \(type STANDARD\) is not this run's;
+EC2_LINUX access entry with the exact EKS service-linked role ARN (in place of the STANDARD one)#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS"] = {"type": "EC2_LINUX", "tags": {}}#access entry arn:aws:iam::[0-9]+:role/aws-service-role/eks\.amazonaws\.com/AWSServiceRoleForAmazonEKS \(type EC2_LINUX, not in the node role record NODE_ROLE_ARNS\) is not this run's;
+access entry of the EKS service-linked role ARN with one more character (AWSServiceRoleForAmazonEKSx)#s["eks"]["access_entries"]["cb-offline-test|arn:aws:iam::" + s["account"] + ":role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKSx"] = {"type": "STANDARD", "tags": {}}#access entry arn:aws:iam::[0-9]+:role/aws-service-role/eks\.amazonaws\.com/AWSServiceRoleForAmazonEKSx \(type STANDARD\) is not this run's;
 eksctl stack of the cluster#s["cloudformation"]["stacks"]["eksctl-cb-offline-test-addon-iamserviceaccount-team-a-app"] = {"StackStatus": "CREATE_COMPLETE", "Tags": [{"Key": "alpha.eksctl.io/cluster-name", "Value": "cb-offline-test"}, {"Key": "team", "Value": "someone-else"}]}#stack eksctl-cb-offline-test-addon-iamserviceaccount-team-a-app is not this run's;
 Service of type LoadBalancer#s["k8s"]["objects"]["services/team-a/web"] = {"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web", "namespace": "team-a"}, "spec": {"type": "LoadBalancer"}}#Service team-a/web of type LoadBalancer is not this run's;
 Ingress#s["k8s"]["objects"]["ingresses/team-a/web"] = {"apiVersion": "networking.k8s.io/v1", "kind": "Ingress", "metadata": {"name": "web", "namespace": "team-a"}}#ingres[a-z]*/web is not this run's;
