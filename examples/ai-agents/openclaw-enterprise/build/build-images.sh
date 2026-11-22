@@ -150,6 +150,18 @@ python3 -I \
   "$OCE_SOURCE_DIR/pnpm-lock.yaml" \
   "$OCE_MSAL_NODE_VERSION"
 
+OPENSSL_BACKPORT_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openssl-cve-2026-95692.patch"
+OPENSSL_BACKPORT_CVE="CVE-2026-95692"
+OPENSSL_BACKPORT_PATCH_SHA256="32169c518c04ef3cb42d9de435d129caef006d38fc5056e1bcaa39795c786894"
+OPENSSL_BACKPORT_UPSTREAM_COMMIT="257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116"
+python3 -I \
+  "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/apply-oce-security-patches.py" \
+  "$OCE_SOURCE_DIR" \
+  "$OCE_SOURCE_REVISION" \
+  "$OPENSSL_BACKPORT_PATCH"
+readonly OPENSSL_BACKPORT_PATCH OPENSSL_BACKPORT_CVE
+readonly OPENSSL_BACKPORT_PATCH_SHA256 OPENSSL_BACKPORT_UPSTREAM_COMMIT
+
 # Consume the exact bases reviewed with the pinned OCE commit. The runtime
 # Dockerfile currently requires Bookworm, so substituting a newer Debian base
 # without an upstream change would fail the build. Inspector gates the final
@@ -297,12 +309,14 @@ verify_digest "$RUNTIME_REPOSITORY" "$runtime_digest"
 verify_scan() {
   local repository="$1"
   local digest="$2"
+  local backport_patch="${3:-}"
   local coverage_response="$metadata_dir/coverage-${repository//\//-}.json"
   local findings_response="$metadata_dir/findings-${repository//\//-}.json"
   local filter_dir="$metadata_dir/filters-${repository//\//-}"
   local partition
   local resource_id
   local scan_result
+  local -a scan_command
   local _
   partition="$(cut -d: -f2 <<<"$CODEBUILD_BUILD_ARN")"
   [[ -n "$partition" ]] || die "could not derive AWS partition"
@@ -353,20 +367,26 @@ PY
     if ! aws inspector2 list-findings \
       --region "$AWS_DEFAULT_REGION" \
       --filter-criteria "file://$filter_dir/findings.json" \
-      --max-results 1 \
+      --max-results 100 \
       --no-paginate \
       --output json >"$findings_response"; then
       die "Inspector findings lookup failed for $repository@$digest"
     fi
 
-    if python3 -I \
-      "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-inspector-scan.py" \
-      "$coverage_response" \
-      "$findings_response" \
-      "$resource_id" \
-      "$AWS_ACCOUNT_ID" \
-      "$repository" \
-      "$digest"; then
+    scan_command=(
+      python3 -I
+      "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/check-inspector-scan.py"
+      "$coverage_response"
+      "$findings_response"
+      "$resource_id"
+      "$AWS_ACCOUNT_ID"
+      "$repository"
+      "$digest"
+    )
+    if [[ -n "$backport_patch" ]]; then
+      scan_command+=(--backport-patch "$backport_patch")
+    fi
+    if "${scan_command[@]}"; then
       return 0
     else
       scan_result=$?
@@ -381,7 +401,7 @@ PY
 verify_scan "$ADAPTER_REPOSITORY" "$adapter_digest"
 verify_scan "$CONTROLLER_REPOSITORY" "$controller_digest"
 verify_scan "$OWNERSHIP_HELPER_REPOSITORY" "$ownership_helper_digest"
-verify_scan "$RUNTIME_REPOSITORY" "$runtime_digest"
+verify_scan "$RUNTIME_REPOSITORY" "$runtime_digest" "$OPENSSL_BACKPORT_PATCH"
 
 ADAPTER_IMAGE="${REGISTRY}/${ADAPTER_REPOSITORY}@${adapter_digest}"
 CONTROLLER_IMAGE="${REGISTRY}/${CONTROLLER_REPOSITORY}@${controller_digest}"
@@ -391,6 +411,8 @@ export ADAPTER_IMAGE CONTROLLER_IMAGE OWNERSHIP_INIT_IMAGE RUNTIME_IMAGE
 export OWNERSHIP_HELPER_BUILDER_IMAGE
 export SAMPLE_SOURCE_REVISION OCE_SOURCE_REVISION
 export OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
+export OPENSSL_BACKPORT_CVE OPENSSL_BACKPORT_PATCH_SHA256
+export OPENSSL_BACKPORT_UPSTREAM_COMMIT
 
 {
   printf 'export ADAPTER_IMAGE=%q\n' "$ADAPTER_IMAGE"
@@ -427,6 +449,17 @@ result = {
         "image": os.environ["RUNTIME_IMAGE"],
         "oceSourceRevision": os.environ["OCE_SOURCE_REVISION"],
         "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
+        "securityBackports": [
+            {
+                "cve": os.environ["OPENSSL_BACKPORT_CVE"],
+                "patchSha256": os.environ["OPENSSL_BACKPORT_PATCH_SHA256"],
+                "upstreamCommit": os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"],
+                "upstreamUrl": (
+                    "https://github.com/openssl/openssl/commit/"
+                    + os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"]
+                ),
+            }
+        ],
     },
 }
 with open(sys.argv[1], "w", encoding="utf-8") as handle:

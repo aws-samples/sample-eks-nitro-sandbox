@@ -155,6 +155,13 @@ when your threat model requires those stronger boundaries.
 | Local Node.js tooling | `22` or later |
 | `yq` | Mike Farah `yq` `v4.54.3` |
 
+The OCE source pins Node.js 24.22.1, which bundles OpenSSL 3.5.9. Until the
+pinned OCE source bundles OpenSSL 3.5.10 or later, the image build applies the
+official OpenSSL fix for CVE-2026-95692 from source and records its checksum and
+upstream commit in `image-digests.json`. The Inspector gate accepts only that
+exact backported finding; any other active HIGH or CRITICAL finding stops the
+build.
+
 ## Files
 
 | Path | Purpose |
@@ -390,7 +397,11 @@ repositories and a fixed Step Functions workflow. CodeBuild checks out this
 repository and OCE at exact commits, builds the adapter, controller, ownership
 helper, and runtime images, waits for Amazon Inspector `PACKAGE` coverage, and
 rejects active `HIGH` or `CRITICAL` findings before it exports digest-qualified
-references. ECR basic scanning alone does not meet this gate.
+references. The runtime exception is limited to CVE-2026-95692 reported as
+`HIGH` for OpenSSL 3.5.9, fixed in 3.5.10, at the three expected Node.js header
+paths, and only when the reviewed upstream commit and patch checksum match. All
+other findings fail the build. ECR basic scanning alone does not meet this
+gate.
 
 Assume the generated invocation role in a subshell and start the fixed
 workflow. The temporary credentials disappear when the subshell exits; only

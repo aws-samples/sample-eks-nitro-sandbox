@@ -20,6 +20,8 @@ SCAN_CHECK = BUILD / "check-image-scan.py"
 INSPECTOR_SCAN_CHECK = BUILD / "check-inspector-scan.py"
 ENHANCED_SCAN_CHECK = BUILD / "check-enhanced-scanning.py"
 OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
+OCE_SECURITY_PATCHER = BUILD / "apply-oce-security-patches.py"
+OPENSSL_BACKPORT_PATCH = BUILD / "patches" / "openssl-cve-2026-95692.patch"
 ADAPTER_DOCKERFILE = SAMPLE / "adapter" / "Dockerfile"
 CONTROLLER_DOCKERFILE = BUILD / "controller-runtime.Dockerfile"
 OWNERSHIP_HELPER = SAMPLE / "ownership-helper"
@@ -127,7 +129,9 @@ def test_sample_workflow_pins_runner_toolchains_and_hashed_dependencies() -> Non
     ):
         assert dependency in requirements
     assert " --hash=sha256:" in requirements
-    assert not re.search(r"(?m)^\s*(?:-e|--editable|-f|--find-links|https?://)", requirements)
+    assert not re.search(
+        r"(?m)^\s*(?:-e|--editable|-f|--find-links|https?://)", requirements
+    )
 
 
 def test_ecr_repositories_are_empty_on_stack_delete() -> None:
@@ -190,7 +194,7 @@ def test_readme_builds_a_pinned_scanned_builder_and_resolves_the_principal() -> 
     assert "ENV DOCKER_HOST=unix:///var/run/docker.sock" in builder_dockerfile
     assert "dockerd --version" in builder_dockerfile
     assert "docker buildx version" in builder_dockerfile
-    assert 'docker build \\' in build_step
+    assert "docker build \\" in build_step
     assert "--platform linux/amd64" in build_step
     assert "--pull" in build_step
     assert 'build/codebuild-builder.Dockerfile"' in build_step
@@ -281,7 +285,7 @@ def test_codebuild_starts_docker_before_building_images() -> None:
         index
         for index, command in enumerate(commands)
         if "docker info --format" in command
-        and 'cat /tmp/dockerd.log >&2; exit 1' in command
+        and "cat /tmp/dockerd.log >&2; exit 1" in command
     )
     build_index = commands.index(
         "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/"
@@ -960,6 +964,10 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     assert "node scripts/lib/openclaw-source.mjs build-args" in script
     assert 'OCE_MSAL_NODE_VERSION="7.2.0"' in script
     assert "check-oce-lock.py" in script
+    assert "apply-oce-security-patches.py" in script
+    assert script.index("apply-oce-security-patches.py") < script.rindex(
+        "docker buildx build"
+    )
     assert script.count("docker buildx build") == 4
     assert script.count("--provenance=false") == 4
     assert "docker buildx prune --all --force" in script
@@ -988,12 +996,12 @@ def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:
 
     assert '"baseImage": os.environ["OCE_NODE_RUNTIME_BASE_IMAGE"]' in script
     assert '"buildBaseImage": os.environ["OCE_NODE_BUILD_BASE_IMAGE"]' in script
-    assert script.count(
-        '"oceSourceRevision": os.environ["OCE_SOURCE_REVISION"]'
-    ) == 2
-    assert script.count(
-        '"sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"]'
-    ) == 4
+    assert script.count('"oceSourceRevision": os.environ["OCE_SOURCE_REVISION"]') == 2
+    assert script.count('"sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"]') == 4
+    assert '"securityBackports": [' in script
+    assert '"cve": os.environ["OPENSSL_BACKPORT_CVE"]' in script
+    assert '"patchSha256": os.environ["OPENSSL_BACKPORT_PATCH_SHA256"]' in script
+    assert '"upstreamCommit": os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"]' in script
 
 
 def test_build_script_checks_bash_four_before_using_mapfile() -> None:
@@ -1387,23 +1395,27 @@ def _inspector_scan_result(
     tmp_path: pathlib.Path,
     coverage: object,
     findings: object,
+    backport_patch: pathlib.Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     coverage_path = tmp_path / "coverage.json"
     findings_path = tmp_path / "findings.json"
     coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
     findings_path.write_text(json.dumps(findings), encoding="utf-8")
+    command = [
+        sys.executable,
+        "-I",
+        str(INSPECTOR_SCAN_CHECK),
+        str(coverage_path),
+        str(findings_path),
+        INSPECTOR_RESOURCE_ID,
+        INSPECTOR_ACCOUNT,
+        INSPECTOR_REPOSITORY,
+        INSPECTOR_DIGEST,
+    ]
+    if backport_patch is not None:
+        command.extend(["--backport-patch", str(backport_patch)])
     return subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            str(INSPECTOR_SCAN_CHECK),
-            str(coverage_path),
-            str(findings_path),
-            INSPECTOR_RESOURCE_ID,
-            INSPECTOR_ACCOUNT,
-            INSPECTOR_REPOSITORY,
-            INSPECTOR_DIGEST,
-        ],
+        command,
         check=False,
         text=True,
         capture_output=True,
@@ -1462,6 +1474,33 @@ def _inspector_finding(severity: str = "HIGH") -> dict[str, object]:
     }
 
 
+def _openssl_backport_finding() -> dict[str, object]:
+    finding = _inspector_finding()
+    finding["packageVulnerabilityDetails"] = {
+        "vulnerabilityId": "CVE-2026-95692",
+        "vulnerablePackages": [
+            {
+                "name": "openssl/openssl",
+                "version": "3.5.9",
+                "packageManager": "GENERIC",
+                "fixedInVersion": "3.5.10",
+                "filePath": (
+                    "/usr/local/include/node/openssl/archs/linux-x86_64/"
+                    f"{variant}/include/openssl/opensslv.h"
+                ),
+            }
+            for variant in ("asm", "asm_avx2", "no-asm")
+        ],
+        "referenceUrls": [
+            (
+                "https://github.com/openssl/openssl/commit/"
+                "257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116"
+            )
+        ],
+    }
+    return finding
+
+
 def test_inspector_gate_accepts_successful_coverage_with_no_severe_findings(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1487,6 +1526,64 @@ def test_inspector_gate_rejects_critical_or_high_finding(
 
         assert result.returncode == 1
         assert f"scan found {severity} finding" in result.stderr
+
+
+def test_inspector_gate_accepts_only_the_exact_reviewed_source_backport(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = _inspector_scan_result(
+        tmp_path,
+        _inspector_coverage(),
+        {"findings": [_openssl_backport_finding()]},
+        OPENSSL_BACKPORT_PATCH,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "accepted 1 reviewed source backport" in result.stdout
+
+
+def test_inspector_backport_gate_rejects_near_matches_and_other_findings(
+    tmp_path: pathlib.Path,
+) -> None:
+    wrong_package = _openssl_backport_finding()
+    wrong_package["packageVulnerabilityDetails"]["vulnerablePackages"][0][  # type: ignore[index]
+        "version"
+    ] = "3.5.8"
+    wrong_cve = _openssl_backport_finding()
+    wrong_cve["packageVulnerabilityDetails"]["vulnerabilityId"] = (  # type: ignore[index]
+        "CVE-2026-00000"
+    )
+    for findings in (
+        {"findings": [wrong_package]},
+        {"findings": [wrong_cve]},
+        {"findings": [_openssl_backport_finding(), _inspector_finding()]},
+        {"findings": [_openssl_backport_finding()], "nextToken": "more"},
+    ):
+        result = _inspector_scan_result(
+            tmp_path,
+            _inspector_coverage(),
+            findings,
+            OPENSSL_BACKPORT_PATCH,
+        )
+
+        assert result.returncode == 1
+
+
+def test_inspector_backport_gate_rejects_a_different_patch(
+    tmp_path: pathlib.Path,
+) -> None:
+    different_patch = tmp_path / "different.patch"
+    different_patch.write_text("different", encoding="utf-8")
+
+    result = _inspector_scan_result(
+        tmp_path,
+        _inspector_coverage(),
+        {"findings": [_openssl_backport_finding()]},
+        different_patch,
+    )
+
+    assert result.returncode == 1
+    assert "patch checksum" in result.stderr
 
 
 def test_inspector_gate_retries_pending_or_missing_coverage(
@@ -1539,6 +1636,138 @@ def test_inspector_gate_fails_closed_on_mismatched_or_failed_responses(
         result = _inspector_scan_result(tmp_path, coverage, findings)
 
         assert result.returncode == 1
+
+
+def _create_fake_oce_source(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
+    oce_source = tmp_path / "oce"
+    node_dir = oce_source / "deploy" / "runtime" / "node"
+    node_dir.mkdir(parents=True)
+    (node_dir / "source.json").write_text(
+        json.dumps(
+            {
+                "version": "24.22.1",
+                "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",
+                "sourceArchiveSha256": (
+                    "4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231"
+                ),
+                "patchSha256": (
+                    "4ca82f5f04473f4a79b89e57064f71d6f01e6fcacf6794930fc128177306b5c9"
+                ),
+                "modules": "137",
+                "napi": "10",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (node_dir / "fetch.sh").write_text(
+        """#!/bin/sh
+set -eu
+archive_sha=$(node -p 'require("./source.json").sourceArchiveSha256')
+patch_sha=$(node -p 'require("./source.json").patchSha256')
+printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n' "$archive_sha" "$patch_sha" | sha256sum --check --strict
+git apply /node-repair/worker-esm-termination.patch
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(oce_source)], check=True)
+    subprocess.run(["git", "-C", str(oce_source), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(oce_source),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    revision = subprocess.run(
+        ["git", "-C", str(oce_source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return oce_source, revision
+
+
+def test_oce_security_patcher_applies_the_reviewed_backport(
+    tmp_path: pathlib.Path,
+) -> None:
+    oce_source, revision = _create_fake_oce_source(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(OCE_SECURITY_PATCHER),
+            str(oce_source),
+            revision,
+            str(OPENSSL_BACKPORT_PATCH),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    node_dir = oce_source / "deploy" / "runtime" / "node"
+    assert (node_dir / "openssl-cve-2026-95692.patch").read_bytes() == (
+        OPENSSL_BACKPORT_PATCH.read_bytes()
+    )
+    fetch = (node_dir / "fetch.sh").read_text(encoding="utf-8")
+    assert "security_patch_sha=" in fetch
+    assert "sha256sum --check --strict" in fetch
+    assert (
+        "git apply -p1 --directory=deps/openssl/openssl "
+        "/node-repair/openssl-cve-2026-95692.patch" in fetch
+    )
+
+
+def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
+    tmp_path: pathlib.Path,
+) -> None:
+    oce_source, revision = _create_fake_oce_source(tmp_path)
+    source_json = oce_source / "deploy" / "runtime" / "node" / "source.json"
+    source = json.loads(source_json.read_text(encoding="utf-8"))
+    source["version"] = "24.22.2"
+    source_json.write_text(json.dumps(source), encoding="utf-8")
+
+    wrong_source = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(OCE_SECURITY_PATCHER),
+            str(oce_source),
+            revision,
+            str(OPENSSL_BACKPORT_PATCH),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    wrong_revision = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(OCE_SECURITY_PATCHER),
+            str(oce_source),
+            "0" * 40,
+            str(OPENSSL_BACKPORT_PATCH),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert wrong_source.returncode == 1
+    assert "source metadata changed" in wrong_source.stderr
+    assert wrong_revision.returncode == 1
+    assert "OCE checkout is" in wrong_revision.stderr
 
 
 def _oce_lock_result(
