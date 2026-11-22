@@ -123,6 +123,16 @@ def resource_name(kind):
     }[kind]
 
 def apply_server_defaults(document):
+    if document.get("kind") == "Namespace":
+        metadata = document.setdefault("metadata", {})
+        metadata.setdefault("labels", {}).setdefault(
+            "kubernetes.io/metadata.name", metadata["name"]
+        )
+        document.setdefault("spec", {}).setdefault(
+            "finalizers", ["kubernetes"]
+        )
+    if document.get("kind") == "Secret":
+        document.setdefault("type", "Opaque")
     if document.get("kind") != "Deployment":
         return
     template = document.setdefault("spec", {}).setdefault("template", {})

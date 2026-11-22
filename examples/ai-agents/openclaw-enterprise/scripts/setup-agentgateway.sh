@@ -485,9 +485,11 @@ inspect() {
       | if .metadata.annotations=={} then del(.metadata.annotations) else . end
       | if .kind=="Namespace" then drop(["metadata","labels","kubernetes.io/metadata.name"];.metadata.name)
           | del(.metadata.labels[$podIdentityInvocationKey])
-          | drop(["spec","finalizers"];["kubernetes"]) else . end
+          | drop(["spec","finalizers"];["kubernetes"])
+          | if .spec=={} then del(.spec) else . end else . end
       | if .kind=="ServiceAccount" then del(.metadata.labels[$podIdentityInvocationKey],.secrets)
           else . end
+      | if .kind=="Secret" then drop(["type"];"Opaque") else . end
       | if .kind=="Certificate" then drop(["spec","issuerRef","group"];"cert-manager.io")
           | drop(["spec","duration"];"2160h0m0s") | drop(["spec","renewBefore"];"720h0m0s")
           | drop(["spec","isCA"];false) | drop(["spec","privateKey"];{"rotationPolicy":"Always"}) else . end
