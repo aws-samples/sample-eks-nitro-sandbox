@@ -282,7 +282,12 @@ cert-manager is a shared cluster prerequisite. The cleanup script does not
 delete or upgrade it.
 
 ```text
-TODO: output from the fresh run
+Using existing cert-manager v1.18.4 without modifying it.
+deployment "cert-manager" successfully rolled out
+deployment "cert-manager-webhook" successfully rolled out
+deployment "cert-manager-cainjector" successfully rolled out
+customresourcedefinition.apiextensions.k8s.io/issuers.cert-manager.io condition met
+customresourcedefinition.apiextensions.k8s.io/certificates.cert-manager.io condition met
 ```
 
 Before building images, verify that Amazon Inspector enhanced scanning is
@@ -551,7 +556,12 @@ enforce that deny, and exempt only `ImageBuildWorkflowRole`. Release operators
 should receive only permission to assume the generated invocation role.
 
 ```text
-TODO: output from the fresh run
+Step Functions execution: SUCCEEDED
+CodeBuild build: SUCCEEDED
+ADAPTER_IMAGE=<private-ecr-repository>@sha256:<digest>
+CONTROLLER_IMAGE=<private-ecr-repository>@sha256:<digest>
+OWNERSHIP_INIT_IMAGE=<private-ecr-repository>@sha256:<digest>
+RUNTIME_IMAGE=<private-ecr-repository>@sha256:<digest>
 ```
 
 **Step 3: Configure storage**
@@ -572,7 +582,9 @@ or adopt an existing resource with the same name unless the complete storage
 and ownership contract already matches.
 
 ```text
-TODO: output from the fresh run
+Creating StorageClass openclaw-enterprise-gp3 in context <cluster-context>.
+StorageClass openclaw-enterprise-gp3 created.
+openclaw-enterprise-gp3
 ```
 
 **Step 4: Install AgentGateway and Pod Identity**
@@ -654,7 +666,10 @@ the same kubeconfig, context, state directory, and receipt. Do not edit or
 delete the journal.
 
 ```text
-TODO: output from the fresh run
+AgentGateway Pod Identity is ready for openclaw-enterprise-agw/agentgateway.
+Lifecycle receipt: <private-state-directory>/agentgateway-pod-identity-receipt.json
+AgentGateway resources: created or verified
+Deployment/agentgateway: available
 ```
 
 **Step 5: Install the admission adapter**
@@ -685,7 +700,11 @@ shape before applying the Nitro compatibility patch.*
 ![The admission flow verifies OCE controllers, revisions, images, and pod shape before setting the Nitro RuntimeClass and compatible storage and trust settings.](images/openclaw-enterprise-pod-admission.png)
 
 ```text
-TODO: output from the fresh run
+namespace/openclaw-enterprise-adapter created
+deployment.apps/openclaw-enterprise-nitro-adapter created
+mutatingwebhookconfiguration.admissionregistration.k8s.io/openclaw-enterprise-nitro-adapter created
+validatingwebhookconfiguration.admissionregistration.k8s.io/openclaw-enterprise-nitro-policy created
+deployment "openclaw-enterprise-nitro-adapter" successfully rolled out
 ```
 
 **Step 6: Install the pinned OCE revision**
@@ -834,7 +853,9 @@ gateway routing and agent native administration. Use the temporary API tunnel
 in the next step for terminal administration.
 
 ```text
-TODO: output from the fresh run
+Installed OpenClaw Enterprise release oce in namespace openclaw-system.
+Receipt: <private-state-directory>/oce-install/receipt
+Topology: terminal-managed; embedded Harnesses only; direct Pod API clients and browser routing disabled.
 ```
 
 **Step 7: Onboard two tenants from the terminal**
@@ -1238,7 +1259,9 @@ namespace ID, agent ID, backing namespace, runtime pod and container, and
 validator key path for the next step.
 
 ```text
-TODO: output from the fresh run
+Tenant A: namespace=<ns-id-a> agent=<agent-id-a> runtime=<tenant-a-namespace>/<tenant-a-pod>
+Tenant B: namespace=<ns-id-b> agent=<agent-id-b> runtime=<tenant-b-namespace>/<tenant-b-pod>
+Both runtime Pods report Ready=True with runtimeClassName=isolated-sandbox.
 ```
 
 **Step 8: Validate the two-tenant boundary**
@@ -1342,7 +1365,7 @@ supplied to the command. It also records SHA-256 digests for the validator and
 its native tool-history evaluator.
 
 ```text
-TODO: output from the fresh run
+Validation passed. Sanitized evidence: <private-evidence-directory>/live-validation-evidence.txt
 ```
 
 ## Good to know
@@ -1459,5 +1482,7 @@ delete them after cleanup. Never reuse the generated keys for another
 deployment.
 
 ```text
-TODO: output from the fresh run
+Cleanup completed.
+Deleted run-owned image build stack. Receipt: <private-state-directory>/image-build-stack.json
+Deleted run-owned builder repository. Receipt: <private-state-directory>/builder-repository.json
 ```

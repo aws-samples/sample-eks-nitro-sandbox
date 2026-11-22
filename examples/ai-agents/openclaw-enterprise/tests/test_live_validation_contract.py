@@ -557,6 +557,11 @@ FAKE_COMMAND = textwrap.dedent(
     if args[:1] in (["-n"], ["--namespace"]):
         namespace = args[1]
         args = args[2:]
+    args = [
+        value
+        for value in args
+        if not value.startswith("--request-timeout=")
+    ]
 
     if args[:2] == ["get", "persistentvolumeclaim"]:
         name = args[2]
@@ -591,6 +596,25 @@ FAKE_COMMAND = textwrap.dedent(
                 "reason": "FailedScheduling",
                 "message": 'persistentvolumeclaim "pvc-b" not found',
             }}]}})
+        sys.exit(0)
+    if (
+        args[:1] == ["get"]
+        and "--ignore-not-found=true" in args
+        and any(
+            resource.startswith("pod/oce-api-loopback-relay-")
+            or resource.startswith("networkpolicy/oce-api-loopback-relay-")
+            for resource in args[1:]
+        )
+    ):
+        if scenario == "tunnel_cleanup_failure":
+            for resource in args[1:]:
+                if resource.startswith("pod/oce-api-loopback-relay-"):
+                    emit(resource)
+                elif resource.startswith("networkpolicy/oce-api-loopback-relay-"):
+                    emit(
+                        "networkpolicy.networking.k8s.io/"
+                        + resource.removeprefix("networkpolicy/")
+                    )
         sys.exit(0)
     if args[:2] == ["get", "pod"] and "-o" in args:
         name = args[2]
@@ -1332,11 +1356,57 @@ FAKE_CURL = textwrap.dedent(
 FAKE_OCE_API_TUNNEL = textwrap.dedent(
     """\
     #!/usr/bin/env bash
-    set -euo pipefail
+    set -Eeuo pipefail
+    umask 077
 
     kube_context=""
     namespace=""
     local_port=""
+    startup_timeout_seconds=""
+    cleanup_timeout_seconds=""
+    ready_file=""
+    state_file=""
+    relay_name="oce-api-loopback-relay-0123456789abcdef"
+    egress_policy="${relay_name}-egress"
+    api_ingress_policy="${relay_name}-api-ingress"
+    port_forward_pid=""
+    port_forward_log=""
+
+    write_state() {
+      local cleanup_status="$1"
+      jq -cn \
+        --arg namespace "$namespace" \
+        --arg relayPod "$relay_name" \
+        --arg egressPolicy "$egress_policy" \
+        --arg apiIngressPolicy "$api_ingress_policy" \
+        --arg cleanupStatus "$cleanup_status" \
+        '{
+          namespace: $namespace,
+          relayPod: $relayPod,
+          egressPolicy: $egressPolicy,
+          apiIngressPolicy: $apiIngressPolicy,
+          cleanupStatus: $cleanupStatus
+        }' >"$state_file"
+      chmod 600 "$state_file"
+    }
+
+    cleanup() {
+      local status=$?
+      trap - EXIT HUP INT TERM
+      if [[ -n "$port_forward_pid" ]] &&
+        kill -0 "$port_forward_pid" 2>/dev/null; then
+        kill -TERM "$port_forward_pid" 2>/dev/null || true
+        wait "$port_forward_pid" 2>/dev/null || true
+      fi
+      [[ -z "$port_forward_log" ]] || rm -f -- "$port_forward_log"
+      if [[ "${FAKE_SCENARIO:-pass}" == "tunnel_cleanup_failure" ]]; then
+        write_state failed
+        exit 70
+      fi
+      write_state complete
+      exit "$status"
+    }
+
     while (($#)); do
       case "$1" in
         --kube-context)
@@ -1351,16 +1421,72 @@ FAKE_OCE_API_TUNNEL = textwrap.dedent(
           local_port="$2"
           shift 2
           ;;
+        --startup-timeout-seconds)
+          startup_timeout_seconds="$2"
+          shift 2
+          ;;
+        --cleanup-timeout-seconds)
+          cleanup_timeout_seconds="$2"
+          shift 2
+          ;;
+        --ready-file)
+          ready_file="$2"
+          shift 2
+          ;;
+        --state-file)
+          state_file="$2"
+          shift 2
+          ;;
         *)
           exit 98
           ;;
       esac
     done
 
-    exec kubectl --context "$kube_context" -n "$namespace" port-forward \
+    trap cleanup EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    write_state pending
+
+    port_forward_log="$(mktemp)"
+    chmod 600 "$port_forward_log"
+    kubectl --context "$kube_context" -n "$namespace" port-forward \
       --address=127.0.0.1 \
       service/openclaw-enterprise-api \
-      "${local_port}:8080"
+      "${local_port}:8080" >"$port_forward_log" 2>&1 &
+    port_forward_pid=$!
+
+    forwarding_line="Forwarding from 127.0.0.1:${local_port} -> 8080"
+    tunnel_ready="false"
+    for ((attempt = 0; attempt < startup_timeout_seconds * 10; attempt += 1)); do
+      if ! kill -0 "$port_forward_pid" 2>/dev/null; then
+        set +e
+        wait "$port_forward_pid"
+        status=$?
+        set -e
+        port_forward_pid=""
+        exit "$status"
+      fi
+      if grep -Fqx "$forwarding_line" "$port_forward_log"; then
+        printf 'Forwarding from 127.0.0.1:%s -> 18080\n' "$local_port" >"$ready_file"
+        chmod 600 "$ready_file"
+        tunnel_ready="true"
+        break
+      fi
+      sleep 0.1
+    done
+    [[ "$tunnel_ready" == "true" ]] || exit 1
+
+    set +e
+    while kill -0 "$port_forward_pid" 2>/dev/null; do
+      sleep 0.1
+    done
+    wait "$port_forward_pid"
+    status=$?
+    set -e
+    port_forward_pid=""
+    exit "$status"
     """
 )
 
@@ -1466,6 +1592,7 @@ def _run(
     env["FAKE_STATE_DIR"] = str(state_dir)
     env["FAKE_SCENARIO"] = scenario
     env["OCE_API_TUNNEL_SCRIPT"] = str(fake_bin / "oce-api-tunnel")
+    env["OCE_API_TUNNEL_STARTUP_TIMEOUT_SECONDS"] = "2"
     arguments = _arguments(tmp_path)
     if kms_key_id is not None:
         arguments.extend(["--kms-signing-key-id", kms_key_id])
@@ -2326,6 +2453,8 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
     [
         ("wrong_cluster_arn", "eks-cluster"),
         ("port_forward_early_exit", "oce-api-loopback-tunnel"),
+        ("port_forward_no_marker", "oce-api-loopback-tunnel"),
+        ("tunnel_cleanup_failure", "oce-tenant-api-isolation"),
         ("wrong_oce_revision", "oce-deployed-source-revision"),
         ("wrong_cross_code", "oce-tenant-api-isolation"),
         ("cross_tenant_pvc_mounted", "tenant-storage-isolation"),
@@ -2547,6 +2676,13 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert 'if wait "$pid" 2>/dev/null; then' in source
     assert "stop_oce_api_port_forward || die" in source
     assert 'OCE_API_TUNNEL_SCRIPT="$(dirname "$SCRIPT_PATH")/oce-api-tunnel.sh"' in source
+    assert "--ready-file" in source
+    assert "--state-file" in source
+    assert "oce_api_tunnel_resources_absent" in source
+    assert (
+        '"Forwarding from 127.0.0.1:${OCE_API_LOCAL_PORT} -> 18080"'
+        in source
+    )
     assert "service/openclaw-enterprise-api" not in source
     assert 'delete namespace "$TENANT_A_NAMESPACE"' not in source
     assert 'delete namespace "$TENANT_B_NAMESPACE"' not in source

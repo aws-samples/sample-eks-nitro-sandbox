@@ -81,6 +81,10 @@ OCE_PORT_FORWARD_PID=""
 OCE_PORT_FORWARD_LOG=""
 OCE_PORT_FORWARD_CLEANED="false"
 OCE_API_TUNNEL_SCRIPT="${OCE_API_TUNNEL_SCRIPT:-}"
+OCE_API_TUNNEL_STARTUP_TIMEOUT_SECONDS="${OCE_API_TUNNEL_STARTUP_TIMEOUT_SECONDS:-120}"
+OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS="${OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS:-30}"
+OCE_API_TUNNEL_READY_FILE=""
+OCE_API_TUNNEL_STATE_FILE=""
 FINAL_EVIDENCE_CANDIDATE=""
 FINAL_MANIFEST_CANDIDATE=""
 FINAL_SIGNATURE_CANDIDATE=""
@@ -317,6 +321,39 @@ oce_api_port_is_ready() {
   ' "$OCE_API_LOCAL_PORT" >/dev/null 2>&1
 }
 
+oce_api_tunnel_resources_absent() {
+  [[ -n "$OCE_API_TUNNEL_STATE_FILE" &&
+    -f "$OCE_API_TUNNEL_STATE_FILE" &&
+    ! -L "$OCE_API_TUNNEL_STATE_FILE" ]] || return 1
+  private_regular_file_identity "$OCE_API_TUNNEL_STATE_FILE" >/dev/null || return 1
+
+  local namespace relay_pod egress_policy api_ingress_policy cleanup_status
+  namespace="$(jq -er '.namespace' "$OCE_API_TUNNEL_STATE_FILE")" || return 1
+  relay_pod="$(jq -er '.relayPod' "$OCE_API_TUNNEL_STATE_FILE")" || return 1
+  egress_policy="$(jq -er '.egressPolicy' "$OCE_API_TUNNEL_STATE_FILE")" || return 1
+  api_ingress_policy="$(
+    jq -er '.apiIngressPolicy' "$OCE_API_TUNNEL_STATE_FILE"
+  )" || return 1
+  cleanup_status="$(jq -er '.cleanupStatus' "$OCE_API_TUNNEL_STATE_FILE")" || return 1
+
+  [[ "$namespace" == "$OCE_SYSTEM_NAMESPACE" &&
+    "$relay_pod" =~ ^oce-api-loopback-relay-[0-9a-f]{16}$ &&
+    "$egress_policy" == "${relay_pod}-egress" &&
+    "$api_ingress_policy" == "${relay_pod}-api-ingress" &&
+    "$cleanup_status" == "complete" ]] || return 1
+
+  local resource_name
+  resource_name="$(
+    kube -n "$namespace" \
+      --request-timeout="${OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS}s" get \
+      "pod/$relay_pod" \
+      "networkpolicy/$egress_policy" \
+      "networkpolicy/$api_ingress_policy" \
+      --ignore-not-found=true -o name
+  )" || return 1
+  [[ -z "$resource_name" ]]
+}
+
 start_oce_api_port_forward() {
   [[ -z "$OCE_PORT_FORWARD_PID" ]] || die "OCE API tunnel is already running"
   if oce_api_port_is_ready; then
@@ -324,31 +361,52 @@ start_oce_api_port_forward() {
   fi
 
   OCE_PORT_FORWARD_LOG="$WORK_DIR/oce-api-port-forward.log"
+  OCE_API_TUNNEL_READY_FILE="$WORK_DIR/oce-api-tunnel.ready"
+  OCE_API_TUNNEL_STATE_FILE="$WORK_DIR/oce-api-tunnel-state.json"
   : >"$OCE_PORT_FORWARD_LOG"
   chmod 600 "$OCE_PORT_FORWARD_LOG"
   "$OCE_API_TUNNEL_SCRIPT" \
     --kube-context "$KUBE_CONTEXT" \
     --namespace "$OCE_SYSTEM_NAMESPACE" \
     --local-port "$OCE_API_LOCAL_PORT" \
+    --startup-timeout-seconds "$OCE_API_TUNNEL_STARTUP_TIMEOUT_SECONDS" \
+    --cleanup-timeout-seconds "$OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS" \
+    --ready-file "$OCE_API_TUNNEL_READY_FILE" \
+    --state-file "$OCE_API_TUNNEL_STATE_FILE" \
     >"$OCE_PORT_FORWARD_LOG" 2>&1 &
   OCE_PORT_FORWARD_PID=$!
   OCE_PORT_FORWARD_CLEANED="false"
 
-  local attempt
-  for ((attempt = 0; attempt < 50; attempt += 1)); do
+  local attempt wait_status
+  for ((
+    attempt = 0;
+    attempt < OCE_API_TUNNEL_STARTUP_TIMEOUT_SECONDS * 10;
+    attempt += 1
+  )); do
     if ! kill -0 "$OCE_PORT_FORWARD_PID" 2>/dev/null; then
-      wait "$OCE_PORT_FORWARD_PID" 2>/dev/null || true
+      if wait "$OCE_PORT_FORWARD_PID" 2>/dev/null; then
+        wait_status=0
+      else
+        wait_status=$?
+      fi
       OCE_PORT_FORWARD_PID=""
       OCE_API_URL=""
-      OCE_PORT_FORWARD_CLEANED="true"
-      die "OCE API tunnel exited before becoming ready"
+      if oce_api_tunnel_resources_absent; then
+        OCE_PORT_FORWARD_CLEANED="true"
+      fi
+      die "OCE API tunnel exited with status ${wait_status} before becoming ready"
     fi
-    if oce_api_port_is_ready &&
+    if [[ -f "$OCE_API_TUNNEL_READY_FILE" &&
+      ! -L "$OCE_API_TUNNEL_READY_FILE" ]] &&
+      private_regular_file_identity "$OCE_API_TUNNEL_READY_FILE" >/dev/null &&
+      grep -Fqx \
+        "Forwarding from 127.0.0.1:${OCE_API_LOCAL_PORT} -> 18080" \
+        "$OCE_API_TUNNEL_READY_FILE" &&
       kill -0 "$OCE_PORT_FORWARD_PID" 2>/dev/null; then
       OCE_API_URL="http://127.0.0.1:${OCE_API_LOCAL_PORT}"
       return 0
     fi
-    sleep 0.2
+    sleep 0.1
   done
   die "OCE API tunnel did not become ready on the explicit loopback port"
 }
@@ -361,25 +419,23 @@ stop_oce_api_port_forward() {
     if ! kill "$pid" 2>/dev/null && kill -0 "$pid" 2>/dev/null; then
       return 1
     fi
-    local attempt
-    for ((attempt = 0; attempt < 50; attempt += 1)); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.1
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      if ! kill -KILL "$pid" 2>/dev/null && kill -0 "$pid" 2>/dev/null; then
-        return 1
-      fi
-    fi
   fi
-  local wait_status
+  local wait_status watchdog_pid
+  (
+    sleep "$((OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS * 2 + 15))"
+    kill -KILL "$pid" 2>/dev/null || true
+  ) </dev/null >/dev/null 2>&1 &
+  watchdog_pid=$!
   if wait "$pid" 2>/dev/null; then
     wait_status=0
   else
     wait_status=$?
   fi
-  ((wait_status != 127)) || return 1
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  ((wait_status == 143)) || return 1
   kill -0 "$pid" 2>/dev/null && return 1
+  oce_api_tunnel_resources_absent || return 1
   OCE_PORT_FORWARD_PID=""
   OCE_API_URL=""
   OCE_PORT_FORWARD_CLEANED="true"
@@ -644,6 +700,14 @@ done
   die "OCE API local port must be an integer"
 ((OCE_API_LOCAL_PORT >= 1024 && OCE_API_LOCAL_PORT <= 65535)) ||
   die "OCE API local port must be between 1024 and 65535"
+[[ "$OCE_API_TUNNEL_STARTUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+  die "OCE API tunnel startup timeout must be a positive integer"
+((OCE_API_TUNNEL_STARTUP_TIMEOUT_SECONDS <= 600)) ||
+  die "OCE API tunnel startup timeout must not exceed 600 seconds"
+[[ "$OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+  die "OCE API tunnel cleanup timeout must be a positive integer"
+((OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS <= 120)) ||
+  die "OCE API tunnel cleanup timeout must not exceed 120 seconds"
 [[ "$OCE_SYSTEM_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ &&
   ${#OCE_SYSTEM_NAMESPACE} -le 63 ]] ||
   die "OCE system namespace must be a Kubernetes DNS label"

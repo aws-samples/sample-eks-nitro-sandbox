@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import time
@@ -18,6 +19,7 @@ import json
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 
 state = Path(os.environ["FAKE_STATE_DIR"])
@@ -51,12 +53,28 @@ if "wait" in args:
 
 if "port-forward" in args:
     append("commands.log", "port-forward " + " ".join(args))
+    time.sleep(float(os.environ.get("FAKE_PORT_FORWARD_DELAY", "0")))
+    local_port, relay_port = args[-1].split(":", 1)
+    print(
+        f"Forwarding from 127.0.0.1:{local_port} -> {relay_port}",
+        file=sys.stderr,
+        flush=True,
+    )
     signal.signal(signal.SIGTERM, lambda *_: raise_exit(143))
     signal.signal(signal.SIGINT, lambda *_: raise_exit(130))
     signal.pause()
 
 if "delete" in args:
     append("commands.log", "delete " + " ".join(args))
+    if os.environ.get("FAKE_DELETE_FAIL") == "true":
+        raise SystemExit(9)
+    raise SystemExit(0)
+
+if "get" in args and any(
+    item.startswith(("pod/", "networkpolicy/")) for item in args
+):
+    if os.environ.get("FAKE_DELETE_FAIL") == "true":
+        print(next(item for item in args if item.startswith("pod/")))
     raise SystemExit(0)
 
 raise SystemExit(97)
@@ -119,6 +137,11 @@ def _wait_for(path: Path, text: str) -> None:
 
 def test_tunnel_uses_digest_pinned_relay_and_cleans_up(tmp_path: Path) -> None:
     env = _environment(tmp_path, f"example.invalid/oce-api@sha256:{DIGEST}")
+    env["FAKE_PORT_FORWARD_DELAY"] = "0.5"
+    control_dir = tmp_path / "control"
+    control_dir.mkdir(mode=0o700)
+    ready_file = control_dir / "ready"
+    state_file = control_dir / "state.json"
     process = subprocess.Popen(
         [
             "bash",
@@ -127,6 +150,10 @@ def test_tunnel_uses_digest_pinned_relay_and_cleans_up(tmp_path: Path) -> None:
             "fake-context",
             "--local-port",
             "18081",
+            "--ready-file",
+            str(ready_file),
+            "--state-file",
+            str(state_file),
         ],
         text=True,
         stdout=subprocess.PIPE,
@@ -135,11 +162,18 @@ def test_tunnel_uses_digest_pinned_relay_and_cleans_up(tmp_path: Path) -> None:
     )
     log = tmp_path / "state" / "commands.log"
     _wait_for(log, "port-forward")
-    process.terminate()
+    time.sleep(0.1)
+    assert not ready_file.exists()
+    _wait_for(ready_file, "Forwarding from 127.0.0.1:18081 -> 18080")
+    assert process.poll() is None
+    process.send_signal(signal.SIGTERM)
     _, stderr = process.communicate(timeout=10)
 
     assert process.returncode == 143
     assert "http://127.0.0.1:18081" in stderr
+    state = json.loads(state_file.read_text())
+    assert state["cleanupStatus"] == "complete"
+    assert state["relayPod"].startswith("oce-api-loopback-relay-")
 
     manifest = json.loads((tmp_path / "state" / "manifest.json").read_text())
     relay, relay_policy, api_policy = manifest["items"]
@@ -167,9 +201,9 @@ def test_tunnel_uses_digest_pinned_relay_and_cleans_up(tmp_path: Path) -> None:
     commands = log.read_text()
     assert "--address=127.0.0.1 pod/oce-api-loopback-relay-" in commands
     assert "service/openclaw-enterprise-api" not in commands
-    assert len([line for line in commands.splitlines() if line.startswith("delete ")]) == 2
-    assert " delete pod oce-api-loopback-relay-" in commands
-    assert " delete networkpolicy oce-api-loopback-relay-" in commands
+    assert len([line for line in commands.splitlines() if line.startswith("delete ")]) == 1
+    assert " delete pod/oce-api-loopback-relay-" in commands
+    assert " networkpolicy/oce-api-loopback-relay-" in commands
 
 
 def test_tunnel_rejects_mutable_api_image_before_creating_resources(
@@ -203,4 +237,38 @@ def test_tunnel_cleans_partial_create_failure(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "could not create the temporary API relay" in result.stderr
     commands = (tmp_path / "state" / "commands.log").read_text()
-    assert len([line for line in commands.splitlines() if line.startswith("delete ")]) == 2
+    assert len([line for line in commands.splitlines() if line.startswith("delete ")]) == 1
+
+
+def test_tunnel_reports_unverified_cleanup_as_failure(tmp_path: Path) -> None:
+    env = _environment(tmp_path, f"example.invalid/oce-api@sha256:{DIGEST}")
+    env["FAKE_DELETE_FAIL"] = "true"
+    control_dir = tmp_path / "control"
+    control_dir.mkdir(mode=0o700)
+    ready_file = control_dir / "ready"
+    state_file = control_dir / "state.json"
+    process = subprocess.Popen(
+        [
+            "bash",
+            str(SCRIPT),
+            "--kube-context",
+            "fake-context",
+            "--local-port",
+            "18082",
+            "--ready-file",
+            str(ready_file),
+            "--state-file",
+            str(state_file),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    _wait_for(ready_file, "Forwarding from 127.0.0.1:18082 -> 18080")
+    process.send_signal(signal.SIGTERM)
+    _, stderr = process.communicate(timeout=10)
+
+    assert process.returncode == 70
+    assert "cleanup could not be verified" in stderr
+    assert json.loads(state_file.read_text())["cleanupStatus"] == "failed"
