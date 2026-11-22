@@ -19,6 +19,8 @@ PERSISTENT_MARKER="/home/node/.openclaw/.live-validation-marker"
 EPHEMERAL_MARKER="/home/node/.live-validation-marker"
 PERSISTENT_HOME="/home/node/.openclaw"
 RUNTIME_HOME="/home/node"
+RUNTIME_CODEX_HOME="$RUNTIME_HOME/.openclaw/agents/main/agent/codex-home"
+RUNTIME_CODEX_HOME_SUBPATH="gateway-codex-home"
 PERSISTENT_STATE_ROOT="/gateway-state"
 RUNTIME_STATE_VOLUME="runtime-state"
 PREP_INIT_CONTAINER="prepare-private-state"
@@ -1008,6 +1010,8 @@ assert_no_aws_credential_paths() {
     jq -r \
       --arg runtime_container "$runtime_container" \
       --arg runtime_home "$RUNTIME_HOME" \
+      --arg runtime_codex_home "$RUNTIME_CODEX_HOME" \
+      --arg runtime_codex_home_subpath "$RUNTIME_CODEX_HOME_SUBPATH" \
       --arg persistent_home "$PERSISTENT_HOME" \
       --arg persistent_state_root "$PERSISTENT_STATE_ROOT" \
       --arg runtime_state_volume "$RUNTIME_STATE_VOLUME" \
@@ -1189,36 +1193,45 @@ assert_no_aws_credential_paths() {
       ):
         (
           (
-            is_runtime_container($group_field; $container_name)
-            and $mount.mountPath == $runtime_home
-          )
-          or (
-            is_init_container(
-              $group_field;
-              $container_name;
-              $owner_init_container
-            )
-            and $mount.mountPath == $runtime_home
-          )
-          or (
             (
+              is_runtime_container($group_field; $container_name)
+              and $mount.mountPath == $runtime_home
+            )
+            or (
               is_init_container(
                 $group_field;
                 $container_name;
-                $prep_init_container
+                $owner_init_container
               )
-              or is_init_container(
-                $group_field;
-                $container_name;
-                $link_init_container
-              )
+              and $mount.mountPath == $runtime_home
             )
-            and $mount.mountPath == "/runtime-state"
+            or (
+              (
+                is_init_container(
+                  $group_field;
+                  $container_name;
+                  $prep_init_container
+                )
+                or is_init_container(
+                  $group_field;
+                  $container_name;
+                  $link_init_container
+                )
+              )
+              and $mount.mountPath == "/runtime-state"
+            )
           )
+          and ($mount.subPath // null) == null
+          and ($mount.subPathExpr // null) == null
+          and ($mount.readOnly // false) == false
         )
-        and ($mount.subPath // null) == null
-        and ($mount.subPathExpr // null) == null
-        and ($mount.readOnly // false) == false;
+        or (
+          is_runtime_container($group_field; $container_name)
+          and $mount.mountPath == $runtime_codex_home
+          and $mount.subPath == $runtime_codex_home_subpath
+          and ($mount.subPathExpr // null) == null
+          and ($mount.readOnly // false) == false
+        );
 
       def approved_gateway_state_mount(
         $mount;
@@ -1414,7 +1427,7 @@ assert_no_aws_credential_paths() {
   fi
 
   [[ -z "$finding" ]] ||
-    die "$tenant_alias pod exposes an AWS credential path: $finding"
+    die "$tenant_alias pod violates the runtime volume or AWS credential contract: $finding"
 }
 
 verify_runtime_pod() {

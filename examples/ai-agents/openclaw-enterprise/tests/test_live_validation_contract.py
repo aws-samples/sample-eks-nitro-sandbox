@@ -121,6 +121,13 @@ FAKE_COMMAND = textwrap.dedent(
                             "mountPath": "/home/node",
                         }},
                         {{
+                            "name": "runtime-state",
+                            "mountPath": (
+                                "/home/node/.openclaw/agents/main/agent/codex-home"
+                            ),
+                            "subPath": "gateway-codex-home",
+                        }},
+                        {{
                             "name": "openclaw-gateway-state",
                             "mountPath": "/home/node/.openclaw",
                         }},
@@ -283,6 +290,10 @@ FAKE_COMMAND = textwrap.dedent(
                 "mountPath": "/home/node/.openclaw",
             }}],
         }})
+    elif scenario == "wrong_codex_home_subpath":
+        pod_a["spec"]["containers"][0]["volumeMounts"][1]["subPath"] = (
+            "unexpected-codex-home"
+        )
     elif scenario == "csi_credential_mount":
         pod_a["spec"]["volumes"].append({{
             "name": "credential-csi",
@@ -2149,6 +2160,14 @@ def test_evidence_directory_replacement_aborts_without_writing_replacement(
                 'spec.containers[1] ("state-sidecar").volumeMounts[0] uses '
                 "unapproved PersistentVolumeClaim volume "
                 '"openclaw-gateway-state" at "/home/node/.openclaw"'
+            ),
+        ),
+        (
+            "wrong_codex_home_subpath",
+            (
+                'spec.containers[0] ("gateway").volumeMounts[1] uses '
+                'unapproved emptyDir volume "runtime-state" at '
+                '"/home/node/.openclaw/agents/main/agent/codex-home"'
             ),
         ),
         (
