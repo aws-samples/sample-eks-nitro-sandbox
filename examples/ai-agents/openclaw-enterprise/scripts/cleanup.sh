@@ -156,6 +156,12 @@ def run(command, *, stdin=None, absent=()):
     return result.stdout
 
 
+def require_helm_3():
+    version = run(["helm", "version", "--short"]).strip()
+    if not re.match(r"^v?3(?:[.+-]|$)", version):
+        fail(f"pinned OCE revision requires Helm 3; found {version or 'unknown version'}.")
+
+
 def digest(value):
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -1875,7 +1881,9 @@ class Cleanup:
 def main():
     cleanup = None
     try:
-        cleanup = Cleanup(parse_args())
+        args = parse_args()
+        require_helm_3()
+        cleanup = Cleanup(args)
         cleanup.run()
     except CleanupError as error:
         recovery_error = None

@@ -393,6 +393,9 @@ def kubectl():
     raise SystemExit(f"unsupported kubectl command: {command}")
 
 def helm():
+    if args == ["version", "--short"]:
+        print(state.get("helmVersion", "v3.22.1+gd6c1a0e"))
+        return
     if args[:2] != ["--kubeconfig", state["kubeconfig"]]:
         raise SystemExit("missing explicit kubeconfig")
     if args[2:4] != ["--kube-context", state["context"]]:
@@ -966,6 +969,19 @@ def _all_created() -> dict[str, bool]:
         "policy": True,
         "association": True,
     }
+
+
+def test_cleanup_rejects_helm_4_before_mutation(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path)
+    state = _state(env)
+    state["helmVersion"] = "v4.3.0+gbec5b06"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert "requires Helm 3; found v4.3.0+gbec5b06" in result.stderr
+    assert _state(env)["mutations"] == 0
 
 
 def _add_tenant(
