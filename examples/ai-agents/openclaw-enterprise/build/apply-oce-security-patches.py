@@ -11,10 +11,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Any
 
 PATCH_FILE_NAME = "openssl-cve-2026-95692.patch"
-PATCH_SHA256 = "32169c518c04ef3cb42d9de435d129caef006d38fc5056e1bcaa39795c786894"
+PATCH_SHA256 = "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"
 EXPECTED_NODE_SOURCE: dict[str, Any] = {
     "version": "24.22.1",
     "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",
@@ -77,6 +78,23 @@ if hashlib.sha256(patch_bytes).hexdigest() != PATCH_SHA256:
     fail("the OpenSSL patch checksum does not match the reviewed upstream patch")
 if b"Fixes: CVE-2026-95692" not in patch_bytes:
     fail("the reviewed CVE identifier is missing from the OpenSSL patch")
+try:
+    with tempfile.TemporaryDirectory(prefix="oce-openssl-patch-check-") as check_dir:
+        subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                "--unsafe-paths",
+                str(args.patch.resolve()),
+            ],
+            cwd=check_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+except (OSError, subprocess.CalledProcessError) as error:
+    fail(f"the reviewed OpenSSL patch is not a valid Git patch: {error}")
 
 try:
     fetch = fetch_script.read_text(encoding="utf-8")

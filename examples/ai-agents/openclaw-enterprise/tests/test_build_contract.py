@@ -1728,6 +1728,29 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     )
 
 
+def test_reviewed_openssl_backport_is_a_valid_git_patch(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = subprocess.run(
+        [
+            "git",
+            "apply",
+            "--numstat",
+            "--unsafe-paths",
+            str(OPENSSL_BACKPORT_PATCH),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "14\t0\tproviders/implementations/ciphers/cipher_aes_gcm_siv.c\n"
+    )
+
+
 def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
     tmp_path: pathlib.Path,
 ) -> None:
