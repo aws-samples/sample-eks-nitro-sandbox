@@ -14,7 +14,7 @@ PENDING = 10
 PENDING_REASONS = {"PENDING_INITIAL_SCAN", "SCAN_IN_PROGRESS"}
 BACKPORT_CVE = "CVE-2026-95692"
 BACKPORT_PATCH_SHA256 = (
-    "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"
+    "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"  # pragma: allowlist secret -- public patch checksum
 )
 BACKPORT_REFERENCE = (
     "https://github.com/openssl/openssl/commit/257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116"

@@ -1494,7 +1494,7 @@ def _openssl_backport_finding() -> dict[str, object]:
         "referenceUrls": [
             (
                 "https://github.com/openssl/openssl/commit/"
-                "257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116"
+                "257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116"  # pragma: allowlist secret -- public source revision
             )
         ],
     }
@@ -1646,12 +1646,12 @@ def _create_fake_oce_source(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
         json.dumps(
             {
                 "version": "24.22.1",
-                "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",
+                "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",  # pragma: allowlist secret -- public source revision
                 "sourceArchiveSha256": (
-                    "4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231"
+                    "4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231"  # pragma: allowlist secret -- public archive checksum
                 ),
                 "patchSha256": (
-                    "4ca82f5f04473f4a79b89e57064f71d6f01e6fcacf6794930fc128177306b5c9"
+                    "4ca82f5f04473f4a79b89e57064f71d6f01e6fcacf6794930fc128177306b5c9"  # pragma: allowlist secret -- public patch checksum
                 ),
                 "modules": "137",
                 "napi": "10",

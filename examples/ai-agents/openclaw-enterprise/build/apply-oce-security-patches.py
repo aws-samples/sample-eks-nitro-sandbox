@@ -15,14 +15,14 @@ import tempfile
 from typing import Any
 
 PATCH_FILE_NAME = "openssl-cve-2026-95692.patch"
-PATCH_SHA256 = "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"
+PATCH_SHA256 = "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"  # pragma: allowlist secret -- public patch checksum
 EXPECTED_NODE_SOURCE: dict[str, Any] = {
     "version": "24.22.1",
-    "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",
+    "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",  # pragma: allowlist secret -- public source revision
     "sourceArchiveSha256": (
-        "4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231"
+        "4f5379796280cdaeb0c2f358fd04b6a16cc4fb7dfa83b5a8c91a9d963b435231"  # pragma: allowlist secret -- public archive checksum
     ),
-    "patchSha256": ("4ca82f5f04473f4a79b89e57064f71d6f01e6fcacf6794930fc128177306b5c9"),
+    "patchSha256": ("4ca82f5f04473f4a79b89e57064f71d6f01e6fcacf6794930fc128177306b5c9"),  # pragma: allowlist secret -- public patch checksum
     "modules": "137",
     "napi": "10",
 }
