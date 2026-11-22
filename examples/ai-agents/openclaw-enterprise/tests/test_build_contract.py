@@ -22,6 +22,9 @@ ENHANCED_SCAN_CHECK = BUILD / "check-enhanced-scanning.py"
 OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
 OCE_SECURITY_PATCHER = BUILD / "apply-oce-security-patches.py"
 OPENSSL_BACKPORT_PATCH = BUILD / "patches" / "openssl-cve-2026-95692.patch"
+OPENCLAW_DEPENDENCY_PATCH = (
+    BUILD / "patches" / "openclaw-mailauth-security-overrides.patch"
+)
 ADAPTER_DOCKERFILE = SAMPLE / "adapter" / "Dockerfile"
 CONTROLLER_DOCKERFILE = BUILD / "controller-runtime.Dockerfile"
 OWNERSHIP_HELPER = SAMPLE / "ownership-helper"
@@ -1002,6 +1005,10 @@ def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:
     assert '"cve": os.environ["OPENSSL_BACKPORT_CVE"]' in script
     assert '"patchSha256": os.environ["OPENSSL_BACKPORT_PATCH_SHA256"]' in script
     assert '"upstreamCommit": os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"]' in script
+    assert '"dependencyPatches": [' in script
+    assert (
+        '"patchSha256": os.environ["OPENCLAW_DEPENDENCY_PATCH_SHA256"]' in script
+    )
 
 
 def test_build_script_checks_bash_four_before_using_mapfile() -> None:
@@ -1640,7 +1647,8 @@ def test_inspector_gate_fails_closed_on_mismatched_or_failed_responses(
 
 def _create_fake_oce_source(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
     oce_source = tmp_path / "oce"
-    node_dir = oce_source / "deploy" / "runtime" / "node"
+    runtime_dir = oce_source / "deploy" / "runtime"
+    node_dir = runtime_dir / "node"
     node_dir.mkdir(parents=True)
     (node_dir / "source.json").write_text(
         json.dumps(
@@ -1657,6 +1665,31 @@ def _create_fake_oce_source(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
                 "napi": "10",
             }
         ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "openclaw-source.json").write_text(
+        json.dumps(
+            {
+                "commit": "513c12703ad9a9161cc123e0b8ed4ecb811aa6b3",  # pragma: allowlist secret -- public source revision
+                "sourceArchiveSha256": (
+                    "dab8e21f38603bace955a157f804ddec32b0097ab52286c87b0c0886d45b7730"  # pragma: allowlist secret -- public archive checksum
+                ),
+                "buildTimestamp": "2026-11-04T17:24:42Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (runtime_dir / "Dockerfile").write_text(
+        """FROM scratch
+# Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
+# which writes provenance; runtime-assets.test.mjs compares the two.
+""",
+        encoding="utf-8",
+    )
+    scripts_dir = oce_source / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "build-runtime-assets.mjs").write_text(
+        "const appliedPatches = [\n];\n",
         encoding="utf-8",
     )
     (node_dir / "fetch.sh").write_text(
@@ -1708,6 +1741,7 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
             str(oce_source),
             revision,
             str(OPENSSL_BACKPORT_PATCH),
+            str(OPENCLAW_DEPENDENCY_PATCH),
         ],
         check=False,
         capture_output=True,
@@ -1726,6 +1760,22 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
         "git apply -p1 --directory=deps/openssl/openssl "
         "/node-repair/openssl-cve-2026-95692.patch" in fetch
     )
+    runtime_dir = oce_source / "deploy" / "runtime"
+    assert (
+        runtime_dir / "openclaw-mailauth-security-overrides.patch"
+    ).read_bytes() == OPENCLAW_DEPENDENCY_PATCH.read_bytes()
+    dockerfile = (runtime_dir / "Dockerfile").read_text(encoding="utf-8")
+    assert (
+        "git apply /tmp/openclaw-mailauth-security-overrides.patch" in dockerfile
+    )
+    assert (
+        "ec982d8627084f2f0fba0c09a073aa79d028cee9a1cbe07d09a47740e17449ea"
+        in dockerfile
+    )
+    runtime_assets = (
+        oce_source / "scripts" / "build-runtime-assets.mjs"
+    ).read_text(encoding="utf-8")
+    assert 'file: "openclaw-mailauth-security-overrides.patch"' in runtime_assets
 
 
 def test_reviewed_openssl_backport_is_a_valid_git_patch(
@@ -1751,6 +1801,27 @@ def test_reviewed_openssl_backport_is_a_valid_git_patch(
     )
 
 
+def test_reviewed_openclaw_dependency_patch_is_scoped_to_the_lockfiles(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = subprocess.run(
+        [
+            "git",
+            "apply",
+            "--numstat",
+            "--unsafe-paths",
+            str(OPENCLAW_DEPENDENCY_PATCH),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "7\t11\tpnpm-lock.yaml\n4\t0\tpnpm-workspace.yaml\n"
+
+
 def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1768,6 +1839,7 @@ def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
             str(oce_source),
             revision,
             str(OPENSSL_BACKPORT_PATCH),
+            str(OPENCLAW_DEPENDENCY_PATCH),
         ],
         check=False,
         capture_output=True,
@@ -1781,6 +1853,7 @@ def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
             str(oce_source),
             "0" * 40,
             str(OPENSSL_BACKPORT_PATCH),
+            str(OPENCLAW_DEPENDENCY_PATCH),
         ],
         check=False,
         capture_output=True,
@@ -1791,6 +1864,40 @@ def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
     assert "source metadata changed" in wrong_source.stderr
     assert wrong_revision.returncode == 1
     assert "OCE checkout is" in wrong_revision.stderr
+
+
+def test_oce_security_patcher_fails_closed_on_openclaw_source_drift(
+    tmp_path: pathlib.Path,
+) -> None:
+    oce_source, revision = _create_fake_oce_source(tmp_path)
+    source_json = oce_source / "deploy" / "runtime" / "openclaw-source.json"
+    source = json.loads(source_json.read_text(encoding="utf-8"))
+    source["commit"] = "0" * 40
+    source_json.write_text(json.dumps(source), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(OCE_SECURITY_PATCHER),
+            str(oce_source),
+            revision,
+            str(OPENSSL_BACKPORT_PATCH),
+            str(OPENCLAW_DEPENDENCY_PATCH),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "pinned OpenClaw source metadata changed" in result.stderr
+    assert not (
+        oce_source
+        / "deploy"
+        / "runtime"
+        / "openclaw-mailauth-security-overrides.patch"
+    ).exists()
 
 
 def _oce_lock_result(

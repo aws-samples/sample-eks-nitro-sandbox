@@ -1,0 +1,83 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 30ec9d15b82..0a5542a1bcd 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -189,6 +189,8 @@ overrides:
+   request-promise: npm:@cypress/request-promise@5.0.0
+   basic-ftp: 6.2.3
+   brace-expansion: 5.0.12
++  mailauth@7.3.1>joi: 18.3.2
++  mailauth@7.3.1>undici: 8.12.3
+   source-map-js: 1.2.2
+   file-type: 22.2.0
+   form-data: 4.0.6
+@@ -8568,8 +8570,8 @@ packages:
+     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
+     hasBin: true
+ 
+-  joi@18.2.9:
+-    resolution: {integrity: sha512-2mD929bUVKUhOLQQEVhlf6EZ0Mlo0DeRb5MO7cViR9AXLtBauuccEtB1py9Ocxpo/P7ucnh442iY/iOwrh3IQw==}
++  joi@18.3.2:
++    resolution: {integrity: sha512-iUivApKYw5GpZmq2Sy6El99j7noo8QSUFZlyQtr3HCkosC/b5wKF6/Y3teiHIlaM8WI38sAT3P+51rB0lhAhJA==}
+     engines: {node: '>= 20'}
+ 
+   jose@6.2.13:
+@@ -10603,10 +10605,6 @@ packages:
+   undici-types@8.9.0:
+     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
+ 
+-  undici@8.11.2:
+-    resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
+-    engines: {node: '>=22.19.0'}
+-
+   undici@8.12.3:
+     resolution: {integrity: sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw==}
+     engines: {node: '>=22.19.0'}
+@@ -16613,7 +16611,7 @@ snapshots:
+ 
+   jiti@2.7.0: {}
+ 
+-  joi@18.2.9:
++  joi@18.3.2:
+     dependencies:
+       '@hapi/address': 5.1.1
+       '@hapi/formula': 3.0.2
+@@ -17008,12 +17006,12 @@ snapshots:
+       commander: 15.0.0
+       fast-xml-parser: 5.11.2
+       ipaddr.js: 2.5.0
+-      joi: 18.2.9
++      joi: 18.3.2
+       libmime: 5.4.7
+       nodemailer: 10.1.0
+       punycode.js: 2.3.1
+       tldts: 7.4.18
+-      undici: 8.11.2
++      undici: 8.12.3
+ 
+   mailparser@3.12.4:
+     dependencies:
+@@ -18896,8 +18894,6 @@ snapshots:
+ 
+   undici-types@8.9.0: {}
+ 
+-  undici@8.11.2: {}
+-
+   undici@8.12.3: {}
+ 
+   unhomoglyph@1.0.6: {}
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index 2ebd5730420..b76ae79798e 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -137,6 +137,10 @@ overrides:
+   request-promise: "npm:@cypress/request-promise@5.0.0"
+   basic-ftp: 6.2.3
+   brace-expansion: 5.0.12
++  # mailauth 7.3.1 permits vulnerable releases of these transitive dependencies.
++  # Keep the override scoped to mailauth so unrelated dependency trees stay unchanged.
++  "mailauth@7.3.1>joi": 18.3.2
++  "mailauth@7.3.1>undici": 8.12.3
+   # GHSA-68fv-2mgg-jv7q: source-map-js <1.2.2 event-loop DoS (via css-tree).
+   source-map-js: 1.2.2
+   file-type: 22.2.0

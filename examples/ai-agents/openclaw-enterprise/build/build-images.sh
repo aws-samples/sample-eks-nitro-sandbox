@@ -154,13 +154,17 @@ OPENSSL_BACKPORT_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterpris
 OPENSSL_BACKPORT_CVE="CVE-2026-95692"
 OPENSSL_BACKPORT_PATCH_SHA256="ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c" # pragma: allowlist secret -- public patch checksum
 OPENSSL_BACKPORT_UPSTREAM_COMMIT="257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116" # pragma: allowlist secret -- public source revision
+OPENCLAW_DEPENDENCY_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openclaw-mailauth-security-overrides.patch"
+OPENCLAW_DEPENDENCY_PATCH_SHA256="ec982d8627084f2f0fba0c09a073aa79d028cee9a1cbe07d09a47740e17449ea" # pragma: allowlist secret -- reviewed patch checksum
 python3 -I \
   "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/apply-oce-security-patches.py" \
   "$OCE_SOURCE_DIR" \
   "$OCE_SOURCE_REVISION" \
-  "$OPENSSL_BACKPORT_PATCH"
+  "$OPENSSL_BACKPORT_PATCH" \
+  "$OPENCLAW_DEPENDENCY_PATCH"
 readonly OPENSSL_BACKPORT_PATCH OPENSSL_BACKPORT_CVE
 readonly OPENSSL_BACKPORT_PATCH_SHA256 OPENSSL_BACKPORT_UPSTREAM_COMMIT
+readonly OPENCLAW_DEPENDENCY_PATCH OPENCLAW_DEPENDENCY_PATCH_SHA256
 
 # Consume the exact bases reviewed with the pinned OCE commit. The runtime
 # Dockerfile currently requires Bookworm, so substituting a newer Debian base
@@ -413,6 +417,7 @@ export SAMPLE_SOURCE_REVISION OCE_SOURCE_REVISION
 export OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
 export OPENSSL_BACKPORT_CVE OPENSSL_BACKPORT_PATCH_SHA256
 export OPENSSL_BACKPORT_UPSTREAM_COMMIT
+export OPENCLAW_DEPENDENCY_PATCH_SHA256
 
 {
   printf 'export ADAPTER_IMAGE=%q\n' "$ADAPTER_IMAGE"
@@ -449,6 +454,12 @@ result = {
         "image": os.environ["RUNTIME_IMAGE"],
         "oceSourceRevision": os.environ["OCE_SOURCE_REVISION"],
         "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
+        "dependencyPatches": [
+            {
+                "component": "OpenClaw mailauth transitive dependencies",
+                "patchSha256": os.environ["OPENCLAW_DEPENDENCY_PATCH_SHA256"],
+            }
+        ],
         "securityBackports": [
             {
                 "cve": os.environ["OPENSSL_BACKPORT_CVE"],
