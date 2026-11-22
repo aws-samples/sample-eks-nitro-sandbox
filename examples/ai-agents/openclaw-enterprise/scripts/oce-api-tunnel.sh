@@ -465,14 +465,14 @@ while ((SECONDS < STARTUP_DEADLINE)); do
   if grep -Fqx "$forwarding_line" "$PORT_FORWARD_LOG"; then
     kill -0 "$PORT_FORWARD_PID" 2>/dev/null ||
       die "local port-forward exited while becoming ready"
+    printf 'OCE API tunnel: http://127.0.0.1:%s -> %s/%s:8080\n' \
+      "$LOCAL_PORT" "$NAMESPACE" "$API_POD" >&2
+    printf 'The relay is temporary and will be removed when this command stops.\n' >&2
     if [[ -n "$READY_FILE" ]]; then
       (set -o noclobber; printf '%s\n' "$forwarding_line" >"$READY_FILE") ||
         die "could not publish the private tunnel readiness signal"
       chmod 600 "$READY_FILE"
     fi
-    printf 'OCE API tunnel: http://127.0.0.1:%s -> %s/%s:8080\n' \
-      "$LOCAL_PORT" "$NAMESPACE" "$API_POD" >&2
-    printf 'The relay is temporary and will be removed when this command stops.\n' >&2
     TUNNEL_READY="true"
     break
   fi

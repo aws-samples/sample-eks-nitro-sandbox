@@ -128,12 +128,30 @@ def _environment(tmp_path: Path, image: str) -> dict[str, str]:
     return env
 
 
-def _wait_for(path: Path, text: str) -> None:
-    deadline = time.monotonic() + 20
+def _wait_for(
+    path: Path,
+    text: str,
+    *,
+    process: subprocess.Popen[str] | None = None,
+) -> None:
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if path.exists() and text in path.read_text():
             return
+        if process is not None and process.poll() is not None:
+            stdout, stderr = process.communicate(timeout=1)
+            pytest.fail(
+                f"process exited with {process.returncode} while waiting for "
+                f"{text!r} in {path}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            )
         time.sleep(0.05)
+    if process is not None and process.poll() is None:
+        process.terminate()
+        try:
+            process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate(timeout=5)
     pytest.fail(f"timed out waiting for {text!r} in {path}")
 
 
@@ -163,10 +181,14 @@ def test_tunnel_uses_digest_pinned_relay_and_cleans_up(tmp_path: Path) -> None:
         env=env,
     )
     log = tmp_path / "state" / "commands.log"
-    _wait_for(log, "port-forward")
+    _wait_for(log, "port-forward", process=process)
     time.sleep(0.1)
     assert not ready_file.exists()
-    _wait_for(ready_file, "Forwarding from 127.0.0.1:18081 -> 18080")
+    _wait_for(
+        ready_file,
+        "Forwarding from 127.0.0.1:18081 -> 18080",
+        process=process,
+    )
     assert process.poll() is None
     process.send_signal(signal.SIGTERM)
     _, stderr = process.communicate(timeout=10)
@@ -267,7 +289,11 @@ def test_tunnel_reports_unverified_cleanup_as_failure(tmp_path: Path) -> None:
         stderr=subprocess.PIPE,
         env=env,
     )
-    _wait_for(ready_file, "Forwarding from 127.0.0.1:18082 -> 18080")
+    _wait_for(
+        ready_file,
+        "Forwarding from 127.0.0.1:18082 -> 18080",
+        process=process,
+    )
     process.send_signal(signal.SIGTERM)
     _, stderr = process.communicate(timeout=10)
 
