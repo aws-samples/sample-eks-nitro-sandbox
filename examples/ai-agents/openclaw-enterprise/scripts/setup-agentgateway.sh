@@ -857,6 +857,13 @@ if [[ "$ROTATE" == true ]]; then
 else
   if [[ "$RECOVERY" == false ]]; then
     preflight "$JOURNAL/current" false "$JOURNAL/presence"
+    if [[ "$RECEIPT_PRESENT" == true ]]; then
+      "${KUBECTL[@]}" --namespace "$NAMESPACE" rollout status deployment/agentgateway \
+        --timeout="$ROLLOUT_TIMEOUT" >/dev/null || die "AgentGateway rollout did not complete."
+      echo "AgentGateway resources: validated; lifecycle receipt preserved"
+      echo "Deployment/agentgateway: available"
+      exit 0
+    fi
     SETUP_ID="$(openssl rand -hex 16)"
     write_value "$JOURNAL/setup-id" "$SETUP_ID"
     awk -F '|' -v OFS='|' '{print $1,$2,$3,$4,$5,

@@ -714,18 +714,23 @@ def test_failed_create_readback_preserves_journal_and_recovers(
     _assert_no_setup_journal(state_dir)
 
 
-def test_second_run_preserves_key_bytes_and_creates_no_resources(
+def test_repeated_runs_preserve_keys_receipt_and_create_no_resources(
     tmp_path: Path,
 ) -> None:
     first, _, first_calls, state_dir = _run(tmp_path)
     assert first.returncode == 0, first.stderr
     original = {name: (state_dir / name).read_bytes() for name in STATE_FILES}
+    receipt_path = state_dir / "agentgateway-lifecycle-receipt.json"
+    original_receipt = receipt_path.read_bytes()
     first_mutation_count = len(_mutations(first_calls))
 
     second, _, all_calls, _ = _run(tmp_path, state_dir=state_dir)
+    third, _, all_calls, _ = _run(tmp_path, state_dir=state_dir)
 
     assert second.returncode == 0, second.stderr
+    assert third.returncode == 0, third.stderr
     assert {name: (state_dir / name).read_bytes() for name in STATE_FILES} == original
+    assert receipt_path.read_bytes() == original_receipt
     assert len(_mutations(all_calls)) == first_mutation_count
 
 
