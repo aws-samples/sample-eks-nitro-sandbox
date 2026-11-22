@@ -304,12 +304,61 @@ def test_node_build_and_runtime_bases_come_from_the_pinned_oce_source() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
 
     assert "read_oce_dockerfile_arg()" in script
+    assert "require_matching_oce_node_bases()" in script
     assert "read_oce_dockerfile_arg NODE_BASE_IMAGE" in script
     assert "read_oce_dockerfile_arg NODE_RUNTIME_BASE_IMAGE" in script
     assert "@sha256:[0-9a-f]{64}$" in script
     assert "-bookworm@sha256:" in script
     assert "-bookworm-slim@sha256:" in script
     assert "trixie" not in script
+
+
+def test_node_base_guard_accepts_only_matching_bookworm_images() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    function_match = re.search(
+        r"(?ms)^require_matching_oce_node_bases\(\) \{\n.*?^\}\n",
+        script,
+    )
+    assert function_match is not None
+    function_source = function_match.group(0)
+    digest = "a" * 64
+    valid_build = f"docker.io/library/node:24.22.1-bookworm@sha256:{digest}"
+    valid_runtime = f"docker.io/library/node:24.22.1-bookworm-slim@sha256:{digest}"
+
+    def run_guard(
+        build_image: str, runtime_image: str
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    "set -euo pipefail\n"
+                    "die() { printf '%s\\n' \"$*\" >&2; exit 1; }\n"
+                    f"{function_source}\n"
+                    'require_matching_oce_node_bases "$1" "$2"\n'
+                ),
+                "guard",
+                build_image,
+                runtime_image,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert run_guard(valid_build, valid_runtime).returncode == 0
+    assert (
+        run_guard(
+            valid_build,
+            f"docker.io/library/node:24.23.0-bookworm-slim@sha256:{digest}",
+        ).returncode
+        != 0
+    )
+    assert (
+        run_guard(valid_build.replace("@sha256:", ":"), valid_runtime).returncode != 0
+    )
+    assert run_guard(valid_build, valid_runtime.replace("-slim", "")).returncode != 0
 
 
 def test_buildspec_defensively_rebinds_environment_input_overrides() -> None:

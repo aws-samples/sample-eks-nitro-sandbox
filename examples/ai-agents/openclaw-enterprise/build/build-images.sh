@@ -53,6 +53,26 @@ process.stdout.write(matches[0][1]);
 NODE
 }
 
+require_matching_oce_node_bases() {
+  local build_image="$1"
+  local runtime_image="$2"
+  local build_version
+  local runtime_version
+
+  if [[ "$build_image" =~ ^docker\.io/library/node:([0-9]+\.[0-9]+\.[0-9]+)-bookworm@sha256:[0-9a-f]{64}$ ]]; then
+    build_version="${BASH_REMATCH[1]}"
+  else
+    die "OCE NODE_BASE_IMAGE must be a digest-pinned Node.js Bookworm image"
+  fi
+  if [[ "$runtime_image" =~ ^docker\.io/library/node:([0-9]+\.[0-9]+\.[0-9]+)-bookworm-slim@sha256:[0-9a-f]{64}$ ]]; then
+    runtime_version="${BASH_REMATCH[1]}"
+  else
+    die "OCE NODE_RUNTIME_BASE_IMAGE must be a digest-pinned Node.js Bookworm slim image"
+  fi
+  [[ "$build_version" == "$runtime_version" ]] ||
+    die "OCE Node build and runtime base versions must match"
+}
+
 readonly OCE_REPOSITORY_URL="https://github.com/openclaw/openclaw-enterprise.git"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="gcr.io/distroless/nodejs24-debian13"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="nonroot"
@@ -142,19 +162,9 @@ OCE_NODE_RUNTIME_BASE_IMAGE="$(
   read_oce_dockerfile_arg NODE_RUNTIME_BASE_IMAGE "$OCE_RUNTIME_DOCKERFILE"
 )" || die "could not resolve OCE's digest-pinned NODE_RUNTIME_BASE_IMAGE"
 readonly OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
-node - "$OCE_NODE_BUILD_BASE_IMAGE" "$OCE_NODE_RUNTIME_BASE_IMAGE" <<'NODE' ||
-  die "OCE Node bases must be matching digest-pinned Bookworm build/runtime images"
-const [build, runtime] = process.argv.slice(2);
-const buildMatch = build.match(
-  /^docker\.io\/library\/node:([0-9]+\.[0-9]+\.[0-9]+)-bookworm@sha256:[0-9a-f]{64}$/
-);
-const runtimeMatch = runtime.match(
-  /^docker\.io\/library\/node:([0-9]+\.[0-9]+\.[0-9]+)-bookworm-slim@sha256:[0-9a-f]{64}$/
-);
-if (!buildMatch || !runtimeMatch || buildMatch[1] !== runtimeMatch[1]) {
-  process.exit(1);
-}
-NODE
+require_matching_oce_node_bases \
+  "$OCE_NODE_BUILD_BASE_IMAGE" \
+  "$OCE_NODE_RUNTIME_BASE_IMAGE"
 
 REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
 aws ecr get-login-password --region "$AWS_DEFAULT_REGION" |
