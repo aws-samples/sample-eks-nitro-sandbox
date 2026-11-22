@@ -160,6 +160,7 @@ def test_tunnel_uses_digest_pinned_relay_and_cleans_up(tmp_path: Path) -> None:
     env["FAKE_PORT_FORWARD_DELAY"] = "0.5"
     control_dir = tmp_path / "control"
     control_dir.mkdir(mode=0o700)
+    control_dir.chmod(0o700)
     ready_file = control_dir / "ready"
     state_file = control_dir / "state.json"
     process = subprocess.Popen(
@@ -269,6 +270,7 @@ def test_tunnel_reports_unverified_cleanup_as_failure(tmp_path: Path) -> None:
     env["FAKE_DELETE_FAIL"] = "true"
     control_dir = tmp_path / "control"
     control_dir.mkdir(mode=0o700)
+    control_dir.chmod(0o700)
     ready_file = control_dir / "ready"
     state_file = control_dir / "state.json"
     process = subprocess.Popen(
