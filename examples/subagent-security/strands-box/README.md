@@ -84,6 +84,12 @@ It installs the shared Python dependency lock with hashes and pins the Python im
 | Python base image | `3.13-slim-bookworm`, digest in [versions.json](versions.json) |
 | Strands Agents, boto3, Pydantic | `1.63.0`, `1.43.118`, `2.14.1`. Complete [shared lock](../analyst/requirements.txt) |
 
+`strands-agents` 1.63.0 is what the lock installs. The walkthrough output on this page was
+recorded on 1.62.0, before a security advisory in `mcp`, which arrives only as a transitive
+dependency of `strands-agents`, moved the lock to the release that can take the fix. The
+Strands API this blueprint uses is the same in both, and the page has not been run again
+since.
+
 The final analyst and supplier images differ from the Python base image.
 Their tested digests identify the complete images used in the walkthrough.
 
