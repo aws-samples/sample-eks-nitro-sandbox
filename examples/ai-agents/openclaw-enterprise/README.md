@@ -117,7 +117,7 @@ The blueprint layers these controls:
 |---|---|---|
 | Compute | The fail-closed admission chain verifies the OCE controller lineage and expected pod shape, then sets `runtimeClassName: isolated-sandbox`. Each admitted runtime gets its own Nitro sandbox VM, kernel, and memory boundary. | The OCE control plane and EKS cluster remain shared. |
 | Storage | The adapter derives the expected PVC from the gateway identity and rejects another claim. Each runtime mounts its own persistent volume. | The OCE database is shared and is outside the runtime storage boundary. |
-| Network | The blueprint adds exact outbound rules from OCE gateway pods to the EKS DNS address and private AgentGateway Service address. These rules provide only the private service connectivity this topology needs. | The cluster network remains shared. Add tenant network isolation separately. Native OCE support for private model services would remove the operator-owned AgentGateway rule. |
+| Network | The blueprint permits the EKS DNS address, Kubernetes API Service address on TCP 443, and private AgentGateway Service address. These are the control and model paths OCE needs. | The cluster network remains shared. Add tenant network isolation separately. Native OCE support for private model services would remove the operator-owned AgentGateway rule. |
 | AWS identity | Tenant runtimes receive no EKS Pod Identity association, IRSA annotation, common AWS credential variables, or unapproved credential-capable mounts. | AgentGateway alone has a shared IAM role for the configured Bedrock model. |
 | OCE authorization | Each validator identity receives `read` permission on only its own OCE namespace and agent. The live test requires same-tenant success and cross-tenant HTTP `403` responses. | A compromised OCE control plane or copied bearer key is outside this boundary. |
 
@@ -1347,9 +1347,10 @@ TODO: output from the fresh run
   different revision needs a new compatibility review and live validation.
   Harness credentials may select only `ANTHROPIC_API_KEY`,
   `OCE_MODEL_API_KEY`, or `OPENAI_API_KEY`.
-- The blueprint adds only the exact EKS DNS and private AgentGateway Service
-  routes required by OCE gateway pods. It does not provide general tenant
-  network isolation. Add that boundary with the
+- The blueprint permits only the EKS DNS route, the Kubernetes API Service
+  `/32` on TCP 443, and the private AgentGateway Service route required by OCE
+  gateway pods. It does not provide general tenant network isolation. Add that
+  boundary with the
   [dedicated network-policy sample](../../isolation/network-policy/README.md).
   DNS egress permits name resolution; it is not DNS content filtering. For
   hostile workloads, add Route 53 Resolver DNS Firewall and query logging, or

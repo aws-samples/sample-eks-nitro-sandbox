@@ -442,11 +442,34 @@ bootstrap_handoff_contract_matches() {
       and .metadata.namespace == $namespace
       and (.metadata.generateName // "") == ""
       and (.metadata.ownerReferences // []) == []
-      and .metadata.labels == {
-        "app.kubernetes.io/managed-by": $owner,
-        "app.kubernetes.io/part-of": $owner,
-        "app.kubernetes.io/component": "bootstrap-handoff"
-      }
+      and .metadata.labels["app.kubernetes.io/managed-by"] == $owner
+      and .metadata.labels["app.kubernetes.io/part-of"] == $owner
+      and .metadata.labels["app.kubernetes.io/component"]
+        == "bootstrap-handoff"
+      and (
+        (.metadata.labels | keys) - [
+          "app.kubernetes.io/managed-by",
+          "app.kubernetes.io/part-of",
+          "app.kubernetes.io/component",
+          "topology.kubernetes.io/region",
+          "topology.kubernetes.io/zone"
+        ]
+        | length == 0
+      )
+      and (
+        (.metadata.labels | has("topology.kubernetes.io/region") | not)
+        or (
+          .metadata.labels["topology.kubernetes.io/region"]
+          | type == "string" and length > 0
+        )
+      )
+      and (
+        (.metadata.labels | has("topology.kubernetes.io/zone") | not)
+        or (
+          .metadata.labels["topology.kubernetes.io/zone"]
+          | type == "string" and length > 0
+        )
+      )
       and .metadata.annotations[
         "openclaw.dev/bootstrap-handoff-receipt"
       ] == $receipt

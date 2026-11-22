@@ -459,7 +459,30 @@ case "$1" in
     if [[ -z "$attempt" && -f "$TEST_KUBE_STATE/release-attempt" ]]; then
       attempt=$(<"$TEST_KUBE_STATE/release-attempt")
     fi
-    printf '{"installation":{"attemptId":"%s"}}\n' "$attempt"
+    case "${TEST_HELM_VALUES_LAYOUT:-current}" in
+      current)
+        printf '{"installation":{"attemptId":"%s"}}\n' "$attempt"
+        ;;
+      legacy)
+        printf '{"installationAttempt":"%s"}\n' "$attempt"
+        ;;
+      dual)
+        printf \
+          '{"installation":{"attemptId":"%s"},"installationAttempt":"%s"}\n' \
+          "$attempt" "$attempt"
+        ;;
+      conflict)
+        printf \
+          '{"installation":{"attemptId":"%s"},"installationAttempt":"other"}\n' \
+          "$attempt"
+        ;;
+      missing)
+        printf '{}\n'
+        ;;
+      *)
+        exit 2
+        ;;
+    esac
     ;;
   template) printf '%s\n' 'apiVersion: v1' 'kind: List' 'items: []' ;;
   *) exit 2 ;;
@@ -493,7 +516,7 @@ require_delete_preconditions() {
   fi
 }
 handoff_pod_json() {
-  local receipt owner image extra_container
+  local receipt owner image extra_container topology_labels extra_label
   receipt=${TEST_POD_RECEIPT:-}
   if [[ -z "$receipt" && -f "$TEST_KUBE_STATE/pod-receipt" ]]; then
     receipt=$(<"$TEST_KUBE_STATE/pod-receipt")
@@ -501,6 +524,8 @@ handoff_pod_json() {
   owner=${TEST_POD_OWNER:-openclaw-enterprise-blueprint}
   image=${TEST_POD_IMAGE:-example/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
   extra_container=${TEST_POD_EXTRA_CONTAINER:-false}
+  topology_labels=${TEST_POD_TOPOLOGY_LABELS:-false}
+  extra_label=${TEST_POD_EXTRA_LABEL:-}
   jq -cn \
     --arg uid "${TEST_POD_UID:-uid-bootstrap-pod}" \
     --arg resource_version "${TEST_POD_RESOURCE_VERSION:-103}" \
@@ -508,6 +533,8 @@ handoff_pod_json() {
     --arg owner "$owner" \
     --arg image "$image" \
     --arg extra_container "$extra_container" \
+    --arg topology_labels "$topology_labels" \
+    --arg extra_label "$extra_label" \
     '{
       metadata: {
         name: "oce-sample-bootstrap-handoff",
@@ -563,6 +590,17 @@ handoff_pod_json() {
         name: "sidecar",
         image: "example/attacker:latest"
       }]
+      else .
+      end
+    | if $topology_labels == "true"
+      then .metadata.labels += {
+        "topology.kubernetes.io/region": "us-west-2",
+        "topology.kubernetes.io/zone": "us-west-2b"
+      }
+      else .
+      end
+    | if $extra_label != ""
+      then .metadata.labels["example.test/unexpected"] = $extra_label
       else .
       end'
 }
@@ -1345,6 +1383,45 @@ def test_resume_rejects_helm_attempt_mismatching_receipt(tmp_path: Path) -> None
     assert (tmp_path / "calls.log").read_text().count("occ installation install") == 1
 
 
+@pytest.mark.parametrize("layout", ["legacy", "dual"])
+def test_resume_accepts_supported_helm_attempt_layouts(
+    tmp_path: Path,
+    layout: str,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"  # pragma: allowlist secret -- test-only fault injection
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    assert run_script(*args, env=env).returncode != 0
+    env["TEST_HELM_VALUES_LAYOUT"] = layout
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode == 0, retry.stderr
+    assert (tmp_path / "calls.log").read_text().count(
+        "occ installation install"
+    ) == 1
+
+
+def test_resume_rejects_conflicting_helm_attempt_layouts(
+    tmp_path: Path,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"  # pragma: allowlist secret -- test-only fault injection
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    assert run_script(*args, env=env).returncode != 0
+    env["TEST_HELM_VALUES_LAYOUT"] = "conflict"
+    calls_before_retry = (tmp_path / "calls.log").read_text()
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode != 0
+    assert "has no OCC installation attempt" in retry.stderr
+    assert (tmp_path / "calls.log").read_text().count(
+        "occ installation install"
+    ) == calls_before_retry.count("occ installation install")
+    assert (Path(env["TEST_KUBE_STATE"]) / "pod-live").is_file()
+
+
 def test_undispatched_receipt_requires_a_new_receipt_directory(
     tmp_path: Path,
 ) -> None:
@@ -1455,6 +1532,7 @@ def test_retry_rejects_replaced_handoff_pod_uid(tmp_path: Path) -> None:
     [
         ("TEST_POD_RECEIPT", "c" * 64),
         ("TEST_POD_EXTRA_CONTAINER", "true"),
+        ("TEST_POD_EXTRA_LABEL", "unexpected"),
         (
             "TEST_POD_IMAGE",
             "example/other@sha256:" + "d" * 64,
@@ -1487,6 +1565,22 @@ def test_retry_rejects_tampered_handoff_pod(
         calls_before_retry.count("exec pod/oce-sample-bootstrap-handoff")
     )
     assert (Path(env["TEST_KUBE_STATE"]) / "pod-live").is_file()
+
+
+def test_retry_accepts_cluster_added_topology_labels(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_FAIL_PASSWORD_READ_ONCE"] = "true"  # pragma: allowlist secret -- test-only fault injection
+    args = _base_args(tmp_path, source, kubeconfig, occ)
+    first = run_script(*args, env=env)
+    assert first.returncode != 0
+    env["TEST_POD_TOPOLOGY_LABELS"] = "true"
+
+    retry = run_script(*args, env=env)
+
+    assert retry.returncode == 0, retry.stderr
+    assert (tmp_path / "calls.log").read_text().count(
+        "occ installation install"
+    ) == 1
 
 
 def test_retry_rejects_replaced_job_identity_before_delete(tmp_path: Path) -> None:

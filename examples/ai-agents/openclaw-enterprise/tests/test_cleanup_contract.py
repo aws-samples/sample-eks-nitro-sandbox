@@ -402,7 +402,26 @@ def helm():
         print(json.dumps([{"name": "oce"}] if state["helm"] else []))
         return
     if command[:2] == ["get", "values"]:
-        print(json.dumps({"installation": {"attemptId": state["attempt"]}}))
+        layout = state.get("helmValuesLayout", "current")
+        if layout == "current":
+            values = {"installation": {"attemptId": state["attempt"]}}
+        elif layout == "legacy":
+            values = {"installationAttempt": state["attempt"]}
+        elif layout == "dual":
+            values = {
+                "installation": {"attemptId": state["attempt"]},
+                "installationAttempt": state["attempt"],
+            }
+        elif layout == "conflict":
+            values = {
+                "installation": {"attemptId": state["attempt"]},
+                "installationAttempt": "other",
+            }
+        elif layout == "missing":
+            values = {}
+        else:
+            raise SystemExit("unsupported Helm values layout")
+        print(json.dumps(values))
         return
     if command[:2] == ["uninstall", "oce"]:
         changed = state["helm"]
@@ -548,6 +567,7 @@ def _base_state(kubeconfig: Path) -> dict[str, Any]:
         "cluster": CLUSTER,
         "kubeconfig": str(kubeconfig),
         "attempt": ATTEMPT,
+        "helmValuesLayout": "current",
         "helm": True,
         "mutations": 0,
         "killAfterFreezeCreate": None,
@@ -1034,6 +1054,41 @@ def test_all_created_resources_are_deleted_and_second_run_is_idempotent(
     second = _run(command, env)
     assert second.returncode == 0, second.stderr
     assert _state(env)["mutations"] == mutation_count
+
+
+@pytest.mark.parametrize("layout", ["legacy", "dual"])
+def test_cleanup_accepts_supported_helm_attempt_layouts(
+    tmp_path: Path,
+    layout: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["helmValuesLayout"] = layout
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["helm"] is False
+    assert current["resources"] == {}
+
+
+def test_cleanup_rejects_conflicting_helm_attempt_layouts_before_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["helmValuesLayout"] = "conflict"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: live Helm release does not match the OCC receipt attempt.\n"
+    )
+    assert _state(env)["mutations"] == 0
 
 
 def test_helm_rbac_ownership_mismatch_fails_before_any_mutation(
