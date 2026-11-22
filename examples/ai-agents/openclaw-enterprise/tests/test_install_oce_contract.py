@@ -141,6 +141,7 @@ def test_static_install_contract_is_pinned_and_closed() -> None:
 def test_validation_postgres_is_explicitly_disposable_and_owned() -> None:
     documents = list(yaml.safe_load_all(POSTGRES.read_text()))
     assert [document["kind"] for document in documents] == [
+        "PersistentVolumeClaim",
         "Deployment",
         "Service",
     ]
@@ -152,7 +153,14 @@ def test_validation_postgres_is_explicitly_disposable_and_owned() -> None:
             == "openclaw-enterprise-blueprint"
         )
         assert metadata["annotations"]["openclaw.dev/validation-only"] == "true"
-    deployment = documents[0]
+    claim = documents[0]
+    assert (
+        claim["spec"]["storageClassName"]
+        == "__OCE_VALIDATION_POSTGRES_STORAGE_CLASS__"
+    )
+    assert claim["spec"]["accessModes"] == ["ReadWriteOnce"]
+    assert claim["spec"]["resources"]["requests"]["storage"] == "2Gi"
+    deployment = documents[1]
     pod_spec = deployment["spec"]["template"]["spec"]
     assert pod_spec["automountServiceAccountToken"] is False
     postgres = pod_spec["containers"][0]
@@ -169,15 +177,16 @@ def test_validation_postgres_is_explicitly_disposable_and_owned() -> None:
     assert bootstrap["secret"]["items"] == [
         {"key": "init.sql", "path": "10-openclaw-roles.sql"}
     ]
-    assert pod_spec["volumes"][0]["emptyDir"]["sizeLimit"] == "2Gi"
-    assert "persistentVolumeClaim" not in POSTGRES.read_text()
+    assert pod_spec["volumes"][0]["persistentVolumeClaim"] == {
+        "claimName": "oce-validation-only-postgres"
+    }
 
 
 def test_help_names_validation_database_limit() -> None:
     result = run_script("--help")
     assert result.returncode == 0
     assert PIN in result.stdout
-    assert "emptyDir" in result.stdout
+    assert "EBS-backed" in result.stdout
     assert "never production" in result.stdout
     assert "exact tag key Environment" in result.stdout
     assert "value validation (value matching is case-insensitive)" in result.stdout

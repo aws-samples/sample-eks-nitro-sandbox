@@ -1019,6 +1019,40 @@ def _add_tenant_storage(env: dict[str, str], namespace: str) -> None:
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
 
 
+def _add_validation_database_storage(env: dict[str, str]) -> None:
+    state = _state(env)
+    state["pvcs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": "oce-validation-only-postgres",
+            "namespace": SYSTEM_NAMESPACE,
+            "uid": "uid-pvc-validation-postgres",
+        },
+        "spec": {
+            "storageClassName": STORAGE_CLASS,
+            "volumeName": "pv-validation-postgres",
+        },
+    })
+    state["pvs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {
+            "name": "pv-validation-postgres",
+            "uid": "uid-pv-validation-postgres",
+        },
+        "spec": {
+            "storageClassName": STORAGE_CLASS,
+            "claimRef": {
+                "name": "oce-validation-only-postgres",
+                "namespace": SYSTEM_NAMESPACE,
+                "uid": "uid-pvc-validation-postgres",
+            },
+        },
+    })
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
 def _mutate_tenant_namespace_on_discovery(
     env: dict[str, str],
     *,
@@ -1054,6 +1088,24 @@ def test_all_created_resources_are_deleted_and_second_run_is_idempotent(
     second = _run(command, env)
     assert second.returncode == 0, second.stderr
     assert _state(env)["mutations"] == mutation_count
+
+
+def test_cleanup_removes_validation_database_storage_with_system_namespace(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    _add_validation_database_storage(env)
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["pvcs"] == []
+    assert current["pvs"] == []
+    assert (
+        f"storageclass.storage.k8s.io/{STORAGE_CLASS}"
+        not in current["resources"]
+    )
 
 
 @pytest.mark.parametrize("layout", ["legacy", "dual"])

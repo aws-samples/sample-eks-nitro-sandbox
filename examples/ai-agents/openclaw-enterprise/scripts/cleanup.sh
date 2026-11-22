@@ -1774,12 +1774,17 @@ class Cleanup:
                 )
                 if not preserve_gateway and receipt["created"]:
                     region_config_map = live_region_config_map
-        deleting_tenants = (
+        deleting_namespaces = [
+            plan["metadata"]["name"] for plan in plans if plan
+        ]
+        if agw_plan:
+            deleting_namespaces.append(agw_plan["metadata"]["name"])
+        deleting_namespaces.extend(
             [item["name"] for item in tenant_targets]
             if self.a.delete_tenant_data
             else []
         )
-        storage = self.validate_storage(deleting_tenants)
+        storage = self.validate_storage(deleting_namespaces)
 
         if self.a.delete_tenant_data:
             # Keep the tenant freeze active until the exact namespace UIDs and

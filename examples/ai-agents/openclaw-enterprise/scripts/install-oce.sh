@@ -7,6 +7,7 @@ readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff" # pragma: all
 readonly OCE_MODULE="github.com/openclaw/openclaw-enterprise"
 readonly OWNER_LABEL="openclaw-enterprise-blueprint"
 readonly VALIDATION_POSTGRES_TOKEN="__OCE_VALIDATION_POSTGRES_IMAGE__"
+readonly VALIDATION_POSTGRES_STORAGE_TOKEN="__OCE_VALIDATION_POSTGRES_STORAGE_CLASS__"
 readonly VALIDATION_CLUSTER_TAG_KEY="Environment"
 readonly VALIDATION_CLUSTER_TAG_VALUE="validation"
 readonly VALIDATION_POSTGRES_MIN_SERVER_VERSION_NUM=170000
@@ -46,8 +47,9 @@ usage() {
     'Direct Pod API clients, browser gateway routing, and agent native administration' \
     'are disabled.' \
     '' \
-    '--validation-postgres creates a disposable, single-Pod PostgreSQL database with' \
-    'emptyDir storage. The EKS cluster must have the exact tag key Environment with' \
+    '--validation-postgres creates a single-Pod PostgreSQL database on the encrypted' \
+    'EBS-backed --runtime-storage-class. Cleanup deletes its claim and Delete-policy' \
+    'volume. The EKS cluster must have the exact tag key Environment with' \
     'value validation (value matching is case-insensitive). Production-tagged clusters' \
     'are rejected. The image must run PostgreSQL 17 or later; the README pins the' \
     'OCE-qualified PostgreSQL 18.6 baseline. This mode is only for installation' \
@@ -1369,7 +1371,7 @@ normalize_hex_secret "generated auth secret" "$auth_secret_value" 64
 
 validation_manifest="$state_dir/oce-validation-postgres.yaml"
 if [[ "$validation_postgres" == true ]]; then
-  printf 'WARNING: using disposable validation-only PostgreSQL with emptyDir storage.\n' >&2
+  printf 'WARNING: using single-instance, validation-only PostgreSQL on sample-managed EBS storage.\n' >&2
   validation_password="$state_dir/validation-postgres-password"
   validation_migration_password="$state_dir/validation-postgres-migration-password"
   validation_app_password="$state_dir/validation-postgres-app-password"
@@ -1432,11 +1434,16 @@ data:
   validation_template="$script_root/deploy/oce-validation-postgres.yaml"
   [[ -f "$validation_template" ]] ||
     die "missing validation PostgreSQL manifest $validation_template."
-  sed "s|$VALIDATION_POSTGRES_TOKEN|$validation_postgres_image|g" \
+  sed \
+    -e "s|$VALIDATION_POSTGRES_TOKEN|$validation_postgres_image|g" \
+    -e "s|$VALIDATION_POSTGRES_STORAGE_TOKEN|$runtime_storage_class|g" \
     "$validation_template" >"$validation_manifest"
   chmod 600 "$validation_manifest"
-  grep -Fq "$VALIDATION_POSTGRES_TOKEN" "$validation_manifest" &&
-    die "validation PostgreSQL image placeholder was not replaced."
+  if grep -Fq "$VALIDATION_POSTGRES_TOKEN" "$validation_manifest" ||
+    grep -Fq "$VALIDATION_POSTGRES_STORAGE_TOKEN" "$validation_manifest"; then
+    die "validation PostgreSQL manifest placeholders were not replaced."
+  fi
+  resource_is_owned persistentvolumeclaim oce-validation-only-postgres || true
   resource_is_owned deployment oce-validation-only-postgres || true
   resource_is_owned service oce-validation-only-postgres || true
   "${KUBE[@]}" --namespace "$namespace" apply \

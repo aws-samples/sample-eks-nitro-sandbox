@@ -115,7 +115,7 @@ The blueprint layers these controls:
 
 | Boundary | How the blueprint enforces it | Remaining shared boundary |
 |---|---|---|
-| Compute | The fail-closed admission chain verifies the OCE controller lineage and expected pod shape, then sets `runtimeClassName: isolated-sandbox`. Each admitted runtime gets its own Nitro sandbox VM, kernel, and memory boundary. | The OCE control plane and EKS cluster remain shared. |
+| Compute | The fail-closed admission chain verifies the OCE controller lineage and expected pod shape, then sets `runtimeClassName: isolated-sandbox`. Each admitted runtime gets its own Nitro sandbox, kernel, and memory boundary. | The OCE control plane and EKS cluster remain shared. |
 | Storage | The adapter derives the expected PVC from the gateway identity and rejects another claim. Each runtime mounts its own persistent volume. | The OCE database is shared and is outside the runtime storage boundary. |
 | Network | The blueprint permits the EKS DNS address, Kubernetes API Service address on TCP 443, and private AgentGateway Service address. These are the control and model paths OCE needs. | The cluster network remains shared. Add tenant network isolation separately. Native OCE support for private model services would remove the operator-owned AgentGateway rule. |
 | AWS identity | Tenant runtimes receive no EKS Pod Identity association, IRSA annotation, common AWS credential variables, or unapproved credential-capable mounts. | AgentGateway alone has a shared IAM role for the configured Bedrock model. |
@@ -813,11 +813,13 @@ done < <(
   --validation-postgres-image "$OCE_VALIDATION_POSTGRES_IMAGE"
 ```
 
-This optional database is a single validation-only PostgreSQL 18.6 pod with
-`emptyDir` storage. Its data disappears when the pod or system namespace is
-removed. The installer creates separate least-privilege application and
-migration roles, then checks the PostgreSQL version and role contract before it
-dispatches the OCE installation.
+This optional database is a single validation-only PostgreSQL 18.6 pod backed
+by an encrypted `gp3` Amazon EBS volume. The data survives pod replacement.
+The sample cleanup deletes the claim and its `Delete`-policy volume with the
+system namespace. This is not a highly available or backed-up database. The
+installer creates separate least-privilege application and migration roles,
+then checks the PostgreSQL version and role contract before it dispatches the
+OCE installation.
 
 For an external database, omit the two validation flags and provide protected
 application URL, migration URL, and CA files plus at least one exact database

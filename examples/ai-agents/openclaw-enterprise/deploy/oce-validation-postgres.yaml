@@ -1,5 +1,27 @@
-# Disposable installation-validation fixture. This intentionally uses emptyDir
-# and a conspicuous name. It is not a production database.
+# Installation-validation fixture. This uses an encrypted EBS-backed claim so
+# data survives Pod replacement. The sample cleanup removes the claim and its
+# Delete-policy volume; this remains a single-instance, non-production database.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oce-validation-only-postgres
+  labels:
+    app.kubernetes.io/name: oce-validation-only-postgres
+    app.kubernetes.io/instance: validation-only
+    app.kubernetes.io/component: validation-only-database
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+    app.kubernetes.io/part-of: openclaw-enterprise-blueprint
+  annotations:
+    openclaw.dev/validation-only: "true"
+    openclaw.dev/data-durability: "pod-replacement-only"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: __OCE_VALIDATION_POSTGRES_STORAGE_CLASS__
+  resources:
+    requests:
+      storage: 2Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,7 +34,7 @@ metadata:
     app.kubernetes.io/part-of: openclaw-enterprise-blueprint
   annotations:
     openclaw.dev/validation-only: "true"
-    openclaw.dev/data-durability: "none-emptydir"
+    openclaw.dev/data-durability: "pod-replacement-only"
 spec:
   replicas: 1
   selector:
@@ -95,8 +117,8 @@ spec:
               mountPath: /tmp
       volumes:
         - name: data
-          emptyDir:
-            sizeLimit: 2Gi
+          persistentVolumeClaim:
+            claimName: oce-validation-only-postgres
         - name: bootstrap
           secret:
             secretName: oce-validation-only-postgres # pragma: allowlist secret -- Kubernetes Secret name
