@@ -394,7 +394,7 @@ node role eksctl-nitro-cilium-bottlerocket-n-NodeInstanceRole-<SUFFIX_2> (system
   [PASS] the only Pod Identity association is kube-system/cilium-operator
 ```
 
-`test.sh` prints these lines in its step 6, when both node groups exist. The output shows
+When both node groups exist, `test.sh` prints these lines in its step 6. The output shows
 the Pod Identity association of `cilium-operator`, and the policies of the two node roles.
 
 **Step 5: Before you add the system node, install Cilium.** Helm installs Cilium 1.20.5 before a
@@ -601,7 +601,7 @@ tag audit: 39 resources in 35 classes, each with both tags
 The system node <SYSTEM_NODE> and the Cilium operator are healthy. The AMI build can start.
 ```
 
-To see the Cilium operator pod, run this command:
+Run this command to see the Cilium operator pod:
 
 ```bash
 kubectl --context cb-<RUN_ID> -n kube-system get pods -o wide -l io.cilium/app=operator,name=cilium-operator
@@ -1669,7 +1669,7 @@ actions. Some rows name a tag to identify the resources of the run. The scripts 
 
 | Principal | Resource | Actions |
 |---|---|---|
-| Cluster creator | The account, and the four VPC and EC2 quotas that `setup.sh` reads | `sts:GetCallerIdentity`, `servicequotas:GetServiceQuota`, `autoscaling:DescribeAutoScalingGroups`, `ec2:DescribeAvailabilityZones`, `ec2:DescribeVpcs`, `ec2:DescribeVpcAttribute`, `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`, `ec2:DescribeNetworkAcls`, `ec2:DescribeInternetGateways`, `ec2:DescribeNatGateways`, `ec2:DescribeAddresses`, `ec2:DescribeSecurityGroups`, `ec2:DescribeSecurityGroupRules`, `ec2:DescribeNetworkInterfaces`, `ec2:DescribeVpcEndpoints`, `ec2:DescribeInstances`, `ec2:DescribeVolumes`, `ec2:DescribeInstanceTypes`, `ec2:DescribeImages`, `ec2:DescribeImageAttribute`, `ec2:DescribeSnapshots`, `ec2:DescribeLaunchTemplates`, `ec2:DescribeLaunchTemplateVersions`. Also `iam:GetAccountSummary`, which CloudFormation calls with these credentials when it creates the IAM roles of the eksctl stacks. |
+| Cluster creator | The account, and the four VPC and EC2 quotas that `setup.sh` reads | `sts:GetCallerIdentity`, `servicequotas:GetServiceQuota`, `autoscaling:DescribeAutoScalingGroups`, `ec2:DescribeAvailabilityZones`, `ec2:DescribeVpcs`, `ec2:DescribeVpcAttribute`, `ec2:DescribeSubnets`, `ec2:DescribeRouteTables`, `ec2:DescribeNetworkAcls`, `ec2:DescribeInternetGateways`, `ec2:DescribeNatGateways`, `ec2:DescribeAddresses`, `ec2:DescribeSecurityGroups`, `ec2:DescribeSecurityGroupRules`, `ec2:DescribeNetworkInterfaces`, `ec2:DescribeVpcEndpoints`, `ec2:DescribeInstances`, `ec2:DescribeVolumes`, `ec2:DescribeInstanceTypes`, `ec2:DescribeImages`, `ec2:DescribeImageAttribute`, `ec2:DescribeSnapshots`, `ec2:DescribeLaunchTemplates`, `ec2:DescribeLaunchTemplateVersions`. CloudFormation also calls `iam:GetAccountSummary` with these credentials when it creates the IAM roles of the eksctl stacks. |
 | Cluster creator | All the CloudFormation stacks of the Region. The tag audit reads them all, then keeps the stacks of the cluster. | `cloudformation:DescribeStacks` with no stack name, `cloudformation:ListStacks` |
 | Cluster creator | The public SSM parameter of the Bottlerocket `aws-k8s-1.36` v1.70.0 AMI | `ssm:GetParameter` |
 | Cluster creator | The CloudFormation stacks `eksctl-<CLUSTER_NAME>-*` | `cloudformation:CreateStack`, `cloudformation:DescribeStacks`, `cloudformation:DescribeStackResources`, `cloudformation:GetTemplate` |
@@ -1704,7 +1704,7 @@ actions. Some rows name a tag to identify the resources of the run. The scripts 
 | Cleaner | The CloudFormation stacks `eksctl-<CLUSTER_NAME>-*` | `cloudformation:DescribeStacks`, `cloudformation:DescribeStackEvents`, `cloudformation:UpdateTerminationProtection`, `cloudformation:DeleteStack` |
 | Cleaner | The VPC objects that CloudFormation deletes with the eksctl stacks | `ec2:DeleteNatGateway`, `ec2:DisassociateAddress`, `ec2:ReleaseAddress`, `ec2:DetachInternetGateway`, `ec2:DeleteInternetGateway`, `ec2:DeleteRoute`, `ec2:DisassociateRouteTable`, `ec2:DeleteRouteTable`, `ec2:DeleteSubnet`, `ec2:RevokeSecurityGroupIngress`, `ec2:RevokeSecurityGroupEgress`, `ec2:DeleteSecurityGroup`, `ec2:DeleteVpc` |
 | Cleaner | The builder role, the role `<CLUSTER_NAME>-cilium-operator` and the roles `eksctl-<CLUSTER_NAME>-*` | `iam:GetRole`, `iam:ListRoleTags`, `iam:ListAttachedRolePolicies`, `iam:ListRolePolicies`, `iam:DetachRolePolicy`, `iam:DeleteRolePolicy`, `iam:DeleteRole` |
-| Cleaner | The IAM OIDC providers of the account. `clean.sh` lists the IAM OIDC providers to find one whose URL matches the OIDC issuer of the cluster. If it finds one, it keeps the cluster. `eksctl delete cluster` reads the provider of the cluster issuer. | `iam:ListOpenIDConnectProviders`, `iam:GetOpenIDConnectProvider` |
+| Cleaner | The IAM OIDC providers of the account. `clean.sh` lists the IAM OIDC providers to find one whose URL matches the OIDC issuer of the cluster. If it finds one, it keeps the cluster. `eksctl delete cluster` tries to read the IAM OIDC provider for the OIDC issuer of the cluster. | `iam:ListOpenIDConnectProviders`, `iam:GetOpenIDConnectProvider` |
 | Cleaner | The builder instance profile `<CLUSTER_NAME>-<RUN_ID>-builder` | `iam:GetInstanceProfile`, `iam:ListInstanceProfileTags`, `iam:RemoveRoleFromInstanceProfile`, `iam:DeleteInstanceProfile` |
 
 The node roles are not principals of the blueprint. Each node role has only the AWS managed
@@ -1774,7 +1774,7 @@ assertions passed. `clean.sh` took 16 min 15 s. The resources of the run cost US
 | **Total** | | | **1.19** |
 ```
 
-The cost uses these `us-west-2` on-demand list prices in USD:
+The cost calculation uses these `us-west-2` on-demand list prices in USD:
 
 - EKS control plane: 0.10 for each hour.
 - NAT gateway: 0.045 for each hour, and 0.045 for each GB of data.
@@ -1782,8 +1782,8 @@ The cost uses these `us-west-2` on-demand list prices in USD:
 - `m8i.xlarge`: 0.21168 for each hour. `m8i.4xlarge`: 0.84672 for each hour.
 - gp3 volumes: 0.08 for each GiB-month. Snapshots: 0.05 for each GB-month.
 
-The times come from the script logs, and each time is an upper bound by a few minutes. The
-NAT data comes from CloudWatch.
+The script logs give the time ranges in the table. Each range can be a few minutes longer
+than the time that the resource existed. CloudWatch gives the NAT data.
 
 Some resources continue to cost money after a failed build or a failed setup. After a
 failure, run `./clean.sh` immediately. After a failed AMI build, you can also build again in
@@ -2019,8 +2019,9 @@ A Service of type LoadBalancer, an Ingress or a Gateway in any namespace also ke
 cluster. eksctl deletes the AWS load balancers of these objects, and the blueprint makes none.
 
 Apart from the IAM OIDC provider, an object of this list is a resource of the run when it has
-the tags of the run. EKS makes three kinds of access entry with no tag. `clean.sh` counts such
-an entry as a resource of the run only by its exact principal ARN, in these cases:
+the tags of the run. EKS makes three kinds of access entry with no tag. `clean.sh` uses the
+exact principal ARN to count such an entry as a resource of the run. It counts the entry only
+in these cases:
 
 - The entry of the cluster creator: only when its principal is the ARN of the IAM role or user
   that runs `clean.sh`. When another role or user runs `clean.sh`, this entry is not a
@@ -2036,7 +2037,7 @@ an entry as a resource of the run only by its exact principal ARN, in these case
   EKS creates this entry with the cluster and deletes it with the cluster. The blueprint never
   creates this entry, and no caller can create it. The Amazon EKS User Guide,
   [*Create access entries*](https://docs.aws.amazon.com/eks/latest/userguide/creating-access-entries.html),
-  says that access entries do not support service-linked roles.
+  says that a caller cannot create an access entry whose principal ARN is a service-linked role.
 
 `clean.sh` keeps the cluster for a node role entry in these cases:
 
