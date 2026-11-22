@@ -1009,6 +1009,14 @@ def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:
     assert (
         '"patchSha256": os.environ["OPENCLAW_DEPENDENCY_PATCH_SHA256"]' in script
     )
+    assert 'NPM_RUNTIME_VERSION="11.21.3"' in script
+    assert (
+        'NPM_RUNTIME_ARCHIVE_SHA256="'
+        "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"
+        '"' in script
+    )
+    assert '"runtimePackages": [' in script
+    assert '"version": os.environ["NPM_RUNTIME_VERSION"]' in script
 
 
 def test_build_script_checks_bash_four_before_using_mapfile() -> None:
@@ -1680,9 +1688,11 @@ def _create_fake_oce_source(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
         encoding="utf-8",
     )
     (runtime_dir / "Dockerfile").write_text(
-        """FROM scratch
+        """FROM node-build-base AS node-source
 # Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
 # which writes provenance; runtime-assets.test.mjs compares the two.
+FROM node-runtime-base AS runtime
+
 """,
         encoding="utf-8",
     )
@@ -1770,6 +1780,21 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     )
     assert (
         "ec982d8627084f2f0fba0c09a073aa79d028cee9a1cbe07d09a47740e17449ea"
+        in dockerfile
+    )
+    assert "FROM node-build-base AS npm-runtime" in dockerfile
+    assert "npm-11.21.3.tgz" in dockerfile
+    assert (
+        "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"
+        in dockerfile
+    )
+    assert 'require("/out/node_modules/undici/package.json").version' in dockerfile
+    assert "RUN rm -rf /usr/local/lib/node_modules/npm" in dockerfile
+    assert "COPY --from=npm-runtime /out/ /usr/local/lib/node_modules/npm/" in (
+        dockerfile
+    )
+    assert (
+        'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version'
         in dockerfile
     )
     runtime_assets = (
@@ -1898,6 +1923,38 @@ def test_oce_security_patcher_fails_closed_on_openclaw_source_drift(
         / "runtime"
         / "openclaw-mailauth-security-overrides.patch"
     ).exists()
+
+
+def test_oce_security_patcher_fails_closed_on_runtime_dockerfile_drift(
+    tmp_path: pathlib.Path,
+) -> None:
+    oce_source, revision = _create_fake_oce_source(tmp_path)
+    dockerfile = oce_source / "deploy" / "runtime" / "Dockerfile"
+    dockerfile.write_text(
+        dockerfile.read_text(encoding="utf-8").replace(
+            "FROM node-runtime-base AS runtime",
+            "FROM node-runtime-base AS changed-runtime",
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(OCE_SECURITY_PATCHER),
+            str(oce_source),
+            revision,
+            str(OPENSSL_BACKPORT_PATCH),
+            str(OPENCLAW_DEPENDENCY_PATCH),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "runtime patch anchors changed" in result.stderr
 
 
 def _oce_lock_result(

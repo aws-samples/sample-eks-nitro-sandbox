@@ -18,6 +18,9 @@ OPENSSL_PATCH_FILE_NAME = "openssl-cve-2026-95692.patch"
 OPENSSL_PATCH_SHA256 = "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"  # pragma: allowlist secret -- public patch checksum
 OPENCLAW_PATCH_FILE_NAME = "openclaw-mailauth-security-overrides.patch"
 OPENCLAW_PATCH_SHA256 = "ec982d8627084f2f0fba0c09a073aa79d028cee9a1cbe07d09a47740e17449ea"  # pragma: allowlist secret -- reviewed patch checksum
+NPM_RUNTIME_VERSION = "11.21.3"
+NPM_RUNTIME_ARCHIVE_SHA256 = "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
+NPM_RUNTIME_UNDICI_VERSION = "6.29.1"
 EXPECTED_NODE_SOURCE: dict[str, Any] = {
     "version": "24.22.1",
     "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",  # pragma: allowlist secret -- public source revision
@@ -190,7 +193,35 @@ assets_insertion = assets_anchor + f"""  {{
     sha256: "{OPENCLAW_PATCH_SHA256}",
   }},
 """
-if dockerfile.count(docker_anchor) != 1 or runtime_assets.count(assets_anchor) != 1:
+npm_stage_anchor = "FROM node-build-base AS node-source\n"
+npm_stage_insertion = f"""FROM node-build-base AS npm-runtime
+RUN --mount=type=secret,id=build-ca,required=false \\
+    set -eu; \\
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \\
+    curl --fail --location --no-progress-meter --retry 6 --retry-all-errors \\
+      https://registry.npmjs.org/npm/-/npm-{NPM_RUNTIME_VERSION}.tgz -o /tmp/npm.tgz; \\
+    echo '{NPM_RUNTIME_ARCHIVE_SHA256}  /tmp/npm.tgz' | sha256sum --check --strict; \\
+    mkdir /out; \\
+    tar -xzf /tmp/npm.tgz --strip-components=1 -C /out; \\
+    rm /tmp/npm.tgz; \\
+    test "$(node /out/bin/npm-cli.js --version)" = "{NPM_RUNTIME_VERSION}"; \\
+    test "$(node -p 'require("/out/node_modules/undici/package.json").version')" = "{NPM_RUNTIME_UNDICI_VERSION}"
+
+{npm_stage_anchor}"""
+runtime_stage_anchor = "FROM node-runtime-base AS runtime\n\n"
+runtime_stage_insertion = runtime_stage_anchor + f"""# Replace the npm bundled by the Node base with a reviewed maintenance release.
+RUN rm -rf /usr/local/lib/node_modules/npm
+COPY --from=npm-runtime /out/ /usr/local/lib/node_modules/npm/
+RUN test "$(npm --version)" = "{NPM_RUNTIME_VERSION}" \\
+    && test "$(node -p 'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version')" = "{NPM_RUNTIME_UNDICI_VERSION}"
+
+"""
+if (
+    dockerfile.count(docker_anchor) != 1
+    or dockerfile.count(npm_stage_anchor) != 1
+    or dockerfile.count(runtime_stage_anchor) != 1
+    or runtime_assets.count(assets_anchor) != 1
+):
     fail("the OpenClaw runtime patch anchors changed; review the patch before building")
 
 openclaw_destination = (
@@ -202,7 +233,9 @@ try:
     fetch_script.write_text(patched_fetch, encoding="utf-8")
     shutil.copyfile(args.openclaw_patch, openclaw_destination)
     runtime_dockerfile.write_text(
-        dockerfile.replace(docker_anchor, docker_insertion),
+        dockerfile.replace(npm_stage_anchor, npm_stage_insertion)
+        .replace(docker_anchor, docker_insertion)
+        .replace(runtime_stage_anchor, runtime_stage_insertion),
         encoding="utf-8",
     )
     runtime_assets_script.write_text(
@@ -215,5 +248,6 @@ except OSError as error:
 print(
     "OCE security backport: applied CVE-2026-95692 patch "
     f"{OPENSSL_PATCH_SHA256} to Node {EXPECTED_NODE_SOURCE['version']}; "
-    f"applied OpenClaw dependency patch {OPENCLAW_PATCH_SHA256}"
+    f"applied OpenClaw dependency patch {OPENCLAW_PATCH_SHA256}; "
+    f"pinned npm {NPM_RUNTIME_VERSION} with undici {NPM_RUNTIME_UNDICI_VERSION}"
 )
