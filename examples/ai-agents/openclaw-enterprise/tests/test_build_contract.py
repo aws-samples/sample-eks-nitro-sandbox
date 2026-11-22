@@ -23,7 +23,7 @@ OCE_LOCK_CHECK = BUILD / "check-oce-lock.py"
 OCE_SECURITY_PATCHER = BUILD / "apply-oce-security-patches.py"
 OPENSSL_BACKPORT_PATCH = BUILD / "patches" / "openssl-cve-2026-95692.patch"
 OPENCLAW_DEPENDENCY_PATCH = (
-    BUILD / "patches" / "openclaw-mailauth-security-overrides.patch"
+    BUILD / "patches" / "openclaw-security-overrides.patch"
 )
 ADAPTER_DOCKERFILE = SAMPLE / "adapter" / "Dockerfile"
 CONTROLLER_DOCKERFILE = BUILD / "controller-runtime.Dockerfile"
@@ -1772,14 +1772,14 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     )
     runtime_dir = oce_source / "deploy" / "runtime"
     assert (
-        runtime_dir / "openclaw-mailauth-security-overrides.patch"
+        runtime_dir / "openclaw-security-overrides.patch"
     ).read_bytes() == OPENCLAW_DEPENDENCY_PATCH.read_bytes()
     dockerfile = (runtime_dir / "Dockerfile").read_text(encoding="utf-8")
     assert (
-        "git apply /tmp/openclaw-mailauth-security-overrides.patch" in dockerfile
+        "git apply /tmp/openclaw-security-overrides.patch" in dockerfile
     )
     assert (
-        "ec982d8627084f2f0fba0c09a073aa79d028cee9a1cbe07d09a47740e17449ea"  # pragma: allowlist secret -- reviewed patch checksum
+        "90a81159bfc78b6cf2596e113dac2212f02087bdf5dc5ad43ba62683952f7ad4"  # pragma: allowlist secret -- reviewed patch checksum
         in dockerfile
     )
     assert "FROM node-build-base AS npm-runtime" in dockerfile
@@ -1800,7 +1800,7 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     runtime_assets = (
         oce_source / "scripts" / "build-runtime-assets.mjs"
     ).read_text(encoding="utf-8")
-    assert 'file: "openclaw-mailauth-security-overrides.patch"' in runtime_assets
+    assert 'file: "openclaw-security-overrides.patch"' in runtime_assets
 
 
 def test_reviewed_openssl_backport_is_a_valid_git_patch(
@@ -1844,7 +1844,7 @@ def test_reviewed_openclaw_dependency_patch_is_scoped_to_the_lockfiles(
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "7\t11\tpnpm-lock.yaml\n4\t0\tpnpm-workspace.yaml\n"
+    assert result.stdout == "12\t15\tpnpm-lock.yaml\n7\t0\tpnpm-workspace.yaml\n"
 
 
 def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
@@ -1921,7 +1921,7 @@ def test_oce_security_patcher_fails_closed_on_openclaw_source_drift(
         oce_source
         / "deploy"
         / "runtime"
-        / "openclaw-mailauth-security-overrides.patch"
+        / "openclaw-security-overrides.patch"
     ).exists()
 
 

@@ -1,11 +1,12 @@
 diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
-index 30ec9d15b82..0a5542a1bcd 100644
+index 30ec9d15b82..414f522289d 100644
 --- a/pnpm-lock.yaml
 +++ b/pnpm-lock.yaml
-@@ -189,6 +189,8 @@ overrides:
+@@ -189,6 +189,9 @@ overrides:
    request-promise: npm:@cypress/request-promise@5.0.0
    basic-ftp: 6.2.3
    brace-expansion: 5.0.12
++  '@openclaw/crabline@0.1.31>re2js': 2.8.7
 +  mailauth@7.3.1>joi: 18.3.2
 +  mailauth@7.3.1>undici: 8.12.3
    source-map-js: 1.2.2
@@ -22,7 +23,18 @@ index 30ec9d15b82..0a5542a1bcd 100644
      engines: {node: '>= 20'}
  
    jose@6.2.13:
-@@ -10603,10 +10605,6 @@ packages:
+@@ -9926,8 +9929,8 @@ packages:
+     resolution: {integrity: sha512-K5zQjDllxWkf7Z5xJdV0/B0WTNqx6vxG70zJE4N0kBs4LovmEYWJzQGxC9bS9RAKu3bgM40lrd5zoLJ12MQ5BA==}
+     engines: {node: '>= 0.10'}
+ 
+-  re2js@2.8.6:
+-    resolution: {integrity: sha512-xLgQil4kIUCrAzVk9fRSkxkFNwmygLFjVxXrLc65aE1F0+Zsb8rxumFBy4XKyvgMCTL6kilDq3EZ0piE2dP/Dg==}
++  re2js@2.8.7:
++    resolution: {integrity: sha512-bRSL/vn3KAmlGfGNoVpcsBXLaVvl6AbuvMMWbz0m3vBj60nj+p2/biozfBUOSBP+5XTduF6mr6IO/ZVjmqqkVQ==}
+     engines: {node: '>=18.0.0'}
+ 
+   react-is@17.0.2:
+@@ -10603,10 +10606,6 @@ packages:
    undici-types@8.9.0:
      resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
  
@@ -33,7 +45,16 @@ index 30ec9d15b82..0a5542a1bcd 100644
    undici@8.12.3:
      resolution: {integrity: sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw==}
      engines: {node: '>=22.19.0'}
-@@ -16613,7 +16611,7 @@ snapshots:
+@@ -13163,7 +13162,7 @@ snapshots:
+       picocolors: 1.1.1
+       proper-lockfile: 4.1.2(patch_hash=ef83b3d51ecb27f8b06d2a3660d509c3da303d7e1d2074712b0ecc2f6256b7cf)
+       protobufjs: 8.8.1
+-      re2js: 2.8.6
++      re2js: 2.8.7
+       ws: 8.22.0
+       yaml: 2.9.1
+       zod: 4.6.7
+@@ -16613,7 +16612,7 @@ snapshots:
  
    jiti@2.7.0: {}
  
@@ -42,7 +63,7 @@ index 30ec9d15b82..0a5542a1bcd 100644
      dependencies:
        '@hapi/address': 5.1.1
        '@hapi/formula': 3.0.2
-@@ -17008,12 +17006,12 @@ snapshots:
+@@ -17008,12 +17007,12 @@ snapshots:
        commander: 15.0.0
        fast-xml-parser: 5.11.2
        ipaddr.js: 2.5.0
@@ -57,7 +78,16 @@ index 30ec9d15b82..0a5542a1bcd 100644
  
    mailparser@3.12.4:
      dependencies:
-@@ -18896,8 +18894,6 @@ snapshots:
+@@ -18123,7 +18122,7 @@ snapshots:
+       iconv-lite: 0.7.3
+       unpipe: 1.0.0
+ 
+-  re2js@2.8.6: {}
++  re2js@2.8.7: {}
+ 
+   react-is@17.0.2: {}
+ 
+@@ -18896,8 +18895,6 @@ snapshots:
  
    undici-types@8.9.0: {}
  
@@ -67,13 +97,16 @@ index 30ec9d15b82..0a5542a1bcd 100644
  
    unhomoglyph@1.0.6: {}
 diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
-index 2ebd5730420..b76ae79798e 100644
+index 2ebd5730420..83a8425f4fc 100644
 --- a/pnpm-workspace.yaml
 +++ b/pnpm-workspace.yaml
-@@ -137,6 +137,10 @@ overrides:
+@@ -137,6 +137,13 @@ overrides:
    request-promise: "npm:@cypress/request-promise@5.0.0"
    basic-ftp: 6.2.3
    brace-expansion: 5.0.12
++  # @openclaw/crabline 0.1.31 pins re2js 2.8.6, which is affected by
++  # CVE-2026-116795. Keep the override scoped to this dependency tree.
++  "@openclaw/crabline@0.1.31>re2js": 2.8.7
 +  # mailauth 7.3.1 permits vulnerable releases of these transitive dependencies.
 +  # Keep the override scoped to mailauth so unrelated dependency trees stay unchanged.
 +  "mailauth@7.3.1>joi": 18.3.2

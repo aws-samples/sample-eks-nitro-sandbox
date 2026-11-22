@@ -154,8 +154,8 @@ OPENSSL_BACKPORT_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterpris
 OPENSSL_BACKPORT_CVE="CVE-2026-95692"
 OPENSSL_BACKPORT_PATCH_SHA256="ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c" # pragma: allowlist secret -- public patch checksum
 OPENSSL_BACKPORT_UPSTREAM_COMMIT="257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116" # pragma: allowlist secret -- public source revision
-OPENCLAW_DEPENDENCY_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openclaw-mailauth-security-overrides.patch"
-OPENCLAW_DEPENDENCY_PATCH_SHA256="ec982d8627084f2f0fba0c09a073aa79d028cee9a1cbe07d09a47740e17449ea" # pragma: allowlist secret -- reviewed patch checksum
+OPENCLAW_DEPENDENCY_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openclaw-security-overrides.patch"
+OPENCLAW_DEPENDENCY_PATCH_SHA256="90a81159bfc78b6cf2596e113dac2212f02087bdf5dc5ad43ba62683952f7ad4" # pragma: allowlist secret -- reviewed patch checksum
 NPM_RUNTIME_VERSION="11.21.3"
 NPM_RUNTIME_ARCHIVE_SHA256="ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514" # pragma: allowlist secret -- public archive checksum
 python3 -I \
@@ -460,7 +460,7 @@ result = {
         "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
         "dependencyPatches": [
             {
-                "component": "OpenClaw mailauth transitive dependencies",
+                "component": "OpenClaw transitive dependencies",
                 "patchSha256": os.environ["OPENCLAW_DEPENDENCY_PATCH_SHA256"],
             }
         ],
