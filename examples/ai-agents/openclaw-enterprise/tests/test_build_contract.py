@@ -1012,7 +1012,7 @@ def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:
     assert 'NPM_RUNTIME_VERSION="11.21.3"' in script
     assert (
         'NPM_RUNTIME_ARCHIVE_SHA256="'
-        "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"
+        "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
         '"' in script
     )
     assert '"runtimePackages": [' in script
@@ -1779,13 +1779,13 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
         "git apply /tmp/openclaw-mailauth-security-overrides.patch" in dockerfile
     )
     assert (
-        "ec982d8627084f2f0fba0c09a073aa79d028cee9a1cbe07d09a47740e17449ea"
+        "ec982d8627084f2f0fba0c09a073aa79d028cee9a1cbe07d09a47740e17449ea"  # pragma: allowlist secret -- reviewed patch checksum
         in dockerfile
     )
     assert "FROM node-build-base AS npm-runtime" in dockerfile
     assert "npm-11.21.3.tgz" in dockerfile
     assert (
-        "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"
+        "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
         in dockerfile
     )
     assert 'require("/out/node_modules/undici/package.json").version' in dockerfile
