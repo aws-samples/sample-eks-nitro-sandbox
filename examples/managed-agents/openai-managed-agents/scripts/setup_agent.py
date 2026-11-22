@@ -54,11 +54,17 @@ its own way: a failure inside a dependency, whose traceback could carry text fro
 .env or from whatever OPENAI_BASE_URL points at, so the call to main() is wrapped
 below and shows only an exception class name.
 
-That covers exceptions raised while main() runs, and not the imports above it,
-which happen before the wrapper exists -- a dependency that cannot be imported at
-all still prints the ordinary traceback. Nothing in .env or from the endpoint is
-read at that point, so what such a traceback carries is the dependency's own error
-text, but it is outside what this handles and the page says so too.
+Importing the dependencies is wrapped the same way, and for the same reason
+rather than for symmetry. Loading the SDK runs third-party module-level code
+that reads the environment, and `set -a; . ./.env; set +a` exports every name in
+.env, so a traceback from an import can carry a value out of the file: round 14
+of the second review reached ssl.create_default_context() through
+aiohttp.connector, which the vendored transport imports, and a SSLKEYLOGFILE
+whose path could not be opened came back in full inside a FileNotFoundError,
+before main() existed to be wrapped. So the imports below are guarded too and
+show only an exception class name. What that costs is the module name in the
+ordinary case of a missing dependency, which is why the message names the
+install step instead.
 
 The SDK's own logging is a separate matter, held down by scripts/_client.py; see
 its comment and tests/test_client.py.
@@ -81,9 +87,59 @@ import os
 import re
 import sys
 
-from openai import APIError, NotFoundError
+# One helper for every place an exception reaches the output, because they had
+# drifted: the handler around main() constrained the class name and _describe()
+# did not. It is defined up here, above the imports it also protects, because
+# importing the SDK runs third-party code that reads the environment and a
+# traceback from it can carry a value out of .env; see the module docstring.
+#
+# A class name is normally from installed code, but a dynamically built subclass
+# can be named anything, including with a newline in it, so it is held to an
+# identifier either way.
+_SAFE_EXCEPTION_KIND = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 
-from _client import make_client
+# How the name is read matters as much as the pattern it is held to, and round 14
+# of the second review got a forged line past the pattern twice over. A metaclass
+# can define __name__ as a property, so `type(exc).__name__` runs code the
+# exception's author chose: it returned a str SUBCLASS whose own value was
+# "SafeError", which the pattern accepts, while its __format__ returned
+# "SafeError\n  AGENT_ID=forged", which is what an f-string prints. It can also
+# return a non-string, which made the handler itself raise and so restored the
+# traceback it exists to suppress. So the name is read through type's own
+# descriptor, which a metaclass property cannot displace, and it must be exactly
+# a str -- not merely an instance of one -- before the pattern is applied. Both
+# checks are load-bearing: a class literally created with a str subclass as its
+# name keeps it here, so the descriptor alone does not settle the type.
+_CLASS_NAME = type.__dict__["__name__"]
+
+
+def exception_kind(exc: BaseException) -> str:
+    """The exception's class name, or "error" if it is not a plain identifier."""
+    name = _CLASS_NAME.__get__(type(exc))
+    if type(name) is not str or not _SAFE_EXCEPTION_KIND.match(name):
+        return "error"
+    return name
+
+
+IMPORT_FAILURE_MESSAGE = """\
+This step could not import what it needs, and the details are not shown: the
+imports read the environment, `set -a; . ./.env; set +a` exports every name in
+.env, and a failure while loading them can carry one of those values in its
+text. The failure was a {kind}.
+If it is a ModuleNotFoundError, create the virtualenv and install this folder as
+the page's first step shows, and run .venv/bin/python rather than another python.
+Otherwise check .env for a variable a dependency reads as it loads, such as
+SSLKEYLOGFILE, SSL_CERT_FILE or REQUESTS_CA_BUNDLE, then load the file again and
+rerun this step."""
+
+try:
+    from openai import APIError, NotFoundError
+
+    from _client import make_client
+except Exception as exc:  # noqa: BLE001 -- deliberate; see IMPORT_FAILURE_MESSAGE
+    # SystemExit and KeyboardInterrupt are not Exception, so a reader's Ctrl-C
+    # during a slow import still behaves as it did.
+    sys.exit(IMPORT_FAILURE_MESSAGE.format(kind=exception_kind(exc)))
 
 # PLACEHOLDER model id. Override with AGENT_MODEL in .env. This value is taken
 # from the OpenAI Agents API quickstart example as read on 2026-10-15
@@ -100,20 +156,6 @@ INSTRUCTIONS = (
 )
 
 
-# One helper for both places an exception reaches the output, because they had
-# drifted: the handler around main() constrained the class name and this one did
-# not. A class name is normally from installed code, but a dynamically built
-# subclass can be named anything, including with a newline in it, so it is held to
-# an identifier either way.
-_SAFE_EXCEPTION_KIND = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
-
-
-def exception_kind(exc: BaseException) -> str:
-    """The exception's class name, or "error" if it is not a plain identifier."""
-    name = type(exc).__name__
-    return name if _SAFE_EXCEPTION_KIND.match(name) else "error"
-
-
 def _describe(exc: APIError) -> str:
     """Name an API error by its SDK exception class and, when it has one, its HTTP status.
 
@@ -121,13 +163,24 @@ def _describe(exc: APIError) -> str:
     body and the request id comes from a response header; a proxy behind
     OPENAI_BASE_URL controls both, and either could carry a key, so neither is
     printed. The two values that are printed are constrained rather than trusted:
-    the class name through exception_kind above, and the status only when it is
-    genuinely an int. A custom APIError subclass can carry a str status and a class
-    name with a newline in it, which would otherwise forge a line of output.
+    the class name through exception_kind above, and the status only when it is an
+    integer. A custom APIError subclass can carry a str status and a class name
+    with a newline in it, which would otherwise forge a line of output.
+
+    The status is printed as the integer's own value rather than as whatever the
+    object renders to. int() on an int, or on any subclass of one, returns a plain
+    int in CPython, so the digits below cannot come from an overridden __str__ or
+    __format__. That also keeps a status the SDK happens to carry as an IntEnum:
+    round 14 of the second review built an AuthenticationError whose status_code
+    was http.HTTPStatus.UNAUTHORIZED, and an exact `type(status) is int` test
+    dropped the "HTTP 401" from a message that should have had it. bool is
+    excluded because True is an int and "HTTP 1" is not a status.
     """
     status = getattr(exc, "status_code", None)
     name = exception_kind(exc)
-    return name if type(status) is not int else f"{name}, HTTP {status}"
+    if isinstance(status, bool) or not isinstance(status, int):
+        return name
+    return f"{name}, HTTP {int(status)}"
 
 
 NOT_FOUND_MESSAGE = """\
@@ -184,10 +237,13 @@ def is_emittable_agent_id(value: object) -> bool:
 # A byte-level check is not enough on its own. Round 11 of the second review
 # forged a line with no control character at all, using a value of ordinary
 # letters and spaces long enough that the terminal's own wrapping put
-# "  AGENT_ID=forged" at the start of a row. So whitespace is excluded too: that
-# is what the indented forgery needed, and no model id has any. The length cap is
-# a local display policy, not something the API documents -- the SDK types this
-# field as a plain str.
+# "  AGENT_ID=forged" at the start of a row. So whitespace is excluded too, which
+# is what that forgery needed. Both that and the length cap are this step's own
+# display policy rather than anything the API documents -- the SDK types this
+# field as a plain str, and that the model ids in OpenAI's own documentation
+# carry no whitespace is an observation about those ids, not a rule the service
+# states. A legitimate id this rejects stops the step instead of being echoed,
+# which is the safe direction to fail in.
 #
 # Stated plainly rather than claimed as closed: this reduces display forgery, it
 # does not eliminate it. On a narrow enough terminal a wrapped row can still begin

@@ -11,8 +11,8 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/managed-agents/openai-managed-agents
 ```
 
-For this blueprint you also need [Docker](https://docs.docker.com/get-docker/), Python 3 with
-`venv`, and an OpenAI project with access to the
+For this blueprint you also need [Docker](https://docs.docker.com/get-docker/), Python 3.12 or
+newer with `venv`, and an OpenAI project with access to the
 [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview) (beta) and
 its [self-hosted sandbox](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted).
 A session uses OpenAI API credit for model tokens; the tools run on your cluster's nodes.
@@ -281,7 +281,10 @@ in `.env` can sit there inertly and still be unsafe once the script prints it ba
 If something inside a dependency fails unexpectedly while the script is running, it reports
 the exception's class name and nothing else, because the message could carry text from `.env`
 or from whatever `OPENAI_BASE_URL` points at. A failure while the script's own imports run is
-not covered by that, and shows the ordinary Python traceback.
+reported the same way, because `set -a; . ./.env; set +a` exports every name in `.env` and
+loading the SDK reads some of them, so an import traceback can carry a value out of the file
+too. The cost is that a missing dependency names no module, so that message points at the
+virtualenv step above instead.
 The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per
 session by `submit.py`, not here, because a self-hosted environment is the live connection to

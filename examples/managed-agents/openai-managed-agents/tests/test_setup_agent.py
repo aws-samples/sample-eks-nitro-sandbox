@@ -862,13 +862,18 @@ UNEXPECTED_FAILURES = {
 
 
 @pytest.mark.parametrize("kind", sorted(UNEXPECTED_FAILURES))
-def test_an_unexpected_dependency_failure_shows_no_detail(tmp_path, kind):
+def test_an_unexpected_dependency_failure_shows_no_text_of_its_own(tmp_path, kind):
     """A traceback is an output channel too, and not one this program controls.
 
     Round 11 reached httpx2.InvalidURL carrying a port from a hostile
     OPENAI_BASE_URL, UnicodeEncodeError carrying a non-ASCII key and
     JSONDecodeError on a malformed 2xx, so main() is wrapped and only the
     exception's class name -- constrained to an identifier -- is shown.
+
+    "No text of its own" rather than "no detail": the class name IS shown, and
+    asserted below. What must not appear is anything the exception carried, since
+    that is where a value from .env or from the endpoint would be. Round 15 named
+    the earlier wording, which said no detail while the test asserted the name.
     """
     source = SCRIPT.read_text()
     marker = "def main() -> None:\n"
@@ -892,12 +897,204 @@ def test_an_unexpected_dependency_failure_shows_no_detail(tmp_path, kind):
     assert stdout == ""
 
 
+# What a forged class name is trying to produce: a second line that looks like the
+# one the page tells the reader to paste. This file owns the literal, as it owns
+# every other expected value here.
+FORGED_BY_A_CLASS_NAME = "SafeError\n  AGENT_ID=forged"
+
+
+class _ForgedName(str):
+    """A str whose own value is an identifier and whose rendering is not.
+
+    This is the pair that defeats a pattern applied to the name on its own:
+    re.match sees "SafeError", and an f-string calls __format__. Round 15 of the
+    second review built it, and the test that was supposed to establish the
+    constraint passed with the constraint deleted.
+    """
+
+    def __format__(self, spec: str) -> str:
+        return FORGED_BY_A_CLASS_NAME
+
+    def __str__(self) -> str:
+        return FORGED_BY_A_CLASS_NAME
+
+
+def _real_script_module():
+    """Import scripts/setup_agent.py itself, so these cases run the real functions.
+
+    Not a pasted copy of exception_kind() and _describe(): AGENTS.md asks for the
+    check in the script rather than a copy, and a copy here would stop matching at
+    the next edit while still passing. The import is side-effect-free -- the module
+    only defines things, and main() is behind __name__ == "__main__" -- and the
+    scripts folder goes on sys.path for the duration because the script imports
+    _client by that name, as it does when a reader runs it.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_real_setup_agent", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    scripts_dir = str(SCRIPT.parent.resolve())
+    sys.path.insert(0, scripts_dir)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(scripts_dir)
+    return module
+
+
+def test_the_premise_that_a_forged_name_defeats_the_pattern_on_its_own():
+    """Why the class name is not simply matched against the pattern.
+
+    The two halves of the trick, asserted before the cases that must survive it:
+    the pattern accepts the subclass's own value, and formatting it prints the
+    forgery instead. Without this, a reader of those cases cannot tell that the
+    pattern is the thing being got around.
+    """
+    module = _real_script_module()
+    forged = _ForgedName("SafeError")
+
+    assert module._SAFE_EXCEPTION_KIND.match(forged) is not None
+    assert f"{forged}" == FORGED_BY_A_CLASS_NAME
+    assert "AGENT_ID=forged" in f"{forged}"
+
+
+def test_a_name_a_metaclass_property_returns_is_not_the_one_printed():
+    """A metaclass makes type(exc).__name__ run the exception author's code.
+
+    So the name is read through type's own descriptor, which the property cannot
+    displace. This case fails if that read goes back to type(exc).__name__: the
+    property hands over the forging subclass, and "error" is not what comes out.
+    """
+    module = _real_script_module()
+
+    class _Meta(type):
+        @property
+        def __name__(cls):  # noqa: A003 -- the point of the case
+            return _ForgedName("SafeError")
+
+    class _ViaMetaclass(Exception, metaclass=_Meta):
+        pass
+
+    assert type(_ViaMetaclass()).__name__ == _ForgedName("SafeError")
+    assert module.exception_kind(_ViaMetaclass()) == "_ViaMetaclass"
+    assert "AGENT_ID=forged" not in module.exception_kind(_ViaMetaclass())
+
+
+@pytest.mark.parametrize("how", ["created-with-it", "assigned-afterwards"])
+def test_a_class_name_that_is_a_str_subclass_is_refused(how):
+    """The case the descriptor alone does not settle, so the type is checked too.
+
+    A class can be created with a str subclass as its name, or be given one later,
+    and type's own descriptor hands back exactly what was stored. This case fails
+    if `type(name) is not str` is relaxed to isinstance, or dropped.
+    """
+    module = _real_script_module()
+
+    if how == "created-with-it":
+        cls = type(_ForgedName("SafeError"), (Exception,), {})
+    else:
+        cls = type("Plain", (Exception,), {})
+        cls.__name__ = _ForgedName("SafeError")
+
+    assert type(module._CLASS_NAME.__get__(cls)) is not str
+    assert module.exception_kind(cls()) == "error"
+
+
+def test_a_class_name_carrying_a_newline_is_refused():
+    """The pattern's own case: an ordinary str name that is not an identifier.
+
+    Fails if the pattern is dropped, which the type check alone would not catch,
+    since this name is exactly a str.
+    """
+    module = _real_script_module()
+    cls = type("Bad\n  AGENT_ID=forged", (Exception,), {})
+
+    assert type(cls.__name__) is str
+    assert module.exception_kind(cls()) == "error"
+
+
+def test_describe_prints_a_status_only_as_an_integer_of_its_own():
+    """Both ways on the status rule, which is the other half of a forged line.
+
+    A str status must not be printed at all, and a status the SDK carries as an
+    IntEnum must still be printed, as its digits rather than as whatever the object
+    renders to. The first case fails if the rule prints every non-None status; the
+    second fails if it narrows to `type(status) is int`, which round 15 found drops
+    the HTTP 401 from an AuthenticationError the SDK itself built.
+
+    The status is set on an instance of a real SDK error class rather than by
+    declaring an APIError subclass here, and that is not a stylistic choice: a
+    subclass declared in this file is a loaded APIError subclass, so
+    sdk_error_classes() picks it up and the three coverage tests above start
+    demanding scenarios for it. The first version of this case did declare two, and
+    those three tests failed -- which is the whole point of enumerating the classes
+    rather than naming them, so the fix belongs here and not in that guard.
+    """
+    import http
+
+    module = _real_script_module()
+
+    str_status = outcomes.create("create-401")
+    str_status.status_code = "418\n  AGENT_ID=forged"
+
+    enum_status = outcomes.create("create-401")
+    enum_status.status_code = http.HTTPStatus.UNAUTHORIZED
+
+    assert type(str_status).__name__ == "AuthenticationError"
+    assert module._describe(str_status) == "AuthenticationError"
+    assert module._describe(enum_status) == "AuthenticationError, HTTP 401"
+
+
+# The block raised at the top of main() for the case below. Indented into place
+# rather than written at this indent, because it is a statement inside a function.
+_FORGED_NAME_RAISE = '''\
+class _Forged(str):
+    def __format__(self, spec):
+        return "SafeError\\n  AGENT_ID=forged"
+    def __str__(self):
+        return "SafeError\\n  AGENT_ID=forged"
+raise type(_Forged("SafeError"), (Exception,), {})()
+'''
+
+
+def test_a_forged_class_name_cannot_forge_a_line_through_the_handler(tmp_path):
+    """The same forgery end to end, through the handler around main().
+
+    The cases above call the two functions directly; this one runs the program
+    with the exception raised inside main(), so the refusal a reader would see is
+    what is asserted. Both paths are covered deliberately: they had drifted apart
+    once already, which is why they share one helper now.
+    """
+    source = SCRIPT.read_text()
+    marker = "def main() -> None:\n"
+    assert source.count(marker) == 1
+    block = "".join(f"    {line}\n" for line in _FORGED_NAME_RAISE.splitlines())
+    mutant = source.replace(marker, marker + block)
+    compile(mutant, "setup_agent.py", "exec")
+
+    status, shown, _ = run_step_2(
+        tmp_path, "kept", "agent_kept", SET_MODEL, tty=False, source=mutant
+    )
+    stdout, stderr = shown
+
+    assert status == 1
+    assert "AGENT_ID=forged" not in stderr
+    assert "AGENT_ID=forged" not in stdout
+    assert "Traceback" not in stderr
+    assert "unexpected error" in stderr
+    assert stdout == ""
+
+
 def test_the_premise_that_a_dot_segment_id_raises_before_any_request():
     """Why "." and ".." are refused even though a shell treats them literally.
 
     The pinned SDK rejects them while building the request path, with ValueError
-    -- not an APIError -- so they would escape both handlers and reach the reader
-    as a traceback. Asserted against the real client over a mock transport, so it
+    -- not an APIError -- so they escape the handling that names an API error and
+    fall through to the handler around main(), whose generic refusal tells a reader
+    nothing about the id they supplied. (Before that handler existed they reached
+    them as a traceback, which is how round 10 found this; round 15 named the
+    earlier wording here, which still said they escape both handlers.) Asserted
+    against the real client over a mock transport, so it
     is the SDK's behaviour being recorded and not the fake's: the fake never
     builds a URL, which is exactly why no scenario here could have caught this.
     """
@@ -957,12 +1154,23 @@ def test_the_suggested_line_is_safe_to_paste_and_load(tmp_path, scenario, pastea
     The accepted case is loaded the way the page tells the reader to, and must
     assign exactly the id and run nothing. The rejected case must print no
     AGENT_ID line at all, so there is nothing to paste in the first place.
+
+    The emitted line is kept byte for byte, including the two spaces the program
+    indents it with, and that exact line is what is asserted and what is written
+    to the .env below. Round 14 of the second review found the earlier version
+    calling .strip() on it first, which removed the program's own indent and any
+    injected surrounding whitespace in the same move: appending U+00A0 to the
+    printed id left the named test passing while sourcing the real line gave an
+    AGENT_ID ending in c2 a0. A reader pastes the line, not a cleaned-up copy of
+    it, so nothing here may normalize it. Leading blanks before an assignment are
+    why the indent can be sourced as it stands.
     """
     status, shown, _ = run_step_2(
         tmp_path, "kept", UNSET, SET_MODEL, tty=False, create_scenario=scenario
     )
     stdout, _ = shown
-    suggested = [line.strip() for line in stdout.splitlines() if line.strip().startswith("AGENT_ID=")]
+    # lstrip() only to FIND the line; what is compared and sourced is the raw line.
+    suggested = [line for line in stdout.splitlines() if line.lstrip().startswith("AGENT_ID=")]
 
     if pasteable is None:
         assert status == 1
@@ -970,7 +1178,7 @@ def test_the_suggested_line_is_safe_to_paste_and_load(tmp_path, scenario, pastea
         return
 
     assert status == 0
-    assert suggested == [f"AGENT_ID={pasteable}"]
+    assert suggested == [f"  AGENT_ID={pasteable}"]
 
     work = tmp_path / "load"
     work.mkdir()

@@ -80,15 +80,20 @@ def _status_error(cls, status: int):
     )
 
 
-# What each class actually exposes of the two values a proxy controls, as the
-# pinned SDK is written. Not "does it have a response": round 9's fix asserted the
+# What each class actually exposes of the values a proxy controls, as the pinned
+# SDK is written. Not "does it have a response": round 9's fix asserted the
 # premise for every class at once, and the SDK answered that two of them expose
 # less than that would imply.
+#
+# Three channels, not two. Round 15 of the second review found this comment and
+# the one on the APIStatusError row below still saying "two" and "both" after
+# RESPONSE_TEXT was added to them.
 #   BODY          the response body reaches str(exc), which a traceback prints
 #   REQUEST_ID    the x-request-id header reaches exc.request_id
 #   RESPONSE_TEXT the response body reaches exc.response.text
-# A class exposing neither has nothing to leak through either channel, which is a
-# fact about the SDK and is pinned by its own test rather than left implied.
+# A class exposing none of them has nothing to leak through any of these channels,
+# which is a fact about the SDK and is pinned by its own test rather than left
+# implied.
 BODY = "body"
 REQUEST_ID = "request_id"
 RESPONSE_TEXT = "response_text"
@@ -139,7 +144,7 @@ _ERROR_BUILDERS = {
         lambda planted: openai.OAuthError(response=_response(401, planted), body=_body(planted)),
         _ALL,
     ),
-    # The ordinary APIStatusError subclasses expose both.
+    # The ordinary APIStatusError subclasses expose all three.
     "api-status": (openai.APIStatusError, _status_error(openai.APIStatusError, 418), _ALL),
     "400": (openai.BadRequestError, _status_error(openai.BadRequestError, 400), _ALL),
     "401": (openai.AuthenticationError, _status_error(openai.AuthenticationError, 401), _ALL),
@@ -220,26 +225,14 @@ def declared_channels(scenario: str) -> frozenset[str]:
     return _ERROR_BUILDERS[scenario[len("create-"):]][2]
 
 
-def observed_channels(scenario: str) -> frozenset[str]:
-    """What the class built for this scenario actually exposes, by looking.
-
-    Compared for equality with declared_channels(), per class, rather than each
-    channel being asserted over a list the table itself produced. Round 10 is why:
-    the previous shape had three lists derived from the table, so a wrong entry
-    simply moved a class to a different list and every test still passed. It found
-    OAuthError declared request-id-only while OpenAI 3.31.0 builds its message
-    from body["error_description"], which the sample had not been planting.
-    """
-    error = create(scenario)
-    channels = set()
-    if IN_BODY in str(error):
-        channels.add(BODY)
-    if getattr(error, "request_id", None) == IN_HEADER:
-        channels.add(REQUEST_ID)
-    response = getattr(error, "response", None)
-    if response is not None and IN_BODY in getattr(response, "text", ""):
-        channels.add(RESPONSE_TEXT)
-    return frozenset(channels)
+# The observer that looks at what a built class actually exposes used to live here,
+# beside the table it checks. Round 14 of the second review moved it into
+# test_setup_agent.py, because a fixture file that both declares the expected
+# channels and measures them can be made self-consistent in one edit, and the test
+# file is where expected values live everywhere else in this suite. Round 15 then
+# found the copy here still sitting unused, with a docstring saying its results are
+# compared, so it is gone rather than left to read like the live one. See
+# _observe_channels() in test_setup_agent.py.
 
 
 def lookup(scenario: str, requested: str | None = None):
