@@ -51,6 +51,19 @@ die() {
   exit 1
 }
 
+file_mode() {
+  local mode
+  if mode="$(stat -c '%a' "$1" 2>/dev/null)" &&
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$mode"
+  elif mode="$(stat -f '%Lp' "$1" 2>/dev/null)" &&
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$mode"
+  else
+    die "could not inspect permissions for $1"
+  fi
+}
+
 refresh_startup_budget() {
   STARTUP_SECONDS_REMAINING=$((STARTUP_DEADLINE - SECONDS))
   ((STARTUP_SECONDS_REMAINING > 0)) ||
@@ -203,9 +216,7 @@ if [[ -n "$READY_FILE" || -n "$STATE_FILE" ]]; then
     control_parent="$(dirname "$control_file")"
     [[ -d "$control_parent" && ! -L "$control_parent" ]] ||
       die "control file parent must be a non-symlink directory"
-    control_mode="$(stat -f '%Lp' "$control_parent" 2>/dev/null ||
-      stat -c '%a' "$control_parent" 2>/dev/null)" ||
-      die "could not inspect control file parent"
+    control_mode="$(file_mode "$control_parent")"
     [[ "$control_mode" == "700" ]] ||
       die "control file parent must have mode 0700"
   done
