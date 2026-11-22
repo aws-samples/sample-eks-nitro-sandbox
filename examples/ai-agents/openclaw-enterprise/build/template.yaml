@@ -318,7 +318,10 @@ Resources:
                 - cat "$CODEBUILD_SRC_DIR/image-digests.json"
       Environment:
         Type: LINUX_CONTAINER
-        ComputeType: BUILD_GENERAL1_LARGE
+        # The pinned OCE runtime build compiles Node.js and copies its dependency
+        # tree with Docker's conservative VFS driver. XLarge provides the 256 GB
+        # ephemeral disk required for that clean-room build.
+        ComputeType: BUILD_GENERAL1_XLARGE
         Image: !Sub ${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}/${BuilderImageRepositoryName}@${BuilderImageDigest}
         ImagePullCredentialsType: SERVICE_ROLE
         PrivilegedMode: true

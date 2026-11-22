@@ -74,6 +74,14 @@ def _buildspec() -> str:
     return project[0]["Properties"]["Source"]["BuildSpec"]
 
 
+def test_image_build_has_disk_for_the_pinned_oce_runtime() -> None:
+    project = _resources("AWS::CodeBuild::Project")
+    assert len(project) == 1
+    assert project[0]["Properties"]["Environment"]["ComputeType"] == (
+        "BUILD_GENERAL1_XLARGE"
+    )
+
+
 def test_template_creates_four_immutable_scan_on_push_repositories() -> None:
     repositories = _resources("AWS::ECR::Repository")
 
