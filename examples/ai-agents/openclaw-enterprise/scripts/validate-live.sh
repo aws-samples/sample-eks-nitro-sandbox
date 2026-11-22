@@ -43,7 +43,6 @@ TENANT_B_POD=""
 TENANT_B_CONTAINER=""
 RUNTIME_IMAGE=""
 OCE_API_LOCAL_PORT=""
-OCE_API_SERVICE_PORT="8080"
 OCE_API_URL=""
 OCE_SYSTEM_NAMESPACE=""
 OCE_SOURCE_REVISION=""
@@ -79,6 +78,7 @@ KMS_KEY_ID_HASH=""
 OCE_PORT_FORWARD_PID=""
 OCE_PORT_FORWARD_LOG=""
 OCE_PORT_FORWARD_CLEANED="false"
+OCE_API_TUNNEL_SCRIPT="${OCE_API_TUNNEL_SCRIPT:-}"
 FINAL_EVIDENCE_CANDIDATE=""
 FINAL_MANIFEST_CANDIDATE=""
 FINAL_SIGNATURE_CANDIDATE=""
@@ -316,7 +316,7 @@ oce_api_port_is_ready() {
 }
 
 start_oce_api_port_forward() {
-  [[ -z "$OCE_PORT_FORWARD_PID" ]] || die "OCE API port-forward is already running"
+  [[ -z "$OCE_PORT_FORWARD_PID" ]] || die "OCE API tunnel is already running"
   if oce_api_port_is_ready; then
     die "OCE API local port is already accepting connections"
   fi
@@ -324,10 +324,10 @@ start_oce_api_port_forward() {
   OCE_PORT_FORWARD_LOG="$WORK_DIR/oce-api-port-forward.log"
   : >"$OCE_PORT_FORWARD_LOG"
   chmod 600 "$OCE_PORT_FORWARD_LOG"
-  kubectl --context "$KUBE_CONTEXT" -n "$OCE_SYSTEM_NAMESPACE" port-forward \
-    --address=127.0.0.1 \
-    service/openclaw-enterprise-api \
-    "${OCE_API_LOCAL_PORT}:${OCE_API_SERVICE_PORT}" \
+  "$OCE_API_TUNNEL_SCRIPT" \
+    --kube-context "$KUBE_CONTEXT" \
+    --namespace "$OCE_SYSTEM_NAMESPACE" \
+    --local-port "$OCE_API_LOCAL_PORT" \
     >"$OCE_PORT_FORWARD_LOG" 2>&1 &
   OCE_PORT_FORWARD_PID=$!
   OCE_PORT_FORWARD_CLEANED="false"
@@ -339,19 +339,16 @@ start_oce_api_port_forward() {
       OCE_PORT_FORWARD_PID=""
       OCE_API_URL=""
       OCE_PORT_FORWARD_CLEANED="true"
-      die "OCE API port-forward exited before becoming ready"
+      die "OCE API tunnel exited before becoming ready"
     fi
-    if grep -Fq \
-      "Forwarding from 127.0.0.1:${OCE_API_LOCAL_PORT} -> ${OCE_API_SERVICE_PORT}" \
-      "$OCE_PORT_FORWARD_LOG" &&
-      oce_api_port_is_ready &&
+    if oce_api_port_is_ready &&
       kill -0 "$OCE_PORT_FORWARD_PID" 2>/dev/null; then
       OCE_API_URL="http://127.0.0.1:${OCE_API_LOCAL_PORT}"
       return 0
     fi
     sleep 0.2
   done
-  die "OCE API port-forward did not become ready on the explicit loopback port"
+  die "OCE API tunnel did not become ready on the explicit loopback port"
 }
 
 stop_oce_api_port_forward() {
@@ -796,6 +793,13 @@ fi
 chmod 600 "$EVIDENCE_FILE"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-live-validation.XXXXXX")"
 NATIVE_HISTORY_EVALUATOR_PATH="$(dirname "$SCRIPT_PATH")/lib/evaluate-native-tool-history.mjs"
+if [[ -z "$OCE_API_TUNNEL_SCRIPT" ]]; then
+  OCE_API_TUNNEL_SCRIPT="$(dirname "$SCRIPT_PATH")/oce-api-tunnel.sh"
+fi
+[[ -f "$OCE_API_TUNNEL_SCRIPT" &&
+  ! -L "$OCE_API_TUNNEL_SCRIPT" &&
+  -x "$OCE_API_TUNNEL_SCRIPT" ]] ||
+  die "OCE API tunnel helper must be an executable regular, non-symlink file"
 [[ -f "$NATIVE_HISTORY_EVALUATOR_PATH" &&
   ! -L "$NATIVE_HISTORY_EVALUATOR_PATH" &&
   -r "$NATIVE_HISTORY_EVALUATOR_PATH" ]] ||
@@ -2552,7 +2556,7 @@ verify_native_tool_execution "$WORK_DIR/native-tool-execution.json"
 record_pass "native-openclaw-tool-execution" \
   "one native OCE session recorded one successful exec tool call and its exact result"
 
-CURRENT_CHECK="oce-api-port-forward"
+CURRENT_CHECK="oce-api-loopback-tunnel"
 start_oce_api_port_forward
 
 assert_live_oce_source_revision() {
@@ -2726,11 +2730,11 @@ assert_cross_tenant_denied "tenant-a-to-b" "$TENANT_A_CREDENTIAL" "$TENANT_B_OCE
   "$TENANT_B_AGENT_ID" "$WORK_DIR/oce-a-to-b.json"
 assert_cross_tenant_denied "tenant-b-to-a" "$TENANT_B_CREDENTIAL" "$TENANT_A_OCE_NAMESPACE" \
   "$TENANT_A_AGENT_ID" "$WORK_DIR/oce-b-to-a.json"
-stop_oce_api_port_forward || die "OCE API port-forward child could not be terminated and reaped"
+stop_oce_api_port_forward || die "OCE API tunnel child could not be terminated and reaped"
 [[ "$OCE_PORT_FORWARD_CLEANED" == "true" ]] ||
-  die "OCE API port-forward child was not reaped"
-record_pass "oce-api-loopback-port-forward" \
-  "OCE API used a 127.0.0.1-only port-forward whose child process was terminated and reaped"
+  die "OCE API tunnel child was not reaped"
+record_pass "oce-api-loopback-tunnel" \
+  "OCE API used a temporary, network-restricted relay and a local-only port-forward; both were removed"
 record_pass "oce-same-tenant-api" "both tenants received HTTP 200 for their own agent"
 record_pass "oce-cross-tenant-api" "both reciprocal requests returned HTTP 403 FORBIDDEN"
 
@@ -2905,10 +2909,10 @@ MARKERS_CREATED="false"
 cleanup_cross_tenant_pvc_probe
 cleanup_ordinary_control_pod
 [[ "$OCE_PORT_FORWARD_CLEANED" == "true" ]] ||
-  die "OCE API port-forward cleanup was not completed"
+  die "OCE API tunnel cleanup was not completed"
 record_pass "temporary-artifact-cleanup" \
-  "port-forward, markers, and both temporary validation pods were removed"
-printf 'CLEANUP\tPASS\tlocal port-forward was reaped; temporary cluster artifacts were deleted and awaited\n' \
+  "API relay, local port-forward, markers, and both temporary validation pods were removed"
+printf 'CLEANUP\tPASS\tAPI relay and local port-forward were removed; temporary cluster artifacts were deleted and awaited\n' \
   >>"$EVIDENCE_FILE"
 
 CURRENT_CHECK="evidence-signing"

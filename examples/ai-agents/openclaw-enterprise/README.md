@@ -169,6 +169,7 @@ when your threat model requires those stronger boundaries.
 | [`scripts/setup-agentgateway.sh`](scripts/setup-agentgateway.sh) | Create or verify AgentGateway and its private key state. |
 | [`scripts/install-oce.sh`](scripts/install-oce.sh) | Install the exact OCE revision in a terminal-managed topology. |
 | [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Add private AgentGateway CA trust and exact private service egress to one OCE tenant namespace. |
+| [`scripts/oce-api-tunnel.sh`](scripts/oce-api-tunnel.sh) | Open temporary loopback-only access to the private OCE API through a network-restricted relay. |
 | [`scripts/validate-live.sh`](scripts/validate-live.sh) | Run the destructive two-tenant validation. |
 | [`scripts/lib/evaluate-native-tool-history.mjs`](scripts/lib/evaluate-native-tool-history.mjs) | Evaluate native OpenClaw tool-call history for live validation. |
 | [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove resources only after ownership checks pass. |
@@ -829,8 +830,8 @@ trusted PEM CA certificates. See `install-oce.sh --help`.
 
 The installer uses `occ installation install`. It deliberately disables direct
 Pod API clients with an unmatched label selector. It also disables browser
-gateway routing and agent native administration. Use local `kubectl
-port-forward` for API administration.
+gateway routing and agent native administration. Use the temporary API tunnel
+in the next step for terminal administration.
 
 ```text
 TODO: output from the fresh run
@@ -845,11 +846,16 @@ Kubernetes namespaces, AgentGateway keys, agents, and validator service keys.
 Open the private OCE API on loopback in a dedicated terminal:
 
 ```bash
-kubectl --context "$KUBE_CONTEXT" \
+"$SAMPLE_DIR/scripts/oce-api-tunnel.sh" \
+  --kube-context "$KUBE_CONTEXT" \
   --namespace "$OCE_NAMESPACE" \
-  port-forward --address=127.0.0.1 \
-  service/openclaw-enterprise-api 18080:8080
+  --local-port 18080
 ```
+
+The helper creates a temporary relay that can connect only to the selected,
+Ready OCE API pod. A network policy permits that API pod to accept traffic only
+from this relay. The local listener binds only to `127.0.0.1`. Press `Ctrl-C`
+when onboarding is complete; the helper removes the relay and both policies.
 
 In another terminal:
 
@@ -1296,9 +1302,10 @@ To sign the evidence with an asymmetric AWS KMS key, add
 `--kms-signing-key-id <key-id-or-arn>`. The validator signs and verifies the
 bundle before publishing it.
 
-The validator starts and stops its own loopback API port-forward. It writes
-test markers, replaces tenant A's runtime pod, and removes temporary test
-resources on exit. Run it only against retained validation tenants.
+The validator starts and stops its own temporary API relay and loopback
+port-forward. It writes test markers, replaces tenant A's runtime pod, and
+removes temporary test resources on exit. Run it only against retained
+validation tenants.
 
 The command exits zero only after it verifies:
 
@@ -1370,11 +1377,12 @@ TODO: output from the fresh run
 
 ## Clean up
 
-Stop every local OCE API port-forward. By default, cleanup refuses to change
-the deployment while an OCE-managed tenant namespace exists. To delete the
-disposable validation tenants and their data, run cleanup with the original
-state, receipts, context, exact tenant namespace list, Pod Identity values, and
-the explicit `--delete-tenant-data` opt-in:
+Stop every local OCE API tunnel with `Ctrl-C` and confirm that its temporary
+relay is gone. By default, cleanup refuses to change the deployment while an
+OCE-managed tenant namespace exists. To delete the disposable validation
+tenants and their data, run cleanup with the original state, receipts, context,
+exact tenant namespace list, Pod Identity values, and the explicit
+`--delete-tenant-data` opt-in:
 
 ```bash
 "$SAMPLE_DIR/scripts/cleanup.sh" \

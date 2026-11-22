@@ -392,6 +392,10 @@ FAKE_COMMAND = textwrap.dedent(
             }},
             "status": {{
                 "phase": "Running",
+                "conditions": [{{
+                    "type": "Ready",
+                    "status": "True",
+                }}],
                 "containerStatuses": [{{
                     "name": "ordinary-control",
                     "ready": True,
@@ -539,7 +543,7 @@ FAKE_COMMAND = textwrap.dedent(
         emit("ok")
         sys.exit(0)
     namespace = None
-    if args[:1] == ["-n"]:
+    if args[:1] in (["-n"], ["--namespace"]):
         namespace = args[1]
         args = args[2:]
 
@@ -706,6 +710,11 @@ FAKE_COMMAND = textwrap.dedent(
             }}]}},
             "status": {{
                 "phase": "Running",
+                "podIP": "10.0.0.42",
+                "conditions": [{{
+                    "type": "Ready",
+                    "status": "True",
+                }}],
                 "containerStatuses": [{{
                     "name": "api",
                     "ready": True,
@@ -1309,6 +1318,41 @@ FAKE_CURL = textwrap.dedent(
     """
 )
 
+FAKE_OCE_API_TUNNEL = textwrap.dedent(
+    """\
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    kube_context=""
+    namespace=""
+    local_port=""
+    while (($#)); do
+      case "$1" in
+        --kube-context)
+          kube_context="$2"
+          shift 2
+          ;;
+        --namespace)
+          namespace="$2"
+          shift 2
+          ;;
+        --local-port)
+          local_port="$2"
+          shift 2
+          ;;
+        *)
+          exit 98
+          ;;
+      esac
+    done
+
+    exec kubectl --context "$kube_context" -n "$namespace" port-forward \
+      --address=127.0.0.1 \
+      service/openclaw-enterprise-api \
+      "${local_port}:8080"
+    """
+)
+
 
 def _make_fake_commands(tmp_path: Path) -> tuple[Path, Path]:
     fake_bin = tmp_path / "bin"
@@ -1325,6 +1369,9 @@ def _make_fake_commands(tmp_path: Path) -> tuple[Path, Path]:
     curl_command = fake_bin / "curl"
     curl_command.write_text(FAKE_CURL)
     curl_command.chmod(0o755)
+    tunnel_command = fake_bin / "oce-api-tunnel"
+    tunnel_command.write_text(FAKE_OCE_API_TUNNEL)
+    tunnel_command.chmod(0o755)
     return fake_bin, state_dir
 
 
@@ -1407,6 +1454,7 @@ def _run(
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["FAKE_STATE_DIR"] = str(state_dir)
     env["FAKE_SCENARIO"] = scenario
+    env["OCE_API_TUNNEL_SCRIPT"] = str(fake_bin / "oce-api-tunnel")
     arguments = _arguments(tmp_path)
     if kms_key_id is not None:
         arguments.extend(["--kms-signing-key-id", kms_key_id])
@@ -1735,6 +1783,7 @@ def test_accepts_raw_one_line_service_keys_for_secret_manager_exports(
     env = os.environ.copy()
     env["PATH"] = f"{fake_bin}:{env['PATH']}"
     env["FAKE_STATE_DIR"] = str(state_dir)
+    env["OCE_API_TUNNEL_SCRIPT"] = str(fake_bin / "oce-api-tunnel")
     result = subprocess.run(
         [str(SCRIPT), *arguments],
         check=False,
@@ -1832,7 +1881,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         "native-openclaw-tool-execution",
         "agentgateway-model-telemetry",
         "control-plane-evidence",
-        "oce-api-loopback-port-forward",
+        "oce-api-loopback-tunnel",
         "oce-deployed-source-revision",
         "oce-same-tenant-api",
         "oce-cross-tenant-api",
@@ -2257,8 +2306,7 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
     "scenario, failed_check",
     [
         ("wrong_cluster_arn", "eks-cluster"),
-        ("port_forward_early_exit", "oce-api-port-forward"),
-        ("port_forward_no_marker", "oce-api-port-forward"),
+        ("port_forward_early_exit", "oce-api-loopback-tunnel"),
         ("wrong_oce_revision", "oce-deployed-source-revision"),
         ("wrong_cross_code", "oce-tenant-api-isolation"),
         ("cross_tenant_pvc_mounted", "tenant-storage-isolation"),
@@ -2346,7 +2394,6 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
     if scenario in (
         "wrong_cross_code",
         "wrong_oce_revision",
-        "port_forward_no_marker",
     ):
         state_dir = tmp_path / "state"
         assert (state_dir / "port_forward_stopped").read_text() == "SIGTERM"
@@ -2433,9 +2480,6 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert 'name="occ-build-revision"' in source
     assert "--oce-api-local-port" in source
     assert "--oce-api-url" not in source
-    assert "port-forward" in source
-    assert "--address=127.0.0.1" in source
-    assert "service/openclaw-enterprise-api" in source
     assert 'OCE_API_URL="http://127.0.0.1:${OCE_API_LOCAL_PORT}"' in source
     assert 'target.hostname !== "127.0.0.1"' in source
     assert "deployment/oce-api-cli-client" not in source
@@ -2483,6 +2527,8 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "stop_oce_api_port_forward >/dev/null 2>&1" in source
     assert 'if wait "$pid" 2>/dev/null; then' in source
     assert "stop_oce_api_port_forward || die" in source
+    assert 'OCE_API_TUNNEL_SCRIPT="$(dirname "$SCRIPT_PATH")/oce-api-tunnel.sh"' in source
+    assert "service/openclaw-enterprise-api" not in source
     assert 'delete namespace "$TENANT_A_NAMESPACE"' not in source
     assert 'delete namespace "$TENANT_B_NAMESPACE"' not in source
     assert "delete deployment" not in source
