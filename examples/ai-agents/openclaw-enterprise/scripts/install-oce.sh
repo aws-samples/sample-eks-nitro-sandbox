@@ -2148,6 +2148,22 @@ record_receipt_resource() {
   receipt_resource_guards+=("$resource|$uid")
 }
 
+record_helm_receipt_resource() {
+  local resource=$1
+  local expected_name=${resource##*/}
+  local record name owner helm_release helm_namespace uid extra
+  record=$("${KUBE[@]}" get "$resource" \
+    -o 'jsonpath={.metadata.name}{"|"}{.metadata.labels.app\.kubernetes\.io/managed-by}{"|"}{.metadata.annotations.meta\.helm\.sh/release-name}{"|"}{.metadata.annotations.meta\.helm\.sh/release-namespace}{"|"}{.metadata.uid}{"\n"}') ||
+    die "could not bind $resource to the installation receipt."
+  IFS='|' read -r name owner helm_release helm_namespace uid extra <<<"$record"
+  [[ -z "${extra:-}" && "$name" == "$expected_name" &&
+    "$owner" == Helm && "$helm_release" == "$release" &&
+    "$helm_namespace" == "$namespace" &&
+    "$uid" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] ||
+    die "$resource does not match the expected Helm ownership identity; refusing to record it."
+  receipt_resource_guards+=("$resource|$uid")
+}
+
 readonly -a adapter_resources=(
   namespace/openclaw-enterprise-adapter
   validatingadmissionpolicies.admissionregistration.k8s.io/protect-openclaw-enterprise-namespace-label
@@ -2177,7 +2193,7 @@ for resource in "${adapter_resources[@]}"; do
   record_receipt_resource "$resource" "$OWNER_LABEL" ""
 done
 for resource in "${release_resources[@]}"; do
-  record_receipt_resource "$resource" Helm "$release"
+  record_helm_receipt_resource "$resource"
 done
 
 write_private "$receipt/resources.json" python3 -I -c '

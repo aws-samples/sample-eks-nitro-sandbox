@@ -743,6 +743,16 @@ case "$*" in
     fi
     rm -f "$TEST_KUBE_STATE/remote-password"
     ;;
+  *"jsonpath={.metadata.name}"*"release-name"*"release-namespace"*"metadata.uid"*)
+    target=
+    previous=
+    for argument in "$@"; do
+      if [[ "$previous" == get ]]; then target=$argument; break; fi
+      previous=$argument
+    done
+    name=${target##*/}
+    printf '%s|Helm|oce|openclaw-system|uid-%s\\n' "$name" "$name"
+    ;;
   *"jsonpath={.metadata.name}"*"metadata.uid"*)
     target=
     previous=
@@ -753,10 +763,6 @@ case "$*" in
     name=${target##*/}
     owner=openclaw-enterprise-blueprint
     instance=
-    if [[ "$name" == oce-openclaw-* ]]; then
-      owner=Helm
-      instance=oce
-    fi
     printf '%s|%s|%s|uid-%s\\n' "$name" "$owner" "$instance" "$name"
     ;;
   *"get "*" -o name"*)
