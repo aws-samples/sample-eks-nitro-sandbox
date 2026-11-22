@@ -2676,6 +2676,8 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert 'if wait "$pid" 2>/dev/null; then' in source
     assert "stop_oce_api_port_forward || die" in source
     assert 'OCE_API_TUNNEL_SCRIPT="$(dirname "$SCRIPT_PATH")/oce-api-tunnel.sh"' in source
+    assert "OCE_API_TUNNEL_CLEANUP_GRACE_SECONDS=15" in source
+    assert "OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS * 2 +" in source
     assert "--ready-file" in source
     assert "--state-file" in source
     assert "oce_api_tunnel_resources_absent" in source

@@ -24,6 +24,8 @@ CREATED="false"
 PORT_FORWARD_PID=""
 PORT_FORWARD_LOG=""
 TUNNEL_READY="false"
+STARTUP_DEADLINE=0
+STARTUP_SECONDS_REMAINING=0
 
 usage() {
   printf '%s\n' \
@@ -47,6 +49,12 @@ usage() {
 die() {
   printf 'ERROR: %s\n' "$1" >&2
   exit 1
+}
+
+refresh_startup_budget() {
+  STARTUP_SECONDS_REMAINING=$((STARTUP_DEADLINE - SECONDS))
+  ((STARTUP_SECONDS_REMAINING > 0)) ||
+    die "OCE API tunnel startup timeout elapsed"
 }
 
 write_state() {
@@ -207,15 +215,21 @@ for command in chmod dirname grep jq kubectl mktemp openssl rm sleep stat; do
   command -v "$command" >/dev/null 2>&1 || die "$command is required"
 done
 
+STARTUP_DEADLINE=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
+refresh_startup_budget
 kubectl --context "$KUBE_CONTEXT" config get-contexts "$KUBE_CONTEXT" \
   --no-headers >/dev/null 2>&1 ||
   die "kube context does not exist"
+refresh_startup_budget
 
 selector="app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/instance=${RELEASE_NAME},app.kubernetes.io/component=api"
 api_pods="$(
-  kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" get pods \
+  kubectl --context "$KUBE_CONTEXT" \
+    --request-timeout="${STARTUP_SECONDS_REMAINING}s" \
+    --namespace "$NAMESPACE" get pods \
     --selector "$selector" -o json
 )" || die "could not list OCE API pods"
+refresh_startup_budget
 
 api_record="$(
   jq -er '
@@ -237,6 +251,7 @@ api_record="$(
     | if length == 1 then .[0] else error("expected exactly one ready OCE API pod") end
   ' <<<"$api_pods"
 )" || die "expected exactly one ready OCE API pod"
+refresh_startup_budget
 
 API_POD="$(jq -er '.name' <<<"$api_record")"
 API_POD_UID="$(jq -er '.uid' <<<"$api_record")"
@@ -263,6 +278,7 @@ fi
 
 nonce="$(openssl rand -hex 8)"
 [[ "$nonce" =~ ^[0-9a-f]{16}$ ]] || die "could not generate relay identity"
+refresh_startup_budget
 RELAY_NAME="oce-api-loopback-relay-${nonce}"
 EGRESS_POLICY="${RELAY_NAME}-egress"
 API_INGRESS_POLICY="${RELAY_NAME}-api-ingress"
@@ -272,8 +288,6 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-startup_deadline=$((SECONDS + STARTUP_TIMEOUT_SECONDS))
 
 manifest="$(
   jq -cn \
@@ -418,20 +432,24 @@ manifest="$(
       ]
     }'
 )" || die "could not build relay manifest"
+refresh_startup_budget
 
 CREATED="true"
 printf '%s\n' "$manifest" |
-  kubectl --context "$KUBE_CONTEXT" create -f - >/dev/null ||
+  kubectl --context "$KUBE_CONTEXT" \
+    --request-timeout="${STARTUP_SECONDS_REMAINING}s" \
+    create -f - >/dev/null ||
   die "could not create the temporary API relay"
 
-kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" wait \
+refresh_startup_budget
+kubectl --context "$KUBE_CONTEXT" \
+  --request-timeout="${STARTUP_SECONDS_REMAINING}s" \
+  --namespace "$NAMESPACE" wait \
   --for=condition=Ready "pod/$RELAY_NAME" \
-  --timeout="${STARTUP_TIMEOUT_SECONDS}s" >/dev/null ||
+  --timeout="${STARTUP_SECONDS_REMAINING}s" >/dev/null ||
   die "temporary API relay did not become ready"
 
-startup_seconds_remaining=$((startup_deadline - SECONDS))
-((startup_seconds_remaining > 0)) ||
-  die "startup timeout elapsed before the local port-forward started"
+refresh_startup_budget
 
 PORT_FORWARD_LOG="$(mktemp "${TMPDIR:-/tmp}/oce-api-tunnel-port-forward.XXXXXX")"
 chmod 600 "$PORT_FORWARD_LOG"
@@ -441,7 +459,7 @@ kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" port-forward \
 PORT_FORWARD_PID=$!
 
 forwarding_line="Forwarding from 127.0.0.1:${LOCAL_PORT} -> ${RELAY_PORT}"
-for ((attempt = 0; attempt < startup_seconds_remaining * 10; attempt += 1)); do
+while ((SECONDS < STARTUP_DEADLINE)); do
   kill -0 "$PORT_FORWARD_PID" 2>/dev/null ||
     die "local port-forward exited before becoming ready"
   if grep -Fqx "$forwarding_line" "$PORT_FORWARD_LOG"; then

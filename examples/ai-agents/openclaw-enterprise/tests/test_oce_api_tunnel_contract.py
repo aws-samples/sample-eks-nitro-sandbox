@@ -33,6 +33,7 @@ def raise_exit(code):
     raise SystemExit(code)
 
 if "config" in args and "get-contexts" in args:
+    time.sleep(float(os.environ.get("FAKE_CONFIG_DELAY", "0")))
     print("fake-context")
     raise SystemExit(0)
 
@@ -128,7 +129,8 @@ def _environment(tmp_path: Path, image: str) -> dict[str, str]:
 
 
 def _wait_for(path: Path, text: str) -> None:
-    for _ in range(100):
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
         if path.exists() and text in path.read_text():
             return
         time.sleep(0.05)
@@ -272,3 +274,29 @@ def test_tunnel_reports_unverified_cleanup_as_failure(tmp_path: Path) -> None:
     assert process.returncode == 70
     assert "cleanup could not be verified" in stderr
     assert json.loads(state_file.read_text())["cleanupStatus"] == "failed"
+
+
+def test_tunnel_applies_one_deadline_to_preflight_and_relay_startup(
+    tmp_path: Path,
+) -> None:
+    env = _environment(tmp_path, f"example.invalid/oce-api@sha256:{DIGEST}")
+    env["FAKE_CONFIG_DELAY"] = "2"
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--kube-context",
+            "fake-context",
+            "--startup-timeout-seconds",
+            "1",
+        ],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+        timeout=5,
+    )
+
+    assert result.returncode != 0
+    assert "startup timeout elapsed" in result.stderr
+    assert not (tmp_path / "state" / "manifest.json").exists()
