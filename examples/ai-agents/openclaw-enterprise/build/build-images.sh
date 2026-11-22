@@ -29,6 +29,14 @@ require_digest() {
     die "$name must be sha256 followed by exactly 64 lowercase hex characters"
 }
 
+reclaim_build_disk() {
+  # Every image is already in ECR at this point. Remove its local BuildKit
+  # cache and VFS layer copies before the next build consumes the ephemeral
+  # CodeBuild disk.
+  docker buildx prune --all --force
+  docker system prune --all --force --volumes
+}
+
 read_oce_dockerfile_arg() {
   local name="$1"
   local dockerfile="$2"
@@ -172,6 +180,7 @@ docker buildx build \
   --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
   --tag "$adapter_tagged" \
   "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/adapter"
+reclaim_build_disk
 
 docker buildx build \
   --pull \
@@ -183,6 +192,7 @@ docker buildx build \
   --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
   --tag "$ownership_helper_tagged" \
   "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/ownership-helper"
+reclaim_build_disk
 
 readonly CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY}:${CONTROLLER_RUNTIME_BASE_IMAGE_TAG}@${CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST}"
 
@@ -201,6 +211,7 @@ docker buildx build \
   --file "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile" \
   --tag "$controller_tagged" \
   "$OCE_SOURCE_DIR"
+reclaim_build_disk
 
 mapfile -t openclaw_source_args < <(
   cd "$OCE_SOURCE_DIR"

@@ -905,6 +905,11 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     assert "check-oce-lock.py" in script
     assert script.count("docker buildx build") == 4
     assert script.count("--provenance=false") == 4
+    assert "docker buildx prune --all --force" in script
+    assert "docker system prune --all --force --volumes" in script
+    assert script.count("reclaim_build_disk") == 4
+    runtime_build = script.rindex("docker buildx build")
+    assert script.rindex("reclaim_build_disk", 0, runtime_build) < runtime_build
     assert (
         script.count(
             '--label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION"'
