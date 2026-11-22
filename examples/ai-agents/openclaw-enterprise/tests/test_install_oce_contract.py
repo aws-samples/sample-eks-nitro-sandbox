@@ -627,6 +627,71 @@ case "$*" in
     [[ ! -f "$TEST_KUBE_STATE/job-deleted" ]] ||
       not_found job/oce-sample-bootstrap-volume-prep
     printf 'job.batch/oce-sample-bootstrap-volume-prep\\n' ;;
+  *"get job oce-initialization -o json")
+    [[ ! -f "$TEST_KUBE_STATE/oce-init-job-deleted" ]] ||
+      not_found job/oce-initialization
+    attempt=${TEST_OCE_INIT_ATTEMPT:-}
+    if [[ -z "$attempt" && -f "$TEST_KUBE_STATE/release-attempt" ]]; then
+      attempt=$(<"$TEST_KUBE_STATE/release-attempt")
+    fi
+    jq -cn \
+      --arg attempt "$attempt" \
+      --arg image "example/controller@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+      --arg claim "${TEST_OCE_INIT_CLAIM:-oce-sample-bootstrap-output}" \
+      --arg succeeded "${TEST_OCE_INIT_SUCCEEDED:-1}" \
+      '{
+        metadata: {
+          name: "oce-initialization",
+          namespace: "openclaw-system",
+          uid: "uid-oce-init-job",
+          resourceVersion: "104",
+          labels: {
+            "app.kubernetes.io/name": "openclaw-enterprise",
+            "app.kubernetes.io/instance": "oce",
+            "app.kubernetes.io/component": "initialization",
+            "app.kubernetes.io/managed-by": "Helm"
+          },
+          annotations: {
+            "openclaw.dev/installation-attempt": $attempt,
+            "helm.sh/hook": "pre-install,pre-upgrade",
+            "helm.sh/hook-weight": "-10",
+            "helm.sh/hook-delete-policy": "before-hook-creation"
+          }
+        },
+        spec: {
+          template: {
+            spec: {
+              serviceAccountName: "openclaw-enterprise-initialization",
+              automountServiceAccountToken: false,
+              restartPolicy: "Never",
+              volumes: [{
+                name: "bootstrap-password-output",
+                persistentVolumeClaim: {claimName: $claim}
+              }],
+              initContainers: [{
+                name: "migration",
+                image: $image
+              }],
+              containers: [{
+                name: "bootstrap",
+                image: $image,
+                volumeMounts: [{
+                  name: "bootstrap-password-output",
+                  mountPath: "/var/lib/openclaw/bootstrap"
+                }]
+              }]
+            }
+          }
+        },
+        status: {
+          succeeded: ($succeeded | tonumber),
+          conditions: [{
+            type: "Complete",
+            status: (if $succeeded == "1" then "True" else "False" end)
+          }]
+        }
+      }'
+    ;;
   *"get persistentvolumeclaim oce-sample-bootstrap-output -o json")
     [[ ! -f "$TEST_KUBE_STATE/pvc-deleted" ]] ||
       not_found persistentvolumeclaim/oce-sample-bootstrap-output
@@ -733,6 +798,16 @@ case "$*" in
     : >"$TEST_KUBE_STATE/job-deleted"
     fail_after_delete job
     printf '%s\n' '{"kind":"Job","metadata":{"name":"oce-sample-bootstrap-volume-prep"}}'
+    ;;
+  *" delete --raw=/apis/batch/v1/namespaces/openclaw-system/jobs/oce-initialization -f -")
+    body=$(cat)
+    require_delete_preconditions "$body" \
+      "uid-oce-init-job" "104"
+    [[ "$(jq -r '.propagationPolicy' <<<"$body")" == Foreground ]] ||
+      exit 2
+    : >"$TEST_KUBE_STATE/oce-init-job-deleted"
+    fail_after_delete oce-init-job
+    printf '%s\n' '{"kind":"Job","metadata":{"name":"oce-initialization"}}'
     ;;
   *" delete --raw=/api/v1/namespaces/openclaw-system/persistentvolumeclaims/oce-sample-bootstrap-output -f -")
     body=$(cat)
@@ -1257,6 +1332,7 @@ def test_bound_pv_contract_fails_before_occ(
         ("TEST_FAIL_ERASE_AFTER_KEY_ONCE", "true"),
         ("TEST_FAIL_AFTER_DELETE", "pod"),
         ("TEST_FAIL_AFTER_DELETE", "job"),
+        ("TEST_FAIL_AFTER_DELETE", "oce-init-job"),
         ("TEST_FAIL_AFTER_DELETE", "pvc"),
         ("TEST_FAIL_PV_WAIT_ONCE", "true"),
     ],
@@ -1286,8 +1362,50 @@ def test_post_occ_failures_resume_without_reinstalling(
     assert not (kube_state / "remote-key").exists()
     assert not (kube_state / "remote-password").exists()
     assert (kube_state / "job-deleted").is_file()
+    assert (kube_state / "oce-init-job-deleted").is_file()
     assert (kube_state / "pvc-deleted").is_file()
     assert (kube_state / "pv-deleted").is_file()
+
+
+def test_completed_oce_hook_is_deleted_before_bootstrap_pvc(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text()
+    hook_delete = calls.index(
+        "jobs/oce-initialization -f -"
+    )
+    pvc_delete = calls.index(
+        "persistentvolumeclaims/oce-sample-bootstrap-output -f -"
+    )
+    assert hook_delete < pvc_delete
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("TEST_OCE_INIT_ATTEMPT", "other-attempt"),
+        ("TEST_OCE_INIT_CLAIM", "other-claim"),
+        ("TEST_OCE_INIT_SUCCEEDED", "0"),
+    ],
+)
+def test_unexpected_oce_hook_is_not_deleted(
+    tmp_path: Path,
+    variable: str,
+    value: str,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env[variable] = value
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "does not match the completed OCE installation hook" in result.stderr
+    kube_state = Path(env["TEST_KUBE_STATE"])
+    assert not (kube_state / "oce-init-job-deleted").exists()
+    assert not (kube_state / "pvc-deleted").exists()
 
 
 def test_interrupted_remote_read_copies_no_partial_credentials(tmp_path: Path) -> None:

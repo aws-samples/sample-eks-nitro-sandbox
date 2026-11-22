@@ -563,6 +563,107 @@ require_bootstrap_handoff_contract() {
     die "bootstrap handoff Pod does not match its journalled receipt and canonical specification."
 }
 
+oce_initialization_job_contract_matches() {
+  local job_json=$1
+  jq -e \
+    --arg namespace "$namespace" \
+    --arg release "$release" \
+    --arg attempt "$occ_attempt" \
+    --arg image "$controller_image" \
+    '
+      .metadata.name == ($release + "-initialization")
+      and .metadata.namespace == $namespace
+      and (.metadata.ownerReferences // []) == []
+      and .metadata.labels["app.kubernetes.io/name"]
+        == "openclaw-enterprise"
+      and .metadata.labels["app.kubernetes.io/instance"] == $release
+      and .metadata.labels["app.kubernetes.io/component"]
+        == "initialization"
+      and .metadata.labels["app.kubernetes.io/managed-by"] == "Helm"
+      and .metadata.annotations["openclaw.dev/installation-attempt"]
+        == $attempt
+      and .metadata.annotations["helm.sh/hook"] == "pre-install,pre-upgrade"
+      and .metadata.annotations["helm.sh/hook-weight"] == "-10"
+      and .metadata.annotations["helm.sh/hook-delete-policy"]
+        == "before-hook-creation"
+      and (.status.active // 0) == 0
+      and (.status.failed // 0) == 0
+      and (.status.succeeded // 0) == 1
+      and any(
+        .status.conditions[]?;
+        .type == "Complete" and .status == "True"
+      )
+      and all(
+        .status.conditions[]?;
+        (.type != "Failed") or .status != "True"
+      )
+      and .spec.template.spec.serviceAccountName
+        == "openclaw-enterprise-initialization"
+      and .spec.template.spec.automountServiceAccountToken == false
+      and .spec.template.spec.restartPolicy == "Never"
+      and (
+        .spec.template.spec.volumes
+        | map(select(has("persistentVolumeClaim")))
+      ) == [{
+        name: "bootstrap-password-output",
+        persistentVolumeClaim: {
+          claimName: "oce-sample-bootstrap-output"
+        }
+      }]
+      and (.spec.template.spec.initContainers | length) == 1
+      and .spec.template.spec.initContainers[0].name == "migration"
+      and .spec.template.spec.initContainers[0].image == $image
+      and (.spec.template.spec.containers | length) == 1
+      and .spec.template.spec.containers[0].name == "bootstrap"
+      and .spec.template.spec.containers[0].image == $image
+      and any(
+        .spec.template.spec.containers[0].volumeMounts[]?;
+        .name == "bootstrap-password-output"
+      )
+    ' <<<"$job_json" >/dev/null
+}
+
+delete_oce_initialization_job() {
+  local job_name="${release}-initialization"
+  local resource_path delete_options output status
+  inspect_owned_resource job "$job_name" Helm
+  if [[ "$INSPECTED_RESOURCE_PRESENT" != true ]]; then
+    return 0
+  fi
+  oce_initialization_job_contract_matches "$INSPECTED_RESOURCE_JSON" ||
+    die "refusing to delete $job_name; it does not match the completed OCE installation hook."
+  if jq -e '.metadata.deletionTimestamp? | type == "string" and length > 0' \
+    <<<"$INSPECTED_RESOURCE_JSON" >/dev/null; then
+    "${KUBE[@]}" --namespace "$namespace" wait \
+      --for=delete "job/$job_name" --timeout=120s
+    return 0
+  fi
+  resource_path=$(kubernetes_resource_path job "$job_name")
+  delete_options=$(jq -cn \
+    --arg uid "$INSPECTED_RESOURCE_UID" \
+    --arg resource_version "$INSPECTED_RESOURCE_VERSION" \
+    '{
+      apiVersion: "v1",
+      kind: "DeleteOptions",
+      propagationPolicy: "Foreground",
+      preconditions: {
+        uid: $uid,
+        resourceVersion: $resource_version
+      }
+    }')
+  set +e
+  output=$("${KUBE[@]}" --namespace "$namespace" delete \
+    --raw="$resource_path" -f - <<<"$delete_options" 2>&1)
+  status=$?
+  set -e
+  if ((status != 0)); then
+    kubectl_error_is_not_found "$output" && return 0
+    die "preconditioned deletion failed for job/$job_name: $output"
+  fi
+  "${KUBE[@]}" --namespace "$namespace" wait \
+    --for=delete "job/$job_name" --timeout=120s
+}
+
 kubernetes_resource_path() {
   local kind=$1 name=$2
   case "$kind" in
@@ -1990,6 +2091,11 @@ spec:
   delete_owned_resource job oce-sample-bootstrap-volume-prep \
     "$bootstrap_job_uid" 120s
   write_handoff_state job-deleted
+
+  # OCE retains its completed pre-install hook until the next Helm operation.
+  # Delete only the exact completed hook for this OCC attempt so its finished
+  # Pod releases the temporary bootstrap PVC before the sample removes it.
+  delete_oce_initialization_job
 
   delete_owned_resource persistentvolumeclaim oce-sample-bootstrap-output \
     "$bootstrap_pvc_uid" 120s
