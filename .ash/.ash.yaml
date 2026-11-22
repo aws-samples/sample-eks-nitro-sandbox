@@ -2316,6 +2316,32 @@ global_settings:
       path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
       reason: 'Coder server advisory (every affected range ends by 2.34.8), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
       expiration: '2027-05-31'
+    # GHSA-qx49-fqc8-xw99 in the mcp Python SDK, published 2026-11-21, which turned the
+    # ASH scan red on main and on every open branch at once. Unlike the coder/coder
+    # entries above, this is NOT a name collision: the advisory applies to the mcp that
+    # is really installed. It is suppressed on a narrower ground, stated here so the
+    # next reader can re-check it rather than trust it:
+    #
+    #   - The advisory is in the MCP SDK's OAuth client, which could send credentials to
+    #     an authorization server the MCP server chose.
+    #   - mcp is not a direct dependency. requirements.in pins strands-agents==1.62.0,
+    #     boto3 and pydantic; mcp arrives only "# via strands-agents".
+    #   - Nothing in examples/subagent-security/ imports mcp, builds an MCP client, or
+    #     performs an OAuth flow, so the vulnerable path is installed and never reached
+    #     (`grep -rn 'mcp\|MCPClient\|oauth' --include='*.py' examples/subagent-security/`
+    #     matches nothing).
+    #
+    # It is suppressed rather than fixed because the fix is not local: strands-agents
+    # 1.62.0 requires mcp>=1.23.0,<2.2, so reaching the patched 2.2.0 needs
+    # strands-agents bumped too (1.65.0 is the lowest that resolves, bringing mcp 2.3.0),
+    # and this requirements file is shared by the analyst, nono, openshell and bubblewrap
+    # samples, whose pages each carry output proved against 1.62.0. That bump needs a
+    # fresh run of all four and is tracked in #285. Expires in three months, shorter than
+    # the entries above, so it cannot outlive that work quietly.
+    - rule_id: GHSA-qx49-fqc8-xw99-mcp
+      path: 'examples/subagent-security/analyst/requirements.txt'
+      reason: 'MCP SDK OAuth-client advisory (fixed in mcp 2.2.0) in a transitive dependency of strands-agents==1.62.0, which caps mcp below 2.2; nothing in examples/subagent-security/ imports mcp or runs an OAuth flow, so the affected code is installed and unreachable. The strands-agents bump that fixes it properly spans four samples and needs a fresh run of each: see #285'
+      expiration: '2027-02-28'
 scanners:
   cdk-nag:
     enabled: false  # no CloudFormation or CDK here; it fails to parse the multi-document Kubernetes manifests
