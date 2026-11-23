@@ -59,15 +59,15 @@ require_matching_oce_node_bases() {
   local build_version
   local runtime_version
 
-  if [[ "$build_image" =~ ^docker\.io/library/node:([0-9]+\.[0-9]+\.[0-9]+)-bookworm@sha256:[0-9a-f]{64}$ ]]; then
+  if [[ "$build_image" =~ ^docker\.io/library/node:([0-9]+\.[0-9]+\.[0-9]+)-trixie@sha256:[0-9a-f]{64}$ ]]; then
     build_version="${BASH_REMATCH[1]}"
   else
-    die "OCE NODE_BASE_IMAGE must be a digest-pinned Node.js Bookworm image"
+    die "OCE NODE_BASE_IMAGE must be a digest-pinned Node.js Trixie image"
   fi
-  if [[ "$runtime_image" =~ ^docker\.io/library/node:([0-9]+\.[0-9]+\.[0-9]+)-bookworm-slim@sha256:[0-9a-f]{64}$ ]]; then
+  if [[ "$runtime_image" =~ ^docker\.io/library/node:([0-9]+\.[0-9]+\.[0-9]+)-trixie-slim@sha256:[0-9a-f]{64}$ ]]; then
     runtime_version="${BASH_REMATCH[1]}"
   else
-    die "OCE NODE_RUNTIME_BASE_IMAGE must be a digest-pinned Node.js Bookworm slim image"
+    die "OCE NODE_RUNTIME_BASE_IMAGE must be a digest-pinned Node.js Trixie slim image"
   fi
   [[ "$build_version" == "$runtime_version" ]] ||
     die "OCE Node build and runtime base versions must match"
@@ -169,10 +169,8 @@ readonly OPENSSL_BACKPORT_PATCH_SHA256 OPENSSL_BACKPORT_UPSTREAM_COMMIT
 readonly OPENCLAW_DEPENDENCY_PATCH OPENCLAW_DEPENDENCY_PATCH_SHA256
 readonly NPM_RUNTIME_VERSION NPM_RUNTIME_ARCHIVE_SHA256
 
-# Consume the exact bases reviewed with the pinned OCE commit. The runtime
-# Dockerfile currently requires Bookworm, so substituting a newer Debian base
-# without an upstream change would fail the build. Inspector gates the final
-# pushed images below.
+# Consume the digest-pinned Debian 13 bases prepared by the fail-closed OCE
+# source patcher. Inspector gates the final pushed images below.
 OCE_RUNTIME_DOCKERFILE="$OCE_SOURCE_DIR/deploy/runtime/Dockerfile"
 OCE_NODE_BUILD_BASE_IMAGE="$(
   read_oce_dockerfile_arg NODE_BASE_IMAGE "$OCE_RUNTIME_DOCKERFILE"

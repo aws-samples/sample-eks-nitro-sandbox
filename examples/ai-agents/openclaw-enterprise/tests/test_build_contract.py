@@ -324,12 +324,12 @@ def test_node_build_and_runtime_bases_come_from_the_pinned_oce_source() -> None:
     assert "read_oce_dockerfile_arg NODE_BASE_IMAGE" in script
     assert "read_oce_dockerfile_arg NODE_RUNTIME_BASE_IMAGE" in script
     assert "@sha256:[0-9a-f]{64}$" in script
-    assert "-bookworm@sha256:" in script
-    assert "-bookworm-slim@sha256:" in script
-    assert "trixie" not in script
+    assert "-trixie@sha256:" in script
+    assert "-trixie-slim@sha256:" in script
+    assert "bookworm" not in script
 
 
-def test_node_base_guard_accepts_only_matching_bookworm_images() -> None:
+def test_node_base_guard_accepts_only_matching_trixie_images() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
     function_match = re.search(
         r"(?ms)^require_matching_oce_node_bases\(\) \{\n.*?^\}\n",
@@ -338,8 +338,8 @@ def test_node_base_guard_accepts_only_matching_bookworm_images() -> None:
     assert function_match is not None
     function_source = function_match.group(0)
     digest = "a" * 64
-    valid_build = f"docker.io/library/node:24.22.1-bookworm@sha256:{digest}"
-    valid_runtime = f"docker.io/library/node:24.22.1-bookworm-slim@sha256:{digest}"
+    valid_build = f"docker.io/library/node:24.22.1-trixie@sha256:{digest}"
+    valid_runtime = f"docker.io/library/node:24.22.1-trixie-slim@sha256:{digest}"
 
     def run_guard(
         build_image: str, runtime_image: str
@@ -367,7 +367,7 @@ def test_node_base_guard_accepts_only_matching_bookworm_images() -> None:
     assert (
         run_guard(
             valid_build,
-            f"docker.io/library/node:24.23.0-bookworm-slim@sha256:{digest}",
+            f"docker.io/library/node:24.23.0-trixie-slim@sha256:{digest}",
         ).returncode
         != 0
     )
@@ -1695,7 +1695,9 @@ def _create_fake_oce_source(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
         encoding="utf-8",
     )
     (runtime_dir / "Dockerfile").write_text(
-        """FROM node-build-base AS node-source
+        """ARG NODE_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a
+ARG NODE_RUNTIME_BASE_IMAGE=docker.io/library/node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
+FROM node-build-base AS node-source
 # Record every patch applied here in appliedPatches in scripts/build-runtime-assets.mjs,
 # which writes provenance; runtime-assets.test.mjs compares the two.
 FROM node-runtime-base AS runtime
@@ -1838,6 +1840,18 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     )
     assert (
         'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version'
+        in dockerfile
+    )
+    assert "node:24.22.1-bookworm@" not in dockerfile
+    assert "node:24.22.1-bookworm-slim@" not in dockerfile
+    assert (
+        "node:24.22.1-trixie@sha256:"
+        "f1e034976f948cf212ef1f659c12e5dd58ac7eab947831813e81a62401ca38be"
+        in dockerfile
+    )
+    assert (
+        "node:24.22.1-trixie-slim@sha256:"
+        "89c5244bc22a9bc3287d89ebc7e49b9cb5bb84cd40e6175ac3421d5a9f68b95a"
         in dockerfile
     )
     assert "v2.103.2" not in dockerfile
@@ -2031,6 +2045,38 @@ def test_oce_security_patcher_fails_closed_on_runtime_dockerfile_drift(
 
     assert result.returncode == 1
     assert "runtime patch anchors changed" in result.stderr
+
+
+def test_oce_security_patcher_fails_closed_on_node_base_drift(
+    tmp_path: pathlib.Path,
+) -> None:
+    oce_source, revision = _create_fake_oce_source(tmp_path)
+    dockerfile = oce_source / "deploy" / "runtime" / "Dockerfile"
+    dockerfile.write_text(
+        dockerfile.read_text(encoding="utf-8").replace(
+            "node:24.22.1-bookworm@",
+            "node:24.22.2-bookworm@",
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(OCE_SECURITY_PATCHER),
+            str(oce_source),
+            revision,
+            str(OPENSSL_BACKPORT_PATCH),
+            str(OPENCLAW_DEPENDENCY_PATCH),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "pinned Node base images changed" in result.stderr
 
 
 def _oce_lock_result(

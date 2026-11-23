@@ -27,6 +27,18 @@ GH_CLI_OLD_CHECKSUMS_SHA256 = "414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861
 GH_CLI_CHECKSUMS_SHA256 = "4597138ea96e474c68001370c0a4955ff4834ba603c53900de6ebbef4cb0bed9"  # pragma: allowlist secret -- public checksum
 GOG_OLD_VERSION = "0.46.0"
 GOG_VERSION = "0.48.1"
+NODE_BASE_IMAGE_REPLACEMENTS = {
+    "docker.io/library/node:24.22.1-bookworm@sha256:"
+    "6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a": (
+        "docker.io/library/node:24.22.1-trixie@sha256:"
+        "f1e034976f948cf212ef1f659c12e5dd58ac7eab947831813e81a62401ca38be"
+    ),
+    "docker.io/library/node:24.22.1-bookworm-slim@sha256:"
+    "55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205": (
+        "docker.io/library/node:24.22.1-trixie-slim@sha256:"
+        "89c5244bc22a9bc3287d89ebc7e49b9cb5bb84cd40e6175ac3421d5a9f68b95a"
+    ),
+}
 GOG_RELEASE_REPLACEMENTS = {
     '"version": "0.46.0"': '"version": "0.48.1"',
     "https://github.com/openclaw/gogcli/releases/download/v0.46.0/"
@@ -262,6 +274,11 @@ if (
     or runtime_assets.count(assets_anchor) != 1
 ):
     fail("the OpenClaw runtime patch anchors changed; review the patch before building")
+if any(
+    dockerfile.count(old_value) != 1
+    for old_value in NODE_BASE_IMAGE_REPLACEMENTS
+):
+    fail("the pinned Node base images changed; review the Debian update")
 gh_cli_fragments = (
     f"releases/download/v{GH_CLI_OLD_VERSION}/gh_{GH_CLI_OLD_VERSION}_linux_",
     f"releases/download/v{GH_CLI_OLD_VERSION}/gh_{GH_CLI_OLD_VERSION}_checksums.txt",
@@ -276,8 +293,11 @@ if any(dockerfile.count(fragment) != 1 for fragment in gh_cli_fragments):
     fail("the pinned GitHub CLI install changed; review the update before building")
 if dockerfile.count(GH_CLI_OLD_CHECKSUMS_SHA256) != 1:
     fail("the pinned GitHub CLI checksum changed; review the update before building")
+patched_dockerfile = dockerfile
+for old_value, new_value in NODE_BASE_IMAGE_REPLACEMENTS.items():
+    patched_dockerfile = patched_dockerfile.replace(old_value, new_value)
 patched_dockerfile = (
-    dockerfile.replace(GH_CLI_OLD_VERSION, GH_CLI_VERSION)
+    patched_dockerfile.replace(GH_CLI_OLD_VERSION, GH_CLI_VERSION)
     .replace(GH_CLI_OLD_CHECKSUMS_SHA256, GH_CLI_CHECKSUMS_SHA256)
     .replace(npm_stage_anchor, npm_stage_insertion)
     .replace(docker_anchor, docker_insertion)
@@ -330,6 +350,7 @@ print(
     f"{OPENSSL_PATCH_SHA256} to Node {EXPECTED_NODE_SOURCE['version']}; "
     f"applied OpenClaw dependency patch {OPENCLAW_PATCH_SHA256}; "
     f"pinned npm {NPM_RUNTIME_VERSION} with undici {NPM_RUNTIME_UNDICI_VERSION}; "
+    "updated the Node build and runtime bases to Debian 13 (Trixie); "
     f"updated GitHub CLI from {GH_CLI_OLD_VERSION} to {GH_CLI_VERSION}; "
     f"updated Google Workspace CLI from {GOG_OLD_VERSION} to {GOG_VERSION}"
 )
