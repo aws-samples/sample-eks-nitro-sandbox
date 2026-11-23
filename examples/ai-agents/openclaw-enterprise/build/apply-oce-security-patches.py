@@ -29,14 +29,14 @@ GOG_OLD_VERSION = "0.46.0"
 GOG_VERSION = "0.48.1"
 NODE_BASE_IMAGE_REPLACEMENTS = {
     "docker.io/library/node:24.22.1-bookworm@sha256:"
-    "6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a": (
+    "6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a": (  # pragma: allowlist secret -- public image digest
         "docker.io/library/node:24.22.1-trixie@sha256:"
-        "f1e034976f948cf212ef1f659c12e5dd58ac7eab947831813e81a62401ca38be"
+        "f1e034976f948cf212ef1f659c12e5dd58ac7eab947831813e81a62401ca38be"  # pragma: allowlist secret -- public image digest
     ),
     "docker.io/library/node:24.22.1-bookworm-slim@sha256:"
-    "55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205": (
+    "55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205": (  # pragma: allowlist secret -- public image digest
         "docker.io/library/node:24.22.1-trixie-slim@sha256:"
-        "89c5244bc22a9bc3287d89ebc7e49b9cb5bb84cd40e6175ac3421d5a9f68b95a"
+        "89c5244bc22a9bc3287d89ebc7e49b9cb5bb84cd40e6175ac3421d5a9f68b95a"  # pragma: allowlist secret -- public image digest
     ),
 }
 GOG_RELEASE_REPLACEMENTS = {
@@ -46,22 +46,22 @@ GOG_RELEASE_REPLACEMENTS = {
         "https://github.com/openclaw/gogcli/releases/download/v0.48.1/"
         "gogcli_0.48.1_linux_amd64.tar.gz"
     ),
-    "d53cf89f0c2a2338211212e380b3efcacadd4e27e500cb8e7ed2cd82a739da2e": (
-        "dcd956e09d1222a07c1304d836f8acd55266b2fa241ef466580ced6a02453d72"
+    "d53cf89f0c2a2338211212e380b3efcacadd4e27e500cb8e7ed2cd82a739da2e": (  # pragma: allowlist secret -- public checksum
+        "dcd956e09d1222a07c1304d836f8acd55266b2fa241ef466580ced6a02453d72"  # pragma: allowlist secret -- public checksum
     ),
-    "36551bb5725a7c7f22413826109ed455ce9de9a1aecaa81e918a5d461072787a": (
-        "c943659544d425aee0c21b46b8f4c7939a4db2f12d5928dcf99f83ddecfb255f"
+    "36551bb5725a7c7f22413826109ed455ce9de9a1aecaa81e918a5d461072787a": (  # pragma: allowlist secret -- public checksum
+        "c943659544d425aee0c21b46b8f4c7939a4db2f12d5928dcf99f83ddecfb255f"  # pragma: allowlist secret -- public checksum
     ),
     "https://github.com/openclaw/gogcli/releases/download/v0.46.0/"
     "gogcli_0.46.0_linux_arm64.tar.gz": (
         "https://github.com/openclaw/gogcli/releases/download/v0.48.1/"
         "gogcli_0.48.1_linux_arm64.tar.gz"
     ),
-    "9ae69d117cef895aa1c50b5859d7d3def45c5580886b25dc1c7f3cfe128ed0dd": (
-        "c091fa2014dc3d5608acef4d09fb3bb4a3eb71e4cff898b5eaddd9703599e45c"
+    "9ae69d117cef895aa1c50b5859d7d3def45c5580886b25dc1c7f3cfe128ed0dd": (  # pragma: allowlist secret -- public checksum
+        "c091fa2014dc3d5608acef4d09fb3bb4a3eb71e4cff898b5eaddd9703599e45c"  # pragma: allowlist secret -- public checksum
     ),
-    "ad84f12b8efd889f65bd7c45c4eb6152fa963f623394fdf50938b14c57b9b694": (
-        "520cbe587cea302d3e7770c43704856d8582ad888de344c8d1f7812997020a9c"
+    "ad84f12b8efd889f65bd7c45c4eb6152fa963f623394fdf50938b14c57b9b694": (  # pragma: allowlist secret -- public checksum
+        "520cbe587cea302d3e7770c43704856d8582ad888de344c8d1f7812997020a9c"  # pragma: allowlist secret -- public checksum
     ),
 }
 EXPECTED_NODE_SOURCE: dict[str, Any] = {
