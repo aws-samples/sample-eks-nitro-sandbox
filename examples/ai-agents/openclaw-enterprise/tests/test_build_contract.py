@@ -1934,7 +1934,8 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     curl_build = (curl_dir / "build.sh").read_text(encoding="utf-8")
     assert "Bookworm" not in curl_build
     assert "version=8.14.1-2+deb13u7" in curl_build
-    assert "curl_8.14.1.orig.tar.xz" in curl_build
+    assert "curl_8.14.1.orig.tar.gz" in curl_build
+    assert "curl_8.14.1.orig.tar.xz" not in curl_build
     assert "curl (8.14.1-2+deb13u7+oce1) trixie" in curl_build
     assert "for package in curl libcurl4t64 libcurl3t64-gnutls; do" in curl_build
 

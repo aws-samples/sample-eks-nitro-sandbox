@@ -76,8 +76,8 @@ CURL_BUILD_REPLACEMENTS = {
         'for file in "curl_${version}.dsc" curl_7.88.1.orig.tar.gz '
         'curl_7.88.1.orig.tar.gz.asc "curl_${version}.debian.tar.xz"; do'
     ): (
-        'for file in "curl_${version}.dsc" curl_8.14.1.orig.tar.xz '
-        'curl_8.14.1.orig.tar.xz.asc "curl_${version}.debian.tar.xz"; do'
+        'for file in "curl_${version}.dsc" curl_8.14.1.orig.tar.gz '
+        'curl_8.14.1.orig.tar.gz.asc "curl_${version}.debian.tar.xz"; do'
     ),
     (
         "2744f12e3aef161c0361743fa1b318296b122e566e47f381e4a63320fbcc23f4  "
@@ -92,9 +92,9 @@ CURL_BUILD_REPLACEMENTS = {
         "a559b829ff852b2ee1ac0e448b5d9c18e0f94875bc820d037609d4d807ac6f57  "
         "curl_8.14.1-2+deb13u7.dsc\n"
         "6766ada7101d292b42b8b15681120acd68effa4a9660935853cf6d61f0d984d4  "
-        "curl_8.14.1.orig.tar.xz\n"
+        "curl_8.14.1.orig.tar.gz\n"
         "39cc2ec8ddc39d04e3e7101bbed46d858d0875cbb297a6bfa20959fa2bc7d5c7  "
-        "curl_8.14.1.orig.tar.xz.asc\n"
+        "curl_8.14.1.orig.tar.gz.asc\n"
         "e0f627ee2b9ae61078b2835edc25c8b94a0b57e180a1bc72dd8636ef260c370b  "
         "curl_8.14.1-2+deb13u7.debian.tar.xz"
     ),
@@ -106,7 +106,7 @@ CURL_BUILD_REPLACEMENTS = {
     ),
     "sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz "
     "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256": (
-        "sha256sum ../*.dsc ../*.orig.tar.xz ../*.debian.tar.xz "
+        "sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz "
         "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256"
     ),
 }
