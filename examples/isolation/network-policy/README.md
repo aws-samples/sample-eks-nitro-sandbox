@@ -177,13 +177,10 @@ client-sandboxed -> web-blocked (192.168.121.114): reached
 [`egress-policy.yaml`](deploy/egress-policy.yaml) is a standard `networking.k8s.io/v1`
 `NetworkPolicy` — the kind platform teams already use, with no sandbox-specific fields. It
 selects both clients (`app: netpol-client`), allows egress to `web-allowed` on 8080 and to DNS
-on port 53 to any IP address, and lists `Egress` in `policyTypes`, which makes everything else
+on port 53 to the cluster's DNS address only, and lists `Egress` in `policyTypes`, which makes everything else
 the default-deny for the selected pods.
 
-DNS is allowed to any address (`ipBlock: { cidr: 0.0.0.0/0 }`) rather than pinned to the
-cluster's own DNS address, which needs no lookup and no permission beyond applying the policy
-itself (#104). The rule stays narrow: it opens only port 53, and everything else the selected
-pods try stays denied.
+DNS on port 53 goes to the cluster's DNS address only. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. The Amazon EKS User Guide gives the rule in [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). IPv4 uses the `.10` address of the service CIDR. IPv6 uses its network address with `a` appended. [`scripts/coredns-cidr-from-service.sh`](scripts/coredns-cidr-from-service.sh) reads the `kubernetes` Service, which holds the first address of that CIDR. It turns `10.100.0.1` into `10.100.0.10/32` and `fd12:3456:789a::1` into `fd12:3456:789a::a/128`. It stops on an empty address or one that does not end in `.1` or `::1`. Port 53 to any address would let code in the sandbox reach any DNS server on the internet. Everything else the selected pods try stays denied.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -203,8 +200,8 @@ spec:
               app: web-allowed
       ports:
         - { protocol: TCP, port: 8080 }
-    - to:                         # allow: DNS on port 53 to any IP, so lookups keep working
-        - ipBlock: { cidr: 0.0.0.0/0 }
+    - to:                         # allow: DNS on port 53 to the cluster's DNS address only
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -217,8 +214,13 @@ lands. The wait loop below is bounded so it cannot hang: if no `PolicyEndpoint` 
 about two minutes, it stops and tells you the controller has not programmed the policy (check the
 `amazon-vpc-cni` enforcement setting from step 1 and the network-policy-agent pods).
 
+Fill in `<COREDNS_CIDR>` and apply the policy. The first command stops, and applies nothing, if
+the `kubernetes` Service address is not one it expects:
+
 ```bash
-kubectl apply -f deploy/egress-policy.yaml
+. scripts/coredns-cidr-from-service.sh &&
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kubectl)" &&
+sed "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" deploy/egress-policy.yaml | kubectl apply -f -
 for i in $(seq 1 60); do
   kubectl get policyendpoints -o name 2>/dev/null \
     | grep -q '^policyendpoint.networking.k8s.aws/netpol-client-egress-' && break
@@ -347,11 +349,11 @@ can allow an endpoint by name. This variant reuses that pattern from
 side-by-side result for name-based egress: a second identical client pair
 (`app: netpol-client-dns`) whose policy allows one AWS endpoint by name and refuses another.
 
-[`app-egress-policy.yaml`](deploy/app-egress-policy.yaml) allows DNS on port 53 to any IP and
-`sts.<AWS_REGION>.amazonaws.com`, and nothing else, so `kms.<AWS_REGION>.amazonaws.com` is
+[`app-egress-policy.yaml`](deploy/app-egress-policy.yaml) allows DNS on port 53 to the cluster's DNS address only
+and `sts.<AWS_REGION>.amazonaws.com`, and nothing else, so `kms.<AWS_REGION>.amazonaws.com` is
 refused. Run it with [`scripts/run-dns-comparison.sh`](scripts/run-dns-comparison.sh) (set
-`AWS_REGION` first; it is the only value the script fills in, so no account value is written
-into a tracked file):
+`AWS_REGION` first; it fills in that and the DNS address, so no account value is written into a
+tracked file):
 
 ```bash
 export AWS_REGION=us-west-2

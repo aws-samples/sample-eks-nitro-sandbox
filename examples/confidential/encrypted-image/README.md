@@ -101,6 +101,7 @@ to is Figure 2.*
 | [`deploy/plain-pod.yaml`](deploy/plain-pod.yaml) | An ordinary pod running the same image unencrypted, on the same node, for comparison |
 | [`deploy/credentials-pod.yaml`](deploy/credentials-pod.yaml) | An ordinary pod with the same IAM role, asking KMS to decrypt the layer key with no attestation |
 | [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The sandbox's egress: DNS, Pod Identity and the KMS endpoint, nothing else |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the egress policy |
 | [`deploy/enable-network-policy.yaml`](deploy/enable-network-policy.yaml) | The one-line, once-per-cluster change that makes network policies enforced |
 | [`deploy/namespace.yaml`](deploy/namespace.yaml) | The `encrypted-image-sample` namespace, labelled as the blueprint's own |
 | [`deploy/service-account.yaml`](deploy/service-account.yaml) | The pod's service account, which the Pod Identity association names |
@@ -841,7 +842,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -856,14 +857,14 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-`setup.sh` reads `<AWS_REGION>` from `.env`; the DNS rule's `0.0.0.0/0` is a literal in
-the file, so nothing is substituted for it.
+`setup.sh` reads `<AWS_REGION>` from `.env` and fills `<COREDNS_CIDR>` with the cluster's DNS
+address, which it reads in step 1 and stops on if the service CIDR is missing or malformed.
 
 | Part | What it does |
 |---|---|
 | `podSelector` | Selects only the sandboxed pod, by its `app: encrypted-image` label. Neither control pod carries that label: the plain pod is the comparison for the readings, and the credentials pod is meant to reach KMS the ordinary way, so that what stops it is the key policy and not the network. |
 | `policyTypes: [Ingress, Egress]` | Denies all ingress and all egress except the rules below. Nothing in the blueprint needs to reach the pod. |
-| DNS rule | Lets the pod resolve names, allowed to any IP address on port 53 rather than pinned to the cluster's CoreDNS Service address. |
+| DNS rule | DNS on UDP and TCP 53 to the cluster's DNS address only. It is the nameserver in every pod's `resolv.conf`. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. [`coredns-cidr.sh`](scripts/coredns-cidr.sh) reads the service CIDR with `aws eks describe-cluster`. It applies the rule in the Amazon EKS User Guide, [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4 that is the `.10` address, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6 it is the network address with `a` appended, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. Port 53 to any address would let code in the sandbox reach any DNS server on the internet. That code could then send data out over DNS or reach a VPN listening on port 53. |
 | Pod Identity rule | `169.254.170.23:80` is the credential endpoint. It is served inside the guest, but the sandbox passes the requests on to the Pod Identity Agent on the node, and this policy applies to them: without the rule they time out. |
 | KMS rule | The one external destination. The `domainNames` form resolves the name and allows the addresses behind it. |
 
