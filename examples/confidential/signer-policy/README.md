@@ -622,6 +622,56 @@ before it removes anything inside the namespace, and each AWS resource for its `
 tag. A lookup it cannot complete counts as "could not determine", which is a failure and
 never "gone", so it reports what it could not do and exits non-zero.
 
+Every `clean.sh` run, whatever its argument, starts by removing the two registry credential
+directories `setup.sh` and `new-version.sh` write in the repository's `tmp/signer-policy/`:
+`genpolicy-home` and `docker-config`. Each holds an ECR authorization token for your
+account, valid for about 12 hours. `clean.sh` removes them by those two names, before it
+reads `.env` or calls the cluster or AWS, and never reads them; when that works it prints
+nothing about them. When it cannot, because `tmp` or `tmp/signer-policy` is a symbolic link
+or not a plain directory, or one of the two cannot be removed, it names the path, touches
+nothing in the cluster or AWS, and exits non-zero. A later `setup.sh` or `new-version.sh`
+writes fresh credentials, so run `clean.sh` after the last of them.
+
+The rest of `tmp/signer-policy/` stays: the run record `state.env`, `aws.err`, the rendered
+pod and namespace documents, the generated policies, the policy generator's logs and the
+pinned pod's message. They name your account, cluster and Region, so keep them to
+yourself. The two release images stay in your local image store as well. To remove both, run
+this from the blueprint folder after `clean.sh`. It removes each release image by the full
+tag the run record names, and the second only if the record has one; it leaves the folder in
+place and ends non-zero if the record is missing or an image will not go, and it refuses a
+`tmp` or `tmp/signer-policy` that is a symbolic link or not a directory. It removes only
+those tags, not other images, shared layers or the build cache:
+
+```bash
+( root="$(cd -P ../../.. && pwd -P)" && [[ "$(pwd -P)" == "$root/examples/confidential/signer-policy" ]] ||
+    { echo "run this from examples/confidential/signer-policy" >&2; exit 1; }
+  run="$root/tmp/signer-policy"
+  for d in "$root/tmp" "$run"; do
+    [[ -d "$d" && ! -L "$d" ]] || { echo "left everything alone: $d is missing, a link or not a directory" >&2; exit 1; }
+  done
+  [[ -f "$run/state.env" && ! -L "$run/state.env" ]] || { echo "no run record in $run; left it in place" >&2; exit 1; }
+  tags="$(unset REGISTRY ECR_REPOSITORY RELEASE_ONE RELEASE_TWO
+    . "$run/state.env" && [[ -n "${REGISTRY:-}" && -n "${ECR_REPOSITORY:-}" && -n "${RELEASE_ONE:-}" ]] &&
+    printf '%s\n' "$REGISTRY/$ECR_REPOSITORY:$RELEASE_ONE" &&
+    if [[ -n "${RELEASE_TWO:-}" ]]; then printf '%s\n' "$REGISTRY/$ECR_REPOSITORY:$RELEASE_TWO"; fi)" ||
+    { echo "the run record names no release image; left $run in place" >&2; exit 1; }
+  while IFS= read -r tag; do
+    found="$(docker image ls --quiet "$tag")" || { echo "could not check $tag; left $run in place" >&2; exit 1; }
+    if [[ -z "$found" ]]; then echo "$tag is already gone"
+    else docker image rm "$tag" || { echo "could not remove $tag; left $run in place" >&2; exit 1; }; fi
+  done <<<"$tags"
+  cd -P "$root/tmp" && [[ "$(pwd -P)" == "$root/tmp" && -d signer-policy && ! -L signer-policy ]] &&
+    rm -rf -- signer-policy && [[ ! -e signer-policy && ! -L signer-policy ]] ||
+    { echo "could not remove $run" >&2; exit 1; }
+  echo "removed $run" )
+```
+
+The block runs in a subshell, so it leaves your shell where it was. If `setup.sh` or
+`new-version.sh` stopped after building a release image but before writing that release to
+the run record, the record does not name its tag: remove it yourself by its full tag, with
+the release from `.env` (`docker image rm <REGISTRY>/nitro-sample-signer-policy:<RELEASE>`),
+before you run the block.
+
 AWS Signer has no hard delete, so `--delete-aws-resources` cancels the signing profile and
 confirms the status reads `Canceled`. A canceled profile lingers until its signatures expire
 (about 141 months by default) and AWS Signer refuses to reuse the name, so to set the blueprint
