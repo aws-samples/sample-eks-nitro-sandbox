@@ -1693,6 +1693,14 @@ def _create_fake_oce_source(tmp_path: pathlib.Path) -> tuple[pathlib.Path, str]:
 # which writes provenance; runtime-assets.test.mjs compares the two.
 FROM node-runtime-base AS runtime
 
+RUN curl -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_linux_${architecture}.tar.gz"; \\
+    curl -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_checksums.txt"; \\
+    echo '414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861efd207356a36b2d  gh_2.103.2_checksums.txt' | sha256sum --check --strict; \\
+    grep " gh_2.103.2_linux_${architecture}.tar.gz$" gh_2.103.2_checksums.txt | sha256sum --check --strict; \\
+    tar -xzf "gh_2.103.2_linux_${architecture}.tar.gz"; \\
+    install -m 0755 "gh_2.103.2_linux_${architecture}/bin/gh" /usr/local/bin/gh; \\
+    rm -rf /tmp/gh_2.103.2*; \\
+    XDG_STATE_HOME="$gh_state" /usr/local/bin/gh --version | grep '^gh version 2.103.2 '
 """,
         encoding="utf-8",
     )
@@ -1795,6 +1803,14 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     )
     assert (
         'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version'
+        in dockerfile
+    )
+    assert "v2.103.2" not in dockerfile
+    assert "gh_2.103.2" not in dockerfile
+    assert "v2.105.0" in dockerfile
+    assert "gh_2.105.0" in dockerfile
+    assert (
+        "4597138ea96e474c68001370c0a4955ff4834ba603c53900de6ebbef4cb0bed9"  # pragma: allowlist secret -- public checksum
         in dockerfile
     )
     runtime_assets = (

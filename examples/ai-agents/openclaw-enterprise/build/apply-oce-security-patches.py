@@ -21,6 +21,10 @@ OPENCLAW_PATCH_SHA256 = "90a81159bfc78b6cf2596e113dac2212f02087bdf5dc5ad43ba6268
 NPM_RUNTIME_VERSION = "11.21.3"
 NPM_RUNTIME_ARCHIVE_SHA256 = "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
 NPM_RUNTIME_UNDICI_VERSION = "6.29.1"
+GH_CLI_OLD_VERSION = "2.103.2"
+GH_CLI_VERSION = "2.105.0"
+GH_CLI_OLD_CHECKSUMS_SHA256 = "414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861efd207356a36b2d"  # pragma: allowlist secret -- public checksum
+GH_CLI_CHECKSUMS_SHA256 = "4597138ea96e474c68001370c0a4955ff4834ba603c53900de6ebbef4cb0bed9"  # pragma: allowlist secret -- public checksum
 EXPECTED_NODE_SOURCE: dict[str, Any] = {
     "version": "24.22.1",
     "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",  # pragma: allowlist secret -- public source revision
@@ -225,6 +229,27 @@ if (
     or runtime_assets.count(assets_anchor) != 1
 ):
     fail("the OpenClaw runtime patch anchors changed; review the patch before building")
+gh_cli_fragments = (
+    f"releases/download/v{GH_CLI_OLD_VERSION}/gh_{GH_CLI_OLD_VERSION}_linux_",
+    f"releases/download/v{GH_CLI_OLD_VERSION}/gh_{GH_CLI_OLD_VERSION}_checksums.txt",
+    f"{GH_CLI_OLD_CHECKSUMS_SHA256}  gh_{GH_CLI_OLD_VERSION}_checksums.txt",
+    f'grep " gh_{GH_CLI_OLD_VERSION}_linux_',
+    f'tar -xzf "gh_{GH_CLI_OLD_VERSION}_linux_',
+    f'install -m 0755 "gh_{GH_CLI_OLD_VERSION}_linux_',
+    f"rm -rf /tmp/gh_{GH_CLI_OLD_VERSION}*",
+    f"grep '^gh version {GH_CLI_OLD_VERSION} '",
+)
+if any(dockerfile.count(fragment) != 1 for fragment in gh_cli_fragments):
+    fail("the pinned GitHub CLI install changed; review the update before building")
+if dockerfile.count(GH_CLI_OLD_CHECKSUMS_SHA256) != 1:
+    fail("the pinned GitHub CLI checksum changed; review the update before building")
+patched_dockerfile = (
+    dockerfile.replace(GH_CLI_OLD_VERSION, GH_CLI_VERSION)
+    .replace(GH_CLI_OLD_CHECKSUMS_SHA256, GH_CLI_CHECKSUMS_SHA256)
+    .replace(npm_stage_anchor, npm_stage_insertion)
+    .replace(docker_anchor, docker_insertion)
+    .replace(runtime_stage_anchor, runtime_stage_insertion)
+)
 
 openclaw_destination = (
     args.oce_source / "deploy" / "runtime" / OPENCLAW_PATCH_FILE_NAME
@@ -235,9 +260,7 @@ try:
     fetch_script.write_text(patched_fetch, encoding="utf-8")
     shutil.copyfile(args.openclaw_patch, openclaw_destination)
     runtime_dockerfile.write_text(
-        dockerfile.replace(npm_stage_anchor, npm_stage_insertion)
-        .replace(docker_anchor, docker_insertion)
-        .replace(runtime_stage_anchor, runtime_stage_insertion),
+        patched_dockerfile,
         encoding="utf-8",
     )
     runtime_assets_script.write_text(
@@ -251,5 +274,6 @@ print(
     "OCE security backport: applied CVE-2026-95692 patch "
     f"{OPENSSL_PATCH_SHA256} to Node {EXPECTED_NODE_SOURCE['version']}; "
     f"applied OpenClaw dependency patch {OPENCLAW_PATCH_SHA256}; "
-    f"pinned npm {NPM_RUNTIME_VERSION} with undici {NPM_RUNTIME_UNDICI_VERSION}"
+    f"pinned npm {NPM_RUNTIME_VERSION} with undici {NPM_RUNTIME_UNDICI_VERSION}; "
+    f"updated GitHub CLI from {GH_CLI_OLD_VERSION} to {GH_CLI_VERSION}"
 )
