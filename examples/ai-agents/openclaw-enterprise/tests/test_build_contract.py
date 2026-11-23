@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -996,6 +997,9 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
 
 def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
+    dependency_patch_sha256 = hashlib.sha256(
+        OPENCLAW_DEPENDENCY_PATCH.read_bytes()
+    ).hexdigest()
 
     assert '"baseImage": os.environ["OCE_NODE_RUNTIME_BASE_IMAGE"]' in script
     assert '"buildBaseImage": os.environ["OCE_NODE_BUILD_BASE_IMAGE"]' in script
@@ -1008,6 +1012,9 @@ def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:
     assert '"dependencyPatches": [' in script
     assert (
         '"patchSha256": os.environ["OPENCLAW_DEPENDENCY_PATCH_SHA256"]' in script
+    )
+    assert (
+        f'OPENCLAW_DEPENDENCY_PATCH_SHA256="{dependency_patch_sha256}"' in script
     )
     assert 'NPM_RUNTIME_VERSION="11.21.3"' in script
     assert (
