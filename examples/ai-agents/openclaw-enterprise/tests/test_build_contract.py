@@ -1783,11 +1783,30 @@ done
 cdb38b72e36bc5d33d5b8810f8018ece1baa29a8f215b4495e495ded82bbf3c7  curl_7.88.1.orig.tar.gz
 7a5a55d7123149a1b357f298cf895bd0a601e3a2807005ef6c95f3752803485f  curl_7.88.1.orig.tar.gz.asc
 961b78bc48492c5693e4decb352ddd176f343260a8956f48b2887874048ef23b  curl_7.88.1-10+deb12u15.debian.tar.xz
+quilt pop -a
+cp /tmp/curl/CVE-2026-86414.patch debian/patches/
+# Debian copies the tree for each backend while applying its final two patches.
+# The security fix must precede both, so it reaches OpenSSL and GnuTLS alike.
+sed -i '/^90_gnutls.patch$/i CVE-2026-86414.patch' debian/patches/series
+quilt push -a
 curl (7.88.1-10+deb12u15+oce1) bookworm; urgency=medium
 for package in curl libcurl4 libcurl3-gnutls; do
   :
 done
 sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz /tmp/curl/CVE-2026-86414.patch > /out/source.sha256
+""",
+        encoding="utf-8",
+    )
+    (curl_dir / "verify.sh").write_text(
+        """#!/bin/sh
+set -eu
+for backend in build build-gnutls; do
+  (
+    cd "/build/curl/source/debian/$backend/tests" &&
+    make -C server -j2 all &&
+    perl ./runtests.pl -a -n -v 80 83 206 217 310 311 2173
+  )
+done
 """,
         encoding="utf-8",
     )
@@ -1936,8 +1955,17 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     assert "version=8.14.1-2+deb13u7" in curl_build
     assert "curl_8.14.1.orig.tar.gz" in curl_build
     assert "curl_8.14.1.orig.tar.xz" not in curl_build
+    assert "quilt pop -a" not in curl_build
+    assert (
+        "printf '%s\\n' CVE-2026-86414.patch >> debian/patches/series"
+        in curl_build
+    )
     assert "curl (8.14.1-2+deb13u7+oce1) trixie" in curl_build
     assert "for package in curl libcurl4t64 libcurl3t64-gnutls; do" in curl_build
+    curl_verify = (curl_dir / "verify.sh").read_text(encoding="utf-8")
+    assert "make -C certs -j2 all" in curl_verify
+    assert "test -s certs/test-localhost.pem" in curl_verify
+    assert curl_verify.index("make -C certs") < curl_verify.index("make -C server")
 
 
 def test_reviewed_openssl_backport_is_a_valid_git_patch(
@@ -2010,7 +2038,11 @@ def test_reviewed_curl_backport_is_scoped_to_the_proxy_fix(
         "2\t4\tlib/cf-h1-proxy.c\n"
         "2\t0\ttests/data/Makefile.am\n"
         "68\t0\ttests/data/test2173\n"
+        "1\t1\ttests/testutil.pm\n"
     )
+    patch = CURL_BACKPORT_PATCH.read_text(encoding="utf-8")
+    assert "(GET|POST|PUT|DELETE|CONNECT)" in patch
+    assert "+56\n+</errorcode>" in patch
 
 
 def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(

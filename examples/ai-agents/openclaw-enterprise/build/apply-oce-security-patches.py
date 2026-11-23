@@ -20,7 +20,7 @@ OPENCLAW_PATCH_FILE_NAME = "openclaw-security-overrides.patch"
 OPENCLAW_PATCH_SHA256 = "2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451"  # pragma: allowlist secret -- reviewed patch checksum
 CURL_PATCH_FILE_NAME = "curl-cve-2026-86414-trixie.patch"
 CURL_PATCH_DESTINATION_FILE_NAME = "CVE-2026-86414.patch"
-CURL_PATCH_SHA256 = "e254884af6e63c012ee5c4cfa16910ea91160b104d8a62883a0c7ed24ad11221"  # pragma: allowlist secret -- reviewed patch checksum
+CURL_PATCH_SHA256 = "cdd2c3db9c85552d0a2633e873fdab4f96f7ea996a4f6c87d3348a1b34bae824"  # pragma: allowlist secret -- reviewed patch checksum
 NPM_RUNTIME_VERSION = "11.21.3"
 NPM_RUNTIME_ARCHIVE_SHA256 = "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
 NPM_RUNTIME_UNDICI_VERSION = "6.29.1"
@@ -98,6 +98,20 @@ CURL_BUILD_REPLACEMENTS = {
         "e0f627ee2b9ae61078b2835edc25c8b94a0b57e180a1bc72dd8636ef260c370b  "
         "curl_8.14.1-2+deb13u7.debian.tar.xz"
     ),
+    (
+        "quilt pop -a\n"
+        "cp /tmp/curl/CVE-2026-86414.patch debian/patches/\n"
+        "# Debian copies the tree for each backend while applying its final two patches.\n"
+        "# The security fix must precede both, so it reaches OpenSSL and GnuTLS alike.\n"
+        "sed -i '/^90_gnutls.patch$/i CVE-2026-86414.patch' debian/patches/series\n"
+        "quilt push -a"
+    ): (
+        "cp /tmp/curl/CVE-2026-86414.patch debian/patches/\n"
+        "# Trixie builds OpenSSL and GnuTLS from the same patched source tree.\n"
+        "# Append the reviewed fix after Debian's patches so it reaches both backends.\n"
+        "printf '%s\\n' CVE-2026-86414.patch >> debian/patches/series\n"
+        "quilt push"
+    ),
     "curl (7.88.1-10+deb12u15+oce1) bookworm; urgency=medium": (
         "curl (8.14.1-2+deb13u7+oce1) trixie; urgency=medium"
     ),
@@ -108,6 +122,17 @@ CURL_BUILD_REPLACEMENTS = {
     "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256": (
         "sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz "
         "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256"
+    ),
+}
+CURL_VERIFY_REPLACEMENTS = {
+    (
+        'cd "/build/curl/source/debian/$backend/tests" &&\n'
+        "    make -C server -j2 all &&"
+    ): (
+        'cd "/build/curl/source/debian/$backend/tests" &&\n'
+        "    make -C certs -j2 all &&\n"
+        "    test -s certs/test-localhost.pem &&\n"
+        "    make -C server -j2 all &&"
     ),
 }
 EXPECTED_NODE_SOURCE: dict[str, Any] = {
@@ -392,9 +417,11 @@ for old_value, new_value in GOG_RELEASE_REPLACEMENTS.items():
 
 curl_dir = args.oce_source / "deploy" / "runtime" / "curl"
 curl_build_script = curl_dir / "build.sh"
+curl_verify_script = curl_dir / "verify.sh"
 try:
     curl_patch_bytes = args.curl_patch.read_bytes()
     curl_build = curl_build_script.read_text(encoding="utf-8")
+    curl_verify = curl_verify_script.read_text(encoding="utf-8")
 except (OSError, UnicodeError) as error:
     fail(f"could not read the curl backport inputs: {error}")
 if hashlib.sha256(curl_patch_bytes).hexdigest() != CURL_PATCH_SHA256:
@@ -426,13 +453,22 @@ if curl_patch_summary != (
     "2\t4\tlib/cf-h1-proxy.c\n"
     "2\t0\ttests/data/Makefile.am\n"
     "68\t0\ttests/data/test2173\n"
+    "1\t1\ttests/testutil.pm\n"
 ):
     fail("the curl patch changes files outside the reviewed security backport")
 if any(curl_build.count(old_value) != 1 for old_value in CURL_BUILD_REPLACEMENTS):
     fail("the pinned curl source build changed; review the Debian update")
+if any(
+    curl_verify.count(old_value) != 1
+    for old_value in CURL_VERIFY_REPLACEMENTS
+):
+    fail("the pinned curl verification script changed; review the test setup")
 patched_curl_build = curl_build
 for old_value, new_value in CURL_BUILD_REPLACEMENTS.items():
     patched_curl_build = patched_curl_build.replace(old_value, new_value)
+patched_curl_verify = curl_verify
+for old_value, new_value in CURL_VERIFY_REPLACEMENTS.items():
+    patched_curl_verify = patched_curl_verify.replace(old_value, new_value)
 
 openclaw_destination = (
     args.oce_source / "deploy" / "runtime" / OPENCLAW_PATCH_FILE_NAME
@@ -454,6 +490,7 @@ try:
     gog_release_path.write_text(patched_gog_release, encoding="utf-8")
     shutil.copyfile(args.curl_patch, curl_destination)
     curl_build_script.write_text(patched_curl_build, encoding="utf-8")
+    curl_verify_script.write_text(patched_curl_verify, encoding="utf-8")
 except OSError as error:
     fail(f"could not prepare the OpenClaw runtime source tree: {error}")
 
