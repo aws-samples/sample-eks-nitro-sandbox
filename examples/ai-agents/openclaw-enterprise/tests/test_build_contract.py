@@ -1704,6 +1704,34 @@ RUN curl -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_li
 """,
         encoding="utf-8",
     )
+    gog_release_dir = (
+        oce_source
+        / "apps"
+        / "controller"
+        / "plugins"
+        / "oce-google-workspace"
+        / "ai.openclaw.oce"
+    )
+    gog_release_dir.mkdir(parents=True)
+    (gog_release_dir / "release.json").write_text(
+        """{
+  "version": "0.46.0",
+  "artifacts": {
+    "linux-amd64": {
+      "url": "https://github.com/openclaw/gogcli/releases/download/v0.46.0/gogcli_0.46.0_linux_amd64.tar.gz",
+      "archiveSha256": "d53cf89f0c2a2338211212e380b3efcacadd4e27e500cb8e7ed2cd82a739da2e",
+      "binarySha256": "36551bb5725a7c7f22413826109ed455ce9de9a1aecaa81e918a5d461072787a"
+    },
+    "linux-arm64": {
+      "url": "https://github.com/openclaw/gogcli/releases/download/v0.46.0/gogcli_0.46.0_linux_arm64.tar.gz",
+      "archiveSha256": "9ae69d117cef895aa1c50b5859d7d3def45c5580886b25dc1c7f3cfe128ed0dd",
+      "binarySha256": "ad84f12b8efd889f65bd7c45c4eb6152fa963f623394fdf50938b14c57b9b694"
+    }
+  }
+}
+""",
+        encoding="utf-8",
+    )
     scripts_dir = oce_source / "scripts"
     scripts_dir.mkdir()
     (scripts_dir / "build-runtime-assets.mjs").write_text(
@@ -1812,6 +1840,27 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     assert (
         "4597138ea96e474c68001370c0a4955ff4834ba603c53900de6ebbef4cb0bed9"  # pragma: allowlist secret -- public checksum
         in dockerfile
+    )
+    gog_release = (
+        oce_source
+        / "apps"
+        / "controller"
+        / "plugins"
+        / "oce-google-workspace"
+        / "ai.openclaw.oce"
+        / "release.json"
+    ).read_text(encoding="utf-8")
+    assert "0.46.0" not in gog_release
+    assert '"version": "0.48.1"' in gog_release
+    assert "gogcli_0.48.1_linux_amd64.tar.gz" in gog_release
+    assert "gogcli_0.48.1_linux_arm64.tar.gz" in gog_release
+    assert (
+        "dcd956e09d1222a07c1304d836f8acd55266b2fa241ef466580ced6a02453d72"  # pragma: allowlist secret -- public checksum
+        in gog_release
+    )
+    assert (
+        "c091fa2014dc3d5608acef4d09fb3bb4a3eb71e4cff898b5eaddd9703599e45c"  # pragma: allowlist secret -- public checksum
+        in gog_release
     )
     runtime_assets = (
         oce_source / "scripts" / "build-runtime-assets.mjs"

@@ -25,6 +25,33 @@ GH_CLI_OLD_VERSION = "2.103.2"
 GH_CLI_VERSION = "2.105.0"
 GH_CLI_OLD_CHECKSUMS_SHA256 = "414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861efd207356a36b2d"  # pragma: allowlist secret -- public checksum
 GH_CLI_CHECKSUMS_SHA256 = "4597138ea96e474c68001370c0a4955ff4834ba603c53900de6ebbef4cb0bed9"  # pragma: allowlist secret -- public checksum
+GOG_OLD_VERSION = "0.46.0"
+GOG_VERSION = "0.48.1"
+GOG_RELEASE_REPLACEMENTS = {
+    '"version": "0.46.0"': '"version": "0.48.1"',
+    "https://github.com/openclaw/gogcli/releases/download/v0.46.0/"
+    "gogcli_0.46.0_linux_amd64.tar.gz": (
+        "https://github.com/openclaw/gogcli/releases/download/v0.48.1/"
+        "gogcli_0.48.1_linux_amd64.tar.gz"
+    ),
+    "d53cf89f0c2a2338211212e380b3efcacadd4e27e500cb8e7ed2cd82a739da2e": (
+        "dcd956e09d1222a07c1304d836f8acd55266b2fa241ef466580ced6a02453d72"
+    ),
+    "36551bb5725a7c7f22413826109ed455ce9de9a1aecaa81e918a5d461072787a": (
+        "c943659544d425aee0c21b46b8f4c7939a4db2f12d5928dcf99f83ddecfb255f"
+    ),
+    "https://github.com/openclaw/gogcli/releases/download/v0.46.0/"
+    "gogcli_0.46.0_linux_arm64.tar.gz": (
+        "https://github.com/openclaw/gogcli/releases/download/v0.48.1/"
+        "gogcli_0.48.1_linux_arm64.tar.gz"
+    ),
+    "9ae69d117cef895aa1c50b5859d7d3def45c5580886b25dc1c7f3cfe128ed0dd": (
+        "c091fa2014dc3d5608acef4d09fb3bb4a3eb71e4cff898b5eaddd9703599e45c"
+    ),
+    "ad84f12b8efd889f65bd7c45c4eb6152fa963f623394fdf50938b14c57b9b694": (
+        "520cbe587cea302d3e7770c43704856d8582ad888de344c8d1f7812997020a9c"
+    ),
+}
 EXPECTED_NODE_SOURCE: dict[str, Any] = {
     "version": "24.22.1",
     "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",  # pragma: allowlist secret -- public source revision
@@ -250,6 +277,27 @@ patched_dockerfile = (
     .replace(docker_anchor, docker_insertion)
     .replace(runtime_stage_anchor, runtime_stage_insertion)
 )
+gog_release_path = (
+    args.oce_source
+    / "apps"
+    / "controller"
+    / "plugins"
+    / "oce-google-workspace"
+    / "ai.openclaw.oce"
+    / "release.json"
+)
+try:
+    gog_release = gog_release_path.read_text(encoding="utf-8")
+except (OSError, UnicodeError) as error:
+    fail(f"could not read {gog_release_path}: {error}")
+if any(
+    gog_release.count(old_value) != 1
+    for old_value in GOG_RELEASE_REPLACEMENTS
+):
+    fail("the pinned Google Workspace CLI release changed; review the update")
+patched_gog_release = gog_release
+for old_value, new_value in GOG_RELEASE_REPLACEMENTS.items():
+    patched_gog_release = patched_gog_release.replace(old_value, new_value)
 
 openclaw_destination = (
     args.oce_source / "deploy" / "runtime" / OPENCLAW_PATCH_FILE_NAME
@@ -267,6 +315,7 @@ try:
         runtime_assets.replace(assets_anchor, assets_insertion),
         encoding="utf-8",
     )
+    gog_release_path.write_text(patched_gog_release, encoding="utf-8")
 except OSError as error:
     fail(f"could not prepare the OpenClaw runtime source tree: {error}")
 
@@ -275,5 +324,6 @@ print(
     f"{OPENSSL_PATCH_SHA256} to Node {EXPECTED_NODE_SOURCE['version']}; "
     f"applied OpenClaw dependency patch {OPENCLAW_PATCH_SHA256}; "
     f"pinned npm {NPM_RUNTIME_VERSION} with undici {NPM_RUNTIME_UNDICI_VERSION}; "
-    f"updated GitHub CLI from {GH_CLI_OLD_VERSION} to {GH_CLI_VERSION}"
+    f"updated GitHub CLI from {GH_CLI_OLD_VERSION} to {GH_CLI_VERSION}; "
+    f"updated Google Workspace CLI from {GOG_OLD_VERSION} to {GOG_VERSION}"
 )
