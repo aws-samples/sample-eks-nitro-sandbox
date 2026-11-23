@@ -18,6 +18,9 @@ OPENSSL_PATCH_FILE_NAME = "openssl-cve-2026-95692.patch"
 OPENSSL_PATCH_SHA256 = "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"  # pragma: allowlist secret -- public patch checksum
 OPENCLAW_PATCH_FILE_NAME = "openclaw-security-overrides.patch"
 OPENCLAW_PATCH_SHA256 = "2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451"  # pragma: allowlist secret -- reviewed patch checksum
+CURL_PATCH_FILE_NAME = "curl-cve-2026-86414-trixie.patch"
+CURL_PATCH_DESTINATION_FILE_NAME = "CVE-2026-86414.patch"
+CURL_PATCH_SHA256 = "e254884af6e63c012ee5c4cfa16910ea91160b104d8a62883a0c7ed24ad11221"  # pragma: allowlist secret -- reviewed patch checksum
 NPM_RUNTIME_VERSION = "11.21.3"
 NPM_RUNTIME_ARCHIVE_SHA256 = "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
 NPM_RUNTIME_UNDICI_VERSION = "6.29.1"
@@ -64,6 +67,49 @@ GOG_RELEASE_REPLACEMENTS = {
         "520cbe587cea302d3e7770c43704856d8582ad888de344c8d1f7812997020a9c"  # pragma: allowlist secret -- public checksum
     ),
 }
+CURL_BUILD_REPLACEMENTS = {
+    "# TODO: Remove this backport when Bookworm publishes a CVE-2026-86414 fix.": (
+        "# TODO: Remove this backport when Trixie publishes a CVE-2026-86414 fix."
+    ),
+    "version=7.88.1-10+deb12u15": "version=8.14.1-2+deb13u7",
+    (
+        'for file in "curl_${version}.dsc" curl_7.88.1.orig.tar.gz '
+        'curl_7.88.1.orig.tar.gz.asc "curl_${version}.debian.tar.xz"; do'
+    ): (
+        'for file in "curl_${version}.dsc" curl_8.14.1.orig.tar.xz '
+        'curl_8.14.1.orig.tar.xz.asc "curl_${version}.debian.tar.xz"; do'
+    ),
+    (
+        "2744f12e3aef161c0361743fa1b318296b122e566e47f381e4a63320fbcc23f4  "
+        "curl_7.88.1-10+deb12u15.dsc\n"
+        "cdb38b72e36bc5d33d5b8810f8018ece1baa29a8f215b4495e495ded82bbf3c7  "
+        "curl_7.88.1.orig.tar.gz\n"
+        "7a5a55d7123149a1b357f298cf895bd0a601e3a2807005ef6c95f3752803485f  "
+        "curl_7.88.1.orig.tar.gz.asc\n"
+        "961b78bc48492c5693e4decb352ddd176f343260a8956f48b2887874048ef23b  "
+        "curl_7.88.1-10+deb12u15.debian.tar.xz"
+    ): (
+        "a559b829ff852b2ee1ac0e448b5d9c18e0f94875bc820d037609d4d807ac6f57  "
+        "curl_8.14.1-2+deb13u7.dsc\n"
+        "6766ada7101d292b42b8b15681120acd68effa4a9660935853cf6d61f0d984d4  "
+        "curl_8.14.1.orig.tar.xz\n"
+        "39cc2ec8ddc39d04e3e7101bbed46d858d0875cbb297a6bfa20959fa2bc7d5c7  "
+        "curl_8.14.1.orig.tar.xz.asc\n"
+        "e0f627ee2b9ae61078b2835edc25c8b94a0b57e180a1bc72dd8636ef260c370b  "
+        "curl_8.14.1-2+deb13u7.debian.tar.xz"
+    ),
+    "curl (7.88.1-10+deb12u15+oce1) bookworm; urgency=medium": (
+        "curl (8.14.1-2+deb13u7+oce1) trixie; urgency=medium"
+    ),
+    "for package in curl libcurl4 libcurl3-gnutls; do": (
+        "for package in curl libcurl4t64 libcurl3t64-gnutls; do"
+    ),
+    "sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz "
+    "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256": (
+        "sha256sum ../*.dsc ../*.orig.tar.xz ../*.debian.tar.xz "
+        "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256"
+    ),
+}
 EXPECTED_NODE_SOURCE: dict[str, Any] = {
     "version": "24.22.1",
     "commit": "ce7aaf1cee78b8cf0ce17364260535c418d3ed26",  # pragma: allowlist secret -- public source revision
@@ -103,6 +149,7 @@ parser.add_argument("oce_source", type=pathlib.Path)
 parser.add_argument("expected_revision")
 parser.add_argument("openssl_patch", type=pathlib.Path)
 parser.add_argument("openclaw_patch", type=pathlib.Path)
+parser.add_argument("curl_patch", type=pathlib.Path)
 args = parser.parse_args()
 
 if not re.fullmatch(r"[0-9a-f]{40}", args.expected_revision):
@@ -157,6 +204,11 @@ try:
 except (OSError, UnicodeError) as error:
     fail(f"could not read {fetch_script}: {error}")
 
+node_codename_before = 'test "$VERSION_CODENAME" = bookworm'
+node_codename_after = 'test "$VERSION_CODENAME" = trixie'
+if fetch.count(node_codename_before) != 1:
+    fail("the pinned Node distribution guard changed; review the Debian update")
+
 checksum_before = """patch_sha=$(node -p 'require("./source.json").patchSha256')
 printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n' "$archive_sha" "$patch_sha" | sha256sum --check --strict
 """
@@ -173,8 +225,10 @@ apply_after = (
 if fetch.count(checksum_before) != 1 or fetch.count(apply_before) != 1:
     fail("the pinned Node fetch script changed; review the backport before building")
 
-patched_fetch = fetch.replace(checksum_before, checksum_after).replace(
-    apply_before, apply_after
+patched_fetch = (
+    fetch.replace(checksum_before, checksum_after)
+    .replace(apply_before, apply_after)
+    .replace(node_codename_before, node_codename_after)
 )
 openclaw_source_json = args.oce_source / "deploy" / "runtime" / "openclaw-source.json"
 if read_json(openclaw_source_json) != EXPECTED_OPENCLAW_SOURCE:
@@ -279,6 +333,16 @@ if any(
     for old_value in NODE_BASE_IMAGE_REPLACEMENTS
 ):
     fail("the pinned Node base images changed; review the Debian update")
+runtime_codename_before = (
+    'test "${VERSION_CODENAME:-}" = bookworm || { echo "The Node termination '
+    'repair requires a Bookworm runtime base." >&2; exit 1; };'
+)
+runtime_codename_after = (
+    'test "${VERSION_CODENAME:-}" = trixie || { echo "The Node termination '
+    'repair requires a Trixie runtime base." >&2; exit 1; };'
+)
+if dockerfile.count(runtime_codename_before) != 1:
+    fail("the pinned runtime distribution guard changed; review the Debian update")
 gh_cli_fragments = (
     f"releases/download/v{GH_CLI_OLD_VERSION}/gh_{GH_CLI_OLD_VERSION}_linux_",
     f"releases/download/v{GH_CLI_OLD_VERSION}/gh_{GH_CLI_OLD_VERSION}_checksums.txt",
@@ -299,6 +363,7 @@ for old_value, new_value in NODE_BASE_IMAGE_REPLACEMENTS.items():
 patched_dockerfile = (
     patched_dockerfile.replace(GH_CLI_OLD_VERSION, GH_CLI_VERSION)
     .replace(GH_CLI_OLD_CHECKSUMS_SHA256, GH_CLI_CHECKSUMS_SHA256)
+    .replace(runtime_codename_before, runtime_codename_after)
     .replace(npm_stage_anchor, npm_stage_insertion)
     .replace(docker_anchor, docker_insertion)
     .replace(runtime_stage_anchor, runtime_stage_insertion)
@@ -325,10 +390,55 @@ patched_gog_release = gog_release
 for old_value, new_value in GOG_RELEASE_REPLACEMENTS.items():
     patched_gog_release = patched_gog_release.replace(old_value, new_value)
 
+curl_dir = args.oce_source / "deploy" / "runtime" / "curl"
+curl_build_script = curl_dir / "build.sh"
+try:
+    curl_patch_bytes = args.curl_patch.read_bytes()
+    curl_build = curl_build_script.read_text(encoding="utf-8")
+except (OSError, UnicodeError) as error:
+    fail(f"could not read the curl backport inputs: {error}")
+if hashlib.sha256(curl_patch_bytes).hexdigest() != CURL_PATCH_SHA256:
+    fail("the curl patch checksum does not match the reviewed upstream patch")
+for marker in (
+    b"Fixes: CVE-2026-86414",
+    b"Upstream-Commit: 2956af6c7451029fb12c12f8166dff211f930d52",
+):
+    if marker not in curl_patch_bytes:
+        fail(f"the curl patch is missing reviewed marker {marker!r}")
+try:
+    with tempfile.TemporaryDirectory(prefix="oce-curl-patch-check-") as check_dir:
+        curl_patch_summary = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                "--unsafe-paths",
+                str(args.curl_patch.resolve()),
+            ],
+            cwd=check_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+except (OSError, subprocess.CalledProcessError) as error:
+    fail(f"the reviewed curl patch is not a valid Git patch: {error}")
+if curl_patch_summary != (
+    "2\t4\tlib/cf-h1-proxy.c\n"
+    "2\t0\ttests/data/Makefile.am\n"
+    "68\t0\ttests/data/test2173\n"
+):
+    fail("the curl patch changes files outside the reviewed security backport")
+if any(curl_build.count(old_value) != 1 for old_value in CURL_BUILD_REPLACEMENTS):
+    fail("the pinned curl source build changed; review the Debian update")
+patched_curl_build = curl_build
+for old_value, new_value in CURL_BUILD_REPLACEMENTS.items():
+    patched_curl_build = patched_curl_build.replace(old_value, new_value)
+
 openclaw_destination = (
     args.oce_source / "deploy" / "runtime" / OPENCLAW_PATCH_FILE_NAME
 )
 openssl_destination = node_dir / OPENSSL_PATCH_FILE_NAME
+curl_destination = curl_dir / CURL_PATCH_DESTINATION_FILE_NAME
 try:
     shutil.copyfile(args.openssl_patch, openssl_destination)
     fetch_script.write_text(patched_fetch, encoding="utf-8")
@@ -342,6 +452,8 @@ try:
         encoding="utf-8",
     )
     gog_release_path.write_text(patched_gog_release, encoding="utf-8")
+    shutil.copyfile(args.curl_patch, curl_destination)
+    curl_build_script.write_text(patched_curl_build, encoding="utf-8")
 except OSError as error:
     fail(f"could not prepare the OpenClaw runtime source tree: {error}")
 
@@ -351,6 +463,8 @@ print(
     f"applied OpenClaw dependency patch {OPENCLAW_PATCH_SHA256}; "
     f"pinned npm {NPM_RUNTIME_VERSION} with undici {NPM_RUNTIME_UNDICI_VERSION}; "
     "updated the Node build and runtime bases to Debian 13 (Trixie); "
+    f"applied CVE-2026-86414 patch {CURL_PATCH_SHA256} to Debian curl "
+    "8.14.1-2+deb13u7; "
     f"updated GitHub CLI from {GH_CLI_OLD_VERSION} to {GH_CLI_VERSION}; "
     f"updated Google Workspace CLI from {GOG_OLD_VERSION} to {GOG_VERSION}"
 )

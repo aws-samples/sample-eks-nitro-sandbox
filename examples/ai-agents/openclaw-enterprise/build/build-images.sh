@@ -156,6 +156,10 @@ OPENSSL_BACKPORT_PATCH_SHA256="ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847
 OPENSSL_BACKPORT_UPSTREAM_COMMIT="257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116" # pragma: allowlist secret -- public source revision
 OPENCLAW_DEPENDENCY_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openclaw-security-overrides.patch"
 OPENCLAW_DEPENDENCY_PATCH_SHA256="2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451" # pragma: allowlist secret -- reviewed patch checksum
+CURL_BACKPORT_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/curl-cve-2026-86414-trixie.patch"
+CURL_BACKPORT_CVE="CVE-2026-86414"
+CURL_BACKPORT_PATCH_SHA256="e254884af6e63c012ee5c4cfa16910ea91160b104d8a62883a0c7ed24ad11221" # pragma: allowlist secret -- reviewed patch checksum
+CURL_BACKPORT_UPSTREAM_COMMIT="2956af6c7451029fb12c12f8166dff211f930d52" # pragma: allowlist secret -- public source revision
 NPM_RUNTIME_VERSION="11.21.3"
 NPM_RUNTIME_ARCHIVE_SHA256="ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514" # pragma: allowlist secret -- public archive checksum
 python3 -I \
@@ -163,10 +167,13 @@ python3 -I \
   "$OCE_SOURCE_DIR" \
   "$OCE_SOURCE_REVISION" \
   "$OPENSSL_BACKPORT_PATCH" \
-  "$OPENCLAW_DEPENDENCY_PATCH"
+  "$OPENCLAW_DEPENDENCY_PATCH" \
+  "$CURL_BACKPORT_PATCH"
 readonly OPENSSL_BACKPORT_PATCH OPENSSL_BACKPORT_CVE
 readonly OPENSSL_BACKPORT_PATCH_SHA256 OPENSSL_BACKPORT_UPSTREAM_COMMIT
 readonly OPENCLAW_DEPENDENCY_PATCH OPENCLAW_DEPENDENCY_PATCH_SHA256
+readonly CURL_BACKPORT_PATCH CURL_BACKPORT_CVE
+readonly CURL_BACKPORT_PATCH_SHA256 CURL_BACKPORT_UPSTREAM_COMMIT
 readonly NPM_RUNTIME_VERSION NPM_RUNTIME_ARCHIVE_SHA256
 
 # Consume the digest-pinned Debian 13 bases prepared by the fail-closed OCE
@@ -419,6 +426,8 @@ export OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
 export OPENSSL_BACKPORT_CVE OPENSSL_BACKPORT_PATCH_SHA256
 export OPENSSL_BACKPORT_UPSTREAM_COMMIT
 export OPENCLAW_DEPENDENCY_PATCH_SHA256
+export CURL_BACKPORT_CVE CURL_BACKPORT_PATCH_SHA256
+export CURL_BACKPORT_UPSTREAM_COMMIT
 export NPM_RUNTIME_VERSION NPM_RUNTIME_ARCHIVE_SHA256
 
 {
@@ -477,6 +486,15 @@ result = {
                 "upstreamUrl": (
                     "https://github.com/openssl/openssl/commit/"
                     + os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"]
+                ),
+            },
+            {
+                "cve": os.environ["CURL_BACKPORT_CVE"],
+                "patchSha256": os.environ["CURL_BACKPORT_PATCH_SHA256"],
+                "upstreamCommit": os.environ["CURL_BACKPORT_UPSTREAM_COMMIT"],
+                "upstreamUrl": (
+                    "https://github.com/curl/curl/commit/"
+                    + os.environ["CURL_BACKPORT_UPSTREAM_COMMIT"]
                 ),
             }
         ],

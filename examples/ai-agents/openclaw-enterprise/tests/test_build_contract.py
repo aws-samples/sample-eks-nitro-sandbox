@@ -26,6 +26,9 @@ OPENSSL_BACKPORT_PATCH = BUILD / "patches" / "openssl-cve-2026-95692.patch"
 OPENCLAW_DEPENDENCY_PATCH = (
     BUILD / "patches" / "openclaw-security-overrides.patch"
 )
+CURL_BACKPORT_PATCH = (
+    BUILD / "patches" / "curl-cve-2026-86414-trixie.patch"
+)
 ADAPTER_DOCKERFILE = SAMPLE / "adapter" / "Dockerfile"
 CONTROLLER_DOCKERFILE = BUILD / "controller-runtime.Dockerfile"
 OWNERSHIP_HELPER = SAMPLE / "ownership-helper"
@@ -1009,6 +1012,9 @@ def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:
     assert '"cve": os.environ["OPENSSL_BACKPORT_CVE"]' in script
     assert '"patchSha256": os.environ["OPENSSL_BACKPORT_PATCH_SHA256"]' in script
     assert '"upstreamCommit": os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"]' in script
+    assert '"cve": os.environ["CURL_BACKPORT_CVE"]' in script
+    assert '"patchSha256": os.environ["CURL_BACKPORT_PATCH_SHA256"]' in script
+    assert '"upstreamCommit": os.environ["CURL_BACKPORT_UPSTREAM_COMMIT"]' in script
     assert '"dependencyPatches": [' in script
     assert (
         '"patchSha256": os.environ["OPENCLAW_DEPENDENCY_PATCH_SHA256"]' in script
@@ -1702,6 +1708,9 @@ FROM node-build-base AS node-source
 # which writes provenance; runtime-assets.test.mjs compares the two.
 FROM node-runtime-base AS runtime
 
+RUN set -eu; . /etc/os-release; \\
+    test "${VERSION_CODENAME:-}" = bookworm || { echo "The Node termination repair requires a Bookworm runtime base." >&2; exit 1; };
+
 RUN curl -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_linux_${architecture}.tar.gz"; \\
     curl -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_checksums.txt"; \\
     echo '414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861efd207356a36b2d  gh_2.103.2_checksums.txt' | sha256sum --check --strict; \\
@@ -1751,10 +1760,34 @@ RUN curl -O "https://github.com/cli/cli/releases/download/v2.103.2/gh_2.103.2_li
     (node_dir / "fetch.sh").write_text(
         """#!/bin/sh
 set -eu
+. /etc/os-release
+test "$VERSION_CODENAME" = bookworm
 archive_sha=$(node -p 'require("./source.json").sourceArchiveSha256')
 patch_sha=$(node -p 'require("./source.json").patchSha256')
 printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n' "$archive_sha" "$patch_sha" | sha256sum --check --strict
 git apply /node-repair/worker-esm-termination.patch
+""",
+        encoding="utf-8",
+    )
+    curl_dir = runtime_dir / "curl"
+    curl_dir.mkdir()
+    (curl_dir / "build.sh").write_text(
+        """#!/bin/sh
+set -eu
+# TODO: Remove this backport when Bookworm publishes a CVE-2026-86414 fix.
+version=7.88.1-10+deb12u15
+for file in "curl_${version}.dsc" curl_7.88.1.orig.tar.gz curl_7.88.1.orig.tar.gz.asc "curl_${version}.debian.tar.xz"; do
+  :
+done
+2744f12e3aef161c0361743fa1b318296b122e566e47f381e4a63320fbcc23f4  curl_7.88.1-10+deb12u15.dsc
+cdb38b72e36bc5d33d5b8810f8018ece1baa29a8f215b4495e495ded82bbf3c7  curl_7.88.1.orig.tar.gz
+7a5a55d7123149a1b357f298cf895bd0a601e3a2807005ef6c95f3752803485f  curl_7.88.1.orig.tar.gz.asc
+961b78bc48492c5693e4decb352ddd176f343260a8956f48b2887874048ef23b  curl_7.88.1-10+deb12u15.debian.tar.xz
+curl (7.88.1-10+deb12u15+oce1) bookworm; urgency=medium
+for package in curl libcurl4 libcurl3-gnutls; do
+  :
+done
+sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz /tmp/curl/CVE-2026-86414.patch > /out/source.sha256
 """,
         encoding="utf-8",
     )
@@ -1798,6 +1831,7 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
             revision,
             str(OPENSSL_BACKPORT_PATCH),
             str(OPENCLAW_DEPENDENCY_PATCH),
+            str(CURL_BACKPORT_PATCH),
         ],
         check=False,
         capture_output=True,
@@ -1812,6 +1846,8 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     fetch = (node_dir / "fetch.sh").read_text(encoding="utf-8")
     assert "security_patch_sha=" in fetch
     assert "sha256sum --check --strict" in fetch
+    assert 'test "$VERSION_CODENAME" = trixie' in fetch
+    assert 'test "$VERSION_CODENAME" = bookworm' not in fetch
     assert (
         "git apply -p1 --directory=deps/openssl/openssl "
         "/node-repair/openssl-cve-2026-95692.patch" in fetch
@@ -1855,6 +1891,9 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
         "89c5244bc22a9bc3287d89ebc7e49b9cb5bb84cd40e6175ac3421d5a9f68b95a"  # pragma: allowlist secret -- public image digest
         in dockerfile
     )
+    assert 'test "${VERSION_CODENAME:-}" = trixie' in dockerfile
+    assert "requires a Trixie runtime base" in dockerfile
+    assert "requires a Bookworm runtime base" not in dockerfile
     assert "v2.103.2" not in dockerfile
     assert "gh_2.103.2" not in dockerfile
     assert "v2.105.0" in dockerfile
@@ -1888,6 +1927,16 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
         oce_source / "scripts" / "build-runtime-assets.mjs"
     ).read_text(encoding="utf-8")
     assert 'file: "openclaw-security-overrides.patch"' in runtime_assets
+    curl_dir = runtime_dir / "curl"
+    assert (
+        curl_dir / "CVE-2026-86414.patch"
+    ).read_bytes() == CURL_BACKPORT_PATCH.read_bytes()
+    curl_build = (curl_dir / "build.sh").read_text(encoding="utf-8")
+    assert "Bookworm" not in curl_build
+    assert "version=8.14.1-2+deb13u7" in curl_build
+    assert "curl_8.14.1.orig.tar.xz" in curl_build
+    assert "curl (8.14.1-2+deb13u7+oce1) trixie" in curl_build
+    assert "for package in curl libcurl4t64 libcurl3t64-gnutls; do" in curl_build
 
 
 def test_reviewed_openssl_backport_is_a_valid_git_patch(
@@ -1938,6 +1987,31 @@ def test_reviewed_openclaw_dependency_patch_is_scoped_to_the_dependency_files(
     )
 
 
+def test_reviewed_curl_backport_is_scoped_to_the_proxy_fix(
+    tmp_path: pathlib.Path,
+) -> None:
+    result = subprocess.run(
+        [
+            "git",
+            "apply",
+            "--numstat",
+            "--unsafe-paths",
+            str(CURL_BACKPORT_PATCH),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "2\t4\tlib/cf-h1-proxy.c\n"
+        "2\t0\ttests/data/Makefile.am\n"
+        "68\t0\ttests/data/test2173\n"
+    )
+
+
 def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1956,6 +2030,7 @@ def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
             revision,
             str(OPENSSL_BACKPORT_PATCH),
             str(OPENCLAW_DEPENDENCY_PATCH),
+            str(CURL_BACKPORT_PATCH),
         ],
         check=False,
         capture_output=True,
@@ -1970,6 +2045,7 @@ def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(
             "0" * 40,
             str(OPENSSL_BACKPORT_PATCH),
             str(OPENCLAW_DEPENDENCY_PATCH),
+            str(CURL_BACKPORT_PATCH),
         ],
         check=False,
         capture_output=True,
@@ -2000,6 +2076,7 @@ def test_oce_security_patcher_fails_closed_on_openclaw_source_drift(
             revision,
             str(OPENSSL_BACKPORT_PATCH),
             str(OPENCLAW_DEPENDENCY_PATCH),
+            str(CURL_BACKPORT_PATCH),
         ],
         check=False,
         capture_output=True,
@@ -2038,6 +2115,7 @@ def test_oce_security_patcher_fails_closed_on_runtime_dockerfile_drift(
             revision,
             str(OPENSSL_BACKPORT_PATCH),
             str(OPENCLAW_DEPENDENCY_PATCH),
+            str(CURL_BACKPORT_PATCH),
         ],
         check=False,
         capture_output=True,
@@ -2046,6 +2124,39 @@ def test_oce_security_patcher_fails_closed_on_runtime_dockerfile_drift(
 
     assert result.returncode == 1
     assert "runtime patch anchors changed" in result.stderr
+
+
+def test_oce_security_patcher_fails_closed_on_curl_source_drift(
+    tmp_path: pathlib.Path,
+) -> None:
+    oce_source, revision = _create_fake_oce_source(tmp_path)
+    curl_build = oce_source / "deploy" / "runtime" / "curl" / "build.sh"
+    curl_build.write_text(
+        curl_build.read_text(encoding="utf-8").replace(
+            "version=7.88.1-10+deb12u15",
+            "version=7.88.1-10+deb12u16",
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(OCE_SECURITY_PATCHER),
+            str(oce_source),
+            revision,
+            str(OPENSSL_BACKPORT_PATCH),
+            str(OPENCLAW_DEPENDENCY_PATCH),
+            str(CURL_BACKPORT_PATCH),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "pinned curl source build changed" in result.stderr
 
 
 def test_oce_security_patcher_fails_closed_on_node_base_drift(
@@ -2070,6 +2181,7 @@ def test_oce_security_patcher_fails_closed_on_node_base_drift(
             revision,
             str(OPENSSL_BACKPORT_PATCH),
             str(OPENCLAW_DEPENDENCY_PATCH),
+            str(CURL_BACKPORT_PATCH),
         ],
         check=False,
         capture_output=True,
