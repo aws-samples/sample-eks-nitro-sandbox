@@ -379,8 +379,6 @@ PY
     if ! aws inspector2 list-findings \
       --region "$AWS_DEFAULT_REGION" \
       --filter-criteria "file://$filter_dir/findings.json" \
-      --max-results 100 \
-      --no-paginate \
       --output json >"$findings_response"; then
       die "Inspector findings lookup failed for $repository@$digest"
     fi

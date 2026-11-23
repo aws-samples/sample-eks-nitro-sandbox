@@ -1191,7 +1191,8 @@ def test_build_outputs_are_verified_digest_references() -> None:
     assert "check-enhanced-scanning.py" in script
     assert "aws inspector2 list-coverage" in script
     assert "aws inspector2 list-findings" in script
-    assert script.count("--no-paginate") == 2
+    assert script.count("--no-paginate") == 1
+    assert "--max-results 100" not in verify_scan
     assert '"resourceId": equals(resource_id)' in script
     assert '"ecrImageHash": equals(digest)' in script
     assert '"findingStatus": equals("ACTIVE")' in script
