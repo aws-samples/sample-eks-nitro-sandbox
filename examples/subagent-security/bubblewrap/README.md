@@ -91,7 +91,7 @@ This folder was built against these releases. Pin each to its latest when you bu
 |---|---|
 | [bubblewrap](https://github.com/containers/bubblewrap/releases) | 0.13.1, built from source in the `Dockerfile` at upstream commit `362936aea0d5c6e70f7af75d2d44b5a914cb4ba2`, with no patches |
 | [libseccomp](https://github.com/seccomp/libseccomp) | the base image's `libseccomp2` package, loaded through `ctypes` to compile the filters |
-| [`strands-agents`](https://pypi.org/project/strands-agents/) | 1.62.0 |
+| [`strands-agents`](https://pypi.org/project/strands-agents/) | 1.65.0 |
 | [`boto3`](https://pypi.org/project/boto3/) | 1.43.118 |
 | [`pydantic`](https://pypi.org/project/pydantic/) | 2.14.1 |
 | [Python](https://www.python.org/downloads/) base image | 3.13 (`public.ecr.aws/docker/library/python:3.13-slim`) |
