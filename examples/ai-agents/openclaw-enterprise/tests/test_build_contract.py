@@ -1815,7 +1815,7 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
         "git apply /tmp/openclaw-security-overrides.patch" in dockerfile
     )
     assert (
-        "90a81159bfc78b6cf2596e113dac2212f02087bdf5dc5ad43ba62683952f7ad4"  # pragma: allowlist secret -- reviewed patch checksum
+        "2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451"  # pragma: allowlist secret -- reviewed patch checksum
         in dockerfile
     )
     assert "FROM node-build-base AS npm-runtime" in dockerfile
@@ -1891,7 +1891,7 @@ def test_reviewed_openssl_backport_is_a_valid_git_patch(
     )
 
 
-def test_reviewed_openclaw_dependency_patch_is_scoped_to_the_lockfiles(
+def test_reviewed_openclaw_dependency_patch_is_scoped_to_the_dependency_files(
     tmp_path: pathlib.Path,
 ) -> None:
     result = subprocess.run(
@@ -1909,7 +1909,11 @@ def test_reviewed_openclaw_dependency_patch_is_scoped_to_the_lockfiles(
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "12\t15\tpnpm-lock.yaml\n7\t0\tpnpm-workspace.yaml\n"
+    assert result.stdout == (
+        "1\t1\tpackage.json\n"
+        "17\t20\tpnpm-lock.yaml\n"
+        "7\t0\tpnpm-workspace.yaml\n"
+    )
 
 
 def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(

@@ -17,7 +17,7 @@ from typing import Any
 OPENSSL_PATCH_FILE_NAME = "openssl-cve-2026-95692.patch"
 OPENSSL_PATCH_SHA256 = "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"  # pragma: allowlist secret -- public patch checksum
 OPENCLAW_PATCH_FILE_NAME = "openclaw-security-overrides.patch"
-OPENCLAW_PATCH_SHA256 = "90a81159bfc78b6cf2596e113dac2212f02087bdf5dc5ad43ba62683952f7ad4"  # pragma: allowlist secret -- reviewed patch checksum
+OPENCLAW_PATCH_SHA256 = "2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451"  # pragma: allowlist secret -- reviewed patch checksum
 NPM_RUNTIME_VERSION = "11.21.3"
 NPM_RUNTIME_ARCHIVE_SHA256 = "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
 NPM_RUNTIME_UNDICI_VERSION = "6.29.1"
@@ -175,9 +175,11 @@ except OSError as error:
 if hashlib.sha256(openclaw_patch_bytes).hexdigest() != OPENCLAW_PATCH_SHA256:
     fail("the OpenClaw patch checksum does not match the reviewed patch")
 for marker in (
+    b'"npm": "12.2.2"',
     b'"@openclaw/crabline@0.1.31>re2js": 2.8.7',
     b'"mailauth@7.3.1>joi": 18.3.2',
     b'"mailauth@7.3.1>undici": 8.12.3',
+    b'npm@12.2.0',
     b"re2js@2.8.6",
     b"joi@18.2.9",
     b"undici@8.11.2",
@@ -201,8 +203,12 @@ try:
         ).stdout
 except (OSError, subprocess.CalledProcessError) as error:
     fail(f"the reviewed OpenClaw patch is not a valid Git patch: {error}")
-if patch_summary != "12\t15\tpnpm-lock.yaml\n7\t0\tpnpm-workspace.yaml\n":
-    fail("the OpenClaw patch changes files outside the reviewed dependency override")
+if patch_summary != (
+    "1\t1\tpackage.json\n"
+    "17\t20\tpnpm-lock.yaml\n"
+    "7\t0\tpnpm-workspace.yaml\n"
+):
+    fail("the OpenClaw patch changes files outside the reviewed dependency update")
 
 runtime_dockerfile = args.oce_source / "deploy" / "runtime" / "Dockerfile"
 runtime_assets_script = args.oce_source / "scripts" / "build-runtime-assets.mjs"
