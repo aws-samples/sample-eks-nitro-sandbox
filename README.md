@@ -24,6 +24,10 @@ Node and cluster preparation the other blueprints treat as a prerequisite.
 - [Network policy](examples/isolation/network-policy/README.md): a standard egress NetworkPolicy enforced on a sandboxed pod, side by side with an ordinary pod that is the control.
 - [Sandbox limits](examples/isolation/sandbox-limits/README.md): the per-sandbox DNS query-rate limit and the per-pod outbound connection limit, made visible on your own cluster side by side with an ordinary pod, and how to recognise each one.
 
+## Observability
+
+- [Logs a sandbox does not send to the node](examples/observability/logging/README.md): stdout and stderr leave a sandboxed pod on their own; files, syslog and the guest kernel log do not. Shown side by side with an ordinary pod, with a log sidecar in the same pod that ships all three to CloudWatch Logs.
+
 ## Policy
 
 - [Cedar policy](examples/policy/cedar-policy/README.md): a Cedar policy generated from a workload's pod spec and enforced inside a confidential sandbox guest, which admits the expected container and refuses an operator's exec.

@@ -2168,6 +2168,31 @@ global_settings:
       line_end: 17
       reason: 'The synthetic HTTP fixture must accept requests through its ClusterIP service. It has no real supplier data, API key, or purchasing integration. This sample provides no pod-wide network restriction'
       expiration: '2027-01-31'
+    # ---- observability/logging (#244) ----
+    - rule_id: CKV2_K8S_6
+      path: 'examples/observability/logging/deploy/app-*.yaml'
+      reason: 'A new sample ships no network policy (AGENTS.md, Security rules); the page says nothing limits where the pods connect and links the network policy sample; app-sidecar-isolated has no network at all'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_8
+      path: 'examples/observability/logging/deploy/app-*.yaml'
+      reason: 'Bare demo pods whose output the page reads; a probe gates nothing, and the two compared pods must stay identical but for runtimeClassName'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_9
+      path: 'examples/observability/logging/deploy/app-*.yaml'
+      reason: 'Bare demo pods whose output the page reads; a probe gates nothing, and the two compared pods must stay identical but for runtimeClassName'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_23
+      path: 'examples/observability/logging/deploy/app-sidecar-*.yaml'
+      reason: 'The kernel-log container runs as UID 0 because syslog(2) reads the kernel log only with CAP_SYSLOG, proved on the cluster (README, Good to know); it reads the sandbox guest kernel, every other capability is dropped, no privilege escalation, read-only root'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_40
+      path: 'examples/observability/logging/deploy/app-sidecar-*.yaml'
+      reason: 'Same kernel-log container as CKV_K8S_23: UID 0 is what CAP_SYSLOG needs here; the app and Fluent Bit containers run as UID 10001'
+      expiration: '2027-12-31'
+    - rule_id: CKV_K8S_25
+      path: 'examples/observability/logging/deploy/app-sidecar-*.yaml'
+      reason: 'The kernel-log container adds only CAP_SYSLOG, which reading the guest kernel log requires (README, Good to know); all others are dropped'
+      expiration: '2027-12-31'
     # Coder blueprint (issue #278). Keycloak and PostgreSQL are ordinary control-plane pods
     # behind ClusterIP Services; a new sample ships no network policy (AGENTS.md, Security
     # rules), and the page links the network policy sample instead.

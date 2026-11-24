@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OneLogGroupOnly",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:<AWS_REGION>:<ACCOUNT_ID>:log-group:<LOG_GROUP>",
+        "arn:aws:logs:<AWS_REGION>:<ACCOUNT_ID>:log-group:<LOG_GROUP>:log-stream:*"
+      ]
+    }
+  ]
+}

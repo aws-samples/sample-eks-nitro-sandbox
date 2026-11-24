@@ -1,0 +1,9 @@
+# A namespace this blueprint owns outright. The clean up deletes it, taking every
+# pod and ConfigMap with it, after it checks the `sample` label below.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sandbox-logging
+  labels:
+    app.kubernetes.io/part-of: eks-nitro-sandbox-demos
+    sample: logging

@@ -1,0 +1,110 @@
+# app-sidecar-isolated: app-sidecar-stdout in a sandbox with no network, and with
+# both outputs turned on. The sandbox boots with only loopback, so the CloudWatch
+# Logs output cannot connect, while the stdout output still delivers: container
+# stdout leaves the sandbox over its internal channel to the node, not the network.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-sidecar-isolated
+  namespace: sandbox-logging
+  labels:
+    app: logging-app
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"   # keep consolidation from evicting this bare pod mid-run
+    sandbox.amazonaws.com/network-isolated: "true"   # <-- the sandbox boots with loopback only
+spec:
+  runtimeClassName: isolated-sandbox
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command: ["python3", "-u", "/app/app.py"]
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: SYSLOG_SOCKET
+          value: /run/syslog/log
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: app
+          mountPath: /app
+          readOnly: true
+        - name: app-logs
+          mountPath: /var/log/app
+        - name: syslog
+          mountPath: /run/syslog
+    - name: kernel-log
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      command: ["python3", "-u", "/app/kernel-log.py"]
+      securityContext:
+        runAsUser: 0
+        runAsNonRoot: false
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+          add: ["SYSLOG"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: app
+          mountPath: /app
+          readOnly: true
+        - name: kernel-logs
+          mountPath: /var/log/kernel
+    - name: fluent-bit
+      image: public.ecr.aws/aws-observability/aws-for-fluent-bit:3.5.8
+      imagePullPolicy: IfNotPresent
+      command: ["/fluent-bit/bin/fluent-bit", "-c", "/fluent-bit/config/both.conf"]
+      env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: AWS_REGION
+          value: <AWS_REGION>
+        - name: LOG_GROUP
+          value: <LOG_GROUP>
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: fluent-bit-config
+          mountPath: /fluent-bit/config
+          readOnly: true
+        - name: app-logs
+          mountPath: /var/log/app
+          readOnly: true
+        - name: kernel-logs
+          mountPath: /var/log/kernel
+          readOnly: true
+        - name: syslog
+          mountPath: /run/syslog
+  volumes:
+    - name: app
+      configMap:
+        name: logging-app
+    - name: fluent-bit-config
+      configMap:
+        name: logging-fluent-bit
+    - name: app-logs
+      emptyDir: {}
+    - name: kernel-logs
+      emptyDir: {}
+    - name: syslog
+      emptyDir: {}
