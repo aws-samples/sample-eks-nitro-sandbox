@@ -1,0 +1,7 @@
+# Python packages of the offline test stubs (scripts/testlib/fake_*.py). Install them into a
+# virtual environment under the repository's tmp/, never into a shared Python:
+#   python3 -m venv tmp/cb-tests-venv && tmp/cb-tests-venv/bin/pip install -r <this file>
+jmespath==1.0.1
+PyYAML==6.0.2
+# openpgp_fixture.py signs the fixture Packer release with a test key made per run.
+cryptography==50.0.2

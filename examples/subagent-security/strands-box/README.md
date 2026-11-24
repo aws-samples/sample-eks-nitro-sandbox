@@ -82,7 +82,7 @@ It installs the shared Python dependency lock with hashes and pins the Python im
 | Box source revision | `e39544d49188b82933264b83159c7ccc278ced5a` |
 | Platform | `linux/arm64` |
 | Python base image | `3.13-slim-bookworm`, digest in [versions.json](versions.json) |
-| Strands Agents, boto3, Pydantic | `1.62.0`, `1.43.118`, `2.14.1`. Complete [shared lock](../analyst/requirements.txt) |
+| Strands Agents, boto3, Pydantic | `1.65.0`, `1.43.118`, `2.14.1`. Complete [shared lock](../analyst/requirements.txt) |
 
 The final analyst and supplier images differ from the Python base image.
 Their tested digests identify the complete images used in the walkthrough.

@@ -93,6 +93,7 @@ the images record what they installed.
 | [`deploy/app-policy.yaml`](deploy/app-policy.yaml) | The app's network policy: no ingress from the pod network |
 | [`iam/`](iam/) | The Bedrock, Codex, App and Mount role policies and trusts, and the per-session mount session policy |
 | [`scripts/setup.sh`](scripts/setup.sh), [`scripts/clean.sh`](scripts/clean.sh) | Create everything and apply it; remove it |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the egress policy |
 | `.env.example` | The local values the blueprint needs; copy to `.env`, which git ignores |
 
 ## Quick start
@@ -794,8 +795,8 @@ limitations*). So the session pods have a network, and an egress policy is what 
 code in the sandbox can connect. Each `SandboxTemplate` sets
 `networkPolicyManagement: Unmanaged` and ships its own policy. Here is
 [`egress-policy.yaml`](deploy/egress-policy.yaml) in full, without its header comment;
-`setup.sh` fills in the mount-target addresses at apply time, and adds one extra rule for
-kiro-cli (shown below the table):
+`setup.sh` fills in the cluster's DNS address and the mount-target addresses at apply time,
+and adds one extra rule for kiro-cli (shown below the table):
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -820,7 +821,7 @@ spec:
         - { protocol: TCP, port: 7681 }
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -852,7 +853,7 @@ spec:
 | `podSelector`, `agent-cli: <CLI>` | Selects this CLI's session pods. |
 | `policyTypes`, `Ingress` and `Egress` | Default-deny both ways, so only the rules below are allowed. |
 | `ingress` from `app: agent-app` on 7681 | Admits the app's pods, to `session-bridge` only (see [How the terminal reaches the pod](#how-the-terminal-reaches-the-pod)). Everything else in is denied, including other session pods. The label is what the rule trusts, so whoever can create pods in this namespace can pass it; the bridge's token and pinned certificate still stand behind it. The session's start and stop use the Kubernetes exec API, which is not pod network traffic. |
-| `egress` to `0.0.0.0/0` on 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the blueprint simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
+| `egress` to `<COREDNS_CIDR>` on 53 | DNS on UDP and TCP 53 to the cluster's DNS address only. It is the nameserver in every pod's `resolv.conf`. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. [`coredns-cidr.sh`](scripts/coredns-cidr.sh) reads the service CIDR with `aws eks describe-cluster`. It applies the rule in the Amazon EKS User Guide, [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4 it takes the `.10` address, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6 it appends `a` to the network address, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. `setup.sh` stops before creating anything if the service CIDR is missing or malformed. Port 53 to any address would let code in the sandbox reach any DNS server on the internet. That code could then send data out over DNS or reach a VPN listening on port 53. |
 | `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the pod's role (the Bedrock role, or the Codex role for Codex). kiro-cli's pods have no role, so the agent gives them no credential. |
 | `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, including `api.github.com` for the GitHub CLI, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |
 | `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. They are ENIs in the cluster VPC reached by resolved IP, so `setup.sh` resolves this file system's mount-target IPs and fills in one `/32` per target -- egress on 2049 is allowed to the blueprint's own mount targets only, not to anything on 2049 in the VPC. |
@@ -881,12 +882,11 @@ subdomains its Region and workflow use.
 Enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap in
 `kube-system`, which `setup.sh` checks and stops without if it is off. It is enforced on the
 node, outside the guest, so a command in the sandbox, even as root, cannot change it. Its
-limits: DNS is open on port 53 to any address, so a resolver is always reachable, and a pod
-can always reach its own node; that also means port-53 egress is not confined to the
-cluster's resolver, so a process in the sandbox can send data out over DNS or to anything
-listening on port 53 (see the `0.0.0.0/0` row above). A `domainNames` rule allows the
-addresses a name resolves to, so another name served from the same addresses is reachable
-too. Everything beyond port 53, the allowed hosts and the mount targets is denied.
+limits: a pod can always reach its own node. The cluster's resolver still answers any name,
+so a process in the sandbox can still encode data in the names it looks up. A
+`domainNames` rule allows the addresses a name resolves to, so another name served from the
+same addresses is reachable too. Everything beyond DNS to the cluster's DNS address, the
+allowed hosts and the mount targets is denied.
 
 To see it from inside a session pod, connect to an allowed endpoint and to a denied one
 (`curl` exits 0 once the TCP connection is established; exit 28 is a connect timeout, which

@@ -1,0 +1,19 @@
+# containerd drop-in (/etc/containerd/config.d/50-nitro-sandbox.toml). The Bottlerocket
+# containerd configuration (version 3) imports /etc/containerd/config.d/*.toml.
+# The two runtime handlers of the Amazon EKS User Guide, with the shim path of this package.
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.isolated-sandbox]
+runtime_type = "io.containerd.nitro-sandbox.v2"
+runtime_path = "/usr/bin/containerd-shim-nitro-sandbox-v2"
+sandboxer = "shim"
+privileged_without_host_devices = true
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.confidential-sandbox]
+runtime_type = "io.containerd.nitro-sandbox.v2"
+runtime_path = "/usr/bin/containerd-shim-nitro-sandbox-v2"
+sandboxer = "shim"
+privileged_without_host_devices = true
+
+# The User Guide requires the unpacked layers to stay. false is also the default; this
+# sample sets it explicitly.
+[plugins."io.containerd.cri.v1.images"]
+discard_unpacked_layers = false

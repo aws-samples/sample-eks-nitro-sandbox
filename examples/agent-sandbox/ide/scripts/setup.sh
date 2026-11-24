@@ -120,7 +120,14 @@ case $sec_rc in
 esac
 
 step "3/5 egress policy $POLICY (all ingress denied)"
-sed -e "s/__NAMESPACE__/$NAMESPACE/g" \
+# The cluster's DNS address for the policy's DNS rule (see coredns-cidr-from-service.sh).
+# It stops here, before anything is applied, if the Service address is not what it expects.
+# shellcheck source=coredns-cidr-from-service.sh
+. "$SAMPLE_DIR/scripts/coredns-cidr-from-service.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kc_cluster)" \
+  || die "could not work out the DNS address of the cluster (see the line above)"
+echo "  DNS egress is allowed to $COREDNS_CIDR only"
+sed -e "s/__NAMESPACE__/$NAMESPACE/g" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" \
   "$SAMPLE_DIR/deploy/egress-policy.yaml" | kc apply -f -
 # The PolicyEndpoint shows the controller picked the policy up and handed it to
 # the nodes. Wait for it before creating the editor, so the policy is on the

@@ -1,0 +1,20 @@
+# The ClusterIP Service of the sample. setup.sh applies it and clean.sh removes it with the
+# namespace. Cilium implements it with eBPF, because the cluster has no kube-proxy. test.sh
+# sends a request to http://cb-server.cilium-bottlerocket-demo.svc.cluster.local/ from the
+# sandbox pod and from both ordinary pods. type: ClusterIP keeps it inside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: cb-server
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: cb-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

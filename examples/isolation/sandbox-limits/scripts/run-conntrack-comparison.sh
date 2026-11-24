@@ -126,9 +126,14 @@ kubectl delete -f "$DEPLOY/probe-standard.yaml"                   --ignore-not-f
 kubectl delete -f "$DEPLOY/sink.yaml"                             --ignore-not-found --wait=true
 
 say "Deploy the egress NetworkPolicy, the sink and the two probe pods"
-# DNS egress is allowed to any address (the policy opens only port 53), so there is no
-# per-cluster address to look up or substitute; the file is applied as it is on the page.
-kubectl apply -f "$DEPLOY/egress-policy.yaml"
+# The policy's DNS rule allows the cluster's DNS address only. Work it out from the
+# kubernetes Service (see coredns-cidr-from-service.sh); it stops here if that is not usable.
+# shellcheck source=coredns-cidr-from-service.sh
+. "$HERE/scripts/coredns-cidr-from-service.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kubectl)" \
+  || { echo "STOP: could not work out the cluster's DNS address (see the line above)." >&2; exit 2; }
+echo "DNS egress is allowed to $COREDNS_CIDR only"
+sed "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" "$DEPLOY/egress-policy.yaml" | kubectl apply -f -
 kubectl apply -f "$DEPLOY/sink.yaml"
 kubectl apply -f "$DEPLOY/probe-standard.yaml"
 kubectl apply -f "$DEPLOY/probe-sandboxed.yaml"
