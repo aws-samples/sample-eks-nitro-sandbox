@@ -2285,6 +2285,7 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     )
     assert (
         "git apply -p1 --directory=deps/openssl/openssl "
+        "--include=deps/openssl/openssl/crypto/ec/ec_key.c "
         "/node-repair/openssl-cve-2026-107496.patch" in fetch
     )
     runtime_dir = oce_source / "deploy" / "runtime"

@@ -430,7 +430,10 @@ apply_after = (
     + f"/node-repair/{OPENSSL_PATCH_FILE_NAME}\n"
     + "git apply -p1 --directory=deps/openssl/openssl "
     + f"/node-repair/{OPENSSL_CVE_PATCH_FILE_NAME}\n"
+    # Node's vendored OpenSSL archive omits upstream regression tests. Apply the
+    # production fix here; the Debian OpenSSL build applies the complete patch.
     + "git apply -p1 --directory=deps/openssl/openssl "
+    + "--include=deps/openssl/openssl/crypto/ec/ec_key.c "
     + f"/node-repair/{OPENSSL_EC_ORDER_PATCH_FILE_NAME}\n"
 )
 if fetch.count(checksum_before) != 1 or fetch.count(apply_before) != 1:
