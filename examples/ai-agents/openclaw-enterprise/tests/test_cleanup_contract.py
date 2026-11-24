@@ -1120,6 +1120,65 @@ def test_all_created_resources_are_deleted_and_second_run_is_idempotent(
     assert _state(env)["mutations"] == mutation_count
 
 
+def test_cleanup_removes_local_admin_and_tenant_credentials(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path)
+    state_dir = tmp_path / "state"
+    admin_key = state_dir / "initial-admin-service-key.json"
+    _write_json(admin_key, {"key": "admin-key"})
+    admin_password = state_dir / "initial-admin-password"
+    admin_password.write_text("admin-password")
+    admin_password.chmod(0o600)
+
+    namespace = "openclaw-tenant-a"
+    _add_tenant(env, namespace)
+    validator_dir = tmp_path / "tenant-a"
+    validator_dir.mkdir(mode=0o700)
+    validator_key = validator_dir / "validator-service-key.json"
+    _write_json(validator_key, {"key": "test-validator-key"})
+    command += [
+        *_tenant_identity_args(namespace),
+        "--tenant-validator-key-file",
+        str(validator_key),
+        "--delete-tenant-data",
+    ]
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    for path in (admin_key, admin_password, validator_key):
+        assert not path.exists()
+        assert f"Removed local credential: {path}" in result.stdout
+
+
+def test_hard_linked_validator_key_is_reported_and_preserved_before_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    namespace = "openclaw-tenant-a"
+    _add_tenant(env, namespace)
+    validator_dir = tmp_path / "tenant-a"
+    validator_dir.mkdir(mode=0o700)
+    validator_key = validator_dir / "validator-service-key.json"
+    _write_json(validator_key, {"key": "test-validator-key"})
+    validator_link = validator_dir / "validator-key-backup.json"
+    validator_link.hardlink_to(validator_key)
+    command += [
+        *_tenant_identity_args(namespace),
+        "--tenant-validator-key-file",
+        str(validator_key),
+        "--delete-tenant-data",
+    ]
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert f"local credential remains at {validator_key}" in result.stderr
+    assert "every backup or snapshot that contains it" in result.stderr
+    assert validator_key.exists()
+    assert validator_link.exists()
+    assert _state(env)["mutations"] == 0
+
+
 def test_cleanup_removes_validation_database_storage_with_system_namespace(
     tmp_path: Path,
 ) -> None:
@@ -1459,6 +1518,7 @@ def test_opt_in_deletes_live_tenant_workload_with_namespace(
     ], env)
 
     assert result.returncode == 0, result.stderr
+    assert "No tenant validator key files were supplied" in result.stdout
     after = _state(env)
     assert f"namespace/{tenant_namespace}" not in after["resources"]
     assert not after["tenantWorkloads"].get(tenant_namespace)

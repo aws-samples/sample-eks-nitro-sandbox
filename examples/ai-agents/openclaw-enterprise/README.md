@@ -1443,6 +1443,8 @@ be mistaken for the original:
 ```bash
 TENANT_A_NAMESPACE_IDENTITY_FILE='<tenant-a-namespace-identity-file>'
 TENANT_B_NAMESPACE_IDENTITY_FILE='<tenant-b-namespace-identity-file>'
+TENANT_A_VALIDATOR_KEY_FILE='<tenant-a-work-directory>/validator-service-key.json'
+TENANT_B_VALIDATOR_KEY_FILE='<tenant-b-work-directory>/validator-service-key.json'
 TENANT_A_NAMESPACE="$(
   jq -er '.name' "$TENANT_A_NAMESPACE_IDENTITY_FILE"
 )"
@@ -1465,8 +1467,10 @@ TENANT_B_NAMESPACE_UID="$(
   --release oce \
   --tenant-namespace "$TENANT_A_NAMESPACE" \
   --tenant-namespace-uid "$TENANT_A_NAMESPACE=$TENANT_A_NAMESPACE_UID" \
+  --tenant-validator-key-file "$TENANT_A_VALIDATOR_KEY_FILE" \
   --tenant-namespace "$TENANT_B_NAMESPACE" \
   --tenant-namespace-uid "$TENANT_B_NAMESPACE=$TENANT_B_NAMESPACE_UID" \
+  --tenant-validator-key-file "$TENANT_B_VALIDATOR_KEY_FILE" \
   --delete-tenant-data \
   --storage-class-receipt "$STORAGE_CLASS_RECEIPT" \
   --agentgateway-receipt "$AGENTGATEWAY_RECEIPT" \
@@ -1527,9 +1531,13 @@ builder repository manager separately deletes only the exact private builder
 recorded in its receipt after it verifies the AWS account, Region, repository
 ARN, and random ownership tag.
 
-The cluster cleanup does not delete the local AgentGateway state directory or
-its receipt. Securely archive them if you need an audit record; otherwise
-delete them after cleanup. Never reuse the generated keys for another
+After all cluster and AWS cleanup checks pass, the script removes the local OCE
+administrator key/password and each explicitly supplied validator key. If a
+file cannot be verified or removed, cleanup exits non-zero with its exact path
+and disposal guidance. Deleting a local file does not purge backup or snapshot
+copies. The cluster cleanup does not delete the local AgentGateway state
+directory or its receipt. Securely archive them if you need an audit record;
+otherwise delete them after cleanup. Never reuse the generated keys for another
 deployment.
 
 ```text

@@ -75,6 +75,7 @@ def parse_args():
     parser.add_argument("--release", default="oce")
     parser.add_argument("--tenant-namespace", action="append", default=[])
     parser.add_argument("--tenant-namespace-uid", action="append", default=[])
+    parser.add_argument("--tenant-validator-key-file", action="append", default=[])
     parser.add_argument("--delete-tenant-data", action="store_true")
     for flag in (
         "storage-class-receipt", "agentgateway-receipt",
@@ -107,11 +108,22 @@ def parse_args():
             fail("a tenant namespace UID was supplied more than once.")
         tenant_namespace_uids[name] = uid
     args.tenant_namespace_uids = tenant_namespace_uids
+    validator_paths = [Path(path) for path in args.tenant_validator_key_file]
+    if any(not path.is_absolute() or path.name != "validator-service-key.json"
+           for path in validator_paths):
+        fail(
+            "--tenant-validator-key-file must be an absolute path ending in "
+            "validator-service-key.json."
+        )
+    if len(set(validator_paths)) != len(validator_paths):
+        fail("a tenant validator key file was supplied more than once.")
     reserved = {args.namespace, "openclaw-enterprise-adapter", AGW_NAMESPACE}
     if reserved & set(args.tenant_namespace):
         fail("a reserved namespace was supplied as a tenant namespace.")
     if args.delete_tenant_data and not args.tenant_namespace:
         fail("--delete-tenant-data requires at least one --tenant-namespace.")
+    if args.tenant_validator_key_file and not args.delete_tenant_data:
+        fail("--tenant-validator-key-file requires --delete-tenant-data.")
     aws_fields = (
         "aws_region", "aws_account_id", "eks_cluster_name",
         "pod_identity_association_id", "iam_role_name", "iam_inline_policy_name",
@@ -201,6 +213,7 @@ class Cleanup:
         self.endpoint = self.attempt = self.cluster_arn = ""
         self.install_uids = {}
         self.storage = self.pod = self.gateway = None
+        self.local_credentials = []
 
     def kubectl(self, *args, stdin=None):
         return run([*self.k, *args], stdin=stdin)
@@ -228,6 +241,55 @@ class Cleanup:
             fail("--state-dir and --receipt must be canonical.")
         if receipt.parent != state:
             fail("--receipt must be directly below --state-dir.")
+
+    def credential_error(self, path, reason):
+        fail(
+            f"local credential remains at {path}: {reason} Revoke it if the OCE "
+            "API is still available, then delete that exact file and every "
+            "backup or snapshot that contains it."
+        )
+
+    def validate_local_credentials(self):
+        paths = [
+            Path(self.a.state_dir) / "initial-admin-service-key.json",
+            Path(self.a.state_dir) / "initial-admin-password",
+            *(Path(path) for path in self.a.tenant_validator_key_file),
+        ]
+        for path in paths:
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                self.credential_error(path, f"could not inspect it ({error}).")
+            try:
+                private_path(path.parent, "credential parent directory", True)
+                checked = private_path(path, "local credential")
+                info = checked.stat()
+                if checked.resolve() != checked or info.st_nlink != 1:
+                    self.credential_error(
+                        path,
+                        "it must be a canonical private file with one hard link.",
+                    )
+            except CleanupError as error:
+                self.credential_error(path, str(error))
+            self.local_credentials.append((path, info.st_dev, info.st_ino))
+
+    def remove_local_credentials(self):
+        for path, device, inode in self.local_credentials:
+            try:
+                checked = private_path(path, "local credential")
+                info = checked.stat()
+                if (info.st_dev, info.st_ino, info.st_nlink) != (device, inode, 1):
+                    self.credential_error(path, "its identity changed after preflight.")
+                checked.unlink()
+                checked.lstat()
+            except FileNotFoundError:
+                print(f"Removed local credential: {path}")
+            except CleanupError:
+                raise
+            except OSError as error:
+                self.credential_error(path, f"could not remove it ({error}).")
 
     def validate_install_receipt(self):
         marker = {}
@@ -1773,6 +1835,7 @@ class Cleanup:
         self.validate_paths()
         self.validate_install_receipt()
         self.validate_lifecycle_receipts()
+        self.validate_local_credentials()
         self.recover_freeze()
         helm = self.helm_present()
         self.verify_cluster_resources()
@@ -1914,6 +1977,12 @@ class Cleanup:
             fail(
                 "tenant admission freeze remains after tenant data deletion; "
                 "refusing to report successful cleanup."
+            )
+        self.remove_local_credentials()
+        if self.a.delete_tenant_data and not self.a.tenant_validator_key_file:
+            print(
+                "No tenant validator key files were supplied; revoke each 30-day key "
+                "and delete its validator-service-key.json file and backup copies."
             )
         print(f"Cleanup completed for release {self.a.release} in kube context {self.a.kube_context}.")
 
