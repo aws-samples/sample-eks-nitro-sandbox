@@ -53,8 +53,11 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 # Path-style addressing, so every S3 request goes to the Region's own endpoint rather
-# than to <bucket>.s3.<Region>.amazonaws.com.
-S3_CONFIG = Config(s3={"addressing_style": "path"})
+# than to <bucket>.s3.<Region>.amazonaws.com. Three HTTP sends per request at most, the
+# number setup's cost check counts on for every S3 request this run makes: botocore's
+# total_max_attempts counts the first send, where its max_attempts would count retries only.
+S3_CONFIG = Config(s3={"addressing_style": "path"},
+                   retries={"total_max_attempts": 3, "mode": "standard"})
 
 sys.path.insert(0, "/opt/analyst")
 sys.path.insert(0, "/opt/bubblewrap")
@@ -69,6 +72,12 @@ from sandbox import (CHILD_ENVIRONMENT, HOSTNAME, NAMESPACES,  # noqa: E402
 
 ROOT = Path("/var/lib/analyst")
 ROLES = ("reader", "evaluator", "writer")
+MODEL_TURN_MARKER = ROOT / ".model-turn"
+
+# The run's finite bounds, read from the file setup's cost check reads too, so the two
+# cannot disagree: "model" is the model turn's envelope (analyst_agent.ENVELOPE_KEYS),
+# "reports" the size and number of objects this run writes to S3.
+RUN_ENVELOPE = json.loads((Path(__file__).parent / "run_envelope.json").read_text())
 
 SUPPLIER_KEY_FILE = "/opt/supplier-key/api-key"
 CA = "/opt/supplier-ca/ca.crt"
@@ -697,8 +706,18 @@ class Run:
         return comparison
 
     def model_turn(self, case, comparison):
-        turn = ModelTurn(case, comparison)
+        # One model turn per pod, claimed before the first send: creating the marker fails if
+        # it is already there, so a second controller in this pod, from run.sh or by hand,
+        # stops here rather than paying for another turn. Printed only when it fails.
+        try:
+            os.close(os.open(MODEL_TURN_MARKER, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        except FileExistsError:
+            self.check("this pod has not run a model turn before", False)
+        turn = ModelTurn(case, comparison, envelope=RUN_ENVELOPE["model"])
         payload = turn.run()
+        # Printed only when it fails, so a run inside its envelope prints what it always has.
+        if turn.refusal:
+            self.check(f"the model turn stays inside its envelope ({turn.refusal})", False)
         self.check("the model called the evidence tool", turn.tool_calls > 0)
         self.check("Bedrock returned a real turn with nonzero token usage",
                    turn.usage.get("totalTokens", 0) > 0)
@@ -735,9 +754,17 @@ class Run:
         # claim as looking at one.
         report_bytes = report.encode()
         prefix = f"reports/{CASE}/{self.id}"
-        for name, body in (("recommendation.md", report_bytes),
-                           ("comparison.json",
-                            json.dumps(comparison, indent=2).encode())):
+        objects = (("recommendation.md", report_bytes),
+                   ("comparison.json", json.dumps(comparison, indent=2).encode()))
+        limits = RUN_ENVELOPE["reports"]
+        # Both bounds are checked before the first put, and printed only when they fail.
+        if len(objects) > limits["objects"]:
+            self.check(f"this run writes at most {limits['objects']} report objects", False)
+        for name, body in objects:
+            if len(body) > limits["object_max_bytes"]:
+                self.check(f"the report object {name} is at most "
+                           f"{limits['object_max_bytes']} bytes (it is {len(body)})", False)
+        for name, body in objects:
             s3.put_object(Bucket=BUCKET, Key=f"{prefix}/{name}", Body=body)
             stored = s3.get_object(Bucket=BUCKET, Key=f"{prefix}/{name}")["Body"].read()
             self.check(f"the report object round-trips through S3: {name}", stored == body)

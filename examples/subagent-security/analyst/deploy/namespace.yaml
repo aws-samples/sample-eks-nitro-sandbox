@@ -2,9 +2,10 @@
 #
 # metadata.name is replaced at apply time with the sample's NAMESPACE, and the
 # managed-by label is replaced with the sample's own name, so each sample owns its own
-# namespace and a clean up can tell them apart. A setup script applies this only when
-# the namespace is absent: applying it over a namespace another demo owns would put the
-# mark on it, and that clean up would then delete it.
+# namespace and a clean up can tell them apart. A setup script creates this only when
+# the namespace is absent, with kubectl create rather than apply: applying it over a
+# namespace another demo owns would put the mark on it, and that clean up would then
+# delete it.
 apiVersion: v1
 kind: Namespace
 metadata:

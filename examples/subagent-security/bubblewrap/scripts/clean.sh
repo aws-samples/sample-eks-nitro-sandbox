@@ -3,47 +3,90 @@
 #
 # Usage:
 #   ./scripts/clean.sh                      # the cluster objects and the namespace
-#   ./scripts/clean.sh --delete-aws         # also the bucket, the IAM role and the images
+#   ./scripts/clean.sh --delete-aws         # also the bucket, the IAM role, the ECR
+#                                           # repositories and the local images it built
+#   ./scripts/clean.sh --delete-aws --delete-node
+#                                           # also the sandbox node, and any NodeClaim, the
+#                                           # run's pods were given
+#   ./scripts/clean.sh --delete-aws --delete-node --allow-instance-termination
+#                                           # and, if deleting the node through EKS fails,
+#                                           # cordon it and terminate its EC2 instance
 #
-# It reads the same run record setup.sh wrote, so there is nothing to set again.
+# It reads the same run record setup.sh wrote, so there is nothing to set again, and without
+# that record it touches nothing. setup.sh and run.sh run it with --delete-aws --delete-node
+# themselves when they fail, and so does scripts/deadline.sh at the run's clean-up deadline.
+# It takes the run lock first, so it never runs beside a setup, a run or another clean up on
+# this machine, and it touches nothing while the namespace of the run's name is not the one
+# the run created (another checkout's or machine's run holds it). It stops before its first
+# delete if this shell no longer acts as the account, role, cluster, endpoint, Region and
+# kube context setup recorded. Every call it makes gives up on its own and is killed after
+# CALL_TIMEOUT_S, and all of them together stop after CLEAN_BUDGET_S seconds.
 #
 # It does not stop at the first failure. A lookup that fails means "could not determine",
 # which is a failure and never "already gone": anything it could not delete or confirm is
 # named at the end and makes it exit non-zero. It touches a resource only when that
 # resource carries this sample's ManagedBy tag, or sits inside a namespace carrying this
-# sample's managed-by label, and leaves anything else alone.
+# sample's managed-by label, and leaves anything else alone. The Pod Identity association,
+# the local images and the node must also be the exact ones the run record names.
 #
 # It never removes a shared install or a cluster-wide setting; this sample changes none, so
-# there is nothing of that kind to undo. What stays is listed at the end.
+# there is nothing of that kind to undo. What stays is listed at the end. It needs no cost
+# snapshot: refusing to clean up would only leave billing running.
 set -uo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPO_ROOT="$(cd "$SAMPLE_DIR/../../.." && pwd)"
 SAMPLE="bubblewrap"
-TMP_DIR="$REPO_ROOT/tmp/$SAMPLE"
-STATE_FILE="$TMP_DIR/state.env"
+# Every call below shares this one budget, and each one is also stopped by the clock after
+# CALL_TIMEOUT_S, retries and credential helpers included. The cost check reads both here.
+CLEAN_BUDGET_S=2400
+CALL_TIMEOUT_S=240
+# The most times one run record is cleaned up with S3 calls; the cost check counts them.
+CLEAN_RUNS_MAX=8
 
-delete_aws=false
+delete_aws=false delete_node=false allow_terminate=false
 for arg in "$@"; do
   case "$arg" in
     --delete-aws) delete_aws=true ;;
-    --help|-h) sed -n '2,20p' "$0"; exit 0 ;;
+    --delete-node) delete_node=true ;;
+    --allow-instance-termination) allow_terminate=true ;;
+    --help|-h) sed -n '2,34p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
+
+[[ "$delete_node" != true || "$delete_aws" == true ]] ||
+  { echo "--delete-node also needs --delete-aws" >&2; exit 2; }
+[[ "$allow_terminate" != true || "$delete_node" == true ]] ||
+  { echo "--allow-instance-termination also needs --delete-node" >&2; exit 2; }
 
 failed=0
 note_fail() { echo "INCOMPLETE: $*" >&2; failed=1; }
 say() { printf '\n==> %s\n' "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
+# shellcheck source=run-lib.sh
+. "$SAMPLE_DIR/scripts/run-lib.sh"
 
-# .env first and the run record second, so the record wins. The record holds the names the
-# run actually created; .env holds what the next run would use, and the two differ exactly
-# when someone has changed a name since. Sourced the other way round, a changed .env would
-# send this script after a namespace and a bucket that were never created and leave the
-# real ones behind.
+# .env first and the run record second, so the record wins: it holds the names the run
+# actually created, .env what the next run would use. Which node is the run's, and the
+# identity setup acted as, come from the run record alone, never from .env.
 if [[ -f "$SAMPLE_DIR/.env" ]]; then set -a; . "$SAMPLE_DIR/.env"; set +a; fi
-if [[ -f "$STATE_FILE" ]]; then set -a; . "$STATE_FILE"; set +a; fi
+unset NODE_NAME NODE_UID NODE_PROVIDER_ID NODE_CREATED_AT NODE_POOL NODE_AT_START NAMESPACE_UID \
+  NODECLAIM_NAME NODECLAIM_UID NODECLAIM_CREATED_AT NODECLAIM_POOL RUN_STARTED_AT \
+  NOMINATED_NODECLAIMS ACCOUNT_ID CALLER_ROLE_ARN CLUSTER_ARN CLUSTER_ENDPOINT CLEAN_RUNS_DONE
+# Without the run record nothing ties any resource to a run (every copy of this sample marks
+# its resources the same way, and another checkout's run may be in progress), so nothing is
+# touched: the names are printed for you to check and remove by hand.
+if [[ ! -e "$STATE_FILE" ]]; then
+  echo "There is no run record at $STATE_FILE: this run was cleaned up already, or its record was" >&2
+  echo "lost. Nothing was touched. If it was lost, check and remove by hand namespace" >&2
+  echo "${NAMESPACE:-subagent-security-bubblewrap}, bucket ${BUCKET:-subagent-analyst-$SAMPLE-<ACCOUNT_ID>}, role ${ROLE_NAME:-subagent-analyst-$SAMPLE}" >&2
+  echo "and the ECR repositories pod-isolation/subagent-analyst-$SAMPLE and pod-isolation/subagent-analyst-$SAMPLE-supplier-api." >&2
+  exit 1
+fi
+state_load SAMPLE NAMESPACE AWS_REGION KUBE_CONTEXT CLUSTER_NAME ACCOUNT_ID CALLER_ROLE_ARN \
+    CLUSTER_ARN CLUSTER_ENDPOINT ||
+  die "$STATE_FILE is not a run record this script can read, or it lacks the names and identity setup recorded; touched nothing"
 
 NAMESPACE="${NAMESPACE:-subagent-security-bubblewrap}"
 AWS_REGION="${AWS_REGION:-}"
@@ -55,88 +98,184 @@ CLUSTER_NAME="${CLUSTER_NAME:-}"
 # report resources as "already gone" and exit 0 while they are still there.
 [[ -n "$AWS_REGION" ]] ||
   die "AWS_REGION is not set, so a lookup could run in the wrong Region and report a resource that still exists as already gone. Set it in .env, or run ./scripts/setup.sh first so the run record has it."
-export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION"
+[[ "$KUBE_CONTEXT" =~ ^[A-Za-z0-9_.:@/-]+$ ]] ||
+  die "KUBE_CONTEXT is not set, or is not a context name, so this clean up could act on whichever cluster is current; touched nothing"
+export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION" AWS_MAX_ATTEMPTS=3 AWS_RETRY_MODE=standard
 
 for c in aws jq kubectl; do
   command -v "$c" >/dev/null 2>&1 || die "$c is required"
 done
+TIMEOUT="$(command -v timeout || command -v gtimeout)" ||
+  die "timeout (GNU coreutils; gtimeout on macOS) is required, so every call ends by the clock"
 
-kc() {
-  if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"
-  else kubectl "$@"; fi
+lock_take 0 ||
+  die "another setup, run or clean up of this sample holds $LOCK_DIR (process $(cat "$LOCK_DIR/pid" 2>/dev/null || echo unknown)); touched nothing"
+trap lock_release EXIT
+
+clean_end=$((SECONDS + CLEAN_BUDGET_S)) out_of_time=false
+in_budget() {
+  (( SECONDS < clean_end )) && return 0
+  [[ "$out_of_time" == true ]] ||
+    note_fail "the clean up used its ${CLEAN_BUDGET_S}s; every step after this was skipped"
+  out_of_time=true
+  return 1
+}
+# Each Kubernetes request gives up after a minute; each AWS CLI request after 10 seconds
+# connecting and 60 reading, three tries at most; and either is killed at CALL_TIMEOUT_S.
+kc() { in_budget || return 1; "$TIMEOUT" -k 5 "$CALL_TIMEOUT_S" kubectl --context "$KUBE_CONTEXT" --request-timeout=60s "$@"; }
+aws() { in_budget || return 1; "$TIMEOUT" -k 5 "$CALL_TIMEOUT_S" aws --cli-connect-timeout 10 --cli-read-timeout 60 "$@"; }
+gone_within() { # <seconds> <arguments for kc get...>: true once the object is gone
+  local end=$((SECONDS + $1)) tries=$(( $1 / 10 )) got
+  shift
+  while (( SECONDS < end && tries-- > 0 )) && in_budget; do
+    got="$(kc get "$@" --ignore-not-found -o name 2>/dev/null)" || got=unknown
+    [[ -z "$got" ]] && return 0
+    sleep 10
+  done
+  return 1
 }
 
-# See analyst-lib.sh for why this returns 2 rather than exiting.
-lookup() {
-  local notfound="$1"; shift
-  local out err rc=0
-  out="$(mktemp "${TMPDIR:-/tmp}/analyst-out.XXXXXX")" || return 2
-  err="$(mktemp "${TMPDIR:-/tmp}/analyst-err.XXXXXX")" || return 2
-  aws "$@" >"$out" 2>"$err" || rc=$?
-  if [[ "$rc" == 0 ]]; then cat "$out"; rm -f "$out" "$err"; return 0; fi
-  if grep -Fq "$notfound" "$err"; then rm -f "$out" "$err"; return 1; fi
-  echo "ERROR: 'aws $*' failed (exit $rc) and not with $notfound, so it is unknown whether the resource exists:" >&2
-  sed 's/^/  /' "$err" >&2
-  rm -f "$out" "$err"
-  return 2
+# The identity setup acted as, again, before anything is deleted and again before an
+# instance is terminated.
+want=""
+identity_matches() {
+  local now
+  now="$(identity_now)" && [[ -n "$now" && "$(jq -cS . <<<"$now")" == "$want" ]]
 }
+# The record names the account and role this run may act as, and it wins over .env.
+EXPECTED_ACCOUNT_ID="$ACCOUNT_ID" EXPECTED_ROLE_ARN="$CALLER_ROLE_ARN"
+want="$(jq -cSn --arg a "$ACCOUNT_ID" --arg r "$CALLER_ROLE_ARN" --arg c "$CLUSTER_ARN" \
+  --arg e "$CLUSTER_ENDPOINT" --arg g "$AWS_REGION" --arg k "$KUBE_CONTEXT" \
+  '{account: $a, role: $r, cluster_arn: $c, endpoint: $e, region: $g, context: $k}')"
+identity_matches ||
+  die "this shell does not act as the account, role, cluster, endpoint, Region and kube context setup recorded ($want), or that could not be read; touched nothing"
+CLEAN_RUNS_DONE=$(( ${CLEAN_RUNS_DONE:-0} + 1 ))
+state_put CLEAN_RUNS_DONE "$CLEAN_RUNS_DONE"
 
-say "1/4 the namespace's own objects"
+say "1/5 the namespace's own objects"
 
-# Four states, and only one of them lets anything inside the namespace be deleted.
-ns_state=unknown
+# Five states, and only one of them lets anything inside the namespace be deleted. The
+# namespace is the run's lease: one of this name with another uid than the run recorded (or,
+# when setup stopped before it recorded one, any of this name) is another run's, which may
+# be in progress from another checkout or machine, so nothing at all is touched.
+ns_state=unknown ns_gone=false
 if ns_json="$(kc get namespace "$NAMESPACE" --ignore-not-found -o json 2>/dev/null)"; then
   if [[ -z "$ns_json" ]]; then
     ns_state=absent
-  elif [[ "$(jq -r '.metadata.labels["app.kubernetes.io/managed-by"] // ""' <<<"$ns_json")" == "$SAMPLE" ]]; then
+  elif [[ "$(jq -r '.metadata.labels["app.kubernetes.io/managed-by"] // ""' <<<"$ns_json")" != "$SAMPLE" ]]; then
+    ns_state=foreign
+  elif [[ -n "${NAMESPACE_UID:-}" && "$(jq -r '.metadata.uid // ""' <<<"$ns_json")" == "$NAMESPACE_UID" ]]; then
     ns_state=owned
   else
-    ns_state=foreign
+    ns_state=other_run
   fi
 fi
 case "$ns_state" in
-  absent) echo "  namespace $NAMESPACE is already gone." ;;
+  absent) echo "  namespace $NAMESPACE is already gone."; ns_gone=true ;;
+  other_run)
+    note_fail "namespace $NAMESPACE is not the one this run created (its uid is not the recorded ${NAMESPACE_UID:-none}): another run holds it, so this clean up touched nothing"
+    lock_release; exit 1 ;;
   foreign) note_fail "namespace $NAMESPACE is not this sample's (its managed-by label is not '$SAMPLE'); deleted nothing in it" ;;
   unknown) note_fail "could not determine whether namespace $NAMESPACE exists or whose it is; deleted nothing in it" ;;
   owned)
+    # Which NodeClaims EKS Auto Mode launched for this run's pods, read from the
+    # namespace's events while they still exist, and kept in the run record.
+    # An event this cannot read, or events it cannot list, fail the whole clean up: the
+    # record is kept, so a NodeClaim launched for the run is never forgotten.
+    if nominated="$(nominated_claims 2>/dev/null)"; then
+      state_put NOMINATED_NODECLAIMS "$(printf '%s\n%s\n' "${NOMINATED_NODECLAIMS:-}" "$nominated" |
+        tr ' ' '\n' | grep . | sort -u | tr '\n' ' ' | sed 's/ *$//')"
+      state_load
+    else
+      note_fail "could not read every Nominated event in $NAMESPACE, so a NodeClaim launched for this run's pods may be left"
+    fi
     # Inside this sample's own namespace, the namespace label is the ownership check. The
     # analyst pod goes first: it is what holds sandbox capacity other demos on the cluster
-    # share. Each pod is named exactly, never selected by label.
-    for p in analyst ordinary-comparison; do
-      kc delete pod "$p" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m ||
-        note_fail "could not delete pod $p in $NAMESPACE"
+    # share. Each object is named exactly, never selected by label.
+    for p in pod/analyst pod/ordinary-comparison pod/supplier-api deployment/supplier-api; do
+      { kc delete "$p" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null &&
+        gone_within 300 "$p" -n "$NAMESPACE"; } || note_fail "could not delete $p in $NAMESPACE"
     done
-    kc delete deployment supplier-api -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=5m ||
-      note_fail "could not delete the supplier-api Deployment"
-    kc delete namespace "$NAMESPACE" --wait=true --timeout=5m ||
-      note_fail "could not delete namespace $NAMESPACE"
-    if still="$(kc get namespace "$NAMESPACE" --ignore-not-found -o name 2>/dev/null)"; then
-      [[ -z "$still" ]] || note_fail "namespace $NAMESPACE is still present after the delete"
+    if kc delete namespace "$NAMESPACE" --wait=false >/dev/null &&
+       gone_within 300 namespace "$NAMESPACE"; then
+      ns_gone=true
     else
-      note_fail "could not confirm namespace $NAMESPACE was deleted"
+      note_fail "could not delete namespace $NAMESPACE, or confirm it is gone"
     fi
     ;;
 esac
 
-say "2/4 the EKS Pod Identity association"
+say "2/5 the run's own sandbox node"
 
+# Only with --delete-aws --delete-node, and only after the namespace is confirmed gone;
+# clean-node.sh says what else must hold.
+# shellcheck source=clean-node.sh
+. "$SAMPLE_DIR/scripts/clean-node.sh"
+if [[ "$delete_node" != true ]]; then
+  echo "  left the node to EKS Auto Mode, which removes it once it is empty; --delete-node deletes it now."
+elif [[ "$ns_gone" != true ]]; then
+  note_fail "namespace $NAMESPACE is not confirmed gone, so no node was deleted"
+else
+  if [[ -n "${NODE_NAME:-}" && "${NODE_AT_START:-}" == true ]]; then
+    echo "  the analyst pod ran on node $NODE_NAME, which the cluster had before the run; it is not this run's to delete."
+  elif [[ -n "${NODE_NAME:-}" ]]; then
+    delete_run_node
+  fi
+  if [[ -z "${NOMINATED_NODECLAIMS+set}" ]]; then
+    note_fail "the run record does not say which NodeClaims were launched for this run's pods, so any such NodeClaim was left"
+  else
+    for c in $NOMINATED_NODECLAIMS; do
+      [[ "$c" == "${NODECLAIM_NAME:-}" ]] || delete_nominated_claim "$c"
+    done
+    [[ -n "${NODE_NAME:-}$NOMINATED_NODECLAIMS" ]] || echo "  no node was launched for this run's pods."
+  fi
+fi
+# Any other NodeClaim that appeared after the run started is named, never touched: nothing
+# ties it to this run. setup.sh refuses a run that has one.
+if [[ -f "$TMP_DIR/nodeclaims-at-start.json" ]] &&
+   claims="$(kc get nodeclaims -o json 2>/dev/null)" &&
+   others="$(jq -r --slurpfile start "$TMP_DIR/nodeclaims-at-start.json" --arg mine "${NODECLAIM_UID:-}" \
+     --arg named " ${NOMINATED_NODECLAIMS:-} " \
+     '[.items[] | select((.metadata.uid as $u | $start[0] | index($u)) == null)
+       | select(.metadata.uid != $mine and ($named | contains(" \(.metadata.name) ") | not))
+       | .metadata.name] | join(" ")' <<<"$claims")" &&
+   [[ -n "$others" ]]; then
+  echo "  NodeClaims that appeared after the run started and are not this run's record, left alone: $others"
+fi
+
+say "3/5 the EKS Pod Identity association"
+
+# Only the association the run record names, and only while it is still exactly that one:
+# the one association for this namespace and service account, with the recorded id, this
+# cluster, the recorded role and this sample's tag. Anything else is left in place.
+saved_id="${POD_IDENTITY_ASSOCIATION:-}"
 if [[ -z "$CLUSTER_NAME" ]]; then
   note_fail "CLUSTER_NAME is not set, so the Pod Identity association could not be looked up or removed"
 else
   assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
     --namespace "$NAMESPACE" --service-account analyst --output json 2>/dev/null)"
-  if [[ -z "$assoc" ]]; then
+  count="$(jq '.associations | length' <<<"$assoc" 2>/dev/null)"
+  if [[ -z "$assoc" || -z "$count" ]]; then
     note_fail "could not list the Pod Identity associations for $NAMESPACE/analyst on $CLUSTER_NAME"
-  elif [[ "$(jq '.associations | length' <<<"$assoc")" == 0 ]]; then
+  elif [[ "$count" == 0 ]]; then
     echo "  no association for $NAMESPACE/analyst; already gone."
+  elif [[ "$count" != 1 ]]; then
+    note_fail "there are $count Pod Identity associations for $NAMESPACE/analyst on $CLUSTER_NAME, not the one this run recorded; left them in place"
+  elif [[ -z "$saved_id" ]]; then
+    note_fail "the run record names no Pod Identity association, so the one for $NAMESPACE/analyst was left in place"
   else
     id="$(jq -r '.associations[0].associationId' <<<"$assoc")"
     detail="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-      --association-id "$id" --output json 2>/dev/null)"
-    if [[ -z "$detail" ]]; then
+      --association-id "$saved_id" --output json 2>/dev/null)"
+    want_assoc="$(jq -cn --arg i "$saved_id" --arg c "$CLUSTER_NAME" --arg n "$NAMESPACE" \
+      --arg r "${ROLE_ARN:-}" --arg m "$SAMPLE" '[$i, $c, $n, "analyst", $r, $m]')"
+    if [[ "$id" != "$saved_id" ]]; then
+      note_fail "the Pod Identity association for $NAMESPACE/analyst is $id, not the $saved_id this run recorded; left it in place"
+    elif [[ -z "$detail" ]]; then
       note_fail "could not read the Pod Identity association $id, so it was left in place"
-    elif [[ "$(jq -r '.association.tags.ManagedBy // ""' <<<"$detail")" != "$SAMPLE" ]]; then
-      note_fail "the Pod Identity association $id does not carry ManagedBy=$SAMPLE; left it alone"
+    elif [[ "$(jq -c '.association | [.associationId, .clusterName, .namespace,
+               .serviceAccount, .roleArn, (.tags.ManagedBy // "")]' <<<"$detail" 2>/dev/null)" != "$want_assoc" ]]; then
+      note_fail "the Pod Identity association $id no longer matches the run record (its cluster, namespace, service account, role or ManagedBy=$SAMPLE tag); left it in place"
     else
       aws eks delete-pod-identity-association --cluster-name "$CLUSTER_NAME" \
         --association-id "$id" >/dev/null 2>&1 ||
@@ -154,7 +293,7 @@ else
   fi
 fi
 
-say "3/4 the AWS resources"
+say "4/5 the AWS resources"
 
 if [[ "$delete_aws" != true ]]; then
   echo "  kept the bucket, the IAM role and the images; pass --delete-aws to remove them."
@@ -162,6 +301,8 @@ else
   bucket="${BUCKET:-}"
   if [[ -z "$bucket" ]]; then
     note_fail "no bucket name in the run record or .env, so the bucket could not be removed"
+  elif (( ${CLEAN_RUNS_DONE:-0} > CLEAN_RUNS_MAX )); then
+    note_fail "this run's clean up has run ${CLEAN_RUNS_DONE} times, more than the $CLEAN_RUNS_MAX whose S3 requests the cost check counted, so the bucket $bucket was left; its objects expire a day after they were written"
   else
     tags="$(lookup NoSuchBucket s3api get-bucket-tagging --bucket "$bucket" --output json)"; rc=$?
     if [[ "$rc" == 0 ]]; then
@@ -169,8 +310,18 @@ else
       if [[ "$tag" != "$SAMPLE" ]]; then
         note_fail "the bucket $bucket does not carry ManagedBy=$SAMPLE (found '$tag'); left it alone"
       else
-        aws s3 rm "s3://$bucket" --recursive --region "$AWS_REGION" >/dev/null 2>&1 ||
+        # One list request and one batch delete: a run writes at most a few objects, and a
+        # bucket holding more than one page is not emptied here.
+        empty='{}'
+        if ! listed="$(aws s3api list-objects-v2 --bucket "$bucket" --max-keys 1000 --no-paginate --output json)"; then
+          note_fail "could not list the objects in the bucket $bucket"
+        elif [[ "$(jq -r '.IsTruncated // false' <<<"${listed:-$empty}")" != false ]]; then
+          note_fail "the bucket $bucket holds more than 1000 objects, more than this sample writes; left it"
+        elif [[ "$(jq '.Contents // [] | length' <<<"${listed:-$empty}")" != 0 ]] &&
+             ! aws s3api delete-objects --bucket "$bucket" --delete "$(jq -c \
+               '{Objects: [.Contents[] | {Key}], Quiet: true}' <<<"$listed")" >/dev/null; then
           note_fail "could not empty the bucket $bucket"
+        fi
         aws s3api delete-bucket --bucket "$bucket" >/dev/null 2>&1 ||
           note_fail "could not delete the bucket $bucket"
         lookup NoSuchBucket s3api get-bucket-tagging --bucket "$bucket" --output json \
@@ -255,9 +406,42 @@ else
       note_fail "could not determine whether the ECR repository $repo exists; left it alone"
     fi
   done
+
+  # The local images this run built, each by the exact reference the run record holds, and
+  # only while that reference still names the image id recorded when it was built. An empty
+  # id means the run reused an image already in ECR and built nothing here.
+  if ! docker_err="$(mktemp "${TMPDIR:-/tmp}/bubblewrap-docker.XXXXXX")"; then
+    note_fail "could not make a scratch file, so the local images were not checked or removed"
+  else
+    for pair in "${SUPPLIER_API_IMAGE:-}|${SUPPLIER_API_LOCAL_IMAGE_ID:-}" \
+                "${ANALYST_LOCAL_IMAGE_REF:-}|${ANALYST_LOCAL_IMAGE_ID:-}"; do
+      ref="${pair%%|*}" want_id="${pair#*|}"
+      [[ -n "$want_id" ]] || continue
+      if [[ -z "$ref" ]]; then
+        note_fail "the run record has a local image id ($want_id) with no reference; left it alone"
+      elif have="$(docker image inspect --format '{{.Id}}' "$ref" 2>"$docker_err")"; then
+        if [[ "$have" != "$want_id" ]]; then
+          note_fail "the local image $ref is now $have, not the $want_id this run built; left it alone"
+        elif ! docker image rm "$ref" >/dev/null 2>&1; then
+          note_fail "could not remove the local image $ref"
+        elif docker image inspect "$ref" >/dev/null 2>"$docker_err"; then
+          note_fail "the local image $ref is still present after the remove"
+        elif grep -q 'No such image' "$docker_err"; then
+          echo "  removed the local image $ref."
+        else
+          note_fail "could not confirm the local image $ref was removed"
+        fi
+      elif grep -q 'No such image' "$docker_err"; then
+        echo "  the local image $ref is already gone."
+      else
+        note_fail "could not determine whether the local image $ref exists; left it alone"
+      fi
+    done
+    rm -f "$docker_err"
+  fi
 fi
 
-say "4/4 the local run files"
+say "5/5 the local run files"
 
 if [[ "$failed" == 0 && "$delete_aws" == true ]]; then
   rm -rf "$TMP_DIR"

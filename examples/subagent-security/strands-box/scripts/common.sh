@@ -15,6 +15,8 @@ lookup() {
   case "$1 $2:$notfound" in
     "s3api get-bucket-tagging:NoSuchBucket") operation=GetBucketTagging ;;
     "iam get-role:NoSuchEntity") operation=GetRole ;;
+    "iam get-role-policy:NoSuchEntity") operation=GetRolePolicy ;;
+    "eks describe-pod-identity-association:ResourceNotFoundException") operation=DescribePodIdentityAssociation ;;
     "ecr describe-repositories:RepositoryNotFoundException") operation=DescribeRepositories ;;
     "ecr describe-images:ImageNotFoundException") operation=DescribeImages ;;
     *) echo "ERROR: unsupported sample existence lookup" >&2; return 2 ;;

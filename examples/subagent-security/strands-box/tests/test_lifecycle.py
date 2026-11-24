@@ -510,6 +510,7 @@ aws() {
     'iam list-attached-role-policies') printf '{"AttachedPolicies":[]}\n' ;;
     'eks list-pod-identity-associations') printf '{"associations":[]}\n' ;;
     'eks create-pod-identity-association') printf 'association-example\n' ;;
+    'eks describe-pod-identity-association') printf '{"association":{"associationId":"association-example","clusterName":"%s","namespace":"%s","serviceAccount":"analyst","roleArn":"arn:aws:iam::111111111111:role/custom-role","tags":{"ManagedBy":"%s"}}}\n' "$CLUSTER_NAME" "$NAMESPACE" "$SAMPLE" ;;
     's3api put-public-access-block'|'s3api put-bucket-encryption'|'s3api put-object'|'iam update-assume-role-policy'|'iam put-role-policy') return 0 ;;
     *) printf 'Unexpected command refused\n' >&2; return 99 ;;
   esac
