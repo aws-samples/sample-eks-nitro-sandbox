@@ -811,7 +811,8 @@ def _validate_prepare_private_state(
 
     expected_directories = {
         f"{RUNTIME_ROOT}/home",
-        f"{RUNTIME_TMP_ROOT}/tmp",
+        # This is a guest-local emptyDir path, not a host temporary directory.
+        f"{RUNTIME_TMP_ROOT}/tmp",  # nosec B108
     }
     if role == "gateway":
         expected_directories.add(f"{RUNTIME_ROOT}/home/gateway-codex-home")
@@ -2192,7 +2193,8 @@ def validate_pod(pod: dict[str, Any]) -> None:
     except json.JSONDecodeError as error:
         raise AdmissionError("final prepare-private-state script is invalid") from error
     expected_prep_directories = {
-        f"{RUNTIME_TMP_ROOT}/tmp",
+        # This is a guest-local emptyDir path, not a host temporary directory.
+        f"{RUNTIME_TMP_ROOT}/tmp",  # nosec B108
         f"{RUNTIME_ROOT}/gateway-codex-home",
         f"{RUNTIME_ROOT}/.openclaw",
         *[f"{STATE_ROOT}/{target}" for target in links.values()],
