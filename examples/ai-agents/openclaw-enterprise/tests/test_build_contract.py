@@ -1193,6 +1193,15 @@ def test_build_outputs_are_verified_digest_references() -> None:
     assert "aws inspector2 list-findings" in script
     assert script.count("--no-paginate") == 1
     assert "--max-results 100" not in verify_scan
+    assert "readonly INSPECTOR_SCAN_POLL_SECONDS=5" in script
+    assert "readonly INSPECTOR_SCAN_STABLE_OBSERVATIONS=13" in script
+    assert "local clean_observations=0" in verify_scan
+    assert "((clean_observations += 1))" in verify_scan
+    assert (
+        "clean_observations >= INSPECTOR_SCAN_STABLE_OBSERVATIONS" in verify_scan
+    )
+    assert "clean_observations=0" in verify_scan
+    assert 'sleep "$INSPECTOR_SCAN_POLL_SECONDS"' in verify_scan
     assert '"resourceId": equals(resource_id)' in script
     assert '"ecrImageHash": equals(digest)' in script
     assert '"findingStatus": equals("ACTIVE")' in script

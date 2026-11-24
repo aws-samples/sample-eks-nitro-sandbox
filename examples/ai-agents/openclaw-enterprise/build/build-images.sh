@@ -77,6 +77,8 @@ readonly OCE_REPOSITORY_URL="https://github.com/openclaw/openclaw-enterprise.git
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="gcr.io/distroless/nodejs24-debian13"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="nonroot"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST="sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a"
+readonly INSPECTOR_SCAN_POLL_SECONDS=5
+readonly INSPECTOR_SCAN_STABLE_OBSERVATIONS=13
 
 require_value CODEBUILD_BUILD_ARN
 require_value CODEBUILD_SRC_DIR
@@ -329,6 +331,7 @@ verify_scan() {
   local resource_id
   local scan_result
   local -a scan_command
+  local clean_observations=0
   local _
   partition="$(cut -d: -f2 <<<"$CODEBUILD_BUILD_ARN")"
   [[ -n "$partition" ]] || die "could not derive AWS partition"
@@ -396,14 +399,20 @@ PY
     if [[ -n "$backport_patch" ]]; then
       scan_command+=(--backport-patch "$backport_patch")
     fi
+    # Inspector can mark coverage successful before all findings are queryable.
+    # Observations at five-second intervals span a full minute from first to last.
     if "${scan_command[@]}"; then
-      return 0
+      ((clean_observations += 1))
+      if (( clean_observations >= INSPECTOR_SCAN_STABLE_OBSERVATIONS )); then
+        return 0
+      fi
     else
       scan_result=$?
+      [[ "$scan_result" -eq 10 ]] ||
+        die "Inspector scan gate rejected $repository@$digest"
+      clean_observations=0
     fi
-    [[ "$scan_result" -eq 10 ]] ||
-      die "Inspector scan gate rejected $repository@$digest"
-    sleep 5
+    sleep "$INSPECTOR_SCAN_POLL_SECONDS"
   done
   die "Inspector PACKAGE scan for $repository@$digest did not complete; confirm Amazon Inspector enhanced ECR scanning is enabled"
 }

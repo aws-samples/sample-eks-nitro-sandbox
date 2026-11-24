@@ -396,8 +396,11 @@ in a private receipt. The stack creates four encrypted, immutable ECR
 repositories and a fixed Step Functions workflow. CodeBuild checks out this
 repository and OCE at exact commits, builds the adapter, controller, ownership
 helper, and runtime images, waits for Amazon Inspector `PACKAGE` coverage, and
-rejects active `HIGH` or `CRITICAL` findings before it exports digest-qualified
-references. The runtime exception is limited to CVE-2026-95692 reported as
+requires the complete finding set to remain free of unapproved active `HIGH` or
+`CRITICAL` findings for one minute before it exports digest-qualified
+references. This stabilization window prevents a newly completed scan from
+passing while Amazon Inspector is still publishing its findings. The runtime
+exception is limited to CVE-2026-95692 reported as
 `HIGH` for OpenSSL 3.5.9, fixed in 3.5.10, at the three expected Node.js header
 paths, and only when the reviewed upstream commit and patch checksum match. All
 other findings fail the build. ECR basic scanning alone does not meet this
