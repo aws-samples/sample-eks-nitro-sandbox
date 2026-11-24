@@ -10,6 +10,17 @@ dependencies = [
     # before it releases a claim. The Agents API is beta, so the session,
     # event and environment calls are checked against this pinned build.
     "openai==3.31.0",
+    # The transport and parser underneath it, pinned to the versions the logger
+    # audit in scripts/_client.py actually covers. openai only asks for
+    # httpx2>=2.12,<3 and httpcore2 only for h11>=0.16, so without these a fresh
+    # install resolves whatever is newest and the audit silently stops matching
+    # the code it describes -- which is exactly what happened to a maintainer,
+    # whose venv took 2.16.2. Bumping these means re-reading which loggers the new
+    # versions emit response data on, then updating PROTECTED_LOGGERS and
+    # AUDITED_STACK with them.
+    "httpx2==2.16.0",
+    "httpcore2==2.16.0",
+    "h11==0.16.0",
     # The agent-sandbox client: SandboxClaim create, wait-until-Ready, pod IP,
     # list and delete. Keep it on the same release as the controller (v1.0.10).
     "k8s-agent-sandbox==1.0.10",

@@ -11,8 +11,8 @@ git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
 cd sample-eks-nitro-sandbox/examples/managed-agents/openai-managed-agents
 ```
 
-For this blueprint you also need [Docker](https://docs.docker.com/get-docker/), Python 3 with
-`venv`, and an OpenAI project with access to the
+For this blueprint you also need [Docker](https://docs.docker.com/get-docker/), Python 3.12 or
+newer with `venv`, and an OpenAI project with access to the
 [Agents API](https://developers.openai.com/api/docs/guides/agents-api/overview) (beta) and
 its [self-hosted sandbox](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted).
 A session uses OpenAI API credit for model tokens; the tools run on your cluster's nodes.
@@ -235,18 +235,32 @@ kubectl apply -f ../../getting-started/coding-agent/enable-network-policy.yaml
 **Step 2: Create the agent.** On your machine, with your application key in `.env`:
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install openai==3.31.0
+python3 -m venv .venv && .venv/bin/pip install openai==3.31.0 \
+  httpx2==2.16.0 httpcore2==2.16.0 h11==0.16.0
 cp .env.example .env     # fill in OPENAI_API_KEY and OPENAI_EXECUTOR_API_KEY
 set -a; . ./.env; set +a
 .venv/bin/python scripts/setup_agent.py
 ```
 
 With `AGENT_MODEL` set in `.env` (see "Pick a model id" below), `setup_agent.py` creates the
-agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, it
-keeps that agent and creates none. The run captured for this page used `gpt-6-luna`. Its first
-pass at this step kept an `AGENT_ID` left in `.env` from an agent that no longer existed, so
-step 8 then failed with a 404. The block below is from running this step again with `AGENT_ID`
-unset, when `setup_agent.py` created the agent and printed its id:
+agent with that model and prints the new agent's id and model. If `AGENT_ID` is already set, the
+script checks it is one it is willing to print (see below) and then looks that agent up, keeping
+it only if the lookup returns that agent, creating none. If
+the lookup answers 404, the script stops without claiming the agent is gone, because a mistyped
+`AGENT_ID`, a key or `OPENAI_PROJECT_ID`/`OPENAI_ORG_ID` for a different project or organization,
+or a different `OPENAI_BASE_URL` gives the same answer. It lists those to check. Only once you
+have confirmed the agent is gone, for example in the OpenAI dashboard, change the line in `.env`
+to a blank `AGENT_ID=`, load the file again with `set -a; . ./.env; set +a`, and run this step
+again: a blank `AGENT_ID`, like an unset one, creates a new agent. Removing the line from `.env`
+is not enough, because the old value stays exported in your shell, and unsetting it in the shell
+alone is undone the next time you load `.env`. It never creates a replacement on its own, so `.env`
+never silently points at a different agent. If the lookup fails for any other reason, such as a
+network or authentication error, the script stops and names the error by its SDK exception class and, when it has
+one, its HTTP status, rather than treating the agent as gone. The run captured for this page
+used `gpt-6-luna`, before the script made that check: its first pass at this step kept an
+`AGENT_ID` left in `.env` from an agent that no longer existed, so step 8 then failed with a 404.
+The block below is from running this step again with `AGENT_ID` unset, when `setup_agent.py`
+created the agent and printed its id:
 
 ```text
 Created agent agent_... (gpt-6-luna)
@@ -255,9 +269,24 @@ Add this to .env:
   AGENT_ID=agent_...
 ```
 
-If you leave `AGENT_MODEL` unset, `setup_agent.py` prints a `[note]` that it is falling back to
-a placeholder id and continues; set a real id to avoid that. Put `AGENT_ID` in `.env` and load
-the file again with `set -a; . ./.env; set +a`. The agent is created without hosted tools: the
+When it creates an agent with `AGENT_MODEL` unset or blank, as `.env.example` ships it,
+`setup_agent.py` prints a `[note]` that it is falling back to a placeholder id and continues;
+set a real id to avoid that. Keeping an existing agent uses no model, so it prints no note. Put `AGENT_ID` in `.env` and load
+the file again with `set -a; . ./.env; set +a`. That command parses `.env` as shell code, so an
+expansion or a command inside a value can run rather than be assigned, which is why
+`setup_agent.py` checks each value it is about to print back to you. An agent id, whether you
+supplied it or the API returned it, must be one the script is willing to emit; `AGENT_MODEL`,
+which is echoed on the line reporting a new agent, must be a short token with no whitespace.
+Each check refuses without repeating the value. Quoting is what makes this worth doing: a value
+in `.env` can sit there inertly and still be unsafe once the script prints it back unquoted.
+If something inside a dependency fails unexpectedly while the script is running, it reports
+the exception's class name and nothing else, because the message could carry text from `.env`
+or from whatever `OPENAI_BASE_URL` points at. A failure while the script's own imports run is
+reported the same way, because `set -a; . ./.env; set +a` exports every name in `.env` and
+loading the SDK reads some of them, so an import traceback can carry a value out of the file
+too. The cost is that a missing dependency names no module, so that message points at the
+virtualenv step above instead.
+The agent is created without hosted tools: the
 executor provides the Bash and apply-patch tools. The self-hosted environment is created per
 session by `submit.py`, not here, because a self-hosted environment is the live connection to
 one running executor.
@@ -266,9 +295,10 @@ one running executor.
 on this page used `gpt-6-luna`; that is the id this blueprint was exercised with, not a
 guaranteed-current default, so confirm a model id for your own project against the official
 [model list](https://platform.openai.com/docs/models) before you rely on it. It must be a
-public OpenAI Agents API model id, not an internal or runtime identifier. If `AGENT_MODEL` is
-unset, `setup_agent.py` falls back to a clearly-labeled placeholder and tells you to set a real
-one. Model ids change; re-check before each release.
+public OpenAI Agents API model id, not an internal or runtime identifier. When it creates an
+agent, if `AGENT_MODEL` is unset or blank, `setup_agent.py` falls back to a clearly-labeled
+placeholder and tells you to set a real one; keeping an existing agent uses no model, so no
+note appears. Model ids change; re-check before each release.
 
 **The two keys, and where each is created.** This blueprint uses two OpenAI credentials of
 *different classes*, created on different dashboard surfaces:
