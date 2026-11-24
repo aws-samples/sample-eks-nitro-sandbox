@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# setup.sh: build the AL2023 Nitro Sandbox AMI with the upstream amazon-eks-ami packer flow,
+# add it to an EXISTING standard (non-Auto-Mode) cluster via Karpenter and/or a managed node
+# group, and run a hello-world isolated-sandbox pod beside an ordinary pod to prove it.
+#
+#   ./setup.sh                 # pick a run id, check prereqs, build, join (JOIN_MODE), run pods
+#   ./setup.sh --ami-only      # build and tag the AMI only; no cluster change
+#   RUN_ID=<id> ./setup.sh --join   # join a run's already-built AMI and run the pods
+#
+# This blueprint never creates a cluster, a node group's VPC, or any cluster-wide install; it
+# adds one dedicated, tainted node group and/or a Karpenter NodePool, and reuses the cluster's
+# vpc-cni, RuntimeClasses and (for the Karpenter path) Karpenter as they are.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SAMPLE_DIR="$HERE"
+. "$HERE/scripts/lib/common.sh"
+
+mode=full
+case "${1:-}" in
+  --ami-only) mode=ami-only ;;
+  --join)     mode=join ;;
+  "")         mode=full ;;
+  *) die "unknown argument: ${1:-} (use --ami-only or --join)" ;;
+esac
+
+# Pick or resume the run id.
+if [ "$mode" = full ] || [ "$mode" = ami-only ]; then
+  if [ -z "${RUN_ID:-}" ]; then RUN_ID="$(new_run_id)"; fi
+fi
+require_run_id
+mkdir -p "$RUN_STATE_DIR" "$EVIDENCE_DIR"
+# Record the run's identity once, for resume/join/clean. A later command (a resume, --join) must
+# match it, and never adds a second record: clean.sh reads the first and refuses any other.
+STATE_FILE="$RUN_STATE_DIR/run-state.env"
+account=$(aws sts get-caller-identity --query Account --output text) \
+  || die "could not read the current AWS account (sts get-caller-identity failed); nothing was changed"
+[[ "$account" =~ ^[0-9]{12}$ ]] || die "sts get-caller-identity returned '$account', not an account id; nothing was changed"
+identity() { # identity <KEY> <VALUE>: record it if the run has none, otherwise it must match
+  local have=""
+  [ -f "$STATE_FILE" ] && have=$(sed -n "s/^$1=//p" "$STATE_FILE" | head -n 1)
+  if [ -z "$have" ]; then printf '%s=%s\n' "$1" "$2" >> "$STATE_FILE"
+  elif [ "$have" != "$2" ]; then die "$1 is '$2' but run $RUN_ID recorded '$have'; refusing to continue. Use the recorded value, or start a new run."; fi
+}
+for kv in "ACCOUNT_ID=$account" "RUN_ID=$RUN_ID" "RESOURCE_PREFIX=$RESOURCE_PREFIX" "CLUSTER_NAME=$CLUSTER_NAME" \
+          "AWS_REGION=$AWS_REGION" "NAMESPACE=$NAMESPACE"; do
+  identity "${kv%%=*}" "${kv#*=}"
+done
+grep -qs '^JOIN_MODE=' "$STATE_FILE" || printf 'JOIN_MODE=%s\n' "$JOIN_MODE" >> "$STATE_FILE"
+printf 'RUN_ID=%s\n' "$RUN_ID" > "$RUN_STATE_FILE"
+log "run id: $RUN_ID (mode: $mode, JOIN_MODE: $JOIN_MODE)"
+
+bind_k8s_version
+
+# --- Cluster prerequisites (full, join): read only, and before the long build -----------------
+if [ "$mode" != ami-only ]; then
+  log "=== checking cluster prerequisites (read only) ==="
+  RUN_ID="$RUN_ID" "$HERE/scripts/00c-check-cluster.sh"
+fi
+
+# --- Build the AMI (full, ami-only) ----------------------------------------------------------
+if [ "$mode" = full ] || [ "$mode" = ami-only ]; then
+  log "=== building the AL2023 Nitro Sandbox AMI (upstream packer) ==="
+  RUN_ID="$RUN_ID" "$HERE/scripts/10-build-ami-packer.sh" > /dev/null || die "the AMI build failed"
+  # The builder records the AMI in the run state; read it back from there and check it.
+  AMI_ID="$(sed -n 's/^AMI_ID=//p' "$RUN_STATE_DIR/run-state.env" | tail -n 1)"
+  [[ "$AMI_ID" =~ ^ami-[0-9a-f]+$ ]] || die "the build recorded no valid AMI id in $RUN_STATE_DIR/run-state.env (got '$AMI_ID')"
+  export AMI_ID
+  log "AMI built: $AMI_ID"
+  if [ "$mode" = ami-only ]; then
+    echo "AMI-only run complete: $AMI_ID (RunId=$RUN_ID). Join later with: RUN_ID=$RUN_ID ./setup.sh --join"
+    exit 0
+  fi
+fi
+
+# --- The AMI and the namespace ------------------------------------------------------------------
+# The AMI to join is the one this run recorded, checked before anything is created in the cluster.
+resolve_run_ami
+log "AMI for this run: $AMI_ID"
+
+# Ensure the namespace exists (create only when absent, per AGENTS.md), labelled as the blueprint's.
+# Only an explicit NotFound means absent; an existing namespace is reused only if it is this run's.
+ns_err=$(mktemp)
+if ns_json=$(kc get namespace "$NAMESPACE" -o json 2>"$ns_err"); then
+  printf '%s' "$ns_json" | python3 -c '
+import json, sys
+l = json.load(sys.stdin).get("metadata", {}).get("labels", {}) or {}
+sys.exit(0 if l.get("app.kubernetes.io/part-of") == sys.argv[1] and l.get("app.kubernetes.io/instance") == sys.argv[2] else 1)
+' "$RESOURCE_PREFIX" "$RUN_ID" || { rm -f "$ns_err"; die "namespace $NAMESPACE exists and is not run $RUN_ID's (labels part-of/instance); use another NAMESPACE"; }
+  log "namespace $NAMESPACE is this run's; reusing it"
+elif grep -Eq 'Error from server \(NotFound\)' "$ns_err"; then
+  kc create namespace "$NAMESPACE" || die "could not create namespace $NAMESPACE"
+  kc label namespace "$NAMESPACE" "app.kubernetes.io/part-of=$RESOURCE_PREFIX" "app.kubernetes.io/instance=$RUN_ID" --overwrite \
+    || die "could not label namespace $NAMESPACE"
+else
+  msg=$(head -n 2 "$ns_err"); rm -f "$ns_err"; die "could not determine whether namespace $NAMESPACE exists: $msg"
+fi
+rm -f "$ns_err"
+
+# --- Join (full, join) -----------------------------------------------------------------------
+joined_nodegroup=0 joined_karpenter=0
+if [[ "$JOIN_MODE" == nodegroup || "$JOIN_MODE" == both ]]; then
+  log "=== join path: managed node group ==="
+  RUN_ID="$RUN_ID" AMI_ID="$AMI_ID" "$HERE/scripts/join-nodegroup.sh"
+  joined_nodegroup=1
+fi
+if [[ "$JOIN_MODE" == karpenter || "$JOIN_MODE" == both ]]; then
+  log "=== join path: Karpenter ==="
+  RUN_ID="$RUN_ID" AMI_ID="$AMI_ID" "$HERE/scripts/join-karpenter.sh"
+  joined_karpenter=1
+fi
+
+# --- Run the proof pods ----------------------------------------------------------------------
+# Target the node brought up by whichever path ran. Karpenter creates a node only when a pod
+# is waiting for one, so whenever the Karpenter path ran the proof pods select its NodePool
+# (JOIN_MODE=both included); the managed node group is then checked separately below.
+if [ "$joined_karpenter" = 1 ]; then
+  sel_key="sandbox.blueprint/al2023-ami"; sel_val="true"
+else
+  sel_key="eks.amazonaws.com/nodegroup"; sel_val="$NODEGROUP_NAME"
+fi
+log "=== applying the hello-world isolated pod and the ordinary contrast pod ==="
+render_pod() {
+  sed -e "s|@NODE_SELECTOR_KEY@|$sel_key|g" -e "s|@NODE_SELECTOR_VALUE@|$sel_val|g" \
+      -e "s|namespace: al2023-ami-sample|namespace: $NAMESPACE|g" "$1"
+}
+render_pod "$SAMPLE_DIR/deploy/pod-isolated-sandbox.yaml" | kc apply -n "$NAMESPACE" -f -
+render_pod "$SAMPLE_DIR/deploy/pod-ordinary.yaml"         | kc apply -n "$NAMESPACE" -f -
+
+log "waiting for the isolated pod to run"
+not_ready=0
+for pod in isolated-sandbox-hello ordinary-hello; do
+  kc wait -n "$NAMESPACE" --for=condition=Ready "pod/$pod" --timeout=300s || { warn "pod $pod did not become Ready"; not_ready=1; }
+done
+if [ "$not_ready" = 1 ]; then
+  kc get pods -n "$NAMESPACE" -o wide || true
+  die "a proof pod did not become Ready, so the setup did not complete; look at the pod's events with kubectl describe"
+fi
+
+# Each consumer must have produced a node from this run's AMI. The isolated pod proves the node
+# it ran on; in JOIN_MODE=both that is the Karpenter node, so the node group gets its own check.
+node_ami() { # node_ami <node>: the AMI of the node's EC2 instance
+  local pid iid
+  pid=$(kc get node "$1" -o jsonpath='{.spec.providerID}') || return 1
+  iid=${pid##*/}; [[ "$iid" =~ ^i-[0-9a-f]+$ ]] || return 1
+  aws ec2 describe-instances --region "$AWS_REGION" --instance-ids "$iid" \
+    --query 'Reservations[0].Instances[0].ImageId' --output text
+}
+check_node_ami() { # check_node_ami <what> <node>
+  local got
+  got=$(node_ami "$2") || die "could not read the AMI of $1 node $2"
+  [ "$got" = "$AMI_ID" ] || die "$1 node $2 runs $got, not this run's AMI $AMI_ID"
+  log "$1 node $2 runs this run's AMI $AMI_ID"
+}
+if [ "$joined_karpenter" = 1 ]; then
+  pod_node=$(kc get pod -n "$NAMESPACE" isolated-sandbox-hello -o jsonpath='{.spec.nodeName}') \
+    || die "could not read the node of the isolated pod"
+  [ -n "$pod_node" ] || die "the isolated pod has no node"
+  check_node_ami Karpenter "$pod_node"
+fi
+if [ "$joined_nodegroup" = 1 ]; then
+  ng_nodes=$(kc get nodes -l "eks.amazonaws.com/nodegroup=$NODEGROUP_NAME,eks.amazonaws.com/nitro-sandbox=true" -o json \
+    | python3 -c '
+import json, sys
+for n in json.load(sys.stdin)["items"]:
+    if any(c.get("type") == "Ready" and c.get("status") == "True" for c in n.get("status", {}).get("conditions", [])):
+        print(n["metadata"]["name"])
+') || die "could not list the node group's nodes"
+  [ -n "$ng_nodes" ] || die "node group $NODEGROUP_NAME has no Ready node labelled eks.amazonaws.com/nitro-sandbox=true"
+  for n in $ng_nodes; do check_node_ami "managed node group" "$n"; done
+fi
+
+echo
+echo "=== setup complete (RunId=$RUN_ID) ==="
+echo "Inspect with ./test.sh, or directly:"
+echo "  kubectl --context \$KUBE_CONTEXT -n $NAMESPACE logs isolated-sandbox-hello"
+echo "  kubectl --context \$KUBE_CONTEXT -n $NAMESPACE logs ordinary-hello"
+echo "Clean up with ./clean.sh"

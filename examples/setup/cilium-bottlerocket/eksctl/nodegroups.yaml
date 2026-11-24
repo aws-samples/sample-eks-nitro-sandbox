@@ -1,0 +1,71 @@
+# Stages 4 and 6: the two managed node groups. setup.sh renders ONE group at a time from this
+# file, because the system node group comes before the AMI build and the sandbox node group
+# comes after it:
+#
+#   eksctl create nodegroup -f <run folder>/nodegroups-system.yaml    (stage 4)
+#   eksctl create nodegroup -f <run folder>/nodegroups-sandbox.yaml   (stage 6)
+#
+# Each group uses a launch template that setup.sh creates (scripts/cilium_bottlerocket.py,
+# launch-template). The launch template names the AMI, the instance type, the volumes, IMDSv2
+# with a hop limit of 1, and the Bottlerocket TOML user data. Amazon EKS adds no user data to a
+# launch template that names an AMI, so the TOML settings join the node to the cluster. The
+# labels and the taint below are also in the TOML settings, so the node registers with them.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+  tags:
+    ManagedBy: cilium-bottlerocket-sample
+    RunId: ${RUN_ID}
+
+managedNodeGroups:
+  # The system node: the stock Bottlerocket aws-k8s-1.36 v1.70.0 AMI, by the ID that setup.sh
+  # recorded. It runs CoreDNS, the Cilium operator and an ordinary comparison pod.
+  - name: system
+    launchTemplate:
+      id: ${SYSTEM_LAUNCH_TEMPLATE_ID}
+      version: "1"
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    privateNetworking: true
+    availabilityZones: ["${NODE_ZONE}"]
+    iam:
+      # No AmazonEKS_CNI_Policy and no EC2 network actions. Only the Cilium operator can
+      # create or attach an ENI, through its own Pod Identity role (pod-identity.yaml).
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly
+    tags:
+      ManagedBy: cilium-bottlerocket-sample
+      RunId: ${RUN_ID}
+
+  # The sandbox node: exactly one node on the AMI that Packer built. Nitro Enclaves is on in
+  # its launch template. The taint keeps ordinary pods off this node; only the pods in deploy/
+  # that tolerate it run here. The label eks.amazonaws.com/nitro-sandbox=true, which the
+  # isolated-sandbox RuntimeClass selects, is in the TOML node-labels only, because the EKS
+  # node group API does not accept a label key with the eks.amazonaws.com/ prefix.
+  - name: sandbox
+    launchTemplate:
+      id: ${SANDBOX_LAUNCH_TEMPLATE_ID}
+      version: "1"
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 1
+    privateNetworking: true
+    availabilityZones: ["${NODE_ZONE}"]
+    labels:
+      sandbox.eks-nitro-sandbox.amazonaws.com/dedicated: "true"
+    taints:
+      - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+        value: "true"
+        effect: NoSchedule
+    iam:
+      attachPolicyARNs:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly
+    tags:
+      ManagedBy: cilium-bottlerocket-sample
+      RunId: ${RUN_ID}

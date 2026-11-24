@@ -359,13 +359,34 @@ for a in lists:
 tag = [a for a in calls if a[0] == "resourcegroupstaggingapi"]
 assert tag and all("Key=RunId,Values=testrun1" in " ".join(a) for a in tag)
 PY
-grep -q 'Left in place (shared, not the sample.s): the vpc-cni add-on' "$WORK/dry.log"
-ok "  ... and says the shared vpc-cni add-on is left in place" $?
+SHARED_LEFT="Left in place (shared, not the sample's): the vpc-cni and kube-proxy add-ons and the isolated-sandbox RuntimeClass on cluster example-cluster"
+grep -qxF -- "$SHARED_LEFT" "$WORK/dry.log"
+ok "  ... and its summary line, in full, names the shared vpc-cni and kube-proxy add-ons and the isolated-sandbox RuntimeClass as left in place" $?
 
 st full; two_runs "$FAKE_AWS_STATE"
 mkdir -p "$ISSUE10_RUN_DIR/out"; printf 'RUN_ID=testrun1\n' > "$ISSUE10_RUN_DIR/out/run-state.env"
 rc=0; STUB_NS_JSON='{"metadata": {"labels": {"app.kubernetes.io/part-of": "ubuntu-ami-sample", "app.kubernetes.io/instance": "testrun1"}}}' cl full --delete-aws-resources || rc=$?
 check "ACCEPT a full clean up of the run in the run state (testrun1)" 0 "$rc" "$WORK/full.log" 'Clean up of run testrun1 complete'
+grep -qxF -- "$SHARED_LEFT; see the README's Clean up section for how to remove the add-ons." "$WORK/full.log"
+ok "  ... and its final summary line, in full, names the same shared installs as left in place and points to the README for removing the add-ons" $?
+# The page's What stays paragraph says the same, and removing an add-on stays a manual step,
+# one delete-addon --preserve per add-on, with the ConfigMap warning kept to vpc-cni.
+python3 - "$SAMPLE/README.md" <<'PY'; ok "  ... and the README's What stays names both add-ons and the RuntimeClass, with one manual delete-addon --preserve for each add-on" $?
+import re, sys
+sec = open(sys.argv[1]).read().split("\n## Clean up\n", 1)[1].split("\n## ", 1)[0]
+stays = sec.split("**What stays.**", 1)[1]
+lead = " ".join(stays.split("```", 1)[0].split())
+for want in ("The `isolated-sandbox` RuntimeClass stays",
+             "The `vpc-cni` and `kube-proxy` add-ons you installed as prerequisites stay, and `./clean.sh` says so.",
+             "nothing else on the cluster depends on it"):
+    assert want in lead, (want, lead)
+block = re.search(r"```bash\n(.*?)```", stays, re.S).group(1).splitlines()
+cmd = "aws eks delete-addon --region <AWS_REGION> --cluster-name <CLUSTER_NAME> --addon-name {} --preserve"
+assert block == [cmd.format("vpc-cni"), cmd.format("kube-proxy")], block
+rest = " ".join(stays.split("```", 2)[2].split())
+assert "For `vpc-cni`, that can include the `amazon-vpc-cni` ConfigMap" in rest, rest
+assert rest.index("amazon-vpc-cni") < rest.index("For `kube-proxy`"), rest
+PY
 left=$(remaining)
 [[ "$left" != *testrun1* ]]; ok "  ... every testrun1 resource is gone (left: $left)" $?
 for want in i-testrun2-build ami-testrun2 snap-testrun2-ami snap-testrun2-orphan sg-testrun2 lt-testrun2 ubuntu-ami-sample-testrun2-node profile:ubuntu-ami-sample-testrun2-build ubuntu-ami-sample-stage-testrun2-abcdef i-someone-else \
@@ -1073,7 +1094,8 @@ su_state() { # su_state <with-vpc-cni: yes|no>
 import json, sys
 s = {"account": "111122223333", "eks": {"clusters": {"example-cluster": {"endpoint": "https://EXAMPLE0123.gr7.us-west-2.eks.amazonaws.com"}}}}
 if sys.argv[2] == "yes":
-    s["eks"]["addons"] = {"example-cluster/vpc-cni": {"status": "ACTIVE", "addonVersion": "v1.0.0-eksbuild.1", "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"}}
+    s["eks"]["addons"] = {"example-cluster/vpc-cni": {"status": "ACTIVE", "addonVersion": "v1.0.0-eksbuild.1", "configurationValues": "{\"enableNetworkPolicy\":\"true\"}"},
+                          "example-cluster/kube-proxy": {"status": "ACTIVE", "addonVersion": "v1.36.0-eksbuild.1"}}
 json.dump(s, open(sys.argv[1], "w"))
 PY
 }

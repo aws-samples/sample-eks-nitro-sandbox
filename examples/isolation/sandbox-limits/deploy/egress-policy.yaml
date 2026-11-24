@@ -4,7 +4,8 @@
 #
 # It selects every probe pod (app: dns-probe) and governs their egress:
 #
-#   - allow egress to DNS on UDP and TCP 53 (any IP), which the DNS probe needs;
+#   - allow egress to DNS on UDP and TCP 53 (the cluster's DNS address only), which the DNS
+#     probe needs;
 #   - allow egress to the conntrack sink on TCP 9000, which the connection-limit
 #     probe needs (it connects to the sink by raw IP, so it uses no DNS);
 #   - deny everything else, which is the default for the selected pods once
@@ -17,11 +18,18 @@
 # which sits on the sandbox network path and not in the policy. Keeping egress to
 # the in-cluster resolver means the sample needs no internet egress.
 #
-# This is networking.k8s.io/v1, the standard Kubernetes NetworkPolicy. DNS (port 53) is
-# allowed to any IP address. While CoreDNS typically runs on a fixed cluster address,
-# allowing any destination eliminates the need for address lookup and substitution.
-# This simplifies the setup and avoids issues with missing or malformed cluster DNS
-# addresses (#104).
+# This is networking.k8s.io/v1, the standard Kubernetes NetworkPolicy.
+#
+# DNS (port 53) is allowed to one address only: <COREDNS_CIDR>, the cluster's DNS address,
+# which is the nameserver in every pod's resolv.conf. On EKS Auto Mode the node answers
+# it; there is no kube-dns Service. scripts/coredns-cidr-from-service.sh works it out from
+# the kubernetes Service's clusterIP (10.100.0.1 gives 10.100.0.10/32, fd12:3456:789a::1
+# gives fd12:3456:789a::a/128 on IPv6), and the setup fills it in. Port 53 to any address
+# would let code in the sandbox reach any DNS server on the internet, and so send data out
+# over DNS or reach a VPN listening on port 53 (#226).
+#
+# The comparison scripts fill in <COREDNS_CIDR> when they apply this file. To apply it by
+# hand, replace <COREDNS_CIDR> first (see the README).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -36,9 +44,10 @@ spec:
     - Egress
   # No ingress rule, so all ingress to the probe pods is denied.
   egress:
-    # Allow: DNS on port 53 to any IP, so the probe's DNS queries reach the cluster resolver.
+    # Allow: DNS on port 53 to the cluster's DNS address only, so the probe's DNS queries
+    # reach the cluster resolver.
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

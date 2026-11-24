@@ -1,0 +1,7 @@
+# Cilium in ENI mode manages the secondary ENIs. systemd-networkd must not configure them
+# (Cilium documentation, AWS ENI, "Node Configuration"). eth0 stays with Bottlerocket.
+[Match]
+Name=eth[1-9]*
+
+[Link]
+Unmanaged=yes

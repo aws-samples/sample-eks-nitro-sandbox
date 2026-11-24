@@ -8,7 +8,7 @@
 # The Role is namespaced, not cluster-wide: the manager creates job pods only in this
 # sample's own namespace, which is what `namespace` in config.toml names.
 #
-# scripts/register-runner.sh renders <NAMESPACE> and <RUNNER_SECRET> before applying.
+# scripts/bootstrap-runner.sh renders <NAMESPACE> and <RUNNER_SECRET> before applying.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -103,9 +103,28 @@ spec:
         gitlab-ci/runner-config-version: "<RUNNER_SECRET_VERSION>"
     spec:
       serviceAccountName: gitlab-runner
+      # No automatic token mount. The manager does call the Kubernetes API, to create, watch
+      # and delete job pods, so the token it needs is mounted explicitly by the
+      # kube-api-access volume below, at the path the automatic mount would use, with a
+      # lifetime this file states.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # Makes the mounted config and token files group-readable by the manager's user.
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: runner
           image: gitlab/gitlab-runner:v19.5.0
+          # No port and no Service: the manager only calls out, to GitLab and the API server.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           # The config, token and all, is mounted from the Secret at /config and copied to
           # the working copy at start-up: gitlab-runner rewrites its own config file when it
           # reloads, and a Secret mount is read-only. The copy lives in an emptyDir that
@@ -116,10 +135,19 @@ spec:
               set -euo pipefail
               install -m 600 /config/config.toml /etc/gitlab-runner/config.toml
               exec gitlab-runner run --working-directory=/home/gitlab-runner \
-                --config=/etc/gitlab-runner/config.toml --user=root
+                --config=/etc/gitlab-runner/config.toml
+          env:
+            # The working directory below, which is an emptyDir: the root filesystem is
+            # read-only.
+            - { name: HOME, value: /home/gitlab-runner }
           volumeMounts:
             - { name: config-secret, mountPath: /config,            readOnly: true }
             - { name: config,        mountPath: /etc/gitlab-runner }
+            - { name: work,          mountPath: /home/gitlab-runner }
+            - { name: tmp,           mountPath: /tmp }
+            - name: kube-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
           resources:
             # The manager polls GitLab and talks to the API server; the work happens in the
             # job pods. These are this sample's values, not a GitLab Runner minimum.
@@ -132,6 +160,28 @@ spec:
         - name: config-secret
           secret:
             secretName: <RUNNER_SECRET>
-            defaultMode: 0400
+            # Group-readable, for fsGroup above: the manager does not run as root.
+            defaultMode: 0440
         - name: config
           emptyDir: {}
+        - { name: work, emptyDir: {} }
+        - { name: tmp,  emptyDir: {} }
+        # The ServiceAccount token, mounted by hand in place of the automatic mount.
+        # expirationSeconds is 3600, not the automatic mount's 3607: the API server extends
+        # only a 3607-second token past its stated lifetime, so this token is valid for one
+        # hour. The kubelet rotates the file before it expires.
+        - name: kube-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - { key: ca.crt, path: ca.crt }
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        fieldPath: metadata.namespace

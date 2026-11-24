@@ -1,0 +1,8 @@
+# The namespace of the sample. setup.sh creates it only when it is absent (kubectl create),
+# and uses it only when it carries the label below. clean.sh deletes it only with this label.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample

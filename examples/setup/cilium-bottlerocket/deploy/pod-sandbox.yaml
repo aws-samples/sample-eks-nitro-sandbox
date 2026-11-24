@@ -1,0 +1,50 @@
+# The sandbox pod. runtimeClassName: isolated-sandbox starts it in its own Nitro sandbox guest
+# on the sandbox node. The RuntimeClass selects the node (eks.amazonaws.com/nitro-sandbox=true).
+# The toleration lets the pod use the tainted sandbox node. The pod keeps its network: test.sh
+# runs the pod-to-pod, ClusterIP Service and DNS checks from it. It runs as nobody with the
+# runtime's default seccomp filter, no service account token, no capabilities and a read-only
+# root file system: what test.sh runs in it (uname, cut, ls, cat, wget -O-, nslookup, env)
+# writes no file.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cb-sandbox
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+    app.kubernetes.io/name: cb-sandbox
+spec:
+  runtimeClassName: isolated-sandbox
+  automountServiceAccountToken: false
+  tolerations:
+    - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      image: public.ecr.aws/docker/library/busybox:1.37.0@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+      command: ["sleep", "86400"]
+      # The probes check the container's main process: kill -0 1 succeeds while PID 1 (the
+      # sleep) runs, with no write and no capability. kubelet runs them through the runtime's
+      # exec in the guest, so Ready also means the pod takes the kubectl exec that test.sh uses.
+      readinessProbe:
+        exec:
+          command: ["kill", "-0", "1"]
+        timeoutSeconds: 5
+      livenessProbe:
+        exec:
+          command: ["kill", "-0", "1"]
+        periodSeconds: 30
+        timeoutSeconds: 5
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]

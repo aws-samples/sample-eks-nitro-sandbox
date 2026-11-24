@@ -18,6 +18,10 @@
 #   4. Render and apply the per-CLI SandboxTemplate, SandboxWarmPool and egress policy,
 #      and the app Deployment, Service and RBAC.
 #   5. Print the kubectl port-forward command to open the app.
+# Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh" \
+  || { echo "error: cannot load the bash version check (../../../../scripts/lib/require-bash.sh); run this script by its own path." >&2; exit 1; }
 set -euo pipefail
 
 SAMPLE=coding-agents-for-developers
@@ -84,6 +88,16 @@ npol="$("${KCTL[@]}" get configmap -n kube-system amazon-vpc-cni \
 [[ "$npol" == "true" ]] \
   || die "network policy enforcement is off. Turn it on once per cluster:
   kubectl apply -f ../../getting-started/coding-agent/enable-network-policy.yaml"
+
+# The cluster's DNS address, for the egress policy's DNS rule: 10.100.0.10/32 for the IPv4
+# service CIDR 10.100.0.0/16, or fd12:3456:789a::a/128 for the IPv6 one fd12:3456:789a::/108.
+# coredns-cidr.sh reads it from the cluster and says how. Read it now, before anything is
+# created; the helper stops on a missing or malformed service CIDR.
+# shellcheck source=coredns-cidr.sh
+. "$HERE/coredns-cidr.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr "$CLUSTER_NAME" "$AWS_REGION")" \
+  || die "could not work out the DNS address of cluster $CLUSTER_NAME (see the line above)"
+echo "cluster DNS address: $COREDNS_CIDR"
 
 # The EFS CSI node role needs ClientMount on this file system AND the ability to let the
 # app's per-session credential mount: on this cluster the mount uses the credential the
@@ -392,12 +406,14 @@ for cli in "${clis[@]}"; do
   # placeholder only as a whole line (^<...>$) so a comment that mentions the name by text
   # is left untouched. <MOUNT_TARGET_CIDRS> must always be non-empty (checked above).
   if [ "$cli" = "kiro-cli" ]; then extra="$(kiro_cli_egress)"; else extra=""; fi
-  awk -v repl="$extra" -v mtc="$mount_target_cidrs" '
-      /^<KIRO_CLI_EGRESS>$/   { if (repl != "") printf "%s", repl ORS; next }
-      /^<MOUNT_TARGET_CIDRS>$/ { printf "%s", mtc; next }
+  # Both blocks go in through the environment, not awk -v: BSD awk, which macOS ships, rejects
+  # a newline in a -v value.
+  REPL="$extra" MTC="$mount_target_cidrs" awk '
+      /^<KIRO_CLI_EGRESS>$/   { if (ENVIRON["REPL"] != "") printf "%s", ENVIRON["REPL"] ORS; next }
+      /^<MOUNT_TARGET_CIDRS>$/ { printf "%s", ENVIRON["MTC"]; next }
       { print }' \
       "$ROOT/deploy/egress-policy.yaml" \
-    | sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" \
+    | sed -e "s|<CLI>|$cli|g" -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" \
     | "${KCTL[@]}" apply -n "$NAMESPACE" -f -
 done
 

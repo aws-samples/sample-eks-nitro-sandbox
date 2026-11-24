@@ -93,6 +93,7 @@ the images record what they installed.
 | [`deploy/app-policy.yaml`](deploy/app-policy.yaml) | The app's network policy: no ingress from the pod network |
 | [`iam/`](iam/) | The Bedrock, Codex, App and Mount role policies and trusts, and the per-session mount session policy |
 | [`scripts/setup.sh`](scripts/setup.sh), [`scripts/clean.sh`](scripts/clean.sh) | Create everything and apply it; remove it |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the egress policy |
 | `.env.example` | The local values the blueprint needs; copy to `.env`, which git ignores |
 
 ## Quick start
@@ -176,7 +177,21 @@ Then browse to http://127.0.0.1:8080
 
 ## What a session looks like
 
-Each terminal is a floating window wired to the CLI running in its sandbox pod. These are
+Each terminal is a floating window with two tabs: the first is the coding agent, and the
+second, **Terminal**, is a plain bash login shell in the same pod and the same project
+folder. Ask the agent to write a program, switch to **Terminal**, run it, and switch back to
+carry on the conversation, all without leaving the window or the agent. The shell is a
+second tmux session beside the agent's (`tmux attach -t shell`), opened the first time you
+click the tab and kept after that, so a program left running there is still running when
+you come back. Typing `exit` in it starts a fresh shell. It runs as the same unprivileged
+user and under the same egress policy as the agent, so it can reach nothing the agent
+cannot. The agent's tab is wired to the CLI running in its sandbox pod.
+
+![A terminal window titled "claude-code" with two tabs, "claude-code" and "Terminal", the second selected. The Terminal tab shows a bash prompt as the dev user in the project folder. It ran a script the agent might have written, which printed "built by the agent, run in the shell", then pwd printed /workspace/project, id -un printed dev, and a loop is printing "tick 1" to "tick 10". Behind the window, the session list.](figures/screenshots/shell-tab.png)
+
+The loop above was started in the **Terminal** tab. The window then switched to the agent tab
+for 5 seconds and back, and the loop had kept running, printing `tick 10`. The agent tab was
+unchanged after the switch. These are
 the six CLIs answering the same prompt, each on its own model: four on the Bedrock
 inference profile in the app's agent list (Claude Sonnet here), Codex on a GPT model
 served through the Bedrock "Mantle" OpenAI-compatible endpoint, and Kiro CLI through the
@@ -268,7 +283,7 @@ things a session needs while it runs:
 
 | Request | What it does |
 |---|---|
-| `GET /v1/terminal` | A WebSocket to a PTY running `tmux attach` as the session's user. The app relays the browser's terminal to it, keystrokes and resizes both ways. |
+| `GET /v1/terminal` | A WebSocket to a PTY running `tmux attach` as the session's user, to the agent's session or, with `?pane=shell`, to the shell session beside it (an empty, repeated or any other `pane` value is refused; no `pane` means the agent). The app relays the browser's terminal to it, keystrokes and resizes both ways. |
 | `GET /v1/activity` | The last time the terminal had input or output, which the app reads every minute to find idle sessions. |
 | `PUT /v1/credential` | Replaces the session's mount credential. It accepts only a well-formed credential, so a bad request leaves the running one in place. |
 
@@ -398,7 +413,7 @@ only Delete removes the folder.*
 |---|---|
 | New agent | The app writes the session's record, then claims a warm pod and creates the access point at the same time, mounts the folder and starts the CLI. The pool boots a replacement. If no pod or no access point can be had, the app releases the claim and removes the record, so the list has no row for a session that never ran. |
 | Minimize, or close the browser | Nothing changes in the cluster. The pod and the CLI keep running. |
-| No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
+| No terminal activity for the idle period (default 30 minutes) | The app reads, every minute, the last time each session's terminal had key input or printed output (tmux's `session_activity` and `window_activity`, over the agent and the shell tab, so a program running in the shell keeps the session, even once the agent has exited). An agent still working on its own keeps printing, so it is not idle; a CLI waiting at its prompt prints nothing. Once the period passes, it stops the session cleanly (below), deletes the `SandboxClaim` and then the session's access point: the pod and the access point go, the folder and its files stay. |
 | Close the window | Same as idle: the session is stopped, the claim and the access point released, the folder stays, and the session moves to the session list. |
 | Restore | The app claims a new warm pod (a new pod UID) and creates a new access point on the same folder, at the same time, mounts it and starts the CLI with its own continue-the-last-conversation option: `claude --continue`, `codex resume --last`, `kiro-cli chat --v3 --resume`, `opencode --continue`, `pi --continue` and `omp --continue`. The history is in the CLI's home inside the folder, so it comes back with it; a session restored before its first prompt starts the CLI fresh. |
 | Delete | The session leaves the list at once: the app marks its record and finishes the Delete in the background. If the session is running, the app first empties its folder through the mount, in the pod, as it stops the session. Then it deletes every object version and delete marker under the session's prefix in the (versioned) bucket. S3 Files exports a change to the bucket only after 60 seconds with no writes to the file, so a file written just before Delete can arrive after the first pass: the app lists the prefix again every 15 seconds and deletes whatever came back, until the prefix has stayed empty for 90 seconds, a minute and a half to three minutes in all on these runs. Only then does it delete an access point, if one is left, and last the session's record. A closed session has no access point and its folder is drained the same way. Until the record is gone a Restore of the session is refused, and a Delete that fails, or that an app restart cuts short, is run again by the sweep a minute later. |
@@ -784,8 +799,8 @@ limitations*). So the session pods have a network, and an egress policy is what 
 code in the sandbox can connect. Each `SandboxTemplate` sets
 `networkPolicyManagement: Unmanaged` and ships its own policy. Here is
 [`egress-policy.yaml`](deploy/egress-policy.yaml) in full, without its header comment;
-`setup.sh` fills in the mount-target addresses at apply time, and adds one extra rule for
-kiro-cli (shown below the table):
+`setup.sh` fills in the cluster's DNS address and the mount-target addresses at apply time,
+and adds one extra rule for kiro-cli (shown below the table):
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -810,7 +825,7 @@ spec:
         - { protocol: TCP, port: 7681 }
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -842,7 +857,7 @@ spec:
 | `podSelector`, `agent-cli: <CLI>` | Selects this CLI's session pods. |
 | `policyTypes`, `Ingress` and `Egress` | Default-deny both ways, so only the rules below are allowed. |
 | `ingress` from `app: agent-app` on 7681 | Admits the app's pods, to `session-bridge` only (see [How the terminal reaches the pod](#how-the-terminal-reaches-the-pod)). Everything else in is denied, including other session pods. The label is what the rule trusts, so whoever can create pods in this namespace can pass it; the bridge's token and pinned certificate still stand behind it. The session's start and stop use the Kubernetes exec API, which is not pod network traffic. |
-| `egress` to `0.0.0.0/0` on 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the blueprint simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
+| `egress` to `<COREDNS_CIDR>` on 53 | DNS on UDP and TCP 53 to the cluster's DNS address only. It is the nameserver in every pod's `resolv.conf`. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. [`coredns-cidr.sh`](scripts/coredns-cidr.sh) reads the service CIDR with `aws eks describe-cluster`. It applies the rule in the Amazon EKS User Guide, [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4 it takes the `.10` address, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6 it appends `a` to the network address, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. `setup.sh` stops before creating anything if the service CIDR is missing or malformed. Port 53 to any address would let code in the sandbox reach any DNS server on the internet. That code could then send data out over DNS or reach a VPN listening on port 53. |
 | `egress` to `169.254.170.23` on 80 | The Pod Identity agent on the node, for the pod's role (the Bedrock role, or the Codex role for Codex). kiro-cli's pods have no role, so the agent gives them no credential. |
 | `egress` to the `domainNames` on 443 | The Bedrock runtime endpoint the Bedrock CLIs call their model on, the Bedrock "Mantle" endpoint Codex uses for its GPT model, `docs.aws.amazon.com` so the agents can fetch AWS documentation, and the short list of developer hosts (GitHub, including `api.github.com` for the GitHub CLI, npm, PyPI) the agents fetch from. The S3 Files mount reads over NFS (2049), not an S3 443 endpoint, so none is needed here. |
 | `egress` to `<MOUNT_TARGET_CIDRS>` on 2049 | The S3 Files mount targets, NFS over TLS. They are ENIs in the cluster VPC reached by resolved IP, so `setup.sh` resolves this file system's mount-target IPs and fills in one `/32` per target -- egress on 2049 is allowed to the blueprint's own mount targets only, not to anything on 2049 in the VPC. |
@@ -871,12 +886,11 @@ subdomains its Region and workflow use.
 Enforcement is turned on once per cluster with the `amazon-vpc-cni` ConfigMap in
 `kube-system`, which `setup.sh` checks and stops without if it is off. It is enforced on the
 node, outside the guest, so a command in the sandbox, even as root, cannot change it. Its
-limits: DNS is open on port 53 to any address, so a resolver is always reachable, and a pod
-can always reach its own node; that also means port-53 egress is not confined to the
-cluster's resolver, so a process in the sandbox can send data out over DNS or to anything
-listening on port 53 (see the `0.0.0.0/0` row above). A `domainNames` rule allows the
-addresses a name resolves to, so another name served from the same addresses is reachable
-too. Everything beyond port 53, the allowed hosts and the mount targets is denied.
+limits: a pod can always reach its own node. The cluster's resolver still answers any name,
+so a process in the sandbox can still encode data in the names it looks up. A
+`domainNames` rule allows the addresses a name resolves to, so another name served from the
+same addresses is reachable too. Everything beyond DNS to the cluster's DNS address, the
+allowed hosts and the mount targets is denied.
 
 To see it from inside a session pod, connect to an allowed endpoint and to a denied one
 (`curl` exits 0 once the TCP connection is established; exit 28 is a connect timeout, which

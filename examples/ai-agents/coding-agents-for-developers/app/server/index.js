@@ -135,7 +135,7 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// WebSocket terminal: /ws?session=<name>. Relays the browser to the pod's tmux, both ways.
+// WebSocket terminal: /ws?session=<name>[&pane=agent|shell]. Relays the browser to the pod's tmux, both ways.
 // maxPayload matches the bridge's own frame limit (1 MiB), well above a large paste.
 const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 1 << 20 });
 const PENDING_MAX = 64 * 1024;
@@ -143,7 +143,11 @@ const PENDING_MIN = 64; // at most PENDING_MAX / PENDING_MIN (1024) queued messa
 wss.on("connection", async (ws, req) => {
   const url = new URL(req.url, "http://localhost");
   const session = url.searchParams.get("session");
-  const entry = isSessionName(session) ? sessions.getLive(session) : undefined;
+  // No pane means the agent; one value must be exactly "agent" or "shell". An empty or
+  // repeated value is refused, never answered with a default.
+  const panes = url.searchParams.getAll("pane");
+  const pane = panes.length === 0 ? "agent" : panes.length === 1 ? panes[0] : null;
+  const entry = isSessionName(session) && bridge.PANES.has(pane) ? sessions.getLive(session) : undefined;
   if (!entry) {
     ws.close(1008, "session not running");
     return;
@@ -183,6 +187,7 @@ wss.on("connection", async (ws, req) => {
   try {
     // To the pod's own session-bridge over the pod network, not the Kubernetes exec API.
     term = await bridge.attachTerminal(entry, {
+      pane,
       onData: (chunk) => ws.readyState === ws.OPEN && ws.send(chunk),
       onClose: () => { try { ws.close(); } catch {} },
     });
