@@ -15,7 +15,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlsplit
 
-from adapter import AdmissionError, build_patch, validate_pod
+from adapter import (
+    AdmissionError,
+    build_patch,
+    validate_pod,
+    validate_pod_host_isolation,
+)
 
 MAX_BODY_BYTES = 1_048_576
 MAX_CONCURRENT_REQUESTS = 32
@@ -143,6 +148,10 @@ def _validate_deployment(deployment: Any) -> None:
             "labels"
         ),
         "Deployment.spec.template.metadata.labels",
+    )
+    validate_pod_host_isolation(
+        template.get("spec"),
+        "Deployment.spec.template.spec",
     )
     if template_labels["app.kubernetes.io/name"] != name:
         raise AdmissionError("Deployment template does not match its gateway name")

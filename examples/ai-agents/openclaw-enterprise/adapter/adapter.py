@@ -119,6 +119,12 @@ HARNESS_CREDENTIAL_ENV_NAMES = frozenset(
         "OPENAI_API_KEY",
     }
 )
+UNSAFE_POD_HOST_SHARING_FIELDS = (
+    "hostIPC",
+    "hostNetwork",
+    "hostPID",
+    "shareProcessNamespace",
+)
 IMAGE_DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 GATEWAY_ID_PATTERN = re.compile(r"^[0-9a-f]{12}$")
 OCE_RESOURCE_ID_PATTERN = re.compile(
@@ -230,6 +236,15 @@ for (const item of links) {
 
 class AdmissionError(ValueError):
     """A target OCE Pod has a shape the adapter cannot safely mutate."""
+
+
+def validate_pod_host_isolation(spec: Any, location: str = "spec") -> None:
+    """Refuse Pod settings that weaken the Nitro sandbox workload boundary."""
+    if not isinstance(spec, dict):
+        raise AdmissionError(f"{location} must be an object")
+    for field in UNSAFE_POD_HOST_SHARING_FIELDS:
+        if spec.get(field) is True:
+            raise AdmissionError(f"{location}.{field} must not be true")
 
 
 def _is_nonempty_string(value: Any) -> bool:
@@ -1283,6 +1298,7 @@ def build_patch(pod: dict[str, Any]) -> list[dict[str, Any]]:
     spec = pod.get("spec")
     if not isinstance(spec, dict):
         raise AdmissionError("target OCE Pod must have a spec")
+    validate_pod_host_isolation(spec)
     volumes = spec.get("volumes", [])
     if not isinstance(volumes, list):
         raise AdmissionError("spec.volumes must be a list")
@@ -1944,6 +1960,7 @@ def validate_pod(pod: dict[str, Any]) -> None:
     spec = pod.get("spec")
     if not isinstance(spec, dict):
         raise AdmissionError("target OCE Pod must have a spec")
+    validate_pod_host_isolation(spec)
     volumes = spec.get("volumes")
     if not isinstance(volumes, list):
         raise AdmissionError("spec.volumes must be a list")

@@ -83,7 +83,7 @@ class AdmitTests(unittest.TestCase):
                         "app.kubernetes.io/name": labels["app.kubernetes.io/name"]
                     }
                 },
-                "template": {"metadata": {"labels": labels}},
+                "template": {"metadata": {"labels": labels}, "spec": {}},
             },
         }
         deployment_review = review(
@@ -122,6 +122,53 @@ class AdmitTests(unittest.TestCase):
             response = validate(forged)["response"]
             self.assertFalse(response["allowed"])
             self.assertIn("controller identity", response["status"]["message"])
+
+    def test_validation_rejects_deployment_host_sharing(self) -> None:
+        pod = target_pod()
+        labels = pod["metadata"]["labels"]
+        deployment = {
+            "metadata": {
+                "name": labels["app.kubernetes.io/name"],
+                "labels": {
+                    "app.kubernetes.io/managed-by": labels[
+                        "app.kubernetes.io/managed-by"
+                    ],
+                    "openclaw.dev/agent": labels["openclaw.dev/agent"],
+                    "openclaw.dev/namespace": labels["openclaw.dev/namespace"],
+                },
+            },
+            "spec": {
+                "selector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": labels["app.kubernetes.io/name"]
+                    }
+                },
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {},
+                },
+            },
+        }
+        resource = {"group": "apps", "version": "v1", "resource": "deployments"}
+
+        for field in (
+            "hostIPC",
+            "hostNetwork",
+            "hostPID",
+            "shareProcessNamespace",
+        ):
+            with self.subTest(field=field):
+                unsafe = copy.deepcopy(deployment)
+                unsafe["spec"]["template"]["spec"][field] = True
+                response = validate(
+                    review(
+                        unsafe,
+                        resource=resource,
+                        username=DEPLOYMENT_USER,
+                    )
+                )["response"]
+                self.assertFalse(response["allowed"])
+                self.assertIn(field, response["status"]["message"])
 
     def test_validation_protects_gateway_revision_configmaps(self) -> None:
         configmap = {

@@ -437,6 +437,35 @@ class BuildPatchTests(unittest.TestCase):
                 with self.assertRaisesRegex(AdmissionError, "final OCE Pod must use"):
                     validate_pod(tampered)
 
+    def test_rejects_pod_host_sharing(self) -> None:
+        for field in (
+            "hostIPC",
+            "hostNetwork",
+            "hostPID",
+            "shareProcessNamespace",
+        ):
+            with self.subTest(field=field):
+                pod = target_pod()
+                pod["spec"][field] = True
+                with self.assertRaisesRegex(AdmissionError, field):
+                    build_patch(pod)
+
+    def test_final_validator_rejects_pod_host_sharing(self) -> None:
+        pod = target_pod()
+        rendered = apply_patch(pod, build_patch(pod))
+
+        for field in (
+            "hostIPC",
+            "hostNetwork",
+            "hostPID",
+            "shareProcessNamespace",
+        ):
+            with self.subTest(field=field):
+                tampered = copy.deepcopy(rendered)
+                tampered["spec"][field] = True
+                with self.assertRaisesRegex(AdmissionError, field):
+                    validate_pod(tampered)
+
     def test_preinjected_agentgateway_ca_contract_is_idempotent(self) -> None:
         pod = target_pod()
         gateway = pod["spec"]["containers"][0]
