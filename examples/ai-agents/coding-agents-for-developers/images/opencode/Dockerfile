@@ -24,3 +24,7 @@ COPY --chmod=0755 cli-setup.sh /usr/local/bin/cli-setup.sh
 # Identity via the AI SDK's amazon-bedrock provider.
 ENV CLI_CMD="opencode" \
     CLI_RESUME_CMD="opencode --continue"
+
+# Back to the base image's unprivileged user. The session pods override it with
+# runAsUser: 0 (deploy/sandbox-template.yaml), because the mount needs root.
+USER dev

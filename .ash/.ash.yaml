@@ -780,7 +780,14 @@ global_settings:
     # Namespace is set at apply time, never hard-coded in the manifest.
     - rule_id: CKV_K8S_21
       path: 'examples/ai-agents/coding-agents-for-developers/deploy/*.yaml'
-      reason: 'setup.sh applies app.yaml and rbac.yaml with -n "$NAMESPACE" (setup.sh:260,332)'
+      reason: 'setup.sh applies app.yaml and rbac.yaml with -n "$NAMESPACE" (setup.sh:351,425)'
+      expiration: '2027-12-31'
+    # The coding agents web app calls the Kubernetes API in-cluster, so its token stays mounted.
+    - rule_id: CKV_K8S_38
+      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
+      line_start: 37
+      line_end: 37
+      reason: 'The app calls the Kubernetes API with the agent-app token (app/server/k8s.js:18, loadFromCluster); its Role allows only the sample''s claims, pod get and exec, and ConfigMaps, plus get on nodes (deploy/rbac.yaml:54-75,99-102)'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_21
       path: 'examples/confidential/*/deploy/*.yaml'
@@ -859,10 +866,10 @@ global_settings:
       path: 'examples/ci-cd/docker-builds/deploy/hello-docker.yaml'
       reason: 'Pods carry app.kubernetes.io/part-of: docker-builds (hello-docker.yaml:16), selected by the ApplicationNetworkPolicy in deploy/egress-policy.yaml (egress-policy.yaml:26-28)'
       expiration: '2027-12-31'
-    # Base image comes from a build argument that build-images.sh sets with a fixed tag (build-images.sh:29).
+    # Base image comes from a build argument that build-images.sh sets with a fixed tag (build-images.sh:66).
     - rule_id: CKV_DOCKER_7
       path: 'examples/ai-agents/coding-agents-for-developers/images/*/Dockerfile'
-      reason: 'FROM ${BASE_IMAGE}: build-images.sh passes $REGISTRY/$SAMPLE-base:$IMAGE_TAG (build-images.sh:29,37)'
+      reason: 'FROM ${BASE_IMAGE}: build-images.sh passes $REGISTRY/$SAMPLE-base:$IMAGE_TAG (build-images.sh:66,72)'
       expiration: '2027-12-31'
     # Pinned lines: references, measurements and ciphertext, not secret values.
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
@@ -1845,63 +1852,6 @@ global_settings:
       expiration: '2027-12-31'
     # ---- Baseline: hardening not done yet. Each expires 2027-01-31, so CI fails again ----
     # ---- unless the sample follow-up PR fixes the finding and deletes its entry. ----
-    # Baseline: ai-agents/coding-agents-for-developers
-    - rule_id: CKV2_K8S_6
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_29
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_31
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_38
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_40
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_8
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_K8S_9
-      path: 'examples/ai-agents/coding-agents-for-developers/deploy/app.yaml'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_3
-      path: 'examples/ai-agents/coding-agents-for-developers/images/base/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_8
-      path: 'examples/ai-agents/coding-agents-for-developers/images/claude-code/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_8
-      path: 'examples/ai-agents/coding-agents-for-developers/images/codex/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_8
-      path: 'examples/ai-agents/coding-agents-for-developers/images/kiro-cli/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_8
-      path: 'examples/ai-agents/coding-agents-for-developers/images/oh-my-pi/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_8
-      path: 'examples/ai-agents/coding-agents-for-developers/images/opencode/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
-    - rule_id: CKV_DOCKER_8
-      path: 'examples/ai-agents/coding-agents-for-developers/images/pi/Dockerfile'
-      reason: 'Baseline: ai-agents/coding-agents-for-developers merged before the ASH gate; hardening tracked in #140'
-      expiration: '2027-01-31'
     # Baseline: confidential/s3-encrypted-file
     - rule_id: CKV2_K8S_6
       path: 'examples/confidential/s3-encrypted-file/deploy/credentials-pod.yaml'

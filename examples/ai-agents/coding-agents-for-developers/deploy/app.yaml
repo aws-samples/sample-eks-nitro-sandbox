@@ -32,7 +32,11 @@ spec:
       annotations:
         karpenter.sh/do-not-disrupt: "true"
     spec:
+      # The app calls the Kubernetes API with this service account's token (k8s.js,
+      # loadFromCluster), so the token stays mounted; rbac.yaml limits what it may do.
       serviceAccountName: agent-app
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: app
           image: <ACCOUNT_ID>.dkr.ecr.<AWS_REGION>.amazonaws.com/coding-agents-for-developers-app:<IMAGE_TAG>
@@ -46,6 +50,18 @@ spec:
           readinessProbe:
             tcpSocket: { port: 8080 }
             periodSeconds: 2
+          # The liveness probe starts only once the startup probe has seen the port, which
+          # it allows 120 seconds for, twice the pick-up's 60-second deadline, so a slow
+          # start is not restarted. After that, a listener that stops answering for 30
+          # seconds restarts the app.
+          startupProbe:
+            tcpSocket: { port: 8080 }
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            tcpSocket: { port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 3
           env:
             - name: AWS_REGION
               value: "<AWS_REGION>"
@@ -65,10 +81,13 @@ spec:
             # Minutes of no terminal activity before a session's pod is released.
             - name: IDLE_MINUTES
               value: "30"
+          # A high UID and GID with no entry in the image: the app only reads /app, which is
+          # world-readable, and writes nothing to its file system.
           securityContext:
             allowPrivilegeEscalation: false
             runAsNonRoot: true
-            runAsUser: 1000
+            runAsUser: 10001
+            runAsGroup: 10001
             readOnlyRootFilesystem: true
             capabilities: { drop: ["ALL"] }
 ---

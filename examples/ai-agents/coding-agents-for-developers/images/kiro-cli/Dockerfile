@@ -38,3 +38,7 @@ COPY --chmod=0755 kiro-session.sh /usr/local/bin/kiro-session.sh
 # skips the nag and gives every session the current engine.
 ENV CLI_CMD="/usr/local/bin/kiro-session.sh" \
     CLI_RESUME_CMD="/usr/local/bin/kiro-session.sh --resume"
+
+# Back to the base image's unprivileged user. The session pods override it with
+# runAsUser: 0 (deploy/sandbox-template.yaml), because the mount needs root.
+USER dev

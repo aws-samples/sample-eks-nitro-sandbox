@@ -83,6 +83,10 @@ COPY --chmod=0755 session-stop.sh /usr/local/bin/session-stop.sh
 COPY --chmod=0755 bridge-supervise.sh /usr/local/bin/bridge-supervise.sh
 COPY --from=bridge --chmod=0755 /out/session-bridge /usr/local/bin/session-bridge
 
+# The image's own user is the unprivileged dev user. The session pods override it with
+# runAsUser: 0 (deploy/sandbox-template.yaml), because the mount needs root.
+USER dev
+
 # A warm pod boots with NO session: it just idles here. When the app claims the pod it
 # runs session-entrypoint.sh through `kubectl exec`, passing the session parameters and
 # the mount credential, and that script mounts the access point (as root, with SYS_ADMIN

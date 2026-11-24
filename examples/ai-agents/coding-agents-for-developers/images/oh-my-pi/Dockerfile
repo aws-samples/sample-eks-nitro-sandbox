@@ -28,3 +28,7 @@ ENV PATH="/usr/local/bin:${PATH}" \
     OMP_SKIP_SETUP=1 \
     CLI_CMD="omp --model amazon-bedrock/us.anthropic.claude-sonnet-5-5" \
     CLI_RESUME_CMD="omp --model amazon-bedrock/us.anthropic.claude-sonnet-5-5 --continue"
+
+# Back to the base image's unprivileged user. The session pods override it with
+# runAsUser: 0 (deploy/sandbox-template.yaml), because the mount needs root.
+USER dev

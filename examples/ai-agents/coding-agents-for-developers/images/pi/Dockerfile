@@ -36,3 +36,7 @@ RUN set -eu; \
 # line, so no config file is needed. AWS_REGION is passed by the session entrypoint.
 ENV CLI_CMD="pi --provider amazon-bedrock --model us.anthropic.claude-sonnet-5-5" \
     CLI_RESUME_CMD="pi --provider amazon-bedrock --model us.anthropic.claude-sonnet-5-5 --continue"
+
+# Back to the base image's unprivileged user. The session pods override it with
+# runAsUser: 0 (deploy/sandbox-template.yaml), because the mount needs root.
+USER dev
