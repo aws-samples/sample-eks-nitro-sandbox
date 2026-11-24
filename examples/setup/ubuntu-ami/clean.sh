@@ -31,8 +31,9 @@
 # EKS creates for the node role (it has no tags, and EKS keeps it after the role is deleted) is
 # found by that role's ARN, and deleted only while the role still carries both tags.
 #
-# Never removed, because they are not the sample's: the vpc-cni add-on and the isolated-sandbox
-# RuntimeClass (shared installs the reader set up; the README says how to remove the add-on).
+# Never removed, because they are not the sample's: the vpc-cni and kube-proxy add-ons and the
+# isolated-sandbox RuntimeClass (shared installs the reader set up; the README says how to remove
+# the add-ons).
 set -uo pipefail
 SAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/common.sh
@@ -327,7 +328,7 @@ printf '  role %s: %s\n  role %s: %s\n  instance profile %s: %s\n' "$BUILD_ROLE_
   "$NODE_ROLE_NAME" "$role_node" "$INSTANCE_PROFILE" "$profile_build"
 echo "EKS managed node group $NODEGROUP_NAME: $ng_state"
 echo "EKS access entry for role $NODE_ROLE_NAME: ${ae_node:-none}"
-echo "Left in place (shared, not the sample's): the vpc-cni add-on and the isolated-sandbox RuntimeClass on cluster $CLUSTER_NAME"
+echo "Left in place (shared, not the sample's): the vpc-cni and kube-proxy add-ons and the isolated-sandbox RuntimeClass on cluster $CLUSTER_NAME"
 
 if [[ "$DRY_RUN" == 1 ]]; then
   echo
@@ -702,7 +703,7 @@ done
 if [[ "$KEEP_AMI" == 1 && -n "$kept_images" ]]; then
   echo "Left in place (kept on request): AMI(s) $(printf '%s\n' "$kept_images" | awk 'NF{print $1}' | tr '\n' ' ')and snapshot(s) $(printf '%s\n' "$kept_snaps" | awk 'NF' | tr '\n' ' ')"
 fi
-echo "Left in place (shared, not the sample's): the vpc-cni add-on and the isolated-sandbox RuntimeClass on cluster $CLUSTER_NAME; see the README's Clean up section for how to remove the add-on."
+echo "Left in place (shared, not the sample's): the vpc-cni and kube-proxy add-ons and the isolated-sandbox RuntimeClass on cluster $CLUSTER_NAME; see the README's Clean up section for how to remove the add-ons."
 
 if [[ "$incomplete" -ne 0 ]]; then
   printf '\nClean up INCOMPLETE: see the warnings above.\n' >&2
