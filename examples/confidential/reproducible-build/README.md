@@ -318,8 +318,10 @@ when the pod starts. The guest boots when the pod does, on its own virtual devic
 
 ## Step 5: Verify independently.
 
-`verify.sh` checks the full chain without any shared state from `setup.sh`. It reads
-`IMAGE_REPO`, `KEY_ARN`, and `AWS_REGION` from `.env` and makes only read-only AWS calls:
+`verify.sh` checks the full chain without any shared state from `setup.sh`. It finds the
+ECR repository by `REPO_NAME` and the KMS key by `KMS_ALIAS`, the same names as setup,
+and refuses a key that is not enabled. To verify a different image or key, set
+`IMAGE_REPO` or `KEY_ARN` in `.env`. It makes only read-only AWS calls:
 
 ```bash
 ./scripts/verify.sh

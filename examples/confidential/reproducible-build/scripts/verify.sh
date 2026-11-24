@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Rebuild the image, compare with ECR, predict PCR17, compare with the live KMS key
 # policy. An outside verifier: reads IMAGE_REPO, KEY_ARN and AWS_REGION from .env or the
-# environment; does not read state.env.
+# environment; does not read state.env. Without IMAGE_REPO it looks up the ECR repository
+# REPO_NAME, and without KEY_ARN the key behind KMS_ALIAS (the names setup.sh uses).
 #
 # Read-only AWS calls this script makes:
+#   ecr:DescribeRepositories  -- the repository URI, when IMAGE_REPO is not set
+#   kms:DescribeKey  -- resolve KEY_ARN (or KMS_ALIAS) to the key, and check it is enabled
 #   ecr:GetAuthorizationToken  -- auth for the policy generator's ECR pull
 #   ecr:DescribeImages  -- confirm the rebuilt digest and its v1-<digest12> tag are in ECR
 #   ecr:BatchGetImage  -- fetch manifests when tag digest differs from rebuilt
@@ -31,6 +34,8 @@ fi
 
 IMAGE_REPO="${IMAGE_REPO:-}"
 KEY_ARN="${KEY_ARN:-}"
+REPO_NAME="${REPO_NAME:-reproducible-build}"
+KMS_ALIAS="${KMS_ALIAS:-alias/reproducible-build-sample}"
 AWS_REGION="${AWS_REGION:-}"
 NAMESPACE="${NAMESPACE:-reproducible-build}"
 GENPOLICY="${GENPOLICY:-eks-nitro-sandbox-genpolicy}"
@@ -82,10 +87,6 @@ save_manifests_and_fail() {
 }
 
 # --- preflight ---
-[[ -n "${IMAGE_REPO}" ]] \
-  || die "IMAGE_REPO is not set; add IMAGE_REPO=<ecr_repo_uri> to .env"
-[[ -n "${KEY_ARN}" ]] \
-  || die "KEY_ARN is not set; add KEY_ARN=<kms_key_arn_or_alias_arn> to .env"
 [[ -n "${AWS_REGION}" ]] \
   || die "AWS_REGION is not set; add AWS_REGION=<region> to .env"
 export AWS_REGION AWS_DEFAULT_REGION="${AWS_REGION}"
@@ -93,6 +94,26 @@ export AWS_REGION AWS_DEFAULT_REGION="${AWS_REGION}"
 for c in aws jq kubectl "${CONTAINER_RUNTIME}" "${GENPOLICY}"; do
   command -v "${c}" >/dev/null 2>&1 || die "${c} is required but not found"
 done
+
+if [[ -z "${IMAGE_REPO}" ]]; then
+  IMAGE_REPO="$(aws ecr describe-repositories --repository-names "${REPO_NAME}" \
+    --query 'repositories[0].repositoryUri' --output text)" || {
+    echo "ERROR: IMAGE_REPO is not set and ECR repository ${REPO_NAME} could not be read" >&2
+    exit 2
+  }
+fi
+
+# KMS takes a key ID, key ARN, alias name or alias ARN here, but GetKeyPolicy and
+# ListAliases take only a key ID or ARN, so resolve once. A key an earlier clean up
+# scheduled for deletion still resolves, and is not the gate the running pod uses.
+key_json="$(aws kms describe-key --key-id "${KEY_ARN:-${KMS_ALIAS}}" \
+  --query 'KeyMetadata.[Arn,KeyState]' --output text)" || {
+  echo "ERROR: could not read the KMS key ${KEY_ARN:-${KMS_ALIAS}}" >&2
+  exit 2
+}
+read -r key_arn key_state <<<"${key_json}"
+[[ "${key_state}" == Enabled ]] \
+  || die "the KMS key ${key_arn} is ${key_state}, not Enabled; set KEY_ARN to the key setup.sh gated, or unset it to use ${KMS_ALIAS}"
 
 mkdir -p "${TMP_DIR}/build" "${TMP_DIR}/mismatch" "${TMP_DIR}/genpolicy"
 BUILD_DIR="${TMP_DIR}/build"
@@ -161,15 +182,15 @@ echo "== step 3/4 predict PCR17 =="
 if [[ "${KEY_ARN}" == *":alias/"* ]]; then
   kms_alias_arn="${KEY_ARN}"
 else
-  kms_alias_arn="$(aws kms list-aliases --key-id "${KEY_ARN}" --output json 2>/dev/null \
+  kms_alias_arn="$(aws kms list-aliases --key-id "${key_arn}" --output json 2>/dev/null \
     | jq -r '[.Aliases[] | select(.AliasName | startswith("alias/aws/") | not)
               | .AliasArn] | .[0] // empty')" \
     || {
-      echo "ERROR: could not list aliases for ${KEY_ARN}" >&2
+      echo "ERROR: could not list aliases for ${key_arn}" >&2
       exit 2
     }
   [[ -n "${kms_alias_arn}" && "${kms_alias_arn}" != "None" ]] \
-    || die "no customer-managed alias found for ${KEY_ARN}; the pod env must carry the alias ARN"
+    || die "no customer-managed alias found for ${key_arn}; the pod env must carry the alias ARN"
 fi
 
 PROFILE="${SAMPLE_DIR}/deploy/production-profile.yaml"
@@ -230,10 +251,10 @@ echo "  predicted PCR17: ${predicted_pcr17}"
 # ------------------------------------------------------- 4/4 compare key policy
 echo "== step 4/4 compare PCR17 with the live KMS key policy =="
 
-live_policy="$(aws kms get-key-policy --key-id "${KEY_ARN}" --policy-name default \
+live_policy="$(aws kms get-key-policy --key-id "${key_arn}" --policy-name default \
   --query Policy --output text)" \
   || {
-    echo "ERROR: could not read the key policy of ${KEY_ARN}" >&2
+    echo "ERROR: could not read the key policy of ${key_arn}" >&2
     exit 2
   }
 printf '%s\n' "${live_policy}" | jq . >"${TMP_DIR}/kms-key-policy.live.json"
@@ -244,7 +265,7 @@ policy_pcr17="$(jq -r '
 ' "${TMP_DIR}/kms-key-policy.live.json")"
 [[ -n "${policy_pcr17}" ]] \
   || {
-    echo "ERROR: no PCR17 found in AttestedDecryptOnly of ${KEY_ARN} policy" >&2
+    echo "ERROR: no PCR17 found in AttestedDecryptOnly of ${key_arn} policy" >&2
     exit 2
   }
 require_hex96 "${policy_pcr17}" "key-policy PCR17"
