@@ -1419,9 +1419,22 @@ relay is gone. By default, cleanup refuses to change the deployment while an
 OCE-managed tenant namespace exists. To delete the disposable validation
 tenants and their data, run cleanup with the original state, receipts, context,
 exact tenant namespace list, Pod Identity values, and the explicit
-`--delete-tenant-data` opt-in:
+`--delete-tenant-data` opt-in. Capture each namespace UID immediately before
+cleanup so a deleted and recreated same-name namespace cannot be mistaken for
+the original:
 
 ```bash
+TENANT_A_NAMESPACE='<tenant-a-kubernetes-namespace>'
+TENANT_B_NAMESPACE='<tenant-b-kubernetes-namespace>'
+TENANT_A_NAMESPACE_UID="$(
+  kubectl --kubeconfig "$KUBECONFIG" --context "$KUBE_CONTEXT" \
+    get namespace "$TENANT_A_NAMESPACE" --output=jsonpath='{.metadata.uid}'
+)"
+TENANT_B_NAMESPACE_UID="$(
+  kubectl --kubeconfig "$KUBECONFIG" --context "$KUBE_CONTEXT" \
+    get namespace "$TENANT_B_NAMESPACE" --output=jsonpath='{.metadata.uid}'
+)"
+
 "$SAMPLE_DIR/scripts/cleanup.sh" \
   --kubeconfig "$KUBECONFIG" \
   --kube-context "$KUBE_CONTEXT" \
@@ -1429,8 +1442,10 @@ exact tenant namespace list, Pod Identity values, and the explicit
   --receipt "$OCE_RECEIPT_DIR" \
   --namespace "$OCE_NAMESPACE" \
   --release oce \
-  --tenant-namespace '<tenant-a-kubernetes-namespace>' \
-  --tenant-namespace '<tenant-b-kubernetes-namespace>' \
+  --tenant-namespace "$TENANT_A_NAMESPACE" \
+  --tenant-namespace-uid "$TENANT_A_NAMESPACE=$TENANT_A_NAMESPACE_UID" \
+  --tenant-namespace "$TENANT_B_NAMESPACE" \
+  --tenant-namespace-uid "$TENANT_B_NAMESPACE=$TENANT_B_NAMESPACE_UID" \
   --delete-tenant-data \
   --storage-class-receipt "$STORAGE_CLASS_RECEIPT" \
   --agentgateway-receipt "$AGENTGATEWAY_RECEIPT" \

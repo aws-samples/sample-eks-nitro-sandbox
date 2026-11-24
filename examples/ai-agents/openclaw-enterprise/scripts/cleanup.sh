@@ -74,6 +74,7 @@ def parse_args():
     parser.add_argument("--namespace", default="openclaw-system")
     parser.add_argument("--release", default="oce")
     parser.add_argument("--tenant-namespace", action="append", default=[])
+    parser.add_argument("--tenant-namespace-uid", action="append", default=[])
     parser.add_argument("--delete-tenant-data", action="store_true")
     for flag in (
         "storage-class-receipt", "agentgateway-receipt",
@@ -92,11 +93,32 @@ def parse_args():
         fail("namespace and release names must be Kubernetes DNS labels.")
     if len(set(args.tenant_namespace)) != len(args.tenant_namespace):
         fail("a tenant namespace was supplied more than once.")
+    tenant_namespace_uids = {}
+    for identity in args.tenant_namespace_uid:
+        name, separator, uid = identity.partition("=")
+        if (
+            separator != "="
+            or len(name) > 63
+            or not dns.fullmatch(name)
+            or not re.fullmatch(r"[A-Za-z0-9._:-]+", uid)
+        ):
+            fail("--tenant-namespace-uid must use NAME=UID with a valid Kubernetes UID.")
+        if name in tenant_namespace_uids:
+            fail("a tenant namespace UID was supplied more than once.")
+        tenant_namespace_uids[name] = uid
+    args.tenant_namespace_uids = tenant_namespace_uids
     reserved = {args.namespace, "openclaw-enterprise-adapter", AGW_NAMESPACE}
     if reserved & set(args.tenant_namespace):
         fail("a reserved namespace was supplied as a tenant namespace.")
     if args.delete_tenant_data and not args.tenant_namespace:
         fail("--delete-tenant-data requires at least one --tenant-namespace.")
+    if args.delete_tenant_data and (
+        set(args.tenant_namespace_uids) != set(args.tenant_namespace)
+    ):
+        fail(
+            "--delete-tenant-data requires one "
+            "--tenant-namespace-uid NAME=UID for every supplied tenant namespace."
+        )
     aws_fields = (
         "aws_region", "aws_account_id", "eks_cluster_name",
         "pod_identity_association_id", "iam_role_name", "iam_inline_policy_name",
@@ -1085,6 +1107,13 @@ class Cleanup:
             for item in tenant_plans
         }
         supplied = set(self.a.tenant_namespace)
+        supplied_targets = [
+            {
+                "name": name,
+                "uid": self.a.tenant_namespace_uids[name],
+            }
+            for name in sorted(self.a.tenant_namespace_uids)
+        ]
         deletion = self.read_tenant_deletion()
         if deletion and not self.a.delete_tenant_data:
             fail(
@@ -1109,6 +1138,11 @@ class Cleanup:
                 "cleanup tenant namespace set (" + "; ".join(detail) + ")."
             )
         if deletion:
+            if supplied_targets != deletion["namespaces"]:
+                fail(
+                    "the supplied tenant namespace identities do not exactly "
+                    "match the recorded tenant deletion identities."
+                )
             live = self.require_tenant_namespaces_unchanged(
                 deletion["namespaces"], allow_absent=True
             )
@@ -1124,6 +1158,9 @@ class Cleanup:
                 "changes. Rerun with --delete-tenant-data to delete the exact "
                 "listed tenant namespaces and their data."
             )
+        if self.a.delete_tenant_data:
+            live = self.require_tenant_namespaces_unchanged(supplied_targets)
+            return live, supplied_targets
         return tenant_plans, self.tenant_namespace_targets(tenant_plans)
 
     def require_tenant_namespaces_unchanged(self, expected, allow_absent=False):

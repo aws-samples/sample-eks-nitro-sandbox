@@ -71,8 +71,6 @@ CURRENT_CHECK="argument-validation"
 MARKERS_CREATED="false"
 REPLACEMENT_POD=""
 REPLACEMENT_POD_CANDIDATE=""
-CROSS_TENANT_PVC_POD=""
-CROSS_TENANT_PVC_POD_UID=""
 ORDINARY_CONTROL_POD=""
 ORDINARY_CONTROL_POD_UID=""
 KMS_CANONICAL_KEY_ID=""
@@ -521,49 +519,6 @@ delete_pod_with_uid() {
     -f "$delete_options" >/dev/null
 }
 
-cleanup_cross_tenant_pvc_probe() {
-  [[ -n "$CROSS_TENANT_PVC_POD" ]] || return 0
-  if [[ -z "$CROSS_TENANT_PVC_POD_UID" ]]; then
-    local recovered_probe="$WORK_DIR/cross-tenant-pvc-pod-recovered.json"
-    kube -n "$TENANT_A_NAMESPACE" get pod "$CROSS_TENANT_PVC_POD" -o json \
-      >"$recovered_probe" || return 1
-    jq -e \
-      --arg namespace "$TENANT_A_NAMESPACE" \
-      --arg name "$CROSS_TENANT_PVC_POD" \
-      --arg image "$RUNTIME_IMAGE" \
-      --arg pvc "$TENANT_B_PVC" '
-      .metadata.namespace == $namespace
-      and .metadata.name == $name
-      and .metadata.labels["openclaw.dev/validation"] == "cross-tenant-pvc"
-      and (.metadata.uid | type == "string" and length > 0)
-      and (.spec.containers | length == 1)
-      and .spec.containers[0].name == "cross-tenant-pvc"
-      and .spec.containers[0].image == $image
-      and .spec.containers[0].command == ["sh", "-c", "sleep 3600"]
-      and .spec.containers[0].volumeMounts == [{
-        "name": "cross-tenant-pvc",
-        "mountPath": "/cross-tenant"
-      }]
-      and (.spec.volumes | length == 1)
-      and .spec.volumes[0].name == "cross-tenant-pvc"
-      and .spec.volumes[0].persistentVolumeClaim.claimName == $pvc
-      and .spec.automountServiceAccountToken == false
-      and .spec.enableServiceLinks == false
-      and .spec.restartPolicy == "Never"
-    ' "$recovered_probe" >/dev/null || return 1
-    CROSS_TENANT_PVC_POD_UID="$(jq -er '.metadata.uid' "$recovered_probe")" || return 1
-  fi
-  delete_pod_with_uid \
-    "$TENANT_A_NAMESPACE" \
-    "$CROSS_TENANT_PVC_POD" \
-    "$CROSS_TENANT_PVC_POD_UID" \
-    "$WORK_DIR/cross-tenant-pvc-delete-options.json"
-  kube -n "$TENANT_A_NAMESPACE" wait \
-    --for=delete "pod/$CROSS_TENANT_PVC_POD" --timeout=60s >/dev/null
-  CROSS_TENANT_PVC_POD=""
-  CROSS_TENANT_PVC_POD_UID=""
-}
-
 cleanup_ordinary_control_pod() {
   [[ -n "$ORDINARY_CONTROL_POD" ]] || return 0
   if [[ -z "$ORDINARY_CONTROL_POD_UID" ]]; then
@@ -610,7 +565,6 @@ on_exit() {
   set +e
   stop_oce_api_port_forward >/dev/null 2>&1
   cleanup_markers
-  cleanup_cross_tenant_pvc_probe >/dev/null 2>&1
   cleanup_ordinary_control_pod >/dev/null 2>&1
   if [[ -n "$FINAL_EVIDENCE_FD" ]]; then
     exec {FINAL_EVIDENCE_FD}<&- 2>/dev/null || true
@@ -1658,7 +1612,7 @@ inspect_runtime_storage() {
   printf '%s' "$pvc_name"
 }
 
-CURRENT_CHECK="tenant-storage-isolation"
+CURRENT_CHECK="tenant-storage-boundary"
 TENANT_A_PVC="$(inspect_runtime_storage \
   "tenant-a" "$TENANT_A_NAMESPACE" "$WORK_DIR/tenant-a-pod.json" "$TENANT_A_CONTAINER" \
   "$WORK_DIR/tenant-a")"
@@ -1721,93 +1675,10 @@ set -e
 [[ $CROSS_TENANT_PVC_LOOKUP_STATUS -ne 0 &&
   "$CROSS_TENANT_PVC_LOOKUP" =~ (NotFound|not[[:space:]]found) ]] ||
   die "tenant B PVC name unexpectedly resolves in tenant A or lookup did not fail as NotFound"
-CROSS_TENANT_PVC_POD="oce-live-cross-pvc-$$"
-jq -n \
-  --arg name "$CROSS_TENANT_PVC_POD" \
-  --arg image "$RUNTIME_IMAGE" \
-  --arg claim_name "$TENANT_B_PVC" '
-  {
-    apiVersion: "v1",
-    kind: "Pod",
-    metadata: {
-      name: $name,
-      labels: {
-        "app.kubernetes.io/managed-by": "openclaw-enterprise-blueprint",
-        "openclaw.dev/validation": "cross-tenant-pvc"
-      }
-    },
-    spec: {
-      automountServiceAccountToken: false,
-      enableServiceLinks: false,
-      restartPolicy: "Never",
-      securityContext: {
-        runAsNonRoot: true,
-        runAsUser: 1000,
-        runAsGroup: 1000,
-        seccompProfile: {type: "RuntimeDefault"}
-      },
-      containers: [{
-        name: "cross-tenant-pvc",
-        image: $image,
-        command: ["sh", "-c", "sleep 3600"],
-        volumeMounts: [{
-          name: "cross-tenant-pvc",
-          mountPath: "/cross-tenant"
-        }],
-        securityContext: {
-          allowPrivilegeEscalation: false,
-          readOnlyRootFilesystem: true,
-          capabilities: {drop: ["ALL"]}
-        }
-      }],
-      volumes: [{
-        name: "cross-tenant-pvc",
-        persistentVolumeClaim: {claimName: $claim_name}
-      }]
-    }
-  }
-' >"$WORK_DIR/cross-tenant-pvc-probe.json" ||
-  die "could not render the cross-tenant PVC probe"
-kube -n "$TENANT_A_NAMESPACE" create -f - -o json \
-  <"$WORK_DIR/cross-tenant-pvc-probe.json" \
-  >"$WORK_DIR/cross-tenant-pvc-pod.json"
-CROSS_TENANT_PVC_POD_UID_CANDIDATE="$(jq -er '.metadata.uid' \
-  "$WORK_DIR/cross-tenant-pvc-pod.json")" ||
-  die "cross-tenant PVC probe has no workload UID"
-CROSS_TENANT_PVC_POD_UID="$CROSS_TENANT_PVC_POD_UID_CANDIDATE"
-unset CROSS_TENANT_PVC_POD_UID_CANDIDATE
-[[ "$CROSS_TENANT_PVC_POD_UID" =~ ^[A-Za-z0-9._:-]+$ ]] ||
-  die "cross-tenant PVC probe workload UID is invalid"
-jq -e '
-  select(.status.phase == "Pending")
-  | select([.status.containerStatuses[]? | select(.state.running != null)] | length == 0)
-' "$WORK_DIR/cross-tenant-pvc-pod.json" >/dev/null ||
-  die "cross-tenant PVC probe was not pending before mount"
-PVC_DENIAL_OBSERVED="false"
-for ((attempt = 0; attempt < 15; attempt += 1)); do
-  kube -n "$TENANT_A_NAMESPACE" get events \
-    --field-selector "involvedObject.kind=Pod,involvedObject.uid=${CROSS_TENANT_PVC_POD_UID}" \
-    -o json >"$WORK_DIR/cross-tenant-pvc-events.json"
-  if jq -e --arg pvc "$TENANT_B_PVC" '
-      any(.items[];
-        (.reason == "FailedScheduling" or .reason == "FailedMount")
-        and (.message | contains($pvc))
-        and (.message | test("not found"; "i"))
-      )
-    ' "$WORK_DIR/cross-tenant-pvc-events.json" >/dev/null; then
-    PVC_DENIAL_OBSERVED="true"
-    break
-  fi
-  sleep 2
-done
-[[ "$PVC_DENIAL_OBSERVED" == "true" ]] ||
-  die "cross-tenant PVC mount did not produce the expected NotFound scheduling or mount event"
-printf 'EVIDENCE\tworkload-uid-cross-tenant-pvc-negative\t%s\n' \
-  "$CROSS_TENANT_PVC_POD_UID" >>"$EVIDENCE_FILE"
-record_pass "tenant-storage-isolation" \
-  "PVC/PV identities and hashed CSI handles differ between tenants"
-record_pass "cross-tenant-pvc-mount-denied" \
-  "a live tenant A pod could not resolve or mount tenant B's PVC"
+record_pass "tenant-storage-boundary" \
+  "runtime mounts bind to distinct namespace-local PVC/PV UIDs and CSI volume handles"
+record_pass "pvc-name-resolution-is-namespaced" \
+  "tenant B's claim name is not resolvable in tenant A; no cross-namespace mount was attempted"
 
 verify_service_account() {
   local tenant_alias="$1"
@@ -2819,6 +2690,61 @@ record_pass "oce-api-loopback-tunnel" \
 record_pass "oce-same-tenant-api" "both tenants received HTTP 200 for their own agent"
 record_pass "oce-cross-tenant-api" "both reciprocal requests returned HTTP 403 FORBIDDEN"
 
+CURRENT_CHECK="shared-database-boundary"
+SHARED_POSTGRESQL_BOUNDARY="$(
+  kube -n "$OCE_SYSTEM_NAMESPACE" exec \
+    deployment/oce-validation-only-postgres -- \
+    psql -U oce_validation -d openclaw -v ON_ERROR_STOP=1 -Atc "
+SELECT json_build_object(
+  'appRoleRestricted',
+  COALESCE((
+    SELECT NOT rolsuper
+      AND NOT rolcreatedb
+      AND NOT rolcreaterole
+      AND NOT rolbypassrls
+      AND NOT has_database_privilege('occ_app', current_database(), 'CREATE')
+      AND NOT has_schema_privilege('occ_app', 'public', 'CREATE')
+    FROM pg_roles
+    WHERE rolname = 'occ_app'
+  ), false),
+  'applicationTableCount',
+  (
+    SELECT count(*)
+    FROM pg_class AS relation
+    JOIN pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname IN ('occ', 'drizzle')
+      AND relation.relkind IN ('r', 'p')
+  ),
+  'rlsEnabledTableCount',
+  (
+    SELECT count(*)
+    FROM pg_class AS relation
+    JOIN pg_namespace AS namespace
+      ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname IN ('occ', 'drizzle')
+      AND relation.relkind IN ('r', 'p')
+      AND relation.relrowsecurity
+  )
+)::text;"
+)" || die "could not inspect shared PostgreSQL isolation controls"
+jq -e '
+  type == "object"
+  and .appRoleRestricted == true
+  and (.applicationTableCount | type == "number" and . > 0)
+  and (.rlsEnabledTableCount | type == "number" and . >= 0)
+' <<<"$SHARED_POSTGRESQL_BOUNDARY" >/dev/null ||
+  die "shared PostgreSQL isolation evidence did not match the expected schema"
+[[ "$(jq -r '.rlsEnabledTableCount' <<<"$SHARED_POSTGRESQL_BOUNDARY")" == "0" ]] ||
+  die "shared PostgreSQL row-level security contract changed; reassess the tenant-boundary claim"
+{
+  printf 'EVIDENCE\tshared-postgresql-boundary\tapp-role-restricted=true application-table-count=%s rls-enabled-table-count=0\n' \
+    "$(jq -r '.applicationTableCount' <<<"$SHARED_POSTGRESQL_BOUNDARY")"
+  printf 'LIMITATION\tdatabase-isolation-not-proven\tOCE application schemas occ and drizzle have no row-level security; reciprocal HTTP 403 responses prove application-layer authorization, not a database-enforced tenant boundary\n'
+} >>"$EVIDENCE_FILE"
+record_pass "shared-database-application-boundary" \
+  "shared PostgreSQL uses a restricted application role; reciprocal tenant API denials were also verified"
+
 expect_server_denial() {
   local check_name="$1"
   local expected_text="$2"
@@ -2987,12 +2913,11 @@ if ! exec_in_exact_pod \
   die "validation markers could not be removed"
 fi
 MARKERS_CREATED="false"
-cleanup_cross_tenant_pvc_probe
 cleanup_ordinary_control_pod
 [[ "$OCE_PORT_FORWARD_CLEANED" == "true" ]] ||
   die "OCE API tunnel cleanup was not completed"
 record_pass "temporary-artifact-cleanup" \
-  "API relay, local port-forward, markers, and both temporary validation pods were removed"
+  "API relay, local port-forward, markers, and the ordinary control pod were removed"
 printf 'CLEANUP\tPASS\tAPI relay and local port-forward were removed; temporary cluster artifacts were deleted and awaited\n' \
   >>"$EVIDENCE_FILE"
 

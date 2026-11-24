@@ -860,6 +860,28 @@ FAKE_COMMAND = textwrap.dedent(
     if args[:1] == ["exec"]:
         pod_name = args[2] if args[1] == "-i" else args[1]
         remote = args[args.index("--") + 1:]
+        if pod_name == "deployment/oce-validation-only-postgres":
+            if (
+                namespace != "oce-system"
+                or remote[:5] != [
+                    "psql",
+                    "-U",
+                    "oce_validation",
+                    "-d",
+                    "openclaw",
+                ]
+                or "ON_ERROR_STOP=1" not in remote
+            ):
+                print("invalid PostgreSQL isolation evidence command", file=sys.stderr)
+                sys.exit(106)
+            emit({{
+                "appRoleRestricted": True,
+                "applicationTableCount": 12,
+                "rlsEnabledTableCount": (
+                    1 if scenario == "database_rls_contract_changed" else 0
+                ),
+            }})
+            sys.exit(0)
         if "__OCE_EXACT_POD_COMMAND__" in remote:
             expected_uid_argument = next(
                 (
@@ -2005,14 +2027,25 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "EVIDENCE\tguest-b-block-devices\tvda" in evidence
     assert "EVIDENCE\tordinary-control-root\toverlay overlay" in evidence
     assert "EVIDENCE\tordinary-control-block-devices\tnvme0n1" in evidence  # pragma: allowlist secret -- block-device fixture
+    assert (
+        "EVIDENCE\tshared-postgresql-boundary\t"
+        "app-role-restricted=true application-table-count=12 "
+        "rls-enabled-table-count=0"
+    ) in evidence
+    assert (
+        "LIMITATION\tdatabase-isolation-not-proven\t"
+        "OCE application schemas occ and drizzle have no row-level security; "
+        "reciprocal HTTP 403 responses prove application-layer authorization, "
+        "not a database-enforced tenant boundary"
+    ) in evidence
     assert "EVIDENCE\tsignature-status\tunsigned;" in evidence
     assert "CLEANUP\tPASS\t" in evidence
     for check in (
         "runtime-isolation",
         "security-context",
         "aws-credential-absence",
-        "tenant-storage-isolation",
-        "cross-tenant-pvc-mount-denied",
+        "tenant-storage-boundary",
+        "pvc-name-resolution-is-namespaced",
         "guest-vm-boundary",
         "agentgateway-key-authorization",
         "native-openclaw-model-turn",
@@ -2023,6 +2056,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         "oce-deployed-source-revision",
         "oce-same-tenant-api",
         "oce-cross-tenant-api",
+        "shared-database-application-boundary",
         "reserved-configmap-spoof",
         "managed-pod-spoof",
         "ephemeral-debug",
@@ -2057,7 +2091,6 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     state_dir = tmp_path / "state"
     assert (state_dir / "deleted").read_text() == "tenant-a-pod"
     assert (state_dir / "deleted_uid").read_text() == "uid-a-old"
-    assert (state_dir / "cross_deleted_uid").read_text() == "uid-cross-pvc"
     assert (state_dir / "ordinary_deleted_uid").read_text() == "uid-ordinary-control"
     assert not (state_dir / "marker").exists()
     assert not (state_dir / "ephemeral").exists()
@@ -2457,8 +2490,7 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
         ("tunnel_cleanup_failure", "oce-tenant-api-isolation"),
         ("wrong_oce_revision", "oce-deployed-source-revision"),
         ("wrong_cross_code", "oce-tenant-api-isolation"),
-        ("cross_tenant_pvc_mounted", "tenant-storage-isolation"),
-        ("post_create_uid_failure", "tenant-storage-isolation"),
+        ("database_rls_contract_changed", "shared-database-boundary"),
         ("uid_precondition_rejected", "controller-driven-persistence"),
         ("challenge_mismatch", "native-openclaw-model-turn"),
         ("wrong_native_model", "native-openclaw-model-turn"),
@@ -2507,8 +2539,6 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
     evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
     assert f"FAIL\t{failed_check}\t" in evidence
     assert "RESULT\tPASS" not in evidence
-    if scenario in ("cross_tenant_pvc_mounted", "post_create_uid_failure"):
-        assert (tmp_path / "state" / "cross_deleted_uid").read_text() == "uid-cross-pvc"
     if scenario.startswith("ordinary_"):
         assert (
             tmp_path / "state" / "ordinary_deleted_uid"
@@ -2609,7 +2639,17 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert '"kind":"DeleteOptions","preconditions":{"uid":"%s"}' in source
     assert '--raw="/api/v1/namespaces/${namespace}/pods/${pod}"' in source
     assert 'delete pod "$TENANT_A_POD"' not in source
-    assert "cross-tenant-pvc-mount-denied" in source
+    assert "cross-tenant-pvc-mount-denied" not in source
+    assert "cross-tenant-pvc" not in source
+    assert "pvc-name-resolution-is-namespaced" in source
+    assert "tenant-storage-boundary" in source
+    assert "database-isolation-not-proven" in source
+    assert "shared-database-application-boundary" in source
+    assert (
+        "NOT has_database_privilege('occ_app', current_database(), 'CREATE')"
+        in source
+    )
+    assert "NOT has_schema_privilege('occ_app', 'public', 'CREATE')" in source
     assert 'ORDINARY_CONTROL_POD="oce-live-ordinary-$$"' in source
     assert "cleanup_ordinary_control_pod" in source
     assert '"openclaw.dev/validation": "ordinary-pod-control"' in source

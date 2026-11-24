@@ -988,18 +988,32 @@ def _add_tenant(
     env: dict[str, str],
     name: str,
     *,
+    uid: str | None = None,
     workloads: list[dict[str, Any]] | None = None,
 ) -> None:
     state = _state(env)
     state["resources"][f"namespace/{name}"] = _object(
         "Namespace",
         name,
-        f"uid-{name}",
+        uid or f"uid-{name}",
         owner=OCE_OWNER,
     )
     if workloads:
         state["tenantWorkloads"][name] = workloads
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+def _tenant_identity_args(*names: str) -> list[str]:
+    return [
+        argument
+        for name in names
+        for argument in (
+            "--tenant-namespace",
+            name,
+            "--tenant-namespace-uid",
+            f"{name}=uid-{name}",
+        )
+    ]
 
 
 def _add_tenant_storage(env: dict[str, str], namespace: str) -> None:
@@ -1279,6 +1293,55 @@ def test_undisclosed_managed_tenant_fails_before_any_mutation(
     assert after == before
 
 
+def test_tenant_delete_requires_a_captured_uid_for_every_namespace(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant_namespace = "openclaw-tenant-a"
+    _add_tenant(env, tenant_namespace)
+    before = _state(env)
+
+    result = _run([
+        *command,
+        "--tenant-namespace",
+        tenant_namespace,
+        "--delete-tenant-data",
+    ], env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: --delete-tenant-data requires one "
+        "--tenant-namespace-uid NAME=UID for every supplied tenant namespace.\n"
+    )
+    assert _state(env) == before
+
+
+def test_replacement_same_name_namespace_fails_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant_namespace = "openclaw-tenant-a"
+    _add_tenant(env, tenant_namespace, uid="replacement-tenant-uid")
+    before = _state(env)
+
+    result = _run([
+        *command,
+        *_tenant_identity_args(tenant_namespace),
+        "--delete-tenant-data",
+    ], env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: managed tenant namespaces changed during cleanup; "
+        "refusing to continue.\n"
+    )
+    after = _state(env)
+    assert after["tenantDiscoveryCount"] == 2
+    after["tenantDiscoveryCount"] = before["tenantDiscoveryCount"]
+    after["aws"]["policyGetCount"] = before["aws"]["policyGetCount"]
+    assert after == before
+
+
 def test_tenant_added_after_freeze_fails_before_application_teardown(
     tmp_path: Path,
 ) -> None:
@@ -1295,8 +1358,7 @@ def test_tenant_added_after_freeze_fails_before_application_teardown(
 
     result = _run([
         *command,
-        "--tenant-namespace",
-        tenant_namespace,
+        *_tenant_identity_args(tenant_namespace),
         "--delete-tenant-data",
     ], env)
 
@@ -1318,7 +1380,7 @@ def test_tenant_added_after_freeze_fails_before_application_teardown(
     )
 
 
-def test_tenant_uid_replaced_after_control_plane_removal_stops_teardown(
+def test_tenant_uid_replacement_is_rejected_before_control_plane_removal(
     tmp_path: Path,
 ) -> None:
     _, command, env = _prepare(tmp_path, created=_all_created())
@@ -1334,8 +1396,7 @@ def test_tenant_uid_replaced_after_control_plane_removal_stops_teardown(
 
     result = _run([
         *command,
-        "--tenant-namespace",
-        tenant_namespace,
+        *_tenant_identity_args(tenant_namespace),
         "--delete-tenant-data",
     ], env)
 
@@ -1345,7 +1406,7 @@ def test_tenant_uid_replaced_after_control_plane_removal_stops_teardown(
         "refusing to continue.\n"
     )
     current = _state(env)
-    assert current["helm"] is False
+    assert current["helm"] is True
     assert current["aws"]["association"] is not None
     assert f"namespace/{SYSTEM_NAMESPACE}" in current["resources"]
     assert (
@@ -1382,8 +1443,7 @@ def test_opt_in_deletes_live_tenant_workload_with_namespace(
     )
     result = _run([
         *command,
-        "--tenant-namespace",
-        tenant_namespace,
+        *_tenant_identity_args(tenant_namespace),
         "--delete-tenant-data",
     ], env)
 
@@ -1405,11 +1465,7 @@ def test_opt_in_deletes_exact_tenant_namespaces_and_storage_idempotently(
         _add_tenant_storage(env, tenant)
     destructive_command = [
         *command,
-        *[
-            argument
-            for tenant in tenants
-            for argument in ("--tenant-namespace", tenant)
-        ],
+        *_tenant_identity_args(*tenants),
         "--delete-tenant-data",
     ]
 
@@ -1460,11 +1516,7 @@ def test_partial_tenant_delete_rerun_uses_recorded_uids_and_keeps_controls(
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
     destructive_command = [
         *command,
-        *[
-            argument
-            for tenant in tenants
-            for argument in ("--tenant-namespace", tenant)
-        ],
+        *_tenant_identity_args(*tenants),
         "--delete-tenant-data",
     ]
 
