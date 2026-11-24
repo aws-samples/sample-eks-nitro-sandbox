@@ -39,6 +39,7 @@ if [ "$candidate" != "$debian_version" ]; then
   echo "Refresh the OpenSSL backport: Debian candidate is $candidate, source is $debian_version" >&2
   exit 1
 fi
+apt-get install -y --no-install-recommends quilt
 apt-get build-dep -y --no-install-recommends -Pnocheck "./openssl_${debian_version}.dsc"
 dpkg-source --no-check -x "openssl_${debian_version}.dsc" "$source_dir"
 cd "$source_dir"

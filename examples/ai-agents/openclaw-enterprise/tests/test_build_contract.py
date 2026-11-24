@@ -2311,6 +2311,9 @@ def test_cve_2026_88823_backport_matches_exact_upstream_commit_and_build_contrac
     patch_bytes = OPENSSL_88823_BACKPORT_PATCH.read_bytes()
     patch = patch_bytes.decode()
     script = SCRIPT.read_text(encoding="utf-8")
+    build_script = (
+        OPENSSL_88823_SOURCE_ASSETS / "build.sh"
+    ).read_text(encoding="utf-8")
     patch_sha256 = hashlib.sha256(patch_bytes).hexdigest()
 
     assert patch.startswith(f"From {OPENSSL_88823_UPSTREAM_COMMIT} ")
@@ -2319,6 +2322,10 @@ def test_cve_2026_88823_backport_matches_exact_upstream_commit_and_build_contrac
     assert "CVE-2026-88823" in script
     assert OPENSSL_88823_UPSTREAM_COMMIT in script
     assert patch_sha256 in script
+    assert "apt-get install -y --no-install-recommends quilt" in build_script
+    assert build_script.index("apt-get install -y --no-install-recommends quilt") < (
+        build_script.index("quilt push -a")
+    )
 
     result = subprocess.run(
         [
