@@ -1737,6 +1737,45 @@ def test_inspector_gate_accepts_both_exact_reviewed_source_backports(
     assert "accepted 2 reviewed HIGH source backport finding(s)" in result.stdout
 
 
+@pytest.mark.parametrize(
+    "entry",
+    json.loads((BUILD / "openssl" / "source.json").read_text())["additionalBackports"],
+    ids=lambda entry: entry["cve"],
+)
+@pytest.mark.parametrize(
+    "mutation", ["accepted", "missing-patch", "wrong-path", "wrong-version",
+                 "wrong-reference", "critical", "os-package"]
+)
+def test_additional_openssl_inspector_records_require_exact_source_fix(
+    tmp_path: pathlib.Path, entry: dict[str, Any], mutation: str
+) -> None:
+    finding = _copy_inspector_finding(_openssl_107496_backport_finding())
+    details = finding["packageVulnerabilityDetails"]
+    details["vulnerabilityId"] = entry["cve"]
+    details["referenceUrls"] = [
+        "https://github.com/openssl/openssl/commit/" + entry["commit"]
+    ]
+    package = details["vulnerablePackages"][0]
+    if mutation == "wrong-path":
+        package["filePath"] = "/unreviewed/opensslv.h"
+    elif mutation == "wrong-version":
+        package["version"] = "3.5.8"
+    elif mutation == "wrong-reference":
+        details["referenceUrls"] = ["https://example.invalid/unreviewed"]
+    elif mutation == "critical":
+        finding["severity"] = "CRITICAL"
+    elif mutation == "os-package":
+        package["packageManager"] = "OS"
+    patch = BUILD / "patches" / entry["repoPatchFile"]
+
+    result = _inspector_scan_result(
+        tmp_path, _inspector_coverage(), {"findings": [finding]},
+        () if mutation == "missing-patch" else patch,
+    )
+
+    assert result.returncode == (0 if mutation == "accepted" else 1), result.stderr
+
+
 def test_inspector_gate_accepts_exact_cve_2026_107496_package_shapes(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -2534,9 +2573,15 @@ def test_cve_2026_107496_backport_matches_exact_upstream_commit_and_build_contra
     assert "CVE-2026-107496" in script
     assert OPENSSL_107496_UPSTREAM_COMMIT in script
     assert patch_sha256 in script
-    assert "CVE-2026-107496.patch" in build_script
+    assert "CVE-2026-107496.patch" in (
+        OPENSSL_88823_SOURCE_ASSETS / "security_assets.py"
+    ).read_text()
+    assert "patch-files" in build_script
     assert "keygen_invalid_order_test" in verify_script
-    assert "test_ec" in verify_script
+    assert "test-recipes" in verify_script
+    assert "test_ec" in json.loads(
+        (OPENSSL_88823_SOURCE_ASSETS / "source.json").read_text()
+    )["testRecipes"]
 
     result = subprocess.run(
         [

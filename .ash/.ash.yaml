@@ -2297,6 +2297,22 @@ global_settings:
       reason: 'Pinned Debian source archives, source anchors, upstream revisions, and patch SHA-256 values used for reproducible verification; public hashes, not credentials'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/build/git/source.json'
+      reason: 'Published Git archive and manpage checksums and upstream release revision; immutable public build metadata verified before unpacking, not credentials'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/build/expat/source.json'
+      reason: 'Published Expat release archive checksum verified before unpacking; immutable public build metadata, not a credential'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_2
+      path: 'examples/ai-agents/openclaw-enterprise/build/git/test.Dockerfile'
+      reason: 'One-shot dependency package/ABI test image exits after assertions; it serves no application and is never deployed, so a service healthcheck does not apply'
+      expiration: '2027-12-31'
+    - rule_id: CKV_DOCKER_3
+      path: 'examples/ai-agents/openclaw-enterprise/build/git/test.Dockerfile'
+      reason: 'Disposable package replacement test requires root for apt and dpkg, runs no tenant workload, and is never deployed as a production runtime'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/scripts/manage-image-build-stack.sh'
       line_start: 7
       line_end: 7

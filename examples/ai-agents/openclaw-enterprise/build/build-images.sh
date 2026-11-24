@@ -169,7 +169,7 @@ OPENSSL_107496_BACKPORT_CVE="CVE-2026-107496"
 OPENSSL_107496_BACKPORT_PATCH_SHA256="77d3759d279c71af59629c4a0fa82d8272a099762f2fa9e3f66d7ca5ed544157" # pragma: allowlist secret -- public patch checksum
 OPENSSL_107496_BACKPORT_UPSTREAM_COMMIT="a0051cfe699bf5a047bc1c4faef65f80f7987366" # pragma: allowlist secret -- public source revision
 OPENSSL_DEBIAN_VERSION="3.5.9-1~deb13u1"
-OPENSSL_PACKAGE_VERSION="${OPENSSL_DEBIAN_VERSION}+oce2"
+OPENSSL_PACKAGE_VERSION="${OPENSSL_DEBIAN_VERSION}+oce3"
 OPENCLAW_DEPENDENCY_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openclaw-security-overrides.patch"
 OPENCLAW_DEPENDENCY_PATCH_SHA256="2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451" # pragma: allowlist secret -- reviewed patch checksum
 CURL_BACKPORT_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/curl-cve-2026-86414-trixie.patch"
@@ -448,12 +448,28 @@ PY
 verify_scan "$ADAPTER_REPOSITORY" "$adapter_digest"
 verify_scan "$CONTROLLER_REPOSITORY" "$controller_digest"
 verify_scan "$OWNERSHIP_HELPER_REPOSITORY" "$ownership_helper_digest"
+additional_openssl_patches=()
+while IFS= read -r patch_name; do
+  additional_openssl_patches+=("$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/$patch_name")
+done < <(python3 - "$OPENSSL_88823_SOURCE_ASSETS/source.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    metadata = json.load(source)
+for entry in metadata["additionalBackports"]:
+    print(entry["repoPatchFile"])
+PY
+)
+[[ "${#additional_openssl_patches[@]}" -eq 6 ]] ||
+  die "expected exactly six additional reviewed OpenSSL backports"
 verify_scan \
   "$RUNTIME_REPOSITORY" \
   "$runtime_digest" \
   "$OPENSSL_BACKPORT_PATCH" \
   "$OPENSSL_88823_BACKPORT_PATCH" \
-  "$OPENSSL_107496_BACKPORT_PATCH"
+  "$OPENSSL_107496_BACKPORT_PATCH" \
+  "${additional_openssl_patches[@]}"
 
 ADAPTER_IMAGE="${REGISTRY}/${ADAPTER_REPOSITORY}@${adapter_digest}"
 CONTROLLER_IMAGE="${REGISTRY}/${CONTROLLER_REPOSITORY}@${controller_digest}"
@@ -475,6 +491,9 @@ export OPENCLAW_DEPENDENCY_PATCH_SHA256
 export CURL_BACKPORT_CVE CURL_BACKPORT_PATCH_SHA256
 export CURL_BACKPORT_UPSTREAM_COMMIT
 export NPM_RUNTIME_VERSION NPM_RUNTIME_ARCHIVE_SHA256
+export OPENSSL_METADATA_FILE="$OPENSSL_88823_SOURCE_ASSETS/source.json"
+export GIT_METADATA_FILE="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/git/source.json"
+export EXPAT_METADATA_FILE="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/expat/source.json"
 
 {
   printf 'export ADAPTER_IMAGE=%q\n' "$ADAPTER_IMAGE"
@@ -527,7 +546,9 @@ result = {
         "securityBackports": [
             {
                 "cve": os.environ["OPENSSL_BACKPORT_CVE"],
-                "component": "Node.js embedded OpenSSL",
+                "component": "Node.js embedded and Debian OpenSSL",
+                "debianSourceVersion": os.environ["OPENSSL_DEBIAN_VERSION"],
+                "packageVersion": os.environ["OPENSSL_PACKAGE_VERSION"],
                 "patchSha256": os.environ["OPENSSL_BACKPORT_PATCH_SHA256"],
                 "upstreamCommit": os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"],
                 "upstreamUrl": (
@@ -585,6 +606,30 @@ result = {
         ],
     },
 }
+with open(os.environ["OPENSSL_METADATA_FILE"], encoding="utf-8") as source:
+    openssl_metadata = json.load(source)
+result["runtime"]["securityBackports"].extend(
+    {
+        "cve": entry["cve"],
+        "component": "Node.js embedded and Debian OpenSSL",
+        "packageVersion": openssl_metadata["packageVersion"],
+        "patchSha256": entry["patchSha256"],
+        "upstreamCommit": entry["commit"],
+        "upstreamUrl": "https://github.com/openssl/openssl/commit/" + entry["commit"],
+    }
+    for entry in openssl_metadata["additionalBackports"]
+)
+for variable in ("GIT_METADATA_FILE", "EXPAT_METADATA_FILE"):
+    with open(os.environ[variable], encoding="utf-8") as source:
+        dependency = json.load(source)
+    result["runtime"]["runtimePackages"].append(
+        {
+            "name": dependency["sourcePackage"],
+            "version": dependency["version"],
+            "packageVersion": dependency["packageVersion"],
+            "sources": dependency["sources"],
+        }
+    )
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     json.dump(result, handle, indent=2, sort_keys=True)
     handle.write("\n")

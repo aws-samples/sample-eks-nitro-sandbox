@@ -2,14 +2,24 @@
 set -eu
 
 debian_version=3.5.9-1~deb13u1
-package_version=3.5.9-1~deb13u1+oce2
+package_version=3.5.9-1~deb13u1+oce3
 source_base_url=https://deb.debian.org/debian/pool/main/o/openssl
 asset_dir=/tmp/openssl
 build_dir=/build/openssl
 source_dir="$build_dir/source"
+metadata_sha256=c54110fa43dafa9542779264036f2864a0b828551564d2400b5e22782b57e8da
 
-echo '267f1dd8cf4d58f4e9bda194c1d88f870367d5d525d4a79ba4a1a2d033a6d669  /tmp/openssl/source.json' |
-  sha256sum --check --strict
+if [ "${1:-}" = "--check-assets" ] && [ "$#" -eq 2 ]; then
+  asset_dir=$2
+elif [ "$#" -ne 0 ]; then
+  echo "usage: build.sh [--check-assets ASSET_DIRECTORY]" >&2
+  exit 2
+fi
+python3 "$asset_dir/security_assets.py" check-assets --assets "$asset_dir" \
+  --expected-metadata-sha256 "$metadata_sha256"
+if [ "${1:-}" = "--check-assets" ]; then
+  exit 0
+fi
 mkdir -p "$build_dir" /out
 cd "$build_dir"
 for file in \
@@ -26,15 +36,6 @@ b038dfab5ee111242b7439e07c820d228519273e7fd1f514014b039e929aad9f  openssl_3.5.9-
 bdccf2057a7c4ae377b40e832cb8c632ae8b532d4fb64cc7b843066eee748f89  openssl_3.5.9.orig.tar.gz.asc
 7d5158a87cd24641316b050de419be4ebddb1f180afd7ebaa3bc990036c38ec6  openssl_3.5.9-1~deb13u1.debian.tar.xz
 CHECKSUMS
-printf '%s  %s\n' \
-  a945077c0a978dbfe5af5e4f7174a2151466547f8fb94562f395baa7b6b7c147 \
-  "$asset_dir/CVE-2026-88823.patch" \
-  c7885d44f2659d97c0fc71fcdc8a6ef04cbe2ccdd36a72c28e7dfd1452033f2d \
-  "$asset_dir/CVE-2026-88823-test.patch" \
-  77d3759d279c71af59629c4a0fa82d8272a099762f2fa9e3f66d7ca5ed544157 \
-  "$asset_dir/CVE-2026-107496.patch" |
-  sha256sum --check --strict
-
 apt-get update --error-on=any
 candidate=$(apt-cache policy openssl | sed -n 's/^  Candidate: //p')
 if [ "$candidate" != "$debian_version" ]; then
@@ -45,30 +46,35 @@ apt-get install -y --no-install-recommends quilt
 apt-get build-dep -y --no-install-recommends -Pnocheck "./openssl_${debian_version}.dsc"
 dpkg-source --no-check -x "openssl_${debian_version}.dsc" "$source_dir"
 cd "$source_dir"
-sha256sum --check --strict <<'ANCHORS'
-25012f573a36a465f0a68fe004366ef586f3a153d60a5a53db55df9b7b1da5c3  providers/implementations/ciphers/cipher_aes_gcm_siv.c
-37f4e407d03117c6b74e5d1385efb233f2d71225788f82857bff2368e7fd0457  providers/implementations/ciphers/cipher_aes_gcm_siv_hw.c
-4b4b36c42febb276a7efe258b14939e944e9fff3a6ce4597659b5b48790fa627  test/evp_extra_test.c
-ANCHORS
+python3 "$asset_dir/security_assets.py" check-source --assets "$asset_dir" \
+  --source "$source_dir" --expected-metadata-sha256 "$metadata_sha256"
 
 export QUILT_PATCHES=debian/patches
-cp "$asset_dir/CVE-2026-88823.patch" debian/patches/
-cp "$asset_dir/CVE-2026-88823-test.patch" debian/patches/
-cp "$asset_dir/CVE-2026-107496.patch" debian/patches/
-printf '%s\n' \
-  CVE-2026-88823.patch \
-  CVE-2026-88823-test.patch \
-  CVE-2026-107496.patch \
-  >>debian/patches/series
+python3 "$asset_dir/security_assets.py" patch-files --assets "$asset_dir" \
+  --expected-metadata-sha256 "$metadata_sha256" >"$build_dir/oce-patches.list"
+while IFS= read -r patch_file; do
+  cp "$asset_dir/$patch_file" debian/patches/
+  printf '%s\n' "$patch_file" >>debian/patches/series
+done <"$build_dir/oce-patches.list"
 quilt push -a
+python3 "$asset_dir/security_assets.py" check-patched-source --assets "$asset_dir" \
+  --source "$source_dir" --expected-metadata-sha256 "$metadata_sha256"
 cat >debian/changelog.oce <<'CHANGELOG'
-openssl (3.5.9-1~deb13u1+oce2) trixie; urgency=medium
+openssl (3.5.9-1~deb13u1+oce3) trixie; urgency=medium
 
   * Backport upstream 159e1de0c448d7b9f09ad768c8e141def4aa1eb4
     for CVE-2026-88823 and regression tests from
     9d0d29bcf98ae5c1fb91653ba635e993260176d8.
   * Backport upstream a0051cfe699bf5a047bc1c4faef65f80f7987366
     for CVE-2026-107496 and its regression test.
+  * Backport upstream 257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116
+    for CVE-2026-95692. Verify AES-GCM-SIV rejects unsupported IV lengths
+    through both EVP control and provider parameter APIs.
+  * Backport the openssl-3.5 fixes for CVE-2026-95691, CVE-2026-107493,
+    CVE-2026-124709, CVE-2026-121482, CVE-2026-107494 and CVE-2026-84786.
+    source.json records their ordered upstream commits and patch checksums.
+  * Include upstream stream-GC regression tests from
+    22291a6af12f158fbb13bfbd572a33dbdbf290d2 (test-only hunk).
 
  -- OpenClaw Enterprise contributors <noreply@openclaw.ai>  Wed, 25 Nov 2026 00:00:00 +0000
 
@@ -95,10 +101,13 @@ sha256sum \
   "$build_dir"/*.orig.tar.gz \
   "$build_dir"/*.debian.tar.xz \
   "$asset_dir/source.json" \
-  "$asset_dir/CVE-2026-88823.patch" \
-  "$asset_dir/CVE-2026-88823-test.patch" \
-  "$asset_dir/CVE-2026-107496.patch" \
+  "$asset_dir/iv_length_regression.c" \
   >/out/source.sha256
+while IFS= read -r patch_file; do
+  sha256sum "$asset_dir/$patch_file" >>/out/source.sha256
+done <"$build_dir/oce-patches.list"
+cp "$asset_dir/source.json" /out/source.json
+cp "$build_dir/oce-patches.list" /out/oce-patches.list
 printf '%s\n' "$debian_version" >/out/debian-version
 printf '%s\n' "$package_version" >/out/package-version
 cd /out

@@ -149,17 +149,32 @@ when your threat model requires those stronger boundaries.
 | Amazon Bedrock model | `amazon.nova-lite-v1:0` in `us-west-2` |
 | Adapter, controller, ownership helper, runtime | Digest-qualified outputs from one successful CodeBuild run |
 | OCE Node.js build and runtime bases | Node.js `24.22.1` on Debian 13 (Trixie), each pinned by multi-platform image digest; the build records both references in `image-digests.json` |
+| Debian OpenSSL packages | `3.5.9-1~deb13u1+oce3`, with the nine upstream security backports described below |
+| Runtime Git and Expat packages | Git `1:2.56.1-1+oce1` and Expat `2.11.0-1+oce1`, built from checksum-pinned upstream releases |
 | Controller runtime base | Allowlisted, digest-pinned distroless Node.js 24 on Debian 13 (`nonroot`); the build verifies Node.js 24.22.1+, UID and GID 1000, and the absence of shell and package-manager tools. |
 | cert-manager | `v1.21.3` |
 | Validation PostgreSQL | OCE-qualified `18.6`, digest-pinned in Step 6 |
 | Local Node.js tooling | `22` or later |
 | `yq` | Mike Farah `yq` `v4.54.3` |
 
-The OCE source pins Node.js 24.22.1, which bundles OpenSSL 3.5.9. Until the
-pinned source includes the required fixes, the image build applies reviewed
-upstream backports for CVE-2026-95692, CVE-2026-88823, and CVE-2026-107496 to
-the affected Node.js and Debian OpenSSL sources. It records their checksums and
-upstream commits in `image-digests.json`.
+The OCE source pins Node.js 24.22.1, which bundles OpenSSL 3.5.9. The image
+build backports nine upstream fixes to both Node.js embedded OpenSSL and the
+Debian OpenSSL packages: CVE-2026-95692, CVE-2026-88823, CVE-2026-107496,
+CVE-2026-95691, CVE-2026-107493, CVE-2026-124709, CVE-2026-121482,
+CVE-2026-107494, and CVE-2026-84786. The Debian package revision `+oce3`
+includes the system-library CVE-2026-95692 fix. The build verifies patch
+checksums and source-file hashes, runs focused regression checks, and records
+upstream commits and patch checksums in `image-digests.json`.
+
+The runtime installs Git 2.56.1 and Expat 2.11.0 as Debian packages, preserving
+package records, licenses, and source provenance. Git retains Debian's epoch
+`1` so the replacement upgrades the distro package; it retains local, HTTPS,
+and SSH transports while omitting optional DAV, GUI, Perl, Python contrib,
+and gettext features. Expat retains the `libexpat.so.1` ABI used by Python.
+`image-digests.json` records their package versions and source archive hashes.
+See the [Git and Expat package build notes](build/git/README.md) for provenance
+and compatibility details. The build also retains the curl CVE-2026-86414
+backport and the pinned OpenClaw dependency fixes.
 
 ## Files
 
@@ -398,11 +413,14 @@ helper, and runtime images, waits for Amazon Inspector `PACKAGE` coverage, and
 requires the complete finding set to remain free of unapproved active `HIGH` or
 `CRITICAL` findings for one minute before it exports digest-qualified
 references. This stabilization window prevents a newly completed scan from
-passing while Amazon Inspector is still publishing its findings. The runtime
-exceptions are limited to the exact package and path signatures covered by
-those reviewed backports, and only when the corresponding patch checksums and
-upstream commits match. Any other active `HIGH` or `CRITICAL` finding fails the
-build. ECR basic scanning alone does not meet this gate.
+passing while Amazon Inspector is still publishing its findings. Runtime
+exceptions apply only to reviewed `HIGH` OpenSSL findings whose complete
+package and path signatures, upstream references, and supplied patch checksums
+match the scan policy. The six additional OpenSSL backports qualify only for
+the specified Node.js header records; they do not exempt Debian package
+findings. Git and Expat have no scan exceptions. Every active `CRITICAL`
+finding and every unmatched active `HIGH` finding fails the build.
+ECR basic scanning alone does not meet this gate.
 
 Assume the generated invocation role in a subshell and start the fixed
 workflow. The temporary credentials disappear when the subshell exits; only

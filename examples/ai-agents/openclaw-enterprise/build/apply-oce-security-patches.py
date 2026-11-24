@@ -26,9 +26,9 @@ OPENSSL_EC_ORDER_PATCH_FILE_NAME = "openssl-cve-2026-107496.patch"
 OPENSSL_EC_ORDER_PATCH_DESTINATION_FILE_NAME = "CVE-2026-107496.patch"
 OPENSSL_EC_ORDER_PATCH_SHA256 = "77d3759d279c71af59629c4a0fa82d8272a099762f2fa9e3f66d7ca5ed544157"  # pragma: allowlist secret -- public patch checksum
 OPENSSL_EC_ORDER_UPSTREAM_COMMIT = "a0051cfe699bf5a047bc1c4faef65f80f7987366"  # pragma: allowlist secret -- public source revision
-OPENSSL_SOURCE_METADATA_SHA256 = "267f1dd8cf4d58f4e9bda194c1d88f870367d5d525d4a79ba4a1a2d033a6d669"  # pragma: allowlist secret -- reviewed metadata checksum
+OPENSSL_SOURCE_METADATA_SHA256 = "c54110fa43dafa9542779264036f2864a0b828551564d2400b5e22782b57e8da"  # pragma: allowlist secret -- reviewed metadata checksum
 OPENSSL_DEBIAN_VERSION = "3.5.9-1~deb13u1"
-OPENSSL_PACKAGE_VERSION = f"{OPENSSL_DEBIAN_VERSION}+oce2"
+OPENSSL_PACKAGE_VERSION = f"{OPENSSL_DEBIAN_VERSION}+oce3"
 OPENCLAW_PATCH_FILE_NAME = "openclaw-security-overrides.patch"
 OPENCLAW_PATCH_SHA256 = "2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451"  # pragma: allowlist secret -- reviewed patch checksum
 CURL_PATCH_FILE_NAME = "curl-cve-2026-86414-trixie.patch"
@@ -353,13 +353,20 @@ try:
 except (OSError, subprocess.CalledProcessError) as error:
     fail(f"the reviewed OpenSSL patch is not a valid Git patch: {error}")
 
-expected_openssl_assets = {"build.sh", "source.json", "verify.sh"}
+expected_openssl_assets = {
+    "build.sh", "source.json", "verify.sh",
+    "security_assets.py", "CVE-2026-124709-test.patch",
+    "CVE-2026-95692.patch", "iv_length_regression.c",
+}
 try:
-    openssl_asset_entries = set(path.name for path in args.openssl_source_assets.iterdir())
+    openssl_asset_entries = {
+        path.name for path in args.openssl_source_assets.iterdir()
+        if path.name != "__pycache__"
+    }
 except OSError as error:
     fail(f"could not read {args.openssl_source_assets}: {error}")
 if openssl_asset_entries != expected_openssl_assets:
-    fail("the OpenSSL source asset set changed; expected build.sh, source.json, verify.sh")
+    fail("the reviewed OpenSSL source asset set changed")
 if any(
     not (args.openssl_source_assets / name).is_file()
     or (args.openssl_source_assets / name).is_symlink()
@@ -377,9 +384,31 @@ except OSError as error:
 if (
     hashlib.sha256(openssl_source_metadata_bytes).hexdigest()
     != OPENSSL_SOURCE_METADATA_SHA256
-    or read_json(openssl_source_metadata) != EXPECTED_OPENSSL_SOURCE
 ):
     fail("the pinned Debian OpenSSL source metadata changed")
+openssl_metadata = read_json(openssl_source_metadata)
+additional_openssl_patches: list[tuple[dict[str, Any], pathlib.Path]] = []
+for entry in openssl_metadata["additionalBackports"]:
+    patch_path = (
+        pathlib.Path(__file__).resolve().parent / "patches" / entry["repoPatchFile"]
+    )
+    try:
+        patch_bytes = patch_path.read_bytes()
+    except OSError as error:
+        fail(f"could not read additional OpenSSL patch: {error}")
+    if (
+        patch_path.is_symlink()
+        or hashlib.sha256(patch_bytes).hexdigest() != entry["patchSha256"]
+        or not patch_bytes.startswith(f"From {entry['commit']} ".encode())
+        or entry["cve"].encode() not in patch_bytes
+        or not entry["nodeFiles"]
+        or any(
+            entry["sourceAnchors"][name] == entry["patchedSourceAnchors"][name]
+            for name in entry["nodeFiles"]
+        )
+    ):
+        fail(f"the additional OpenSSL patch changed: {entry['cve']}")
+    additional_openssl_patches.append((entry, patch_path))
 if hashlib.sha256(openssl_cve_patch_bytes).hexdigest() != OPENSSL_CVE_PATCH_SHA256:
     fail("the CVE-2026-88823 fix patch checksum does not match upstream")
 if (
@@ -493,9 +522,17 @@ cve_2026_88823_patch_sha="{OPENSSL_CVE_PATCH_SHA256}"
 cve_2026_107496_patch_sha="{OPENSSL_EC_ORDER_PATCH_SHA256}"
 printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n%s  {OPENSSL_PATCH_FILE_NAME}\\n%s  {OPENSSL_CVE_PATCH_FILE_NAME}\\n%s  {OPENSSL_EC_ORDER_PATCH_FILE_NAME}\\n' "$archive_sha" "$patch_sha" "$security_patch_sha" "$cve_2026_88823_patch_sha" "$cve_2026_107496_patch_sha" | sha256sum --check --strict
 """
+checksum_after += "sha256sum --check --strict <<'OPENSSL_SECURITY_PATCHES'\n"
+checksum_after += "".join(
+    f"{entry['patchSha256']}  {entry['repoPatchFile']}\n"
+    for entry, _ in additional_openssl_patches
+)
+checksum_after += "OPENSSL_SECURITY_PATCHES\n"
 apply_before = "git apply /node-repair/worker-esm-termination.patch\n"
 apply_after = (
-    apply_before
+    # An explicit root prevents silent patch skips in a containing checkout.
+    "git init --quiet /build/node\n"
+    + apply_before
     + "git apply -p1 --directory=deps/openssl/openssl "
     + f"/node-repair/{OPENSSL_PATCH_FILE_NAME}\n"
     + "git apply -p1 --directory=deps/openssl/openssl "
@@ -506,6 +543,40 @@ apply_after = (
     + "--include=deps/openssl/openssl/crypto/ec/ec_key.c "
     + f"/node-repair/{OPENSSL_EC_ORDER_PATCH_FILE_NAME}\n"
 )
+for entry, _ in additional_openssl_patches:
+    scope = " ".join(
+        f"--include=deps/openssl/openssl/{name}" for name in entry["nodeFiles"]
+    )
+    command = (
+        f"git apply -p1 --directory=deps/openssl/openssl {scope} "
+        f"/node-repair/{entry['repoPatchFile']}"
+    )
+    for phase, anchors in (
+        ("BEFORE", entry["sourceAnchors"]),
+        ("AFTER", entry["patchedSourceAnchors"]),
+    ):
+        if phase == "AFTER":
+            apply_after += (
+                command.replace("git apply ", "git apply --check ", 1) + "\n"
+            )
+            apply_after += command + "\n"
+            apply_after += (
+                command.replace(
+                    "git apply ", "git apply --reverse --check ", 1
+                ) + "\n"
+            )
+        apply_after += f"sha256sum --check --strict <<'OPENSSL_{phase}'\n"
+        apply_after += "".join(
+            f"{anchors[name]}  deps/openssl/openssl/{name}\n"
+            for name in entry["nodeFiles"]
+        )
+        apply_after += f"OPENSSL_{phase}\n"
+apply_after += "sha256sum --check --strict <<'OPENSSL_FINAL'\n"
+apply_after += "".join(
+    f"{sha}  deps/openssl/openssl/{name}\n"
+    for name, sha in openssl_metadata["patchedSourceAnchors"].items()
+)
+apply_after += "OPENSSL_FINAL\n"
 if fetch.count(checksum_before) != 1 or fetch.count(apply_before) != 1:
     fail("the pinned Node fetch script changed; review the backport before building")
 
@@ -859,7 +930,18 @@ try:
         node_openssl_ec_order_destination,
     )
     fetch_script.write_text(patched_fetch, encoding="utf-8")
-    shutil.copytree(args.openssl_source_assets, openssl_source_destination)
+    shutil.copytree(
+        args.openssl_source_assets, openssl_source_destination,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    shutil.copyfile(
+        args.node_openssl_patch, openssl_source_destination / "CVE-2026-95692.patch"
+    )
+    for entry, patch_path in additional_openssl_patches:
+        shutil.copyfile(
+            patch_path, openssl_source_destination / entry["patchFile"]
+        )
+        shutil.copyfile(patch_path, node_dir / entry["repoPatchFile"])
     for dependency, asset_dir in runtime_dependency_assets.items():
         dependency_destination = (
             args.oce_source / "deploy" / "runtime" / dependency
@@ -915,4 +997,5 @@ print(
     f"updated GitHub CLI from {GH_CLI_OLD_VERSION} to {GH_CLI_VERSION}; "
     f"updated Google Workspace CLI from {GOG_OLD_VERSION} to {GOG_VERSION}"
     "; installed checksum-pinned Git 2.56.1 and Expat 2.11.0 Debian packages"
+    "; applied six further OpenSSL fixes with before/after source-byte checks"
 )

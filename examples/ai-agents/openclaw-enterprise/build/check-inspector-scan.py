@@ -158,6 +158,37 @@ def read_object(path: pathlib.Path, name: str) -> dict[str, Any]:
     return value
 
 
+# Only source backports validated by the pinned build manifest may match
+# generic Node header records. OS packages and unrelated findings still fail.
+security_manifest = pathlib.Path(__file__).resolve().parent / "openssl" / "source.json"
+try:
+    security_manifest_bytes = security_manifest.read_bytes()
+except OSError as error:
+    fail(f"could not read reviewed OpenSSL manifest: {error}")
+if hashlib.sha256(security_manifest_bytes).hexdigest() != (
+    "c54110fa43dafa9542779264036f2864a0b828551564d2400b5e22782b57e8da"  # pragma: allowlist secret -- public metadata checksum
+):
+    fail("reviewed OpenSSL manifest checksum changed")
+security_metadata = read_object(security_manifest, "reviewed OpenSSL manifest")
+for entry in security_metadata["additionalBackports"]:
+    REVIEWED_BACKPORTS[entry["cve"]] = {
+        "patch_sha256": entry["patchSha256"],
+        "reference": "https://github.com/openssl/openssl/commit/" + entry["commit"],
+        "packages": [
+            {
+                "name": "openssl/openssl",
+                "version": "3.5.9",
+                "epoch": 0,
+                "packageManager": "GENERIC",
+                "fixedInVersion": "3.5.10",
+                "filePath": path,
+                "remediation": "Update affected packages to fixed version (or newer).",
+            }
+            for path in sorted(NODE_OPENSSL_PATHS)
+        ],
+    }
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("coverage", type=pathlib.Path)
 parser.add_argument("findings", type=pathlib.Path)

@@ -13,9 +13,9 @@ import pytest
 BUILD = Path(__file__).resolve().parents[1] / "build"
 PINS = {
     "git": ("2.56.1", "1:2.56.1-1+oce1",
-            "f0b0bf89264b9bd2e1c640363e7529643989da76281600473c50745cd34a607f"),
+            "f0b0bf89264b9bd2e1c640363e7529643989da76281600473c50745cd34a607f"),  # pragma: allowlist secret -- published Git archive checksum
     "expat": ("2.11.0", "2.11.0-1+oce1",
-              "61e7614b602201c28a189dafee78f5bceaee192bbde46a930752ff09cf5542fa"),
+              "61e7614b602201c28a189dafee78f5bceaee192bbde46a930752ff09cf5542fa"),  # pragma: allowlist secret -- published Expat archive checksum
 }
 
 
