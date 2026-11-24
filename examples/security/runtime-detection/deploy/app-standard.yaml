@@ -1,0 +1,59 @@
+# app-standard: the ordinary copy of the app pod, and the control. Identical to
+# app-sandboxed but for runtimeClassName, which it does not set, so it runs on the node's
+# own kernel, where Falco and Tetragon attach.
+#
+# The pod affinity puts it on the same node as app-sandboxed, so one Falco pod and one
+# Tetragon pod watch both copies. It changes where the pod runs, not how.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-standard
+  namespace: runtime-detection   # the scripts change it when NAMESPACE is set
+  labels:
+    app: runtime-detection-app
+    copy: standard
+  annotations:
+    karpenter.sh/do-not-disrupt: "true"   # keep consolidation from evicting this bare pod mid-run
+spec:
+  affinity:
+    podAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              copy: sandboxed
+          topologyKey: kubernetes.io/hostname
+  automountServiceAccountToken: false
+  # Root with every capability dropped and a writable root filesystem, as in app-sandboxed:
+  # the test events read /etc/shadow and write a new binary inside this container.
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: public.ecr.aws/docker/library/python:3.12-slim
+      imagePullPolicy: IfNotPresent
+      # The shell records its pid, then becomes `sleep`, so the probes can check that process.
+      # A pod spec writes the shell's $$ as $$$$, because Kubernetes turns $$ into $.
+      command: ["sh", "-c", "echo $$$$ > /tmp/app.pid && exec sleep infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      # Both probes check the app process is alive. Only that process dying fails them, so
+      # neither can restart the app in the middle of a test.
+      readinessProbe:
+        exec:
+          command: ["sh", "-c", "kill -0 \"$(cat /tmp/app.pid)\""]
+        periodSeconds: 30
+      livenessProbe:
+        exec:
+          command: ["sh", "-c", "kill -0 \"$(cat /tmp/app.pid)\""]
+        periodSeconds: 30
+        failureThreshold: 3
+      resources:
+        requests:
+          cpu: 250m
+          memory: 256Mi
+        limits:
+          cpu: 250m
+          memory: 256Mi
