@@ -1,7 +1,23 @@
-# AWS Nitro Sandbox on Amazon EKS
+# AWS Nitro Sandbox on Amazon EKS Blueprints
 
-This site holds the code from the blog post
-[Introducing Nitro Sandboxes: Hardware-Enforced Workload Isolation on Amazon EKS](<BLOG_URL>).
+In a standard Amazon EKS cluster, pods on the same node share a Linux kernel. A container
+escape or kernel vulnerability can expose one workload to another. Isolated and confidential
+pods address this by running each pod inside its own Nitro sandbox, a dedicated
+hardware-isolated environment backed by the AWS Nitro System. The feature is based on
+[Amazon EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html).
+Each sandbox runs as a first-level guest with direct hardware-assisted virtualization, not
+through emulation or nested virtualization. The Nitro hypervisor enforces memory and CPU
+isolation between sandboxes, providing a hardware trust boundary around every pod.
+
+Isolated and confidential pods are opt-in. You select the feature per pod by setting
+`runtimeClassName` to `isolated-sandbox` or `confidential-sandbox` in the pod spec. Pods
+without this setting continue to use the default container runtime. For requirements and
+concepts, see
+[Sandboxing on Amazon EKS with isolated and confidential pods](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)
+in the Amazon EKS User Guide.
+
+This site holds runnable blueprints for the feature, including the code from the blog post
+[AWS Nitro Sandboxes: Hardware-enforced workload isolation on Amazon EKS](https://aws.amazon.com/blogs/containers/aws-nitro-sandboxes-hardware-enforced-workload-isolation-on-amazon-eks/).
 
 The Getting started blueprints build on each other:
 
@@ -53,6 +69,12 @@ lightweight VM with its own kernel; the node's kubelet still sees an ordinary po
   [`kubectl`](https://kubernetes.io/docs/tasks/tools/).
 - [Git](https://git-scm.com/downloads), to clone this repository: each blueprint applies
   manifests and builds images from files in its folder.
+- A shell for the scripts: bash 4 or later. Linux and
+  [AWS CloudShell](https://docs.aws.amazon.com/cloudshell/latest/userguide/welcome.html) have
+  it. macOS ships bash 3.2, so install a newer one with `brew install bash`, or run from
+  CloudShell. A script that needs bash 4 stops with a message when the shell is older. The
+  `setup/ubuntu-ami` build scripts and `scripts/second-review.sh` also use GNU tool options
+  (`realpath -m`, `find -printf`), so run them on Linux.
 - For the coding agent blueprint: [Docker](https://docs.docker.com/get-docker/), Git
   with `user.name` and `user.email` set, a GitHub account with the
   [GitHub CLI](https://cli.github.com/) (`gh`) signed in, and access to an Anthropic Claude

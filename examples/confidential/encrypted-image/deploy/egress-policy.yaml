@@ -5,12 +5,16 @@
 # hostnames (domainNames) in an egress rule.
 # https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html
 #
-# setup.sh fills in one placeholder at apply time:
-#   <AWS_REGION>  the Region of the KMS key the image layers are wrapped with
+# setup.sh fills in two placeholders at apply time:
+#   <AWS_REGION>    the Region of the KMS key the image layers are wrapped with
+#   <COREDNS_CIDR>  the cluster's DNS address, from scripts/coredns-cidr.sh
 #
-# DNS (port 53) is allowed to any IP address, not pinned to the CoreDNS Service address,
-# which eliminates the need to look that address up and avoids issues with a missing or
-# malformed one (#104).
+# DNS (port 53) is allowed to one address only: <COREDNS_CIDR>, the cluster's DNS address,
+# which is the nameserver in every pod's resolv.conf. On EKS Auto Mode the node answers
+# it; there is no kube-dns Service. scripts/coredns-cidr.sh works it out from the service
+# CIDR (10.100.0.10/32, or fd12:3456:789a::a/128 on IPv6), and setup.sh fills it in.
+# Port 53 to any address would let code in the sandbox reach any DNS server on the
+# internet, and so send data out over DNS or reach a VPN listening on port 53 (#226).
 #
 # Why these three rules and no others. The node pulls the encrypted layer blobs and
 # transfers them into the sandbox, so the guest itself never talks to Amazon ECR and
@@ -32,7 +36,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

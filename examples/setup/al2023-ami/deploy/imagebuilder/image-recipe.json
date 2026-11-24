@@ -1,0 +1,22 @@
+{
+  "name": "eks-nitro-sandbox-al2023",
+  "description": "EKS-optimized AL2023 AMI with Nitro Sandbox runtime for pod isolation",
+  "semanticVersion": "1.0.0",
+  "parentImage": "AMI_ID_OF_EKS_OPTIMIZED_AL2023_FOR_THE_ARCHITECTURE",
+  "components": [
+    {
+      "componentArn": "arn:aws:imagebuilder:REGION:ACCOUNT_ID:component/EKSNitroSandboxAL2023/x.x.x"
+    }
+  ],
+  "blockDeviceMappings": [
+    {
+      "deviceName": "/dev/xvda",
+      "ebs": {
+        "deleteOnTermination": true,
+        "volumeSize": 30,
+        "volumeType": "gp3"
+      }
+    }
+  ],
+  "workingDirectory": "/tmp"
+}

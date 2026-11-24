@@ -1,0 +1,74 @@
+# AWSTOE component: install the EKS Nitro Sandbox (pod isolation) runtime on an EKS-optimized AL2023
+# image, by running the upstream amazon-eks-ami provisioner the Packer build runs.
+#
+# It downloads amazon-eks-ami at a pinned tag, checks the archive's SHA-256, lays out the working
+# directory the way the Packer template does (helpers/ and pod-isolation/), and runs
+# templates/al2023/provisioners/install-pod-isolation.sh with the same variables. So the runtime,
+# guest image, Firecracker, kernel arguments, CRI proxy and NodeConfig drop-in are exactly the
+# Packer build's. The {{ ... }} values in capitals are filled in by 10-build-ami-imagebuilder.sh.
+#
+# See the EC2 Image Builder User Guide, "Use AWSTOE components to configure your image":
+# https://docs.aws.amazon.com/imagebuilder/latest/userguide/toe-use-documents.html
+
+name: EKSNitroSandboxAL2023
+description: Install the EKS Nitro Sandbox runtime with the upstream amazon-eks-ami provisioner
+schemaVersion: 1.0
+
+constants:
+  # The amazon-eks-ami release that carries the pod isolation provisioner, and its archive's hash.
+  - EksAmiRef:
+      type: string
+      value: 'v20261112'
+  - EksAmiSha256:
+      type: string
+      value: '13fd239bc739e18aeafdc9d22b5ee3a98c5c17c3f1540080f604ff9237db650d'  # pragma: allowlist secret -- the public archive's SHA-256
+  # The public bucket of the EKS node bundle and its Region (not the Region you build in).
+  - BinaryBucket:
+      type: string
+      value: 'amazon-eks'
+  - BinaryBucketRegion:
+      type: string
+      value: 'us-west-2'
+
+phases:
+  - name: build
+    steps:
+      - name: InstallPodIsolation
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              src=$(mktemp -d /tmp/eks-ami-src.XXXXXX)
+              curl --fail --silent --show-error --location --retry 3 -o "$src/eks-ami.tar.gz" \
+                "https://github.com/awslabs/amazon-eks-ami/archive/refs/tags/{{ EksAmiRef }}.tar.gz"
+              echo "{{ EksAmiSha256 }}  $src/eks-ami.tar.gz" | sha256sum --check --strict -
+              tar -xzf "$src/eks-ami.tar.gz" -C "$src" --strip-components=1
+              work="$src/work"
+              mkdir -p "$work"
+              cp -r "$src/templates/al2023/helpers" "$work/helpers"
+              cp -r "$src/templates/al2023/runtime/pod-isolation" "$work/pod-isolation"
+              # The provisioner sets the enclave memory pool with this helper from the same release.
+              command -v set-kernel-arg >/dev/null \
+                || install -m 0755 "$src/templates/al2023/runtime/bin/set-kernel-arg" /usr/bin/set-kernel-arg
+              env BINARY_BUCKET_NAME="{{ BinaryBucket }}" BINARY_BUCKET_REGION="{{ BinaryBucketRegion }}" \
+                ENABLE_POD_ISOLATION=true KUBERNETES_VERSION="{{ KUBERNETES_BUNDLE_VERSION }}" \
+                KUBERNETES_BUILD_DATE="{{ KUBERNETES_BUILD_DATE }}" \
+                POD_ISOLATION_FIRECRACKER_VERSION="{{ FIRECRACKER_VERSION }}" WORKING_DIR="$work" \
+                bash "$src/templates/al2023/provisioners/install-pod-isolation.sh"
+              rm -rf "$src"
+
+      - name: CheckInstall
+        action: ExecuteBash
+        inputs:
+          commands:
+            - |
+              set -euo pipefail
+              for f in /usr/bin/containerd-shim-nitro-sandbox-v2 /etc/containerd/nitro-sandbox.toml \
+                       /etc/systemd/system/cri-proxy.service /etc/eks/nodeadm.d/10-pod-isolation.yaml \
+                       /var/lib/nitro-sandbox-images/latest.eif /var/lib/nitro-sandbox-images/latest-disk.img; do
+                [ -e "$f" ] || { echo "ERROR: $f is missing after the install" >&2; exit 1; }
+              done
+              grep -q 'nitro_enclaves.mempool=' /etc/default/grub \
+                || { echo "ERROR: no nitro_enclaves.mempool kernel argument" >&2; exit 1; }
+              echo "pod isolation runtime installed"

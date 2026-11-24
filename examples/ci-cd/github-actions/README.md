@@ -748,9 +748,8 @@ the only step that makes it useless wherever a copy may remain.
 Every ephemeral runner pod ARC creates carries the label
 `actions-ephemeral-runner: "True"`, so one policy covers every per-job pod without naming
 any of them. Here is the whole file as it is in the folder, apart from its header comment.
-DNS (port 53) is allowed to any IP address rather than pinned to the cluster's CoreDNS
-Service, which avoids an address lookup and keeps name resolution working wherever the
-cluster places it:
+`setup.sh` fills `<COREDNS_CIDR>` with the cluster's DNS address. DNS on port 53 goes to the cluster's DNS address only. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. The Amazon EKS User Guide gives the rule in [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). IPv4 uses the `.10` address of the service CIDR. IPv6 uses its network address with `a` appended. [`scripts/coredns-cidr-from-service.sh`](scripts/coredns-cidr-from-service.sh) reads the `kubernetes` Service, which holds the first address of that CIDR. It turns `10.100.0.1` into `10.100.0.10/32` and `fd12:3456:789a::1` into `fd12:3456:789a::a/128`. It stops on an empty address or one that does not end in `.1` or `::1`. Port 53 to any address would let code in the sandbox reach any DNS server on the internet.
+
 
 ```yaml
 apiVersion: networking.k8s.aws/v1alpha1
@@ -770,9 +769,9 @@ spec:
   # long poll, so no inbound connection is ever needed.
   ingress: []
   egress:
-    # Name lookups: DNS on port 53 to any IP.
+    # Name lookups: DNS on port 53 to the cluster's DNS address only.
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -802,7 +801,7 @@ spec:
 | `podSelector` on `actions-ephemeral-runner: "True"` | Selects every ephemeral runner pod ARC creates, present and future, and nothing else |
 | `policyTypes: [Ingress, Egress]` | Both directions are governed, so anything not allowed below is refused |
 | `ingress: []` | Nothing reaches a runner pod. The job is driven by the runner's own outbound long poll, so no inbound connection is ever needed |
-| `ipBlock: 0.0.0.0/0` on 53 | Name lookups, allowed to any IP so resolution keeps working wherever the cluster places its resolver |
+| `ipBlock: <COREDNS_CIDR>` on 53 | Name lookups. DNS on UDP and TCP 53 to the cluster's DNS address only, as the paragraph above explains. |
 | `github.com`, `api.github.com`, `*.actions.githubusercontent.com` | What a self-hosted runner needs to register, collect a job and report back. These are a subset of GitHub's list in the [self-hosted runners reference](https://docs.github.com/en/actions/reference/self-hosted-runners-reference), enough for this workflow |
 | `codeload.github.com` | Downloads the actions a workflow refers to. This workflow uses none, so it is here for workflows that do |
 | `ghcr.io`, `*.pkg.github.com`, `pkg-containers.githubusercontent.com` | Container and package pulls from GitHub, on the same reference list. This workflow needs none of them either: the runner image is pulled by the kubelet on the node, outside this policy. Remove them if your workflows never pull from GitHub's registries, since `ghcr.io` also accepts pushes |
