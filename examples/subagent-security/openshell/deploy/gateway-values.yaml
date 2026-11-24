@@ -28,7 +28,8 @@ server:
   defaultRuntimeClassName: isolated-sandbox
 
   # The analyst image's user. The driver puts these in the workload pod's
-  # securityContext, and the policy's process.run_as_user names the same identity.
+  # securityContext, and the policy's process.run_as_user names the same identity. The
+  # driver also runs the dedicated supervisor container as this UID and GID, non-root.
   sandboxUid: "1000"
   sandboxGid: "1000"
 

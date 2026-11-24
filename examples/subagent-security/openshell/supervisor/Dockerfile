@@ -27,3 +27,9 @@ RUN grep -q 'BEGIN CERTIFICATE' /bundle/sample-ca.crt \
 
 FROM ${SUPERVISOR_IMAGE}
 COPY --from=bundle /bundle/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+# No USER here, deliberately. The pinned upstream image keeps user 0 as its default and
+# leaves the runtime identity to the compute driver: OpenShell's Kubernetes driver starts
+# the supervisor container as the sandbox UID and GID with runAsNonRoot, a read-only root
+# filesystem and every capability dropped, and this sample sets those to 1000
+# (deploy/gateway-values.yaml, sandboxUid and sandboxGid). So this image keeps the upstream
+# default, and the identity it runs as is the one the driver sets.
