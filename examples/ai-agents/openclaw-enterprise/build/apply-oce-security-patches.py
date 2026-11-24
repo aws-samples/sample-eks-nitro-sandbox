@@ -112,6 +112,17 @@ CURL_BUILD_REPLACEMENTS = {
         "curl_8.14.1-2+deb13u7.debian.tar.xz"
     ),
     (
+        "cd source\n"
+        "export QUILT_PATCHES=debian/patches"
+    ): (
+        "cd source\n"
+        "# Git needs HTTP(S), but OCE does not use curl's LDAP transports. Disable\n"
+        "# them so the runtime does not inherit libldap and its Cyrus SASL plugins.\n"
+        "printf '\\nCONFIGURE_ARGS += --disable-ldap --disable-ldaps\\n' "
+        ">> debian/rules\n"
+        "export QUILT_PATCHES=debian/patches"
+    ),
+    (
         "quilt pop -a\n"
         "cp /tmp/curl/CVE-2026-86414.patch debian/patches/\n"
         "# Debian copies the tree for each backend while applying its final two patches.\n"
@@ -130,6 +141,23 @@ CURL_BUILD_REPLACEMENTS = {
     ),
     "for package in curl libcurl4 libcurl3-gnutls; do": (
         "for package in curl libcurl4t64 libcurl3t64-gnutls; do"
+    ),
+    (
+        "done\n"
+        "sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz "
+        "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256"
+    ): (
+        "done\n"
+        'gnutls_package="/out/libcurl3t64-gnutls_${version}+oce1_'
+        '$(dpkg --print-architecture).deb"\n'
+        'test -f "$gnutls_package"\n'
+        'if dpkg-deb -f "$gnutls_package" Depends | '
+        "grep -Eq '(^|, )libldap'; then\n"
+        '  echo "The runtime curl package still depends on LDAP" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        "sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz "
+        "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256"
     ),
     "sha256sum ../*.dsc ../*.orig.tar.gz ../*.debian.tar.xz "
     "/tmp/curl/CVE-2026-86414.patch > /out/source.sha256": (
@@ -598,6 +626,9 @@ runtime_packages_after = f"""RUN --mount=type=bind,from=openssl-packages,source=
     sed 's#^#/tmp/openssl-packages/#' runtime-packages.list \\
       | xargs apt-get install -y --no-install-recommends; \\
     apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb; \\
+    if dpkg-query -W libsasl2-2 >/dev/null 2>&1; then \\
+      echo "The runtime still contains Cyrus SASL" >&2; exit 1; \\
+    fi; \\
     for package in libssl3t64 openssl openssl-provider-legacy; do \\
       test "$(dpkg-query -W -f='${{Version}}' "$package")" = "$openssl_expected"; \\
     done; \\
@@ -798,7 +829,7 @@ print(
     f"pinned npm {NPM_RUNTIME_VERSION} with undici {NPM_RUNTIME_UNDICI_VERSION}; "
     "updated the Node build and runtime bases to Debian 13 (Trixie); "
     f"applied CVE-2026-86414 patch {CURL_PATCH_SHA256} to Debian curl "
-    "8.14.1-2+deb13u7; "
+    "8.14.1-2+deb13u7 and disabled unused LDAP transports; "
     f"updated GitHub CLI from {GH_CLI_OLD_VERSION} to {GH_CLI_VERSION}; "
     f"updated Google Workspace CLI from {GOG_OLD_VERSION} to {GOG_VERSION}"
 )

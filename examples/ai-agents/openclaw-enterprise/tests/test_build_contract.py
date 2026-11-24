@@ -11,6 +11,7 @@ import subprocess
 import sys
 from typing import Any
 
+import pytest
 import yaml
 
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
@@ -2184,6 +2185,8 @@ done
 cdb38b72e36bc5d33d5b8810f8018ece1baa29a8f215b4495e495ded82bbf3c7  curl_7.88.1.orig.tar.gz
 7a5a55d7123149a1b357f298cf895bd0a601e3a2807005ef6c95f3752803485f  curl_7.88.1.orig.tar.gz.asc
 961b78bc48492c5693e4decb352ddd176f343260a8956f48b2887874048ef23b  curl_7.88.1-10+deb12u15.debian.tar.xz
+cd source
+export QUILT_PATCHES=debian/patches
 quilt pop -a
 cp /tmp/curl/CVE-2026-86414.patch debian/patches/
 # Debian copies the tree for each backend while applying its final two patches.
@@ -2379,10 +2382,55 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     )
     assert "curl (8.14.1-2+deb13u7+oce1) trixie" in curl_build
     assert "for package in curl libcurl4t64 libcurl3t64-gnutls; do" in curl_build
+    assert (
+        "CONFIGURE_ARGS += --disable-ldap --disable-ldaps" in curl_build
+    )
+    assert (
+        'dpkg-deb -f "$gnutls_package" Depends' in curl_build
+    )
+    assert 'grep -Eq \'(^|, )libldap\'' in curl_build
+    assert "if dpkg-query -W libsasl2-2 >/dev/null 2>&1; then" in dockerfile
+    assert 'echo "The runtime still contains Cyrus SASL" >&2; exit 1;' in dockerfile
     curl_verify = (curl_dir / "verify.sh").read_text(encoding="utf-8")
     assert "make -C certs -j2 all" in curl_verify
     assert "test -s certs/test-localhost.pem" in curl_verify
     assert curl_verify.index("make -C certs") < curl_verify.index("make -C server")
+
+
+@pytest.mark.parametrize("sasl_present", [False, True])
+def test_runtime_sasl_guard_rejects_installed_package(
+    tmp_path: pathlib.Path, sasl_present: bool
+) -> None:
+    oce_source, revision = _create_fake_oce_source(tmp_path)
+    subprocess.run(
+        _oce_security_patcher_args(oce_source, revision), check=True,
+        capture_output=True, text=True,
+    )
+    dockerfile = (oce_source / "deploy/runtime/Dockerfile").read_text()
+    guard = re.search(
+        r"    if dpkg-query -W libsasl2-2.*?    fi;", dockerfile, re.DOTALL
+    )
+    assert guard is not None
+    # Exercise the generated build guard with both package database responses.
+    package_query = tmp_path / "dpkg-query"
+    package_query.write_text(
+        "#!/bin/sh\n"
+        'test "$1" = -W && test "$2" = libsasl2-2 || exit 2\n'
+        + ("exit 0\n" if sasl_present else "exit 1\n")
+    )
+    package_query.chmod(0o755)
+    result = subprocess.run(
+        ["sh", "-ec", guard.group().replace("\\\n", "\n") + "\necho passed"],
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        capture_output=True, text=True, check=False,
+    )
+    if sasl_present:
+        assert result.returncode == 1
+        assert "The runtime still contains Cyrus SASL" in result.stderr
+        assert "passed" not in result.stdout
+    else:
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "passed"
 
 
 def test_reviewed_openssl_backport_is_a_valid_git_patch(
