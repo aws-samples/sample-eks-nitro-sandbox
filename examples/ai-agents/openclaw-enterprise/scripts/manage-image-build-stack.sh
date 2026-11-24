@@ -197,8 +197,6 @@ verify_builder_scan() {
     aws inspector2 list-findings \
       --region "$region" \
       --filter-criteria "file://$scan_dir/findings-filter.json" \
-      --max-results 1 \
-      --no-paginate \
       --output json >"$scan_dir/findings.json" ||
       die "Inspector findings lookup failed for the privileged builder image."
     if python3 -I "$checker_dir/check-inspector-scan.py" \

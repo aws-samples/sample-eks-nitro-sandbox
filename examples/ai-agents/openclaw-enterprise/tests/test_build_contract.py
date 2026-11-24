@@ -213,6 +213,14 @@ def test_readme_builds_a_pinned_scanned_builder_and_resolves_the_principal() -> 
     assert '"BuilderImageRepositoryName=$builder_repository"' in stack_manager
     assert '"BuilderImageDigest=$builder_digest"' in stack_manager
     assert "verify_builder_scan" in stack_manager
+    builder_scan = stack_manager.split("verify_builder_scan() {", 1)[1].split(
+        "\n}\n\nfor command", 1
+    )[0]
+    builder_findings = builder_scan.split("aws inspector2 list-findings", 1)[1].split(
+        "--output json", 1
+    )[0]
+    assert "--no-paginate" not in builder_findings
+    assert "--max-results" not in builder_findings
     assert '"TrustedBuildInvokerArn=$trusted_invoker_arn"' in stack_manager
     assert "aws iam get-role" in readme
 
