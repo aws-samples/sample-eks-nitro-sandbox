@@ -137,3 +137,4 @@ nav:
       - Ubuntu AMI: setup/ubuntu-ami/README.md
       - AL2023 AMI: setup/al2023-ami/README.md
       - Cilium on Ubuntu nodes: setup/cilium-ubuntu/README.md
+      - Cilium on Bottlerocket nodes: setup/cilium-bottlerocket/README.md

@@ -1,0 +1,25 @@
+# A base containerd configuration in the shape that Bottlerocket aws-k8s-1.36 renders: config
+# version 3, the runc runtime with SELinux, and an imports line for the drop-in folder.
+# scripts/test-node-checks.sh replaces @DROPIN_DIR@ with a folder of its own work folder and runs
+# `containerd --config <this> config dump`. It is a test input only, not the node's file.
+version = 3
+root = "@WORK@/containerd/root"
+state = "@WORK@/containerd/state"
+imports = ["@DROPIN_DIR@/*.toml"]
+
+[grpc]
+address = "@WORK@/containerd/containerd.sock"
+
+[plugins."io.containerd.cri.v1.runtime"]
+enable_selinux = true
+
+[plugins."io.containerd.cri.v1.runtime".containerd]
+default_runtime_name = "shimpei"
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.shimpei]
+runtime_type = "io.containerd.runc.v2"
+base_runtime_spec = "/etc/containerd/cri-base.json"
+
+[plugins."io.containerd.cri.v1.runtime".containerd.runtimes.shimpei.options]
+SystemdCgroup = true
+BinaryName = "shimpei"

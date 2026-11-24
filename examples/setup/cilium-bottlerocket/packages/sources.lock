@@ -1,0 +1,132 @@
+# Pinned inputs of the sandbox AMI build. packages/lib/runtime_verify.py and
+# scripts/builder/20-fetch-verify.sh read this file. A value that does not match stops the
+# build. No flag skips a check.
+#
+# One block per input. A block ends at a blank line. Lines are key=value.
+# Required in every block: id, kind, ref, source, status.
+# Kinds:
+#   git-tag         a git tag; the clone must be at commit= and the tag object at tag_object=
+#   signed-archive  an archive whose downloaded SHA256SUM has an ECDSA P-384 signature
+#                   (manifest=, manifest_sha256=, signature=, public_key=, public_key_sha256=)
+#   sidecar-file    a download with a published .sha256 file beside it (sidecar=)
+#   archive-member  one file in the archive block named by archive= (member= is its path)
+# File blocks carry sha256= (checked by runtime_verify.py) and sha512= (checked again by the
+# Bottlerocket build system, buildsys, through external-files in
+# variant/packages/nitro-sandbox/Cargo.toml). The SHA-512 values were computed from files whose
+# SHA-256 first matched the publisher's checksum.
+# install= is "<path on the node> <mode>" or "none". The RPM spec installs the files at
+# these paths.
+
+id=bottlerocket-source
+kind=git-tag
+ref=v1.70.0
+source=https://github.com/bottlerocket-os/bottlerocket.git
+commit=59b0684a040705cebc4af1658f5e16a0c528e73f
+tag_object=1b2e28daa7a1bcbe03169255d05fde4e5d6ba3d8
+base_variant=aws-k8s-1.36
+verify=git clone --branch v1.70.0; HEAD must be commit= and refs/tags/v1.70.0 must be
+  tag_object= (git ls-remote of the public repository, 2026-11-20).
+status=available
+
+id=runtime-release
+kind=signed-archive
+ref=0.1.4274.0
+arch=x86_64
+file=nitro-sandboxes-runtime.tar.gz
+source=https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/nitro-sandboxes-runtime.tar.gz
+sha256=abc1d0032014f763715c2829ef1a104d768c3e0a76fa91cd2668d87678db3c57
+sha512=3d68cb102a02985169abfe43593ca14069e82b90f80a43071e7530b539de85b39a53485f27a85933f6072cf619d1ba4f6bdda22f4c004b68ad1130357a5be603
+manifest=https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/SHA256SUM
+manifest_sha256=33df467673f08654c611c0820bd7c6449a7bd5280c3a0690e36dbb475ceed972
+signature=https://d1uvmbvklg8rt.cloudfront.net/0.1.4274.0/x86_64/SHA256SUM.sig
+public_key=nitro-sandboxes-runtime-v1.pub
+public_key_sha256=8b61298c0cb361b352063eb4ae8c89d38270d6f8e96131ef93f238aba6137256
+install=none
+verify=The downloaded SHA256SUM has a good ECDSA P-384 signature (SHA256SUM.sig) from the key
+  that the Amazon EKS User Guide page "Download and verify the runtime binaries" prints. Its
+  line for the archive equals sha256=. Pinned to the version, never latest.
+status=available
+
+id=runtime-shim
+kind=archive-member
+archive=runtime-release
+ref=0.1.4274.0
+member=containerd-shim-nitro-sandbox-v2
+source=member of runtime-release
+sha256=fe86bb80bdd69443135300105ce20bc2d1e6f24ef97591f9a5da7ab56a3c67c3
+install=/usr/bin/containerd-shim-nitro-sandbox-v2 0755
+verify=Its line in the signed SHA256SUM equals sha256=. The same binary is the CRI proxy. The
+  Bottlerocket SELinux policy labels /usr/bin/containerd* as runtime_exec_t.
+status=available
+
+id=runtime-shim-logger
+kind=archive-member
+archive=runtime-release
+ref=0.1.4274.0
+member=nitro-sandbox-shim-logger-wrapper
+source=member of runtime-release
+sha256=b5b1da0ac44387576b343682a52bccd4784a9a08f23ce97ab5a5672d67c51768
+install=/usr/bin/nitro-sandbox-shim-logger-wrapper 0755
+verify=Its line in the signed SHA256SUM equals sha256=.
+status=available
+
+id=guest-image-eif
+kind=sidecar-file
+ref=1.36.5/2026-11-06
+arch=amd64
+file=nitro-sandbox-guest.eif
+source=https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest.eif
+sidecar=https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest.eif.sha256
+sha256=bcbf2e9da531ffaee6691db5661c75b3564f151cb411227c5a7f9a530db72182
+sha512=20ddda43709008b0e669fd5c36a6301375fd991f742fb62fd0550fa21ab5a095bf0f4be2839ccca585f5fe4981feee2063ba168db190047ca35a5c98d946a355
+install=/usr/share/nitro-sandbox/latest.eif 0644
+verify=The guest image pair of the Amazon EKS User Guide page "Create and update a Nitro
+  Sandbox AMI". The sidecar and the file both equal sha256= (full download, 2026-11-20).
+status=available
+
+id=guest-image-disk
+kind=sidecar-file
+ref=1.36.5/2026-11-06
+arch=amd64
+file=nitro-sandbox-guest-disk.img
+source=https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest-disk.img
+sidecar=https://amazon-eks.s3.us-west-2.amazonaws.com/1.36.5/2026-11-06/nitro-sandbox-guest/linux/amd64/nitro-sandbox-guest-disk.img.sha256
+sha256=08f8e6d2d032829bff9c4c4907cd44242f46bcf6b1bbc2e6aea691c82bee902c
+sha512=69fb520442ce52d61100959a75ead9f3a41bac08ec641ecf001f508b26d1ebf9e80a174c6e573e341944e8a83121cf96ce70d68a1225304c5fe1ee9c096c975a
+install=/usr/share/nitro-sandbox/latest-disk.img 0644
+verify=The disk of the same release as the EIF (2 GiB). rootfs.ext4 is a symlink to it.
+status=available
+
+id=firecracker-release
+kind=sidecar-file
+ref=v1.18.0
+file=firecracker-v1.18.0-x86_64.tgz
+source=https://github.com/firecracker-microvm/firecracker/releases/download/v1.18.0/firecracker-v1.18.0-x86_64.tgz
+sidecar=https://github.com/firecracker-microvm/firecracker/releases/download/v1.18.0/firecracker-v1.18.0-x86_64.tgz.sha256.txt
+sha256=1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd
+sha512=86d687ab22e6d744e21fe4df692de1f1fbdc6a8f6d9ae40f0d519caf384e5349f80532e27f055246af0ccf0d7b295388022047f1dedad7b5d0bf5fa211136818
+install=none
+verify=The release .sha256.txt and the file both equal sha256=.
+status=available
+
+id=firecracker
+kind=archive-member
+archive=firecracker-release
+ref=v1.18.0
+member=release-v1.18.0-x86_64/firecracker-v1.18.0-x86_64
+source=member of firecracker-release
+sha256=b33f46cd6d88834cf6a4f8d184f08f219809c636236bffd286d233a60602a2ba
+install=/usr/bin/firecracker 0755
+verify=The value that the SHA256SUMS file inside the release archive lists for this member.
+status=available
+
+id=jailer
+kind=archive-member
+archive=firecracker-release
+ref=v1.18.0
+member=release-v1.18.0-x86_64/jailer-v1.18.0-x86_64
+source=member of firecracker-release
+sha256=ddadbaa15b5c942271a83b7040ca7259c8ccf92a9e08d44cce0b86fa407ba460
+install=/usr/bin/jailer 0755
+verify=The value that the SHA256SUMS file inside the release archive lists for this member.
+status=available
