@@ -2,13 +2,13 @@
 set -eu
 
 debian_version=3.5.9-1~deb13u1
-package_version=3.5.9-1~deb13u1+oce1
+package_version=3.5.9-1~deb13u1+oce2
 source_base_url=https://deb.debian.org/debian/pool/main/o/openssl
 asset_dir=/tmp/openssl
 build_dir=/build/openssl
 source_dir="$build_dir/source"
 
-echo 'b144a173be41c9e6af5e4169b6e373f7e0e124ffeff7ffdb782d7782ca1f08a5  /tmp/openssl/source.json' |
+echo '267f1dd8cf4d58f4e9bda194c1d88f870367d5d525d4a79ba4a1a2d033a6d669  /tmp/openssl/source.json' |
   sha256sum --check --strict
 mkdir -p "$build_dir" /out
 cd "$build_dir"
@@ -30,7 +30,9 @@ printf '%s  %s\n' \
   a945077c0a978dbfe5af5e4f7174a2151466547f8fb94562f395baa7b6b7c147 \
   "$asset_dir/CVE-2026-88823.patch" \
   c7885d44f2659d97c0fc71fcdc8a6ef04cbe2ccdd36a72c28e7dfd1452033f2d \
-  "$asset_dir/CVE-2026-88823-test.patch" |
+  "$asset_dir/CVE-2026-88823-test.patch" \
+  77d3759d279c71af59629c4a0fa82d8272a099762f2fa9e3f66d7ca5ed544157 \
+  "$asset_dir/CVE-2026-107496.patch" |
   sha256sum --check --strict
 
 apt-get update --error-on=any
@@ -52,16 +54,23 @@ ANCHORS
 export QUILT_PATCHES=debian/patches
 cp "$asset_dir/CVE-2026-88823.patch" debian/patches/
 cp "$asset_dir/CVE-2026-88823-test.patch" debian/patches/
-printf '%s\n' CVE-2026-88823.patch CVE-2026-88823-test.patch >>debian/patches/series
+cp "$asset_dir/CVE-2026-107496.patch" debian/patches/
+printf '%s\n' \
+  CVE-2026-88823.patch \
+  CVE-2026-88823-test.patch \
+  CVE-2026-107496.patch \
+  >>debian/patches/series
 quilt push -a
 cat >debian/changelog.oce <<'CHANGELOG'
-openssl (3.5.9-1~deb13u1+oce1) trixie; urgency=medium
+openssl (3.5.9-1~deb13u1+oce2) trixie; urgency=medium
 
   * Backport upstream 159e1de0c448d7b9f09ad768c8e141def4aa1eb4
     for CVE-2026-88823 and regression tests from
     9d0d29bcf98ae5c1fb91653ba635e993260176d8.
+  * Backport upstream a0051cfe699bf5a047bc1c4faef65f80f7987366
+    for CVE-2026-107496 and its regression test.
 
- -- OpenClaw Enterprise contributors <noreply@openclaw.ai>  Wed, 04 Nov 2026 00:00:00 +0000
+ -- OpenClaw Enterprise contributors <noreply@openclaw.ai>  Wed, 25 Nov 2026 00:00:00 +0000
 
 CHANGELOG
 cat debian/changelog >>debian/changelog.oce
@@ -88,6 +97,7 @@ sha256sum \
   "$asset_dir/source.json" \
   "$asset_dir/CVE-2026-88823.patch" \
   "$asset_dir/CVE-2026-88823-test.patch" \
+  "$asset_dir/CVE-2026-107496.patch" \
   >/out/source.sha256
 printf '%s\n' "$debian_version" >/out/debian-version
 printf '%s\n' "$package_version" >/out/package-version

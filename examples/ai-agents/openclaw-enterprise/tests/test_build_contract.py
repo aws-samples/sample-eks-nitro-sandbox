@@ -37,6 +37,16 @@ OPENSSL_88823_UPSTREAM_REFERENCE = (
     "https://github.com/openssl/openssl/commit/"
     f"{OPENSSL_88823_UPSTREAM_COMMIT}"
 )
+OPENSSL_107496_BACKPORT_PATCH = (
+    BUILD / "patches" / "openssl-cve-2026-107496.patch"
+)
+OPENSSL_107496_UPSTREAM_COMMIT = (
+    "a0051cfe699bf5a047bc1c4faef65f80f7987366"  # pragma: allowlist secret -- public source revision
+)
+OPENSSL_107496_UPSTREAM_REFERENCE = (
+    "https://github.com/openssl/openssl/commit/"
+    f"{OPENSSL_107496_UPSTREAM_COMMIT}"
+)
 OPENCLAW_DEPENDENCY_PATCH = (
     BUILD / "patches" / "openclaw-security-overrides.patch"
 )
@@ -1241,7 +1251,8 @@ def test_build_outputs_are_verified_digest_references() -> None:
         '  "$RUNTIME_REPOSITORY" \\\n'
         '  "$runtime_digest" \\\n'
         '  "$OPENSSL_BACKPORT_PATCH" \\\n'
-        '  "$OPENSSL_88823_BACKPORT_PATCH"'
+        '  "$OPENSSL_88823_BACKPORT_PATCH" \\\n'
+        '  "$OPENSSL_107496_BACKPORT_PATCH"'
     ) in script
     assert script.index("check-enhanced-scanning.py") < script.index(
         'git init "$OCE_SOURCE_DIR"'
@@ -1613,6 +1624,52 @@ def _openssl_88823_backport_finding() -> dict[str, object]:
     return finding
 
 
+def _openssl_107496_backport_finding(
+    include_os_package: bool = False,
+) -> dict[str, object]:
+    finding = _inspector_finding()
+    packages: list[dict[str, object]] = [
+        {
+            "name": "openssl/openssl",
+            "version": "3.5.9",
+            "epoch": 0,
+            "packageManager": "GENERIC",
+            "fixedInVersion": "3.5.10",
+            "remediation": (
+                "Update affected packages to fixed version (or newer)."
+            ),
+            "filePath": (
+                "/usr/local/include/node/openssl/archs/linux-x86_64/"
+                f"{variant}/include/openssl/opensslv.h"
+            ),
+        }
+        for variant in ("asm", "asm_avx2", "no-asm")
+    ]
+    if include_os_package:
+        packages.insert(
+            0,
+            {
+                "name": "openssl",
+                "version": "3.5.9",
+                "release": "1~deb13u1+oce2",
+                "epoch": 0,
+                "arch": "AMD64",
+                "packageManager": "OS",
+                "fixedInVersion": "NotAvailable",
+                "filePath": "/var/lib/dpkg/status",
+                "remediation": (
+                    "Update affected packages to fixed version (or newer)."
+                ),
+            },
+        )
+    finding["packageVulnerabilityDetails"] = {
+        "vulnerabilityId": "CVE-2026-107496",
+        "vulnerablePackages": packages,
+        "referenceUrls": [OPENSSL_107496_UPSTREAM_REFERENCE],
+    }
+    return finding
+
+
 def _copy_inspector_finding(
     finding: dict[str, object],
 ) -> dict[str, object]:
@@ -1677,6 +1734,46 @@ def test_inspector_gate_accepts_both_exact_reviewed_source_backports(
 
     assert result.returncode == 0, result.stderr
     assert "accepted 2 reviewed HIGH source backport finding(s)" in result.stdout
+
+
+def test_inspector_gate_accepts_exact_cve_2026_107496_package_shapes(
+    tmp_path: pathlib.Path,
+) -> None:
+    for include_os_package in (False, True):
+        result = _inspector_scan_result(
+            tmp_path,
+            _inspector_coverage(),
+            {
+                "findings": [
+                    _openssl_107496_backport_finding(include_os_package)
+                ]
+            },
+            OPENSSL_107496_BACKPORT_PATCH,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert (
+            "accepted 1 reviewed HIGH source backport finding(s)"
+            in result.stdout
+        )
+
+
+def test_inspector_cve_2026_107496_gate_rejects_package_near_match(
+    tmp_path: pathlib.Path,
+) -> None:
+    finding = _copy_inspector_finding(_openssl_107496_backport_finding())
+    finding["packageVulnerabilityDetails"]["vulnerablePackages"][0][  # type: ignore[index]
+        "filePath"
+    ] = "/unexpected/opensslv.h"
+
+    result = _inspector_scan_result(
+        tmp_path,
+        _inspector_coverage(),
+        {"findings": [finding]},
+        OPENSSL_107496_BACKPORT_PATCH,
+    )
+
+    assert result.returncode == 1
 
 
 def test_inspector_backport_gate_rejects_near_matches_and_other_findings(
@@ -2156,6 +2253,7 @@ def _oce_security_patcher_args(
         str(OPENSSL_88823_SOURCE_ASSETS),
         str(OPENSSL_88823_BACKPORT_PATCH),
         str(OPENSSL_88823_TEST_PATCH),
+        str(OPENSSL_107496_BACKPORT_PATCH),
     ]
 
 
@@ -2184,6 +2282,10 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
     assert (
         "git apply -p1 --directory=deps/openssl/openssl "
         "/node-repair/openssl-cve-2026-95692.patch" in fetch
+    )
+    assert (
+        "git apply -p1 --directory=deps/openssl/openssl "
+        "/node-repair/openssl-cve-2026-107496.patch" in fetch
     )
     runtime_dir = oce_source / "deploy" / "runtime"
     assert (
@@ -2352,6 +2454,51 @@ def test_cve_2026_88823_backport_matches_exact_upstream_commit_and_build_contrac
     assert result.stdout == (
         "10\t0\tproviders/implementations/ciphers/cipher_aes_gcm_siv.c\n"
         "1\t6\tproviders/implementations/ciphers/cipher_aes_gcm_siv_hw.c\n"
+    )
+
+
+def test_cve_2026_107496_backport_matches_exact_upstream_commit_and_build_contract(
+    tmp_path: pathlib.Path,
+) -> None:
+    patch_bytes = OPENSSL_107496_BACKPORT_PATCH.read_bytes()
+    patch = patch_bytes.decode()
+    script = SCRIPT.read_text(encoding="utf-8")
+    build_script = (
+        OPENSSL_88823_SOURCE_ASSETS / "build.sh"
+    ).read_text(encoding="utf-8")
+    verify_script = (
+        OPENSSL_88823_SOURCE_ASSETS / "verify.sh"
+    ).read_text(encoding="utf-8")
+    patch_sha256 = hashlib.sha256(patch_bytes).hexdigest()
+
+    assert patch.startswith(f"From {OPENSSL_107496_UPSTREAM_COMMIT} ")
+    assert "Fixes: CVE-2026-107496" in patch
+    assert OPENSSL_107496_BACKPORT_PATCH.name in script
+    assert "CVE-2026-107496" in script
+    assert OPENSSL_107496_UPSTREAM_COMMIT in script
+    assert patch_sha256 in script
+    assert "CVE-2026-107496.patch" in build_script
+    assert "keygen_invalid_order_test" in verify_script
+    assert "test_ec" in verify_script
+
+    result = subprocess.run(
+        [
+            "git",
+            "apply",
+            "--numstat",
+            "--unsafe-paths",
+            str(OPENSSL_107496_BACKPORT_PATCH),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        "5\t0\tcrypto/ec/ec_key.c\n"
+        "33\t0\ttest/ectest.c\n"
     )
 
 

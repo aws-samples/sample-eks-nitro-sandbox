@@ -86,6 +86,60 @@ REVIEWED_BACKPORTS = {
             ],
         ],
     },
+    "CVE-2026-107496": {
+        "patch_sha256": (
+            "77d3759d279c71af59629c4a0fa82d8272a099762f2fa9e3f66d7ca5ed544157"  # pragma: allowlist secret -- public patch checksum
+        ),
+        "reference": (
+            "https://github.com/openssl/openssl/commit/"
+            "a0051cfe699bf5a047bc1c4faef65f80f7987366"  # pragma: allowlist secret -- public source revision
+        ),
+        "package_sets": [
+            [
+                {
+                    "name": "openssl/openssl",
+                    "version": "3.5.9",
+                    "epoch": 0,
+                    "packageManager": "GENERIC",
+                    "fixedInVersion": "3.5.10",
+                    "filePath": path,
+                    "remediation": (
+                        "Update affected packages to fixed version (or newer)."
+                    ),
+                }
+                for path in sorted(NODE_OPENSSL_PATHS)
+            ],
+            [
+                {
+                    "name": "openssl",
+                    "version": "3.5.9",
+                    "release": "1~deb13u1+oce2",
+                    "epoch": 0,
+                    "arch": "AMD64",
+                    "packageManager": "OS",
+                    "fixedInVersion": "NotAvailable",
+                    "filePath": "/var/lib/dpkg/status",
+                    "remediation": (
+                        "Update affected packages to fixed version (or newer)."
+                    ),
+                },
+                *[
+                    {
+                        "name": "openssl/openssl",
+                        "version": "3.5.9",
+                        "epoch": 0,
+                        "packageManager": "GENERIC",
+                        "fixedInVersion": "3.5.10",
+                        "filePath": path,
+                        "remediation": (
+                            "Update affected packages to fixed version (or newer)."
+                        ),
+                    }
+                    for path in sorted(NODE_OPENSSL_PATHS)
+                ],
+            ],
+        ],
+    },
 }
 
 
@@ -237,22 +291,22 @@ def is_reviewed_backport(finding: dict[str, Any]) -> bool:
 
     packages = details.get("vulnerablePackages")
     references = details.get("referenceUrls")
-    if (
-        not isinstance(packages, list)
-        or len(packages) != len(policy["packages"])
-        or not isinstance(references, list)
-        or policy["reference"] not in references
-    ):
+    if not isinstance(packages, list) or not isinstance(references, list):
+        return False
+    if policy["reference"] not in references:
         return False
 
     if not all(isinstance(package, dict) for package in packages):
         return False
     actual_packages = sorted(package_signature(package) for package in packages)
-    expected_packages = sorted(
-        package_signature(package)
-        for package in policy["packages"]
+    expected_package_sets = policy.get("package_sets")
+    if expected_package_sets is None:
+        expected_package_sets = [policy["packages"]]
+    return any(
+        actual_packages
+        == sorted(package_signature(package) for package in expected_packages)
+        for expected_packages in expected_package_sets
     )
-    return actual_packages == expected_packages
 
 
 accepted_backports = 0

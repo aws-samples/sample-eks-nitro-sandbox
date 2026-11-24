@@ -22,9 +22,13 @@ OPENSSL_CVE_PATCH_SHA256 = "a945077c0a978dbfe5af5e4f7174a2151466547f8fb94562f395
 OPENSSL_CVE_TEST_PATCH_FILE_NAME = "openssl-cve-2026-88823-test.patch"
 OPENSSL_CVE_TEST_PATCH_DESTINATION_FILE_NAME = "CVE-2026-88823-test.patch"
 OPENSSL_CVE_TEST_PATCH_SHA256 = "c7885d44f2659d97c0fc71fcdc8a6ef04cbe2ccdd36a72c28e7dfd1452033f2d"  # pragma: allowlist secret -- public patch checksum
-OPENSSL_SOURCE_METADATA_SHA256 = "b144a173be41c9e6af5e4169b6e373f7e0e124ffeff7ffdb782d7782ca1f08a5"  # pragma: allowlist secret -- reviewed metadata checksum
+OPENSSL_EC_ORDER_PATCH_FILE_NAME = "openssl-cve-2026-107496.patch"
+OPENSSL_EC_ORDER_PATCH_DESTINATION_FILE_NAME = "CVE-2026-107496.patch"
+OPENSSL_EC_ORDER_PATCH_SHA256 = "77d3759d279c71af59629c4a0fa82d8272a099762f2fa9e3f66d7ca5ed544157"  # pragma: allowlist secret -- public patch checksum
+OPENSSL_EC_ORDER_UPSTREAM_COMMIT = "a0051cfe699bf5a047bc1c4faef65f80f7987366"  # pragma: allowlist secret -- public source revision
+OPENSSL_SOURCE_METADATA_SHA256 = "267f1dd8cf4d58f4e9bda194c1d88f870367d5d525d4a79ba4a1a2d033a6d669"  # pragma: allowlist secret -- reviewed metadata checksum
 OPENSSL_DEBIAN_VERSION = "3.5.9-1~deb13u1"
-OPENSSL_PACKAGE_VERSION = f"{OPENSSL_DEBIAN_VERSION}+oce1"
+OPENSSL_PACKAGE_VERSION = f"{OPENSSL_DEBIAN_VERSION}+oce2"
 OPENCLAW_PATCH_FILE_NAME = "openclaw-security-overrides.patch"
 OPENCLAW_PATCH_SHA256 = "2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451"  # pragma: allowlist secret -- reviewed patch checksum
 CURL_PATCH_FILE_NAME = "curl-cve-2026-86414-trixie.patch"
@@ -198,6 +202,8 @@ EXPECTED_OPENSSL_SOURCE: dict[str, Any] = {
     "upstreamTestCommit": "9d0d29bcf98ae5c1fb91653ba635e993260176d8",  # pragma: allowlist secret -- public source revision
     "fixPatchSha256": OPENSSL_CVE_PATCH_SHA256,
     "testPatchSha256": OPENSSL_CVE_TEST_PATCH_SHA256,
+    "ecOrderFixCommit": OPENSSL_EC_ORDER_UPSTREAM_COMMIT,
+    "ecOrderPatchSha256": OPENSSL_EC_ORDER_PATCH_SHA256,
     "runtimePackages": ["libssl3t64", "openssl", "openssl-provider-legacy"],
     "buildPackages": ["libssl-dev"],
 }
@@ -227,6 +233,7 @@ parser.add_argument("curl_patch", type=pathlib.Path)
 parser.add_argument("openssl_source_assets", type=pathlib.Path)
 parser.add_argument("openssl_cve_patch", type=pathlib.Path)
 parser.add_argument("openssl_cve_test_patch", type=pathlib.Path)
+parser.add_argument("openssl_ec_order_patch", type=pathlib.Path)
 args = parser.parse_args()
 
 if not re.fullmatch(r"[0-9a-f]{40}", args.expected_revision):
@@ -294,8 +301,9 @@ try:
     openssl_source_metadata_bytes = openssl_source_metadata.read_bytes()
     openssl_cve_patch_bytes = args.openssl_cve_patch.read_bytes()
     openssl_cve_test_patch_bytes = args.openssl_cve_test_patch.read_bytes()
+    openssl_ec_order_patch_bytes = args.openssl_ec_order_patch.read_bytes()
 except OSError as error:
-    fail(f"could not read the OpenSSL CVE-2026-88823 backport inputs: {error}")
+    fail(f"could not read the OpenSSL backport inputs: {error}")
 if (
     hashlib.sha256(openssl_source_metadata_bytes).hexdigest()
     != OPENSSL_SOURCE_METADATA_SHA256
@@ -309,6 +317,11 @@ if (
     != OPENSSL_CVE_TEST_PATCH_SHA256
 ):
     fail("the CVE-2026-88823 test patch checksum does not match upstream")
+if (
+    hashlib.sha256(openssl_ec_order_patch_bytes).hexdigest()
+    != OPENSSL_EC_ORDER_PATCH_SHA256
+):
+    fail("the CVE-2026-107496 patch checksum does not match upstream")
 for patch_bytes, markers in (
     (
         openssl_cve_patch_bytes,
@@ -322,6 +335,13 @@ for patch_bytes, markers in (
         (
             b"From 9d0d29bcf98ae5c1fb91653ba635e993260176d8 ",
             b"Merged-from: https://github.com/openssl/openssl/pull/33456",
+        ),
+    ),
+    (
+        openssl_ec_order_patch_bytes,
+        (
+            f"From {OPENSSL_EC_ORDER_UPSTREAM_COMMIT} ".encode(),
+            b"Fixes: CVE-2026-107496",
         ),
     ),
 ):
@@ -356,6 +376,19 @@ try:
             capture_output=True,
             text=True,
         ).stdout
+        openssl_ec_order_patch_summary = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                "--unsafe-paths",
+                str(args.openssl_ec_order_patch.resolve()),
+            ],
+            cwd=check_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
 except (OSError, subprocess.CalledProcessError) as error:
     fail(f"an OpenSSL CVE-2026-88823 input is not a valid Git patch: {error}")
 if openssl_cve_patch_summary != (
@@ -365,6 +398,11 @@ if openssl_cve_patch_summary != (
     fail("the CVE-2026-88823 fix changes files outside the reviewed backport")
 if openssl_cve_test_patch_summary != "407\t1\ttest/evp_extra_test.c\n":
     fail("the CVE-2026-88823 tests change files outside the upstream regression test")
+if openssl_ec_order_patch_summary != (
+    "5\t0\tcrypto/ec/ec_key.c\n"
+    "33\t0\ttest/ectest.c\n"
+):
+    fail("the CVE-2026-107496 patch changes files outside the reviewed backport")
 
 try:
     fetch = fetch_script.read_text(encoding="utf-8")
@@ -382,7 +420,8 @@ printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n' "$archive_
 checksum_after = f"""patch_sha=$(node -p 'require("./source.json").patchSha256')
 security_patch_sha="{OPENSSL_PATCH_SHA256}"
 cve_2026_88823_patch_sha="{OPENSSL_CVE_PATCH_SHA256}"
-printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n%s  {OPENSSL_PATCH_FILE_NAME}\\n%s  {OPENSSL_CVE_PATCH_FILE_NAME}\\n' "$archive_sha" "$patch_sha" "$security_patch_sha" "$cve_2026_88823_patch_sha" | sha256sum --check --strict
+cve_2026_107496_patch_sha="{OPENSSL_EC_ORDER_PATCH_SHA256}"
+printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n%s  {OPENSSL_PATCH_FILE_NAME}\\n%s  {OPENSSL_CVE_PATCH_FILE_NAME}\\n%s  {OPENSSL_EC_ORDER_PATCH_FILE_NAME}\\n' "$archive_sha" "$patch_sha" "$security_patch_sha" "$cve_2026_88823_patch_sha" "$cve_2026_107496_patch_sha" | sha256sum --check --strict
 """
 apply_before = "git apply /node-repair/worker-esm-termination.patch\n"
 apply_after = (
@@ -391,6 +430,8 @@ apply_after = (
     + f"/node-repair/{OPENSSL_PATCH_FILE_NAME}\n"
     + "git apply -p1 --directory=deps/openssl/openssl "
     + f"/node-repair/{OPENSSL_CVE_PATCH_FILE_NAME}\n"
+    + "git apply -p1 --directory=deps/openssl/openssl "
+    + f"/node-repair/{OPENSSL_EC_ORDER_PATCH_FILE_NAME}\n"
 )
 if fetch.count(checksum_before) != 1 or fetch.count(apply_before) != 1:
     fail("the pinned Node fetch script changed; review the backport before building")
@@ -696,6 +737,7 @@ openclaw_destination = (
 )
 openssl_destination = node_dir / OPENSSL_PATCH_FILE_NAME
 node_openssl_cve_destination = node_dir / OPENSSL_CVE_PATCH_FILE_NAME
+node_openssl_ec_order_destination = node_dir / OPENSSL_EC_ORDER_PATCH_FILE_NAME
 openssl_source_destination = args.oce_source / "deploy" / "runtime" / "openssl"
 curl_destination = curl_dir / CURL_PATCH_DESTINATION_FILE_NAME
 if openssl_source_destination.exists():
@@ -703,6 +745,10 @@ if openssl_source_destination.exists():
 try:
     shutil.copyfile(args.node_openssl_patch, openssl_destination)
     shutil.copyfile(args.openssl_cve_patch, node_openssl_cve_destination)
+    shutil.copyfile(
+        args.openssl_ec_order_patch,
+        node_openssl_ec_order_destination,
+    )
     fetch_script.write_text(patched_fetch, encoding="utf-8")
     shutil.copytree(args.openssl_source_assets, openssl_source_destination)
     shutil.copyfile(
@@ -712,6 +758,10 @@ try:
     shutil.copyfile(
         args.openssl_cve_test_patch,
         openssl_source_destination / OPENSSL_CVE_TEST_PATCH_DESTINATION_FILE_NAME,
+    )
+    shutil.copyfile(
+        args.openssl_ec_order_patch,
+        openssl_source_destination / OPENSSL_EC_ORDER_PATCH_DESTINATION_FILE_NAME,
     )
     shutil.copyfile(args.openclaw_patch, openclaw_destination)
     runtime_dockerfile.write_text(
@@ -736,6 +786,9 @@ print(
     f"{OPENSSL_CVE_PATCH_SHA256} to Node's embedded OpenSSL and Debian OpenSSL "
     f"{OPENSSL_DEBIAN_VERSION}, with upstream regression tests "
     f"{OPENSSL_CVE_TEST_PATCH_SHA256}; "
+    "applied CVE-2026-107496 fix and regression test "
+    f"{OPENSSL_EC_ORDER_PATCH_SHA256} to Node's embedded OpenSSL and Debian "
+    f"OpenSSL package {OPENSSL_PACKAGE_VERSION}; "
     "selected libssl3t64, openssl, and openssl-provider-legacy for runtime "
     "and libssl-dev for the curl build; "
     f"applied OpenClaw dependency patch {OPENCLAW_PATCH_SHA256}; "

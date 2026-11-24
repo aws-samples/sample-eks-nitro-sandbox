@@ -3,7 +3,7 @@ set -eu
 
 out_dir=/out
 source_dir=/build/openssl/source
-expected_version=3.5.9-1~deb13u1+oce1
+expected_version=3.5.9-1~deb13u1+oce2
 arch=$(dpkg --print-architecture)
 
 test "$(cat "$out_dir/debian-version")" = 3.5.9-1~deb13u1
@@ -33,7 +33,10 @@ grep -Fq 'if (len == 0)' \
   providers/implementations/ciphers/cipher_aes_gcm_siv_hw.c
 grep -Fq 'static int test_aes_gcm_siv_zero_length_aad(void)' \
   test/evp_extra_test.c
+grep -Fq 'if (BN_cmp(order, BN_value_one()) <= 0)' crypto/ec/ec_key.c
+grep -Fq 'static int keygen_invalid_order_test(void)' test/ectest.c
+grep -Fq 'ADD_TEST(keygen_invalid_order_test)' test/ectest.c
 
 # The package build compiles tests but skips Debian's full suite. Run the
 # upstream recipe here with networking disabled by the Dockerfile stage.
-make -C build_shared test TESTS=test_evp_extra
+make -C build_shared test TESTS='test_evp_extra test_ec'

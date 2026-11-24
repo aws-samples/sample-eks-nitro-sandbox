@@ -156,11 +156,10 @@ when your threat model requires those stronger boundaries.
 | `yq` | Mike Farah `yq` `v4.54.3` |
 
 The OCE source pins Node.js 24.22.1, which bundles OpenSSL 3.5.9. Until the
-pinned OCE source bundles OpenSSL 3.5.10 or later, the image build applies the
-official OpenSSL fix for CVE-2026-95692 from source and records its checksum and
-upstream commit in `image-digests.json`. The Inspector gate accepts only that
-exact backported finding; any other active HIGH or CRITICAL finding stops the
-build.
+pinned source includes the required fixes, the image build applies reviewed
+upstream backports for CVE-2026-95692, CVE-2026-88823, and CVE-2026-107496 to
+the affected Node.js and Debian OpenSSL sources. It records their checksums and
+upstream commits in `image-digests.json`.
 
 ## Files
 
@@ -400,11 +399,10 @@ requires the complete finding set to remain free of unapproved active `HIGH` or
 `CRITICAL` findings for one minute before it exports digest-qualified
 references. This stabilization window prevents a newly completed scan from
 passing while Amazon Inspector is still publishing its findings. The runtime
-exception is limited to CVE-2026-95692 reported as
-`HIGH` for OpenSSL 3.5.9, fixed in 3.5.10, at the three expected Node.js header
-paths, and only when the reviewed upstream commit and patch checksum match. All
-other findings fail the build. ECR basic scanning alone does not meet this
-gate.
+exceptions are limited to the exact package and path signatures covered by
+those reviewed backports, and only when the corresponding patch checksums and
+upstream commits match. Any other active `HIGH` or `CRITICAL` finding fails the
+build. ECR basic scanning alone does not meet this gate.
 
 Assume the generated invocation role in a subshell and start the fixed
 workflow. The temporary credentials disappear when the subshell exits; only

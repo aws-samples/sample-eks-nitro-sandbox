@@ -1,6 +1,6 @@
 {
   "debianVersion": "3.5.9-1~deb13u1",
-  "packageVersion": "3.5.9-1~deb13u1+oce1",
+  "packageVersion": "3.5.9-1~deb13u1+oce2",
   "sourceBaseUrl": "https://deb.debian.org/debian/pool/main/o/openssl",
   "sourceFiles": [
     {
@@ -29,6 +29,8 @@
   "upstreamTestCommit": "9d0d29bcf98ae5c1fb91653ba635e993260176d8",
   "fixPatchSha256": "a945077c0a978dbfe5af5e4f7174a2151466547f8fb94562f395baa7b6b7c147",
   "testPatchSha256": "c7885d44f2659d97c0fc71fcdc8a6ef04cbe2ccdd36a72c28e7dfd1452033f2d",
+  "ecOrderFixCommit": "a0051cfe699bf5a047bc1c4faef65f80f7987366",
+  "ecOrderPatchSha256": "77d3759d279c71af59629c4a0fa82d8272a099762f2fa9e3f66d7ca5ed544157",
   "runtimePackages": [
     "libssl3t64",
     "openssl",
