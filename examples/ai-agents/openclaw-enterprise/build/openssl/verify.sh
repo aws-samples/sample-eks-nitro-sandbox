@@ -26,7 +26,7 @@ for package in libssl3t64 openssl openssl-provider-legacy libssl-dev; do
 done
 
 cd "$source_dir"
-test "$(grep -c 'ADD_TEST(test_aes_gcm_siv_' test/evp_extra_test.c)" -eq 5
+test "$(grep -c 'ADD_TEST(test_aes_gcm_siv_' test/evp_extra_test.c)" -eq 6
 grep -Fq 'if (key != NULL || iv != NULL || ctx->used_enc || ctx->used_dec)' \
   providers/implementations/ciphers/cipher_aes_gcm_siv.c
 grep -Fq 'if (len == 0)' \

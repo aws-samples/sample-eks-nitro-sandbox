@@ -2314,6 +2314,9 @@ def test_cve_2026_88823_backport_matches_exact_upstream_commit_and_build_contrac
     build_script = (
         OPENSSL_88823_SOURCE_ASSETS / "build.sh"
     ).read_text(encoding="utf-8")
+    verify_script = (
+        OPENSSL_88823_SOURCE_ASSETS / "verify.sh"
+    ).read_text(encoding="utf-8")
     patch_sha256 = hashlib.sha256(patch_bytes).hexdigest()
 
     assert patch.startswith(f"From {OPENSSL_88823_UPSTREAM_COMMIT} ")
@@ -2326,6 +2329,10 @@ def test_cve_2026_88823_backport_matches_exact_upstream_commit_and_build_contrac
     assert build_script.index("apt-get install -y --no-install-recommends quilt") < (
         build_script.index("quilt push -a")
     )
+    assert (
+        """test "$(grep -c 'ADD_TEST(test_aes_gcm_siv_' """
+        """test/evp_extra_test.c)" -eq 6"""
+    ) in verify_script
 
     result = subprocess.run(
         [
