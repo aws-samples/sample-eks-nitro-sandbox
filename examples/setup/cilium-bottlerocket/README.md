@@ -2064,24 +2064,30 @@ fails, `clean.sh` exits with a non-zero code. After an interrupted run, `clean.s
 resources of the run through their tags and the state file, and deletes them.
 
 An earlier, separate run, `20261120t233952zb5b5`, shows a clean-up after an interrupted run.
-The values in this paragraph come from that run, not from the fresh run. `setup.sh` resumed
-that run after stage `ami`, at commit
+The output and records quoted here and in the next two paragraphs come from that run, not from
+the fresh run. `setup.sh` resumed that run after stage `ami`, at commit
 [`fb4aca3`](https://github.com/aws-samples/sample-eks-nitro-sandbox/commit/fb4aca3ec70d5c84e50c46e3254690a2c7090403)
 of pull request #282, with `dirty=no`. The run stopped at stage `7/8` with
 `E_MKFS_EROFS_UNKNOWN`, because the `mkfs.erofs -V` capture from the node was empty. Then three
-`clean.sh` passes ran. The first pass deleted the namespace, the node groups, the launch
-templates and the AMI with its snapshots. EC2 no longer listed the builder instance, and
-`clean.sh` could not read it. Thus the first pass kept the cluster and its VPC, and 35 steps did
-not complete. The second pass deleted the Pod Identity association and the cluster. It could
-not read the operator role, so 1 step did not complete. Both passes exited with code 1. With
-commit
+`clean.sh` passes ran.
+
+The first pass deleted the namespace, the node groups, the launch templates and the AMI with
+its snapshots. EC2 no longer listed the builder instance, and `clean.sh` could not read it.
+Thus the first pass kept the cluster and its VPC, and it exited with code 1 because 35 steps did
+not complete. The second pass deleted the Pod Identity association and asked eksctl to delete
+the cluster. The eksctl output lists the stack for the operator IAM resources and the cluster
+stack, and it reports that all cluster resources were deleted. Then a separate read of the
+operator role failed, so 1 step did not complete and the second pass exited with code 1.
+
+With commit
 [`da01d1c`](https://github.com/aws-samples/sample-eks-nitro-sandbox/commit/da01d1c074a4eb2d68b32c0f44b223313dc287a1)
-of pull request #282, `clean.sh` reads an instance that EC2 no longer lists as gone. For the
-operator role, that commit only keeps the error text of a failed read. A dry run before the
-third pass listed no resource of the run. The third pass exited with code 0, and its read back
-printed "nothing left behind". Its verdict shows `keep_ami=0`, `keep_cluster=0`, `failures=0`
-and `verdict=clean`. The three passes record no commit, and the current `clean.sh` is newer
-than the one they ran.
+of pull request #282, `clean.sh` treats an empty EC2 instance list as evidence that the
+instance is gone. For the operator role, that commit only keeps the error text of a failed
+read. A dry run before the third pass listed nothing to delete. The third pass deleted nothing
+and only confirmed that the recorded resources were already gone. It exited with code 0, its
+read back printed "nothing left behind", and its verdict shows `keep_ami=0`, `keep_cluster=0`,
+`failures=0` and `verdict=clean`. The three passes record no commit, and the current
+`clean.sh` is newer than the one they ran.
 
 To keep the AMI for a later run, give `--keep-ami`:
 
