@@ -2293,6 +2293,10 @@ global_settings:
       reason: 'Public pinned upstream OCE Git commit and documented SHA-256 image digests, not credentials'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
+      path: 'examples/ai-agents/openclaw-enterprise/build/openssl/source.json'
+      reason: 'Pinned Debian source archives, source anchors, upstream revisions, and patch SHA-256 values used for reproducible verification; public hashes, not credentials'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/scripts/manage-image-build-stack.sh'
       line_start: 7
       line_end: 7

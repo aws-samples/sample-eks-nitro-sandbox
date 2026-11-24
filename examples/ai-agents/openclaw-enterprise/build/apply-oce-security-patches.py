@@ -168,34 +168,34 @@ EXPECTED_OPENSSL_SOURCE: dict[str, Any] = {
     "sourceFiles": [
         {
             "name": "openssl_3.5.9-1~deb13u1.dsc",
-            "sha256": "b038dfab5ee111242b7439e07c820d228519273e7fd1f514014b039e929aad9f",
+            "sha256": "b038dfab5ee111242b7439e07c820d228519273e7fd1f514014b039e929aad9f",  # pragma: allowlist secret -- public source checksum
         },
         {
             "name": "openssl_3.5.9.orig.tar.gz",
-            "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
+            "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",  # pragma: allowlist secret -- public source checksum
         },
         {
             "name": "openssl_3.5.9.orig.tar.gz.asc",
-            "sha256": "bdccf2057a7c4ae377b40e832cb8c632ae8b532d4fb64cc7b843066eee748f89",
+            "sha256": "bdccf2057a7c4ae377b40e832cb8c632ae8b532d4fb64cc7b843066eee748f89",  # pragma: allowlist secret -- public source checksum
         },
         {
             "name": "openssl_3.5.9-1~deb13u1.debian.tar.xz",
-            "sha256": "7d5158a87cd24641316b050de419be4ebddb1f180afd7ebaa3bc990036c38ec6",
+            "sha256": "7d5158a87cd24641316b050de419be4ebddb1f180afd7ebaa3bc990036c38ec6",  # pragma: allowlist secret -- public source checksum
         },
     ],
     "sourceAnchors": {
         "providers/implementations/ciphers/cipher_aes_gcm_siv.c": (
-            "25012f573a36a465f0a68fe004366ef586f3a153d60a5a53db55df9b7b1da5c3"
+            "25012f573a36a465f0a68fe004366ef586f3a153d60a5a53db55df9b7b1da5c3"  # pragma: allowlist secret -- public source checksum
         ),
         "providers/implementations/ciphers/cipher_aes_gcm_siv_hw.c": (
-            "37f4e407d03117c6b74e5d1385efb233f2d71225788f82857bff2368e7fd0457"
+            "37f4e407d03117c6b74e5d1385efb233f2d71225788f82857bff2368e7fd0457"  # pragma: allowlist secret -- public source checksum
         ),
         "test/evp_extra_test.c": (
-            "4b4b36c42febb276a7efe258b14939e944e9fff3a6ce4597659b5b48790fa627"
+            "4b4b36c42febb276a7efe258b14939e944e9fff3a6ce4597659b5b48790fa627"  # pragma: allowlist secret -- public source checksum
         ),
     },
-    "upstreamFixCommit": "159e1de0c448d7b9f09ad768c8e141def4aa1eb4",
-    "upstreamTestCommit": "9d0d29bcf98ae5c1fb91653ba635e993260176d8",
+    "upstreamFixCommit": "159e1de0c448d7b9f09ad768c8e141def4aa1eb4",  # pragma: allowlist secret -- public source revision
+    "upstreamTestCommit": "9d0d29bcf98ae5c1fb91653ba635e993260176d8",  # pragma: allowlist secret -- public source revision
     "fixPatchSha256": OPENSSL_CVE_PATCH_SHA256,
     "testPatchSha256": OPENSSL_CVE_TEST_PATCH_SHA256,
     "runtimePackages": ["libssl3t64", "openssl", "openssl-provider-legacy"],

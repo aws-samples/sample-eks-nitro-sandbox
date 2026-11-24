@@ -35,7 +35,7 @@ REVIEWED_BACKPORTS = {
         ),
         "reference": (
             "https://github.com/openssl/openssl/commit/"
-            "257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116"
+            "257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116"  # pragma: allowlist secret -- public source revision
         ),
         "packages": [
             {
@@ -54,7 +54,7 @@ REVIEWED_BACKPORTS = {
         ),
         "reference": (
             "https://github.com/openssl/openssl/commit/"
-            "159e1de0c448d7b9f09ad768c8e141def4aa1eb4"
+            "159e1de0c448d7b9f09ad768c8e141def4aa1eb4"  # pragma: allowlist secret -- public source revision
         ),
         "packages": [
             {
