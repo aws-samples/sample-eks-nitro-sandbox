@@ -49,6 +49,19 @@ for name in base "${clis[@]}" app; do ensure_repo "$SAMPLE-$name"; done
 
 aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REGISTRY" >/dev/null
 
+# From here on Docker holds an ECR token for $REGISTRY. Log out on every exit, so a failed
+# build or push does not leave the token in Docker's credential store. A failed logout is
+# reported, and fails a run that otherwise succeeded; an earlier failure keeps its own status.
+logout_on_exit() {
+  local rc=$?
+  if ! docker logout "$REGISTRY" >/dev/null 2>&1; then
+    echo "ERROR: docker logout $REGISTRY failed; remove the registry entry from your Docker credential store" >&2
+    [ "$rc" -ne 0 ] || rc=1
+  fi
+  exit "$rc"
+}
+trap logout_on_exit EXIT
+
 echo "==> base"
 BASE="$REGISTRY/$SAMPLE-base:$IMAGE_TAG"
 docker build --platform linux/amd64 -t "$BASE" "$ROOT/images/base"
@@ -65,5 +78,4 @@ echo "==> app"
 docker build --platform linux/amd64 -t "$REGISTRY/$SAMPLE-app:$IMAGE_TAG" "$ROOT/app"
 docker push "$REGISTRY/$SAMPLE-app:$IMAGE_TAG"
 
-docker logout "$REGISTRY" >/dev/null 2>&1 || true
 echo "==> images pushed to $REGISTRY"
