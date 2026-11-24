@@ -118,7 +118,51 @@ Output from a fresh run, abridged where marked `[...]`. The account ID, kube con
 association IDs, instance ID and local repository path are replaced with placeholders.
 
 ```text
-TODO: output from the fresh run
+== 1/8 check the tools, the cluster and the Region ==
+  context:  <KUBE_CONTEXT>
+== 2/8 create the ECR repository ==
+  created ECR repository reproducible-build (<ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build)
+== 3/8 build the application image and push it to ECR ==
+[... Nix build and image copy output omitted ...]
+digest=sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build:v1-b0399b41350e
+  published <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build@sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281 (tag v1-b0399b41350e)
+== 4/8 generate the Cedar policy ==
+[... generated Cedar policy omitted ...]
+  predicted PCR17: 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+  image digest pinned under CreateContainer permit: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build@sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+== 5/8 create the pod's IAM role ==
+  created IAM role arn:aws:iam::<ACCOUNT_ID>:role/reproducible-build-pod
+  the role has no identity policies (0 inline, 0 attached)
+== 6/8 create the KMS key ==
+  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/<KEY_ID>
+  the gate releases the key only to this measurement
+== 7/8 create the namespace, the service account and the association ==
+namespace/reproducible-build created
+serviceaccount/reproducible-build-pod created
+  created Pod Identity association <ASSOCIATION_ID>
+== 8/8 run the pods and the Service ==
+pod/reproducible-build-demo created
+service/reproducible-build created
+  the approved pod is on <INSTANCE_ID>
+pod/reproducible-build-plain created
+  waiting for the approved pod to become Ready...
+pod/reproducible-build-demo condition met
+  the approved pod is Ready
+  waiting for the plain pod to be Running...
+pod/reproducible-build-plain condition met
+  the plain pod is Running
+reading kernel=6.18.62	reading kernel=6.18.62
+reading uptime_s=18.77	reading uptime_s=19.39
+reading disks=dm-0,dm-1,dm-2,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,vda,vdb,vdc	reading disks=dm-0,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,nvme0n1,nvme1n1,zram0
+reading dmi_product=c8a.enclave	reading dmi_product=c8a.large
+== the operator cannot read logs or run commands in the approved pod ==
+  kubectl logs refused: Container logs are disabled by policy.
+  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "f421891bfff7deb06a8bdd856b1cc9d594bf053a9ce078c7f41247e6121c1a25": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
+
+Both pods are running. Next:
+  ./scripts/decrypt.sh   # PUT /decrypt through a port-forward to the Service
+[... the remaining hints omitted ...]
 ```
 
 The eight steps:
@@ -251,7 +295,10 @@ production Cedar policy refuses `kubectl logs`. The plain pod's readings come fr
 other, the sandbox pod on the left and the plain pod on the right:
 
 ```text
-TODO: output from the fresh run
+reading kernel=6.18.62	reading kernel=6.18.62
+reading uptime_s=18.77	reading uptime_s=19.39
+reading disks=dm-0,dm-1,dm-2,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,vda,vdb,vdc	reading disks=dm-0,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,nvme0n1,nvme1n1,zram0
+reading dmi_product=c8a.enclave	reading dmi_product=c8a.large
 ```
 
 A confidential-sandbox pod runs inside a lightweight VM with its own Linux kernel, booted
@@ -280,7 +327,21 @@ when the pod starts. The guest boots when the pod does, on its own virtual devic
 Abridged where marked `[...]`, with the same placeholders as in Step 1.
 
 ```text
-TODO: output from the fresh run
+== step 1/4 rebuild the image ==
+[... Nix build output omitted ...]
+  rebuilt: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+== step 2/4 compare with ECR ==
+  ECR tag v1-b0399b41350e digest matches rebuilt: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+== step 3/4 predict PCR17 ==
+[... generated Cedar policy omitted ...]
+  predicted PCR17: 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+== step 4/4 compare PCR17 with the live KMS key policy ==
+
+rebuilt digest:    sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+found in ECR:      sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+predicted PCR17:   8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+key-policy PCR17:  8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+verified
 ```
 
 The four steps the script runs:
@@ -309,7 +370,12 @@ lookup fails and nothing was determined.
 Abridged where marked `[...]`, with the same placeholders as in Step 1.
 
 ```text
-TODO: output from the fresh run
+ciphertext: <REPO>/tmp/reproducible-build/run/ciphertext.bin
+{"ok":true,"sha256":"04b77458af8946e791cfb3681ee61e85aff48dfc0a4fdfc9d0ae73e3206fad50"}
+sha256 check passed: 04b77458af8946e791cfb3681ee61e85aff48dfc0a4fdfc9d0ae73e3206fad50
+  kubectl logs refused: Container logs are disabled by policy.
+  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "ca6656b11209059b50598d8cba635d1b1f87923220f5f8672c6916786bb0a5b9": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
+decrypt verified
 ```
 
 The script generates a random demo string (`demo-<hex>`), encrypts it with the KMS key
@@ -341,7 +407,8 @@ an `assert` in the flake enforces this at eval time.
 the sandbox pod's logs or run commands in it:
 
 ```text
-TODO: output from the fresh run
+  kubectl logs refused: Container logs are disabled by policy.
+  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "ca6656b11209059b50598d8cba635d1b1f87923220f5f8672c6916786bb0a5b9": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 ```
 
 ## Step 7: Show the gate refuses a changed build.
@@ -357,7 +424,36 @@ KMS refuses it:
 Abridged where marked `[...]`, with the same placeholders as in Step 1.
 
 ```text
-TODO: output from the fresh run
+== 1/5 copy the source and change BANNER v1 to v2 ==
+  changed BANNER v1 -> v2 in <REPO>/tmp/reproducible-build/changed/src/src/main.rs (diff lines: 2)
+== 2/5 build and push the changed image ==
+[... Nix build and image copy output omitted ...]
+digest=sha256:d50f87d41a9ec25a409b1191ea6387bf61ba924941dbaad395e323101c46410e
+pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build:v2-d50f87d41a9e
+  approved digest: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+  changed  digest: sha256:d50f87d41a9ec25a409b1191ea6387bf61ba924941dbaad395e323101c46410e
+== 3/5 generate policy for the changed image and confirm PCR17 differs ==
+[... generated Cedar policy omitted ...]
+  approved PCR17: 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+  changed  PCR17: aec9a4bc794893e6ade8542a7ed86349413e7daeb644f6a2dde426a6df447e384f589ef40975334e6ab35d6d404dd213
+== 3b verify the gate still expects the approved measurement ==
+  the gate is bound to the approved measurement, unchanged
+== 4/5 run the changed pod and wait for the kms:Decrypt denial ==
+pod/reproducible-build-changed created
+  waiting for reproducible-build-changed to become Ready...
+pod/reproducible-build-changed condition met
+  reproducible-build-changed is Ready
+  ciphertext: <REPO>/tmp/reproducible-build/changed/ciphertext.bin
+  the changed pod was refused by KMS (kms:Decrypt denied)
+
+== 5/5 summary ==
+  approved digest: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+  changed  digest: sha256:d50f87d41a9ec25a409b1191ea6387bf61ba924941dbaad395e323101c46410e
+  approved PCR17:  8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+  changed  PCR17:  aec9a4bc794893e6ade8542a7ed86349413e7daeb644f6a2dde426a6df447e384f589ef40975334e6ab35d6d404dd213
+
+The changed pod was refused the key by KMS: its measurement differs from the gate.
+Delete it before you finish:  ./scripts/changed-source.sh --delete
 ```
 
 The script changes `const BANNER: &str = "reproducible-build decrypt v1"` to `v2` in a
@@ -434,7 +530,48 @@ failed with `remote error: tls: internal error`, and the script's retry produced
 lines shown.
 
 ```text
-TODO: output from the fresh run
+== 1/6 build and push the debug image (the production image plus busybox) ==
+[... Nix build and image copy output omitted ...]
+digest=sha256:a1c7a3e07e232a8e563f0a55d741baea636a845e8a6f52607ca6eebc7ca6fe05
+pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build:v1-debug-a1c7a3e07e23
+  production digest: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
+  debug      digest: sha256:a1c7a3e07e232a8e563f0a55d741baea636a845e8a6f52607ca6eebc7ca6fe05
+== 2/6 generate the debug policy and confirm its PCR17 differs ==
+[... generated Cedar policy omitted ...]
+  production PCR17: 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+  debug      PCR17: 06b74f2f6c9288bdf0e1aba6efaaace6179a253a7f0d39f73f4411ef13426fdd125cdadb050bd8db62596ed86f684a0d
+== 3/6 gate a separate debug key on the debug PCR17 ==
+  created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/<DEBUG_KEY_ID>
+  the production key is still gated on the production PCR17:
+  ok: alias/reproducible-build-sample still gated on 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+== 4/6 run the debug pod ==
+pod/reproducible-build-debug created
+pod/reproducible-build-debug condition met
+== 5/6 debug works: logs, a shell, and a decrypt with the debug key ==
+  log: reading kernel=6.18.62
+  log: reading uptime_s=3.53
+  log: reading disks=dm-0,dm-1,dm-2,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,vda,vdb,vdc
+  log: reading dmi_product=c8a.enclave
+  sh: uid=65534 gid=65534 groups=65534
+  sh: bin
+  sh: default.script
+  sh: dev
+  sh: etc
+  sh: linuxrc
+  sh: nix
+  sh: nix-support
+  sh: proc
+  sh: sbin
+  sh: sys
+  sh: var
+  debug ciphertext -> HTTP 200, sha256=470372da1a318b462fca9fbead3846fdc7d878dbf3bcc3b9c349168e24d3d46f
+== 6/6 the production ciphertext is refused to the debug pod ==
+  production ciphertext -> HTTP 403, kms-denied
+
+== summary ==
+  production: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281  PCR17 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b  key alias/reproducible-build-sample
+  debug:      sha256:a1c7a3e07e232a8e563f0a55d741baea636a845e8a6f52607ca6eebc7ca6fe05  PCR17 06b74f2f6c9288bdf0e1aba6efaaace6179a253a7f0d39f73f4411ef13426fdd125cdadb050bd8db62596ed86f684a0d  key alias/reproducible-build-debug
+Delete the debug pod before you finish:  ./scripts/debug.sh --delete
 ```
 
 `debug.sh` runs six steps:
@@ -505,7 +642,29 @@ Set the values again if you are in a new shell, then run:
 ```
 
 ```text
-TODO: output from the fresh run
+Cleaning up in context <KUBE_CONTEXT>, Region us-west-2, namespace reproducible-build.
+Deleting pod reproducible-build/reproducible-build-debug...
+Deleting pod reproducible-build/reproducible-build-changed...
+Deleting pod reproducible-build/reproducible-build-plain...
+pod "reproducible-build-plain" deleted from reproducible-build namespace
+Deleting pod reproducible-build/reproducible-build-demo...
+pod "reproducible-build-demo" deleted from reproducible-build namespace
+Deleting service reproducible-build/reproducible-build...
+service "reproducible-build" deleted from reproducible-build namespace
+Deleting Pod Identity association <ASSOCIATION_ID>...
+Deleting namespace reproducible-build (carries app.kubernetes.io/managed-by=reproducible-build)...
+namespace "reproducible-build" deleted
+Deleting IAM role reproducible-build-pod...
+Deleting the alias alias/reproducible-build-debug...
+Scheduling the KMS key <DEBUG_KEY_ID> for deletion in 7 days (the shortest AWS allows)...
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/<DEBUG_KEY_ID>	<DELETION_DATE>
+Deleting the alias alias/reproducible-build-sample...
+Scheduling the KMS key <KEY_ID> for deletion in 7 days (the shortest AWS allows)...
+arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/<KEY_ID>	<DELETION_DATE>
+Deleting ECR repository reproducible-build and the application image in it...
+Deleting the run files under <REPO>/tmp/reproducible-build/run...
+
+Clean up complete. The KMS key is scheduled, not yet destroyed; AWS removes it after its waiting period.
 ```
 
 Pass `--keep-aws-resources` to delete only the cluster objects and leave the KMS key, ECR
