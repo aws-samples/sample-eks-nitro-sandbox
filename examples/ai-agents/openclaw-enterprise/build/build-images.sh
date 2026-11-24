@@ -156,6 +156,16 @@ OPENSSL_BACKPORT_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterpris
 OPENSSL_BACKPORT_CVE="CVE-2026-95692"
 OPENSSL_BACKPORT_PATCH_SHA256="ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c" # pragma: allowlist secret -- public patch checksum
 OPENSSL_BACKPORT_UPSTREAM_COMMIT="257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116" # pragma: allowlist secret -- public source revision
+OPENSSL_88823_BACKPORT_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openssl-cve-2026-88823.patch"
+OPENSSL_88823_TEST_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openssl-cve-2026-88823-test.patch"
+OPENSSL_88823_SOURCE_ASSETS="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/openssl"
+OPENSSL_88823_BACKPORT_CVE="CVE-2026-88823"
+OPENSSL_88823_BACKPORT_PATCH_SHA256="a945077c0a978dbfe5af5e4f7174a2151466547f8fb94562f395baa7b6b7c147" # pragma: allowlist secret -- public patch checksum
+OPENSSL_88823_TEST_PATCH_SHA256="c7885d44f2659d97c0fc71fcdc8a6ef04cbe2ccdd36a72c28e7dfd1452033f2d" # pragma: allowlist secret -- public patch checksum
+OPENSSL_88823_BACKPORT_UPSTREAM_COMMIT="159e1de0c448d7b9f09ad768c8e141def4aa1eb4" # pragma: allowlist secret -- public source revision
+OPENSSL_88823_TEST_UPSTREAM_COMMIT="9d0d29bcf98ae5c1fb91653ba635e993260176d8" # pragma: allowlist secret -- public source revision
+OPENSSL_DEBIAN_VERSION="3.5.9-1~deb13u1"
+OPENSSL_PACKAGE_VERSION="${OPENSSL_DEBIAN_VERSION}+oce1"
 OPENCLAW_DEPENDENCY_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/openclaw-security-overrides.patch"
 OPENCLAW_DEPENDENCY_PATCH_SHA256="2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451" # pragma: allowlist secret -- reviewed patch checksum
 CURL_BACKPORT_PATCH="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/patches/curl-cve-2026-86414-trixie.patch"
@@ -170,9 +180,17 @@ python3 -I \
   "$OCE_SOURCE_REVISION" \
   "$OPENSSL_BACKPORT_PATCH" \
   "$OPENCLAW_DEPENDENCY_PATCH" \
-  "$CURL_BACKPORT_PATCH"
+  "$CURL_BACKPORT_PATCH" \
+  "$OPENSSL_88823_SOURCE_ASSETS" \
+  "$OPENSSL_88823_BACKPORT_PATCH" \
+  "$OPENSSL_88823_TEST_PATCH"
 readonly OPENSSL_BACKPORT_PATCH OPENSSL_BACKPORT_CVE
 readonly OPENSSL_BACKPORT_PATCH_SHA256 OPENSSL_BACKPORT_UPSTREAM_COMMIT
+readonly OPENSSL_88823_BACKPORT_PATCH OPENSSL_88823_TEST_PATCH
+readonly OPENSSL_88823_SOURCE_ASSETS OPENSSL_88823_BACKPORT_CVE
+readonly OPENSSL_88823_BACKPORT_PATCH_SHA256 OPENSSL_88823_TEST_PATCH_SHA256
+readonly OPENSSL_88823_BACKPORT_UPSTREAM_COMMIT OPENSSL_88823_TEST_UPSTREAM_COMMIT
+readonly OPENSSL_DEBIAN_VERSION OPENSSL_PACKAGE_VERSION
 readonly OPENCLAW_DEPENDENCY_PATCH OPENCLAW_DEPENDENCY_PATCH_SHA256
 readonly CURL_BACKPORT_PATCH CURL_BACKPORT_CVE
 readonly CURL_BACKPORT_PATCH_SHA256 CURL_BACKPORT_UPSTREAM_COMMIT
@@ -323,7 +341,8 @@ verify_digest "$RUNTIME_REPOSITORY" "$runtime_digest"
 verify_scan() {
   local repository="$1"
   local digest="$2"
-  local backport_patch="${3:-}"
+  shift 2
+  local -a backport_patches=("$@")
   local coverage_response="$metadata_dir/coverage-${repository//\//-}.json"
   local findings_response="$metadata_dir/findings-${repository//\//-}.json"
   local filter_dir="$metadata_dir/filters-${repository//\//-}"
@@ -331,6 +350,7 @@ verify_scan() {
   local resource_id
   local scan_result
   local -a scan_command
+  local backport_patch
   local clean_observations=0
   local _
   partition="$(cut -d: -f2 <<<"$CODEBUILD_BUILD_ARN")"
@@ -396,9 +416,9 @@ PY
       "$repository"
       "$digest"
     )
-    if [[ -n "$backport_patch" ]]; then
+    for backport_patch in "${backport_patches[@]}"; do
       scan_command+=(--backport-patch "$backport_patch")
-    fi
+    done
     # Inspector can mark coverage successful before all findings are queryable.
     # Observations at five-second intervals span a full minute from first to last.
     if "${scan_command[@]}"; then
@@ -420,7 +440,11 @@ PY
 verify_scan "$ADAPTER_REPOSITORY" "$adapter_digest"
 verify_scan "$CONTROLLER_REPOSITORY" "$controller_digest"
 verify_scan "$OWNERSHIP_HELPER_REPOSITORY" "$ownership_helper_digest"
-verify_scan "$RUNTIME_REPOSITORY" "$runtime_digest" "$OPENSSL_BACKPORT_PATCH"
+verify_scan \
+  "$RUNTIME_REPOSITORY" \
+  "$runtime_digest" \
+  "$OPENSSL_BACKPORT_PATCH" \
+  "$OPENSSL_88823_BACKPORT_PATCH"
 
 ADAPTER_IMAGE="${REGISTRY}/${ADAPTER_REPOSITORY}@${adapter_digest}"
 CONTROLLER_IMAGE="${REGISTRY}/${CONTROLLER_REPOSITORY}@${controller_digest}"
@@ -432,6 +456,10 @@ export SAMPLE_SOURCE_REVISION OCE_SOURCE_REVISION
 export OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
 export OPENSSL_BACKPORT_CVE OPENSSL_BACKPORT_PATCH_SHA256
 export OPENSSL_BACKPORT_UPSTREAM_COMMIT
+export OPENSSL_88823_BACKPORT_CVE OPENSSL_88823_BACKPORT_PATCH_SHA256
+export OPENSSL_88823_TEST_PATCH_SHA256 OPENSSL_88823_BACKPORT_UPSTREAM_COMMIT
+export OPENSSL_88823_TEST_UPSTREAM_COMMIT
+export OPENSSL_DEBIAN_VERSION OPENSSL_PACKAGE_VERSION
 export OPENCLAW_DEPENDENCY_PATCH_SHA256
 export CURL_BACKPORT_CVE CURL_BACKPORT_PATCH_SHA256
 export CURL_BACKPORT_UPSTREAM_COMMIT
@@ -488,11 +516,34 @@ result = {
         "securityBackports": [
             {
                 "cve": os.environ["OPENSSL_BACKPORT_CVE"],
+                "component": "Node.js embedded OpenSSL",
                 "patchSha256": os.environ["OPENSSL_BACKPORT_PATCH_SHA256"],
                 "upstreamCommit": os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"],
                 "upstreamUrl": (
                     "https://github.com/openssl/openssl/commit/"
                     + os.environ["OPENSSL_BACKPORT_UPSTREAM_COMMIT"]
+                ),
+            },
+            {
+                "cve": os.environ["OPENSSL_88823_BACKPORT_CVE"],
+                "component": "Node.js embedded and Debian OpenSSL",
+                "debianSourceVersion": os.environ["OPENSSL_DEBIAN_VERSION"],
+                "packageVersion": os.environ["OPENSSL_PACKAGE_VERSION"],
+                "patchSha256": os.environ[
+                    "OPENSSL_88823_BACKPORT_PATCH_SHA256"
+                ],
+                "testPatchSha256": os.environ[
+                    "OPENSSL_88823_TEST_PATCH_SHA256"
+                ],
+                "upstreamCommit": os.environ[
+                    "OPENSSL_88823_BACKPORT_UPSTREAM_COMMIT"
+                ],
+                "upstreamTestCommit": os.environ[
+                    "OPENSSL_88823_TEST_UPSTREAM_COMMIT"
+                ],
+                "upstreamUrl": (
+                    "https://github.com/openssl/openssl/commit/"
+                    + os.environ["OPENSSL_88823_BACKPORT_UPSTREAM_COMMIT"]
                 ),
             },
             {

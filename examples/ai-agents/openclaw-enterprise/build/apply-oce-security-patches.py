@@ -16,6 +16,15 @@ from typing import Any
 
 OPENSSL_PATCH_FILE_NAME = "openssl-cve-2026-95692.patch"
 OPENSSL_PATCH_SHA256 = "ab26acb8f611cd6d07e9d9e30af45ed58e316b6011cb08847bb99fa5ff67f94c"  # pragma: allowlist secret -- public patch checksum
+OPENSSL_CVE_PATCH_FILE_NAME = "openssl-cve-2026-88823.patch"
+OPENSSL_CVE_PATCH_DESTINATION_FILE_NAME = "CVE-2026-88823.patch"
+OPENSSL_CVE_PATCH_SHA256 = "a945077c0a978dbfe5af5e4f7174a2151466547f8fb94562f395baa7b6b7c147"  # pragma: allowlist secret -- public patch checksum
+OPENSSL_CVE_TEST_PATCH_FILE_NAME = "openssl-cve-2026-88823-test.patch"
+OPENSSL_CVE_TEST_PATCH_DESTINATION_FILE_NAME = "CVE-2026-88823-test.patch"
+OPENSSL_CVE_TEST_PATCH_SHA256 = "c7885d44f2659d97c0fc71fcdc8a6ef04cbe2ccdd36a72c28e7dfd1452033f2d"  # pragma: allowlist secret -- public patch checksum
+OPENSSL_SOURCE_METADATA_SHA256 = "b144a173be41c9e6af5e4169b6e373f7e0e124ffeff7ffdb782d7782ca1f08a5"  # pragma: allowlist secret -- reviewed metadata checksum
+OPENSSL_DEBIAN_VERSION = "3.5.9-1~deb13u1"
+OPENSSL_PACKAGE_VERSION = f"{OPENSSL_DEBIAN_VERSION}+oce1"
 OPENCLAW_PATCH_FILE_NAME = "openclaw-security-overrides.patch"
 OPENCLAW_PATCH_SHA256 = "2b1fb478649494c0b74879bbed20c55155658575555ebe37a88050d372aef451"  # pragma: allowlist secret -- reviewed patch checksum
 CURL_PATCH_FILE_NAME = "curl-cve-2026-86414-trixie.patch"
@@ -152,6 +161,46 @@ EXPECTED_OPENCLAW_SOURCE: dict[str, Any] = {
     ),
     "buildTimestamp": "2026-11-04T17:24:42Z",
 }
+EXPECTED_OPENSSL_SOURCE: dict[str, Any] = {
+    "debianVersion": OPENSSL_DEBIAN_VERSION,
+    "packageVersion": OPENSSL_PACKAGE_VERSION,
+    "sourceBaseUrl": "https://deb.debian.org/debian/pool/main/o/openssl",
+    "sourceFiles": [
+        {
+            "name": "openssl_3.5.9-1~deb13u1.dsc",
+            "sha256": "b038dfab5ee111242b7439e07c820d228519273e7fd1f514014b039e929aad9f",
+        },
+        {
+            "name": "openssl_3.5.9.orig.tar.gz",
+            "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
+        },
+        {
+            "name": "openssl_3.5.9.orig.tar.gz.asc",
+            "sha256": "bdccf2057a7c4ae377b40e832cb8c632ae8b532d4fb64cc7b843066eee748f89",
+        },
+        {
+            "name": "openssl_3.5.9-1~deb13u1.debian.tar.xz",
+            "sha256": "7d5158a87cd24641316b050de419be4ebddb1f180afd7ebaa3bc990036c38ec6",
+        },
+    ],
+    "sourceAnchors": {
+        "providers/implementations/ciphers/cipher_aes_gcm_siv.c": (
+            "25012f573a36a465f0a68fe004366ef586f3a153d60a5a53db55df9b7b1da5c3"
+        ),
+        "providers/implementations/ciphers/cipher_aes_gcm_siv_hw.c": (
+            "37f4e407d03117c6b74e5d1385efb233f2d71225788f82857bff2368e7fd0457"
+        ),
+        "test/evp_extra_test.c": (
+            "4b4b36c42febb276a7efe258b14939e944e9fff3a6ce4597659b5b48790fa627"
+        ),
+    },
+    "upstreamFixCommit": "159e1de0c448d7b9f09ad768c8e141def4aa1eb4",
+    "upstreamTestCommit": "9d0d29bcf98ae5c1fb91653ba635e993260176d8",
+    "fixPatchSha256": OPENSSL_CVE_PATCH_SHA256,
+    "testPatchSha256": OPENSSL_CVE_TEST_PATCH_SHA256,
+    "runtimePackages": ["libssl3t64", "openssl", "openssl-provider-legacy"],
+    "buildPackages": ["libssl-dev"],
+}
 
 
 def fail(message: str) -> None:
@@ -172,9 +221,12 @@ def read_json(path: pathlib.Path) -> dict[str, Any]:
 parser = argparse.ArgumentParser()
 parser.add_argument("oce_source", type=pathlib.Path)
 parser.add_argument("expected_revision")
-parser.add_argument("openssl_patch", type=pathlib.Path)
+parser.add_argument("node_openssl_patch", type=pathlib.Path)
 parser.add_argument("openclaw_patch", type=pathlib.Path)
 parser.add_argument("curl_patch", type=pathlib.Path)
+parser.add_argument("openssl_source_assets", type=pathlib.Path)
+parser.add_argument("openssl_cve_patch", type=pathlib.Path)
+parser.add_argument("openssl_cve_test_patch", type=pathlib.Path)
 args = parser.parse_args()
 
 if not re.fullmatch(r"[0-9a-f]{40}", args.expected_revision):
@@ -199,9 +251,9 @@ if read_json(source_json) != EXPECTED_NODE_SOURCE:
     fail("the pinned Node source metadata changed; review the backport before building")
 
 try:
-    openssl_patch_bytes = args.openssl_patch.read_bytes()
+    openssl_patch_bytes = args.node_openssl_patch.read_bytes()
 except OSError as error:
-    fail(f"could not read {args.openssl_patch}: {error}")
+    fail(f"could not read {args.node_openssl_patch}: {error}")
 if hashlib.sha256(openssl_patch_bytes).hexdigest() != OPENSSL_PATCH_SHA256:
     fail("the OpenSSL patch checksum does not match the reviewed upstream patch")
 if b"Fixes: CVE-2026-95692" not in openssl_patch_bytes:
@@ -214,7 +266,7 @@ try:
                 "apply",
                 "--numstat",
                 "--unsafe-paths",
-                str(args.openssl_patch.resolve()),
+                str(args.node_openssl_patch.resolve()),
             ],
             cwd=check_dir,
             check=True,
@@ -223,6 +275,96 @@ try:
         )
 except (OSError, subprocess.CalledProcessError) as error:
     fail(f"the reviewed OpenSSL patch is not a valid Git patch: {error}")
+
+expected_openssl_assets = {"build.sh", "source.json", "verify.sh"}
+try:
+    openssl_asset_entries = set(path.name for path in args.openssl_source_assets.iterdir())
+except OSError as error:
+    fail(f"could not read {args.openssl_source_assets}: {error}")
+if openssl_asset_entries != expected_openssl_assets:
+    fail("the OpenSSL source asset set changed; expected build.sh, source.json, verify.sh")
+if any(
+    not (args.openssl_source_assets / name).is_file()
+    or (args.openssl_source_assets / name).is_symlink()
+    for name in expected_openssl_assets
+):
+    fail("OpenSSL source assets must be regular, non-symlink files")
+openssl_source_metadata = args.openssl_source_assets / "source.json"
+try:
+    openssl_source_metadata_bytes = openssl_source_metadata.read_bytes()
+    openssl_cve_patch_bytes = args.openssl_cve_patch.read_bytes()
+    openssl_cve_test_patch_bytes = args.openssl_cve_test_patch.read_bytes()
+except OSError as error:
+    fail(f"could not read the OpenSSL CVE-2026-88823 backport inputs: {error}")
+if (
+    hashlib.sha256(openssl_source_metadata_bytes).hexdigest()
+    != OPENSSL_SOURCE_METADATA_SHA256
+    or read_json(openssl_source_metadata) != EXPECTED_OPENSSL_SOURCE
+):
+    fail("the pinned Debian OpenSSL source metadata changed")
+if hashlib.sha256(openssl_cve_patch_bytes).hexdigest() != OPENSSL_CVE_PATCH_SHA256:
+    fail("the CVE-2026-88823 fix patch checksum does not match upstream")
+if (
+    hashlib.sha256(openssl_cve_test_patch_bytes).hexdigest()
+    != OPENSSL_CVE_TEST_PATCH_SHA256
+):
+    fail("the CVE-2026-88823 test patch checksum does not match upstream")
+for patch_bytes, markers in (
+    (
+        openssl_cve_patch_bytes,
+        (
+            b"From 159e1de0c448d7b9f09ad768c8e141def4aa1eb4 ",
+            b"Fixes: CVE-2026-88823",
+        ),
+    ),
+    (
+        openssl_cve_test_patch_bytes,
+        (
+            b"From 9d0d29bcf98ae5c1fb91653ba635e993260176d8 ",
+            b"Merged-from: https://github.com/openssl/openssl/pull/33456",
+        ),
+    ),
+):
+    for marker in markers:
+        if marker not in patch_bytes:
+            fail(f"an OpenSSL CVE-2026-88823 patch is missing marker {marker!r}")
+try:
+    with tempfile.TemporaryDirectory(prefix="oce-openssl-cve-patch-check-") as check_dir:
+        openssl_cve_patch_summary = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                "--unsafe-paths",
+                str(args.openssl_cve_patch.resolve()),
+            ],
+            cwd=check_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        openssl_cve_test_patch_summary = subprocess.run(
+            [
+                "git",
+                "apply",
+                "--numstat",
+                "--unsafe-paths",
+                str(args.openssl_cve_test_patch.resolve()),
+            ],
+            cwd=check_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+except (OSError, subprocess.CalledProcessError) as error:
+    fail(f"an OpenSSL CVE-2026-88823 input is not a valid Git patch: {error}")
+if openssl_cve_patch_summary != (
+    "10\t0\tproviders/implementations/ciphers/cipher_aes_gcm_siv.c\n"
+    "1\t6\tproviders/implementations/ciphers/cipher_aes_gcm_siv_hw.c\n"
+):
+    fail("the CVE-2026-88823 fix changes files outside the reviewed backport")
+if openssl_cve_test_patch_summary != "407\t1\ttest/evp_extra_test.c\n":
+    fail("the CVE-2026-88823 tests change files outside the upstream regression test")
 
 try:
     fetch = fetch_script.read_text(encoding="utf-8")
@@ -239,13 +381,16 @@ printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n' "$archive_
 """
 checksum_after = f"""patch_sha=$(node -p 'require("./source.json").patchSha256')
 security_patch_sha="{OPENSSL_PATCH_SHA256}"
-printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n%s  {OPENSSL_PATCH_FILE_NAME}\\n' "$archive_sha" "$patch_sha" "$security_patch_sha" | sha256sum --check --strict
+cve_2026_88823_patch_sha="{OPENSSL_CVE_PATCH_SHA256}"
+printf '%s  /build/node.tar.xz\\n%s  worker-esm-termination.patch\\n%s  {OPENSSL_PATCH_FILE_NAME}\\n%s  {OPENSSL_CVE_PATCH_FILE_NAME}\\n' "$archive_sha" "$patch_sha" "$security_patch_sha" "$cve_2026_88823_patch_sha" | sha256sum --check --strict
 """
 apply_before = "git apply /node-repair/worker-esm-termination.patch\n"
 apply_after = (
     apply_before
     + "git apply -p1 --directory=deps/openssl/openssl "
     + f"/node-repair/{OPENSSL_PATCH_FILE_NAME}\n"
+    + "git apply -p1 --directory=deps/openssl/openssl "
+    + f"/node-repair/{OPENSSL_CVE_PATCH_FILE_NAME}\n"
 )
 if fetch.count(checksum_before) != 1 or fetch.count(apply_before) != 1:
     fail("the pinned Node fetch script changed; review the backport before building")
@@ -337,7 +482,44 @@ RUN --mount=type=secret,id=build-ca,required=false \\
     test "$(node /out/bin/npm-cli.js --version)" = "{NPM_RUNTIME_VERSION}"; \\
     test "$(node -p 'require("/out/node_modules/undici/package.json").version')" = "{NPM_RUNTIME_UNDICI_VERSION}"
 
+FROM node-build-base AS openssl-packages
+COPY deploy/runtime/openssl /tmp/openssl
+RUN --mount=type=secret,id=build-ca,required=false \\
+    set -eu; \\
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \\
+    sh /tmp/openssl/build.sh
+RUN --network=none sh /tmp/openssl/verify.sh
+
 {npm_stage_anchor}"""
+curl_stage_before = """FROM node-build-base AS curl-packages
+COPY deploy/runtime/curl /tmp/curl
+RUN --mount=type=secret,id=build-ca,required=false \\
+    set -eu; \\
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \\
+    sh /tmp/curl/build.sh
+"""
+curl_stage_after = f"""FROM node-build-base AS curl-packages
+COPY deploy/runtime/curl /tmp/curl
+RUN --mount=type=bind,from=openssl-packages,source=/out,target=/tmp/openssl-packages \\
+    --mount=type=secret,id=build-ca,required=false \\
+    set -eu; \\
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \\
+    cd /tmp/openssl-packages; \\
+    sha256sum --check --strict packages.sha256; \\
+    arch="$(dpkg --print-architecture)"; \\
+    expected="{OPENSSL_PACKAGE_VERSION}"; \\
+    expected_runtime="$(printf '%s\\n' "libssl3t64_${{expected}}_${{arch}}.deb" "openssl_${{expected}}_${{arch}}.deb" "openssl-provider-legacy_${{expected}}_${{arch}}.deb")"; \\
+    test "$(cat runtime-packages.list)" = "$expected_runtime"; \\
+    test "$(cat build-packages.list)" = "libssl-dev_${{expected}}_${{arch}}.deb"; \\
+    apt-get update --error-on=any; \\
+    sed 's#^#/tmp/openssl-packages/#' runtime-packages.list build-packages.list \\
+      | xargs apt-get install -y --no-install-recommends; \\
+    for package in libssl3t64 openssl openssl-provider-legacy libssl-dev; do \\
+      test "$(dpkg-query -W -f='${{Version}}' "$package")" = "$expected"; \\
+    done; \\
+    cd /; \\
+    sh /tmp/curl/build.sh
+"""
 runtime_stage_anchor = "FROM node-runtime-base AS runtime\n\n"
 runtime_stage_insertion = runtime_stage_anchor + f"""# Replace the npm bundled by the Node base with a reviewed maintenance release.
 RUN rm -rf /usr/local/lib/node_modules/npm
@@ -346,10 +528,47 @@ RUN test "$(npm --version)" = "{NPM_RUNTIME_VERSION}" \\
     && test "$(node -p 'require("/usr/local/lib/node_modules/npm/node_modules/undici/package.json").version')" = "{NPM_RUNTIME_UNDICI_VERSION}"
 
 """
+runtime_packages_before = """RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \\
+    apt-get update --error-on=any \\
+    && candidate="$(apt-cache policy curl | sed -n 's/^  Candidate: //p')" \\
+    && expected="$(cat /tmp/curl-packages/debian-version)" \\
+    && { [ "$candidate" = "$expected" ] || { echo "Refresh the curl backport: Debian candidate is $candidate, source is $expected" >&2; exit 1; }; } \\
+    && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb \\
+    && mkdir -p /usr/share/doc/curl/oce \\
+    && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \\
+    && rm -rf /var/lib/apt/lists/*
+"""
+runtime_packages_after = f"""RUN --mount=type=bind,from=openssl-packages,source=/out,target=/tmp/openssl-packages \\
+    --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \\
+    set -eu; \\
+    cd /tmp/openssl-packages; \\
+    sha256sum --check --strict packages.sha256; \\
+    arch="$(dpkg --print-architecture)"; \\
+    openssl_expected="{OPENSSL_PACKAGE_VERSION}"; \\
+    expected_runtime="$(printf '%s\\n' "libssl3t64_${{openssl_expected}}_${{arch}}.deb" "openssl_${{openssl_expected}}_${{arch}}.deb" "openssl-provider-legacy_${{openssl_expected}}_${{arch}}.deb")"; \\
+    test "$(cat runtime-packages.list)" = "$expected_runtime"; \\
+    apt-get update --error-on=any; \\
+    curl_candidate="$(apt-cache policy curl | sed -n 's/^  Candidate: //p')"; \\
+    curl_expected="$(cat /tmp/curl-packages/debian-version)"; \\
+    test "$curl_candidate" = "$curl_expected" || {{ echo "Refresh the curl backport: Debian candidate is $curl_candidate, source is $curl_expected" >&2; exit 1; }}; \\
+    sed 's#^#/tmp/openssl-packages/#' runtime-packages.list \\
+      | xargs apt-get install -y --no-install-recommends; \\
+    apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb; \\
+    for package in libssl3t64 openssl openssl-provider-legacy; do \\
+      test "$(dpkg-query -W -f='${{Version}}' "$package")" = "$openssl_expected"; \\
+    done; \\
+    test "$(openssl version | awk '{{print $2}}')" = 3.5.9; \\
+    mkdir -p /usr/share/doc/openssl/oce /usr/share/doc/curl/oce; \\
+    cp /tmp/openssl-packages/source.sha256 /tmp/openssl-packages/packages.sha256 /usr/share/doc/openssl/oce/; \\
+    cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/; \\
+    rm -rf /var/lib/apt/lists/*
+"""
 if (
     dockerfile.count(docker_anchor) != 1
     or dockerfile.count(npm_stage_anchor) != 1
     or dockerfile.count(runtime_stage_anchor) != 1
+    or dockerfile.count(curl_stage_before) != 1
+    or dockerfile.count(runtime_packages_before) != 1
     or runtime_assets.count(assets_anchor) != 1
 ):
     fail("the OpenClaw runtime patch anchors changed; review the patch before building")
@@ -390,6 +609,8 @@ patched_dockerfile = (
     .replace(GH_CLI_OLD_CHECKSUMS_SHA256, GH_CLI_CHECKSUMS_SHA256)
     .replace(runtime_codename_before, runtime_codename_after)
     .replace(npm_stage_anchor, npm_stage_insertion)
+    .replace(curl_stage_before, curl_stage_after)
+    .replace(runtime_packages_before, runtime_packages_after)
     .replace(docker_anchor, docker_insertion)
     .replace(runtime_stage_anchor, runtime_stage_insertion)
 )
@@ -474,10 +695,24 @@ openclaw_destination = (
     args.oce_source / "deploy" / "runtime" / OPENCLAW_PATCH_FILE_NAME
 )
 openssl_destination = node_dir / OPENSSL_PATCH_FILE_NAME
+node_openssl_cve_destination = node_dir / OPENSSL_CVE_PATCH_FILE_NAME
+openssl_source_destination = args.oce_source / "deploy" / "runtime" / "openssl"
 curl_destination = curl_dir / CURL_PATCH_DESTINATION_FILE_NAME
+if openssl_source_destination.exists():
+    fail("the OpenSSL source asset destination already exists")
 try:
-    shutil.copyfile(args.openssl_patch, openssl_destination)
+    shutil.copyfile(args.node_openssl_patch, openssl_destination)
+    shutil.copyfile(args.openssl_cve_patch, node_openssl_cve_destination)
     fetch_script.write_text(patched_fetch, encoding="utf-8")
+    shutil.copytree(args.openssl_source_assets, openssl_source_destination)
+    shutil.copyfile(
+        args.openssl_cve_patch,
+        openssl_source_destination / OPENSSL_CVE_PATCH_DESTINATION_FILE_NAME,
+    )
+    shutil.copyfile(
+        args.openssl_cve_test_patch,
+        openssl_source_destination / OPENSSL_CVE_TEST_PATCH_DESTINATION_FILE_NAME,
+    )
     shutil.copyfile(args.openclaw_patch, openclaw_destination)
     runtime_dockerfile.write_text(
         patched_dockerfile,
@@ -497,6 +732,12 @@ except OSError as error:
 print(
     "OCE security backport: applied CVE-2026-95692 patch "
     f"{OPENSSL_PATCH_SHA256} to Node {EXPECTED_NODE_SOURCE['version']}; "
+    "applied CVE-2026-88823 fix "
+    f"{OPENSSL_CVE_PATCH_SHA256} to Node's embedded OpenSSL and Debian OpenSSL "
+    f"{OPENSSL_DEBIAN_VERSION}, with upstream regression tests "
+    f"{OPENSSL_CVE_TEST_PATCH_SHA256}; "
+    "selected libssl3t64, openssl, and openssl-provider-legacy for runtime "
+    "and libssl-dev for the curl build; "
     f"applied OpenClaw dependency patch {OPENCLAW_PATCH_SHA256}; "
     f"pinned npm {NPM_RUNTIME_VERSION} with undici {NPM_RUNTIME_UNDICI_VERSION}; "
     "updated the Node build and runtime bases to Debian 13 (Trixie); "
