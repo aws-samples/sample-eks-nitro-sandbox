@@ -73,6 +73,7 @@ The files:
 | [`deploy/autoscaler.yaml`](deploy/autoscaler.yaml) | Optional: sizes the warm pool from the work queue |
 | [`deploy/claude-platform-aws/`](deploy/claude-platform-aws/egress-policy.yaml) | Optional, for [Claude Platform on AWS](#optional-run-it-on-claude-platform-on-aws): that mode's network policy, and the trust and STS policies for its Pod Identity role |
 | [`scripts/setup_agent.py`](scripts/setup_agent.py), [`submit.py`](scripts/submit.py), [`stats.py`](scripts/stats.py) | Run on your machine with the organization key (on Claude Platform on AWS, your AWS credentials): create the agent and environment, start a session, read the queue stats |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the network policy. Run it on your machine. |
 | `.env.example` | The four values the blueprint needs on the Claude API; copy it to `.env`, which git ignores |
 
 **Step 1: Install agent-sandbox and turn on network policy.** Install the controller with
@@ -171,7 +172,7 @@ spec:
         - { protocol: TCP, port: 8080 }
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -182,12 +183,28 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-Apply it, and wait for its `PolicyEndpoint`, which shows the controller has handed the policy
-to the nodes:
+The DNS rule allows the cluster's DNS address only. The Amazon EKS User Guide gives the rule in
+[Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4, take the `.10` address of the
+service CIDR, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6, append `a` to the network
+address, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. To see your cluster's IP
+family and service CIDRs:
 
 ```bash
-kubectl apply -f deploy/egress-policy.yaml
-until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/claude-sandbox-worker-egress-'; do sleep 2; done
+aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --output text \
+  --query 'cluster.kubernetesNetworkConfig.[ipFamily,serviceIpv4Cidr,serviceIpv6Cidr]'
+```
+
+[`coredns-cidr.sh`](scripts/coredns-cidr.sh) runs that command and applies the rule. It stops
+with an error if the service CIDR is missing or malformed, and each command below runs only if
+the one before it worked, so nothing is applied after that error.
+
+Apply the policy with that address filled in, and wait for its `PolicyEndpoint`, which shows
+the controller has handed the policy to the nodes:
+
+```bash
+COREDNS_CIDR=$(scripts/coredns-cidr.sh $CLUSTER_NAME $AWS_REGION) &&
+  sed "s|<COREDNS_CIDR>|$COREDNS_CIDR|" deploy/egress-policy.yaml | kubectl apply -f - &&
+  until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/claude-sandbox-worker-egress-'; do sleep 2; done
 ```
 
 **Step 6: Deploy the sandbox and the poller.** Here is the part of
@@ -397,7 +414,7 @@ its YAML does one job:
 | `podSelector`, `app: claude-sandbox-worker` | Selects the sandbox pods. The poller and the autoscaler are not selected. |
 | `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions, so only the rules below are allowed. |
 | `ingress`, from `app: claude-poller` on TCP 8080 | Lets the poller reach the dispatch port. No other pod can. |
-| `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the sandbox look up names, with no address lookup or substitution needed (#104). |
+| `egress`, to `<COREDNS_CIDR>` on UDP and TCP 53 | Lets the sandbox look up names at the cluster's DNS address only, the nameserver in every pod's `resolv.conf`. Port 53 to any address would let a command the model runs reach any DNS server on the internet. That command could then send data out over DNS or reach a VPN listening on port 53. |
 | `egress`, to `domainNames: api.anthropic.com` on TCP 443 | Lets the sandbox fetch tool calls from the Claude API and post their results. |
 
 Anything that matches no rule is refused: the public internet, AWS service endpoints such
@@ -655,7 +672,7 @@ spec:
         - { protocol: TCP, port: 8080 }
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -670,10 +687,13 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
+Fill in the Region and the cluster's DNS address as in step 5, then apply it:
+
 ```bash
-sed "s|<AWS_REGION>|$AWS_REGION|" \
-  deploy/claude-platform-aws/egress-policy.yaml | kubectl apply -f -
-until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/claude-sandbox-worker-egress-'; do sleep 2; done
+COREDNS_CIDR=$(scripts/coredns-cidr.sh $CLUSTER_NAME $AWS_REGION) &&
+  sed -e "s|<AWS_REGION>|$AWS_REGION|" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|" \
+    deploy/claude-platform-aws/egress-policy.yaml | kubectl apply -f - &&
+  until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/claude-sandbox-worker-egress-'; do sleep 2; done
 ```
 
 **Deploy and run a session.** Continue with steps 6 to 8 as written; the optional autoscaler

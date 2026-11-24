@@ -151,6 +151,13 @@ np_enabled="$(kc get configmap amazon-vpc-cni -n kube-system \
   then re-run this script."
 echo "  network policy enforcement: on"
 
+# The cluster's DNS address for the egress policy's DNS rule (see coredns-cidr.sh). Read it
+# now, before anything is created; it stops on a missing or malformed service CIDR.
+# shellcheck source=coredns-cidr.sh
+. "$SAMPLE_DIR/scripts/coredns-cidr.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr "$CLUSTER_NAME" "$AWS_REGION")" ||
+  die "could not work out the DNS address of cluster $CLUSTER_NAME (see the line above)"
+
 : > "$STATE_FILE"
 chmod 600 "$STATE_FILE"
 state_put NAMESPACE "$NAMESPACE"
@@ -537,9 +544,8 @@ state_put ASSOCIATION_ID "$assoc_id"
 #     does not select was left with no egress at all for as long as it lived, and a pod it
 #     does select reached a host the policy denies. Everything between here and step 8
 #     takes minutes, which is time the policy agent uses to settle.
-# DNS egress is a literal 0.0.0.0/0 in the file already, so only <AWS_REGION> needs
-# rendering.
-sed -e "s|<AWS_REGION>|$AWS_REGION|g" \
+# Render <AWS_REGION> and <COREDNS_CIDR>, the cluster's DNS address read in step 1.
+sed -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" \
   "$SAMPLE_DIR/deploy/egress-policy.yaml" > "$TMP_DIR/egress-policy.yaml"
 kc apply -n "$NAMESPACE" -f "$TMP_DIR/egress-policy.yaml"
 # The PolicyEndpoint is how the controller says it has handed the policy to the nodes.

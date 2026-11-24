@@ -297,7 +297,14 @@ echo "  no last-applied-configuration annotation on it."
 # ---------------------------------------------------------------------------
 say "6/7 the runner pods' egress policy"
 # ---------------------------------------------------------------------------
-"${KCTL[@]}" apply -n "$ARC_RUNNERS_NAMESPACE" -f "$SAMPLE_DIR/deploy/egress-policy.yaml"
+# The cluster's DNS address for the policy's DNS rule (see coredns-cidr-from-service.sh).
+# shellcheck source=coredns-cidr-from-service.sh
+. "$SAMPLE_DIR/scripts/coredns-cidr-from-service.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service "${KCTL[@]}")" \
+  || die "could not work out the DNS address of the cluster (see the line above)"
+echo "  DNS egress is allowed to $COREDNS_CIDR only"
+sed -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" "$SAMPLE_DIR/deploy/egress-policy.yaml" \
+  | "${KCTL[@]}" apply -n "$ARC_RUNNERS_NAMESPACE" -f -
 echo "  applied."
 
 # The PolicyEndpoint is how the controller says it has handed the policy to the
