@@ -1,0 +1,59 @@
+# Stage 3: the AWS permissions of the Cilium operator. setup.sh creates them after the cluster
+# and before Cilium:
+#
+#   eksctl create podidentityassociation -f <run folder>/pod-identity.yaml
+#
+# eksctl does not accept Pod Identity associations in `create cluster` when the cluster has no
+# VPC CNI, so this is a separate step. It must exist before Cilium is installed, because EKS
+# gives the credentials to the operator pod only when the pod is created.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${CLUSTER_NAME}
+  region: ${AWS_REGION}
+  tags:
+    ManagedBy: cilium-bottlerocket-sample
+    RunId: ${RUN_ID}
+
+# The Cilium operator is the only pod with AWS permissions. Its role has the EC2 actions that
+# the Cilium AWS ENI page lists as required privileges for this configuration
+# (https://docs.cilium.io/en/stable/network/concepts/ipam/eni/#required-privileges), and no
+# other action:
+#   - the always-required list;
+#   - DescribeTags, because ENI garbage collection is on (the default);
+#   - no UnassignPrivateIpAddresses (release of excess IPs is off), no AssignIpv6Addresses
+#     (no IPv6) and no DescribeInstances (no instance tag filter).
+# Neither node role has any of these actions (nodegroups.yaml).
+iam:
+  podIdentityAssociations:
+    - namespace: kube-system
+      serviceAccountName: cilium-operator
+      roleName: ${OPERATOR_ROLE_NAME}
+      tags:
+        ManagedBy: cilium-bottlerocket-sample
+        RunId: ${RUN_ID}
+      permissionPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: CiliumEniRead
+            Effect: Allow
+            Action:
+              - ec2:DescribeInstanceTypes
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DescribeVpcs
+              - ec2:DescribeRouteTables
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeTags
+            Resource: "*"
+          - Sid: CiliumEniWrite
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:AttachNetworkInterface
+              - ec2:ModifyNetworkInterfaceAttribute
+              - ec2:AssignPrivateIpAddresses
+              - ec2:DeleteNetworkInterface
+              - ec2:CreateTags
+            Resource: "*"

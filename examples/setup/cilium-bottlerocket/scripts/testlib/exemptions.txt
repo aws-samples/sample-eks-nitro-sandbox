@@ -1,0 +1,4 @@
+# Checks whose failing (or passing) input cannot be produced offline even with a stub command.
+# Format: E_TAG|<accept, reject or both>|reason. The reason says why the input cannot be produced
+# offline. The gate fails on a line whose tag is not in the inventory, or whose exempt side a
+# passing case already covers. The list is empty: every check is proven both ways.
