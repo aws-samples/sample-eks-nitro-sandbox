@@ -2304,6 +2304,14 @@ def test_oce_security_patcher_applies_the_reviewed_backport(
         in dockerfile
     )
     assert "FROM node-build-base AS npm-runtime" in dockerfile
+    for dependency in ("git", "expat"):
+        assert f"FROM dependency-build-base AS {dependency}-packages" in dockerfile
+        assert (
+            f"sh /tmp/{dependency}-assets/verify.sh --runtime" in dockerfile
+        )
+        assert (
+            runtime_dir / dependency / "source.json"
+        ).read_bytes() == (BUILD / dependency / "source.json").read_bytes()
     assert "npm-11.21.3.tgz" in dockerfile
     assert (
         "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
@@ -2603,6 +2611,44 @@ def test_reviewed_curl_backport_is_scoped_to_the_proxy_fix(
     patch = CURL_BACKPORT_PATCH.read_text(encoding="utf-8")
     assert "(GET|POST|PUT|DELETE|CONNECT)" in patch
     assert "+56\n+</errorcode>" in patch
+
+
+@pytest.mark.parametrize("dependency", ["git", "expat"])
+@pytest.mark.parametrize("mutation", ["metadata", "symlink", "extra-file"])
+def test_runtime_dependency_inputs_fail_before_oce_is_changed(
+    tmp_path: pathlib.Path, dependency: str, mutation: str
+) -> None:
+    oce_source, revision = _create_fake_oce_source(tmp_path)
+    dockerfile = oce_source / "deploy" / "runtime" / "Dockerfile"
+    original_dockerfile = dockerfile.read_bytes()
+    assets = tmp_path / dependency
+    assets.mkdir()
+    for source in (BUILD / dependency).iterdir():
+        (assets / source.name).write_bytes(source.read_bytes())
+    if mutation == "metadata":
+        metadata = assets / "source.json"
+        metadata.write_text(
+            metadata.read_text().replace('"sha256":', '"other":', 1)
+        )
+    elif mutation == "symlink":
+        script = assets / "build.sh"
+        script.unlink()
+        script.symlink_to(BUILD / dependency / "build.sh")
+    else:
+        (assets / "unexpected.sh").write_text("exit 0\n")
+
+    result = subprocess.run(
+        _oce_security_patcher_args(oce_source, revision)
+        + [f"--{dependency}-source-assets", str(assets)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert dependency in result.stderr
+    assert dockerfile.read_bytes() == original_dockerfile
+    assert not (oce_source / "deploy" / "runtime" / dependency).exists()
 
 
 def test_oce_security_patcher_fails_closed_on_source_or_revision_drift(

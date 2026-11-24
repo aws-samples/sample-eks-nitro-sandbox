@@ -1,0 +1,20 @@
+{
+  "version": "2.11.0",
+  "packageVersion": "2.11.0-1+oce1",
+  "tag": "R_2_11_0",
+  "sourcePackage": "expat",
+  "runtimePackages": [
+    "libexpat1"
+  ],
+  "buildPackages": [
+    "libexpat1-dev"
+  ],
+  "sources": [
+    {
+      "url": "https://github.com/libexpat/libexpat/releases/download/R_2_11_0/expat-2.11.0.tar.xz",
+      "sha256": "61e7614b602201c28a189dafee78f5bceaee192bbde46a930752ff09cf5542fa"
+    }
+  ],
+  "releaseNotes": "https://github.com/libexpat/libexpat/blob/R_2_11_0/expat/Changes",
+  "checksumReference": "https://api.github.com/repos/libexpat/libexpat/releases/tags/R_2_11_0"
+}

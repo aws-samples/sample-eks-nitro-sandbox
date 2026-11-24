@@ -37,6 +37,10 @@ CURL_PATCH_SHA256 = "cdd2c3db9c85552d0a2633e873fdab4f96f7ea996a4f6c87d3348a1b34b
 NPM_RUNTIME_VERSION = "11.21.3"
 NPM_RUNTIME_ARCHIVE_SHA256 = "ee5fc68e724c4bdba38db9d96d9c661d4e736e4be7001ae44d2fbbaa52159514"  # pragma: allowlist secret -- public archive checksum
 NPM_RUNTIME_UNDICI_VERSION = "6.29.1"
+RUNTIME_DEPENDENCY_METADATA_SHA256 = {
+    "git": "b8f6f175739b1d77487cc88a0b1c127ebefe9f16070fc48f11d16e1a6e71d9cf",  # pragma: allowlist secret -- public source metadata checksum
+    "expat": "bc9edc727635b4a9e9c08c49c687065f3f8d3565587cec3c171c7cb3e8b860e6",  # pragma: allowlist secret -- public source metadata checksum
+}
 GH_CLI_OLD_VERSION = "2.103.2"
 GH_CLI_VERSION = "2.105.0"
 GH_CLI_OLD_CHECKSUMS_SHA256 = "414d6009dc7f9f936d70831af818d1a32aa0ff07a77646861efd207356a36b2d"  # pragma: allowlist secret -- public checksum
@@ -262,7 +266,45 @@ parser.add_argument("openssl_source_assets", type=pathlib.Path)
 parser.add_argument("openssl_cve_patch", type=pathlib.Path)
 parser.add_argument("openssl_cve_test_patch", type=pathlib.Path)
 parser.add_argument("openssl_ec_order_patch", type=pathlib.Path)
+parser.add_argument(
+    "--git-source-assets",
+    type=pathlib.Path,
+    default=pathlib.Path(__file__).resolve().parent / "git",
+)
+parser.add_argument(
+    "--expat-source-assets",
+    type=pathlib.Path,
+    default=pathlib.Path(__file__).resolve().parent / "expat",
+)
 args = parser.parse_args()
+
+runtime_dependency_assets = {
+    "git": args.git_source_assets,
+    "expat": args.expat_source_assets,
+}
+for dependency, asset_dir in runtime_dependency_assets.items():
+    try:
+        entries = {path.name for path in asset_dir.iterdir()}
+        required_entries = {"build.sh", "source.json", "verify.sh"}
+        optional_entries = (
+            {"README.md", "test.Dockerfile"} if dependency == "git" else set()
+        )
+        if (
+            not required_entries <= entries
+            or entries - required_entries - optional_entries
+            or any(
+                not (asset_dir / name).is_file() or (asset_dir / name).is_symlink()
+                for name in entries
+            )
+        ):
+            fail(f"the {dependency} assets contain missing, unexpected or unsafe files")
+        metadata_sha = hashlib.sha256(
+            (asset_dir / "source.json").read_bytes()
+        ).hexdigest()
+    except OSError as error:
+        fail(f"could not read the {dependency} source assets: {error}")
+    if metadata_sha != RUNTIME_DEPENDENCY_METADATA_SHA256[dependency]:
+        fail(f"the {dependency} source metadata changed; review the release")
 
 if not re.fullmatch(r"[0-9a-f]{40}", args.expected_revision):
     fail("expected revision must be a full lowercase Git commit SHA")
@@ -562,6 +604,29 @@ RUN --mount=type=secret,id=build-ca,required=false \\
     sh /tmp/openssl/build.sh
 RUN --network=none sh /tmp/openssl/verify.sh
 
+FROM node-build-base AS dependency-build-base
+RUN apt-get update --error-on=any \\
+    && apt-get install -y --no-install-recommends \\
+      build-essential dpkg-dev pkg-config libcurl4-openssl-dev zlib1g-dev \\
+      ca-certificates curl xz-utils \\
+    && rm -rf /var/lib/apt/lists/*
+
+FROM dependency-build-base AS git-packages
+COPY deploy/runtime/git /tmp/git
+RUN --mount=type=secret,id=build-ca,required=false \\
+    set -eu; \\
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \\
+    sh /tmp/git/build.sh
+RUN --network=none sh /tmp/git/verify.sh --packages /out
+
+FROM dependency-build-base AS expat-packages
+COPY deploy/runtime/expat /tmp/expat
+RUN --mount=type=secret,id=build-ca,required=false \\
+    set -eu; \\
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \\
+    sh /tmp/expat/build.sh
+RUN --network=none sh /tmp/expat/verify.sh --packages /out
+
 {npm_stage_anchor}"""
 curl_stage_before = """FROM node-build-base AS curl-packages
 COPY deploy/runtime/curl /tmp/curl
@@ -612,6 +677,10 @@ runtime_packages_before = """RUN --mount=type=bind,from=curl-packages,source=/ou
 """
 runtime_packages_after = f"""RUN --mount=type=bind,from=openssl-packages,source=/out,target=/tmp/openssl-packages \\
     --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \\
+    --mount=type=bind,from=git-packages,source=/out,target=/tmp/git-packages \\
+    --mount=type=bind,from=expat-packages,source=/out,target=/tmp/expat-packages \\
+    --mount=type=bind,source=deploy/runtime/git,target=/tmp/git-assets \\
+    --mount=type=bind,source=deploy/runtime/expat,target=/tmp/expat-assets \\
     set -eu; \\
     cd /tmp/openssl-packages; \\
     sha256sum --check --strict packages.sha256; \\
@@ -625,7 +694,13 @@ runtime_packages_after = f"""RUN --mount=type=bind,from=openssl-packages,source=
     test "$curl_candidate" = "$curl_expected" || {{ echo "Refresh the curl backport: Debian candidate is $curl_candidate, source is $curl_expected" >&2; exit 1; }}; \\
     sed 's#^#/tmp/openssl-packages/#' runtime-packages.list \\
       | xargs apt-get install -y --no-install-recommends; \\
-    apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb; \\
+    sh /tmp/git-assets/verify.sh --packages /tmp/git-packages; \\
+    sh /tmp/expat-assets/verify.sh --packages /tmp/expat-packages; \\
+    git_packages="$(sed 's#^#/tmp/git-packages/#' /tmp/git-packages/runtime-packages.list)"; \\
+    expat_packages="$(sed 's#^#/tmp/expat-packages/#' /tmp/expat-packages/runtime-packages.list)"; \\
+    apt-get install -y --no-install-recommends tini ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb $git_packages $expat_packages; \\
+    sh /tmp/git-assets/verify.sh --runtime; \\
+    sh /tmp/expat-assets/verify.sh --runtime; \\
     if dpkg-query -W libsasl2-2 >/dev/null 2>&1; then \\
       echo "The runtime still contains Cyrus SASL" >&2; exit 1; \\
     fi; \\
@@ -785,6 +860,13 @@ try:
     )
     fetch_script.write_text(patched_fetch, encoding="utf-8")
     shutil.copytree(args.openssl_source_assets, openssl_source_destination)
+    for dependency, asset_dir in runtime_dependency_assets.items():
+        dependency_destination = (
+            args.oce_source / "deploy" / "runtime" / dependency
+        )
+        dependency_destination.mkdir()
+        for name in ("build.sh", "source.json", "verify.sh"):
+            shutil.copyfile(asset_dir / name, dependency_destination / name)
     shutil.copyfile(
         args.openssl_cve_patch,
         openssl_source_destination / OPENSSL_CVE_PATCH_DESTINATION_FILE_NAME,
@@ -832,4 +914,5 @@ print(
     "8.14.1-2+deb13u7 and disabled unused LDAP transports; "
     f"updated GitHub CLI from {GH_CLI_OLD_VERSION} to {GH_CLI_VERSION}; "
     f"updated Google Workspace CLI from {GOG_OLD_VERSION} to {GOG_VERSION}"
+    "; installed checksum-pinned Git 2.56.1 and Expat 2.11.0 Debian packages"
 )
