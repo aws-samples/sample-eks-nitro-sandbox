@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 00c-check-cluster.sh: read-only checks of the two cluster-wide prerequisites this sample uses
+# 00c-check-cluster.sh: read-only checks of the three cluster-wide prerequisites this sample uses
 # but never installs or changes (AGENTS.md: leave cluster-wide settings to the reader; a shared
 # install is reused as it is). Runs on the operator's workstation before setup.sh creates
 # anything, and stops with the command to run when a prerequisite is missing.

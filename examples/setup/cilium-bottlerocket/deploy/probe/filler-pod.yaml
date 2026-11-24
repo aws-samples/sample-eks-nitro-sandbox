@@ -1,0 +1,39 @@
+# A filler pod for the networkd check. test.sh renders one per name (cb-filler-<n>-<run ID>), on
+# the sandbox node only, until Cilium attaches a second ENI to that node, runs check-eni-capture,
+# and then deletes each filler pod by its exact name. An ordinary pod (default runtime) that
+# only sleeps; it uses one pod IP address and no requests or limits. It has the hardening of the
+# walkthrough pods (no service account token, the default seccomp filter, no capability, a
+# read-only root file system), but no readiness probe: test.sh waits for each filler pod to be
+# Ready in turn, and a probe would add up to one probe period to each wait.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${FILLER_NAME}
+  namespace: cilium-bottlerocket-demo
+  labels:
+    app.kubernetes.io/part-of: cilium-bottlerocket-sample
+    app.kubernetes.io/name: cb-filler
+spec:
+  nodeName: ${NODE_NAME}
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  tolerations:
+    - key: sandbox.eks-nitro-sandbox.amazonaws.com/dedicated
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      image: ${BUSYBOX_IMAGE}
+      command: ["sleep", "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]

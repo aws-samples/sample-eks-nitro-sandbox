@@ -16,7 +16,8 @@ examples/
 ├── setup/
 │   ├── ubuntu-ami/
 │   ├── al2023-ami/
-│   └── cilium-ubuntu/
+│   ├── cilium-ubuntu/
+│   └── cilium-bottlerocket/
 ├── isolation/
 │   ├── network-policy/
 │   └── sandbox-limits/
@@ -105,6 +106,11 @@ for an existing cluster, not creating or managing the cluster itself.
 - [cilium-ubuntu](../examples/setup/cilium-ubuntu/README.md) (available now): a dedicated
   disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, and
   the two Ubuntu node groups (system and sandbox) from `ubuntu-ami` above joining it. Spec: [#11](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/11).
+- [cilium-bottlerocket](../examples/setup/cilium-bottlerocket/README.md) (available now): a dedicated
+  disposable cluster with Cilium as the only CNI, in ENI mode with kube-proxy replacement, on
+  Bottlerocket nodes. The system node uses the stock Bottlerocket AMI. Packer builds the
+  sandbox node AMI from a custom Bottlerocket variant that holds the Nitro Sandbox runtime,
+  with no SSH access to the builder. Spec: [#281](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/281).
 
 ### Isolation (`isolation`)
 

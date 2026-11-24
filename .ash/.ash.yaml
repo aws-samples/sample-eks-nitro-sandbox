@@ -1680,14 +1680,14 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-run-scope.sh'
-      line_start: 771
-      line_end: 771
+      line_start: 792
+      line_end: 792
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/setup/ubuntu-ami/scripts/test-setup-flow.sh'
-      line_start: 412
-      line_end: 412
+      line_start: 431
+      line_end: 431
       reason: 'Test fixture: a run-state record of placeholder names and Region, not a secret'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
@@ -2373,6 +2373,188 @@ global_settings:
       path: 'examples/integrations/coder/templates/claude-code-nitro/.terraform.lock.hcl'
       reason: 'Coder server advisory (every affected range ends by 2.34.8), matched by name to the coder Terraform provider; the blueprint installs Coder 2.38.10'
       expiration: '2027-05-31'
+    # ---- setup/cilium-bottlerocket: Cilium on Bottlerocket nodes ----
+    # The pods run as nobody with the default seccomp filter, no service account token, no capabilities, a
+    # read-only root file system and probes. Left by design: no network policy (the sample ships none), the
+    # process launches the code must make (argument lists, no shell, tools on PATH), and one exec in a test fixture.
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/cilium-bottlerocket/deploy/pod-sandbox.yaml'
+      reason: 'By design the sample ships no network policy (AGENTS.md, Security rules): check-manifests refuses one in deploy/ (cb_render.py:242) and test.sh proves none exists (test.sh:325-326)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/cilium-bottlerocket/deploy/pod-sandbox-network-isolated.yaml'
+      reason: 'Booted with sandbox.amazonaws.com/network-isolated: only loopback, no route and no DNS, so no traffic for a policy (pod-sandbox-network-isolated.yaml:1-2,15)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/cilium-bottlerocket/deploy/pod-ordinary.yaml'
+      reason: 'Comparison pods: they stay as the sandbox pod is, and by design the sample ships no network policy (AGENTS.md, Security rules; cb_render.py:242; test.sh:325-326)'
+      expiration: '2027-12-31'
+    - rule_id: CKV2_K8S_6
+      path: 'examples/setup/cilium-bottlerocket/deploy/pod-server.yaml'
+      reason: 'By design the sample ships no network policy (AGENTS.md, Security rules; test.sh:325-326); the server is reached only through the ClusterIP Service (service.yaml:13)'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/cilium-bottlerocket/packages/lib/runtime_verify.py'
+      line_start: 23
+      line_end: 23
+      reason: 'Imports subprocess to run curl and openssl with fixed argument lists; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/packages/lib/runtime_verify.py'
+      line_start: 117
+      line_end: 118
+      reason: 'curl with a fixed argument list and no shell; the URL and the output path come from packages/sources.lock and the helper''s own folder (runtime_verify.py:114-118)'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/cilium-bottlerocket/packages/lib/runtime_verify.py'
+      line_start: 117
+      line_end: 118
+      reason: 'curl comes from PATH by design: the file runs on the AMI builder (scripts/builder/20-fetch-verify.sh:23) and in the offline tests, whose harness gives it its own PATH (runtime_verify.py:117)'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/packages/lib/runtime_verify.py'
+      line_start: 171
+      line_end: 172
+      reason: 'openssl dgst with a fixed argument list and no shell; its files are the committed key and the downloaded manifest and signature (runtime_verify.py:165-172)'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/cilium-bottlerocket/packages/lib/runtime_verify.py'
+      line_start: 171
+      line_end: 172
+      reason: 'openssl comes from PATH by design, as in the Amazon EKS User Guide''s own verification command: the file runs on the AMI builder and in the offline tests, whose harness gives it its own PATH (runtime_verify.py:171)'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/cilium-bottlerocket/scripts/lib/cb_base.py'
+      line_start: 13
+      line_end: 13
+      reason: 'Imports subprocess for run(), the one process launch of the cluster helper; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/scripts/lib/cb_base.py'
+      line_start: 93
+      line_end: 93
+      reason: 'run() takes an argument list and no shell; its one caller, aws(), passes the aws CLI with fixed subcommands, the Region setting and checked names (cb_base.py:90-96)'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/cilium-bottlerocket/variant/register-variant.py'
+      line_start: 26
+      line_end: 26
+      reason: 'Imports subprocess to run git on the bottlerocket clone; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/variant/register-variant.py'
+      line_start: 123
+      line_end: 123
+      reason: 'git -C <clone> with an argument list and no shell; the subcommands are fixed in this file (register-variant.py:122-125)'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/closed_world.py'
+      line_start: 22
+      line_end: 22
+      reason: 'Offline test runner: imports subprocess to run the sample''s own test suites and tools; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/closed_world.py'
+      line_start: 139
+      line_end: 140
+      reason: 'Offline test runner: the current Python runs testlib/inventory.py on a mutant copy under the repository''s tmp/, with an argument list and no shell (closed_world.py:133-140)'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/closed_world.py'
+      line_start: 154
+      line_end: 155
+      reason: 'Offline test runner: bash runs the sample''s own scripts/test-*.sh against a mutant copy, with an argument list and no shell (closed_world.py:152-155)'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/closed_world.py'
+      line_start: 154
+      line_end: 155
+      reason: 'Offline test runner: bash comes from PATH by design, because the harness gives each suite its own PATH of linked tools (testlib/harness.sh) (closed_world.py:154)'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/closed_world.py'
+      line_start: 172
+      line_end: 172
+      reason: 'Offline test runner: git rev-parse --show-toplevel with a fixed argument list and no shell (closed_world.py:172)'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/closed_world.py'
+      line_start: 172
+      line_end: 172
+      reason: 'Offline test runner: git comes from PATH by design, because the harness gives each suite its own PATH of linked tools (testlib/harness.sh) (closed_world.py:172)'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fake_packer.py'
+      line_start: 37
+      line_end: 37
+      reason: 'Test stub: imports subprocess to run the shell-local steps of the sample''s Packer template; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fake_packer.py'
+      line_start: 297
+      line_end: 297
+      reason: 'Test stub: runs each inline command of a shell-local provisioner of the sample''s own Packer template with /bin/sh -c, as Packer runs it (fake_packer.py:109-115,291-297)'
+      expiration: '2027-12-31'
+    - rule_id: B102
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fixture_aws_json.py'
+      line_start: 78
+      line_end: 78
+      reason: 'Test fixture: the edits are Python statements that test-cluster-helper.sh writes in its own "fixture_aws_json.py mutate" lines, so running them needs exec, on a fixture file this fixture wrote (fixture_aws_json.py:76-81); no input from outside the test'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fixture_br_clone.py'
+      line_start: 20
+      line_end: 20
+      reason: 'Test fixture: imports subprocess to run git on a fixture clone; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fixture_br_clone.py'
+      line_start: 33
+      line_end: 35
+      reason: 'Test fixture: git with a fixed test identity on a fixture clone under the repository''s tmp/, with an argument list and no shell (fixture_br_clone.py:32-35)'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fixture_br_clone.py'
+      line_start: 33
+      line_end: 35
+      reason: 'Test fixture: git comes from PATH by design, because the harness gives each suite its own PATH of linked tools (testlib/harness.sh) (fixture_br_clone.py:33)'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fixture_inputs.py'
+      line_start: 40
+      line_end: 40
+      reason: 'Test fixture: imports subprocess to run openssl with fixed arguments; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fixture_inputs.py'
+      line_start: 68
+      line_end: 68
+      reason: 'Test fixture: openssl with an argument list and no shell makes the offline tests'' key pair and signature (fixture_inputs.py:67-68)'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/fixture_inputs.py'
+      line_start: 68
+      line_end: 68
+      reason: 'Test fixture: openssl comes from PATH by design, because the harness gives each suite its own PATH of linked tools (testlib/harness.sh) (fixture_inputs.py:68)'
+      expiration: '2027-12-31'
+    - rule_id: B404
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/inventory.py'
+      line_start: 27
+      line_end: 27
+      reason: 'Offline test inventory: imports subprocess to run bash -n on a mutant copy; the import runs nothing'
+      expiration: '2027-12-31'
+    - rule_id: B603
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/inventory.py'
+      line_start: 279
+      line_end: 279
+      reason: 'Offline test inventory: bash -n parses a mutant copy under the repository''s tmp/ and runs nothing in it, with an argument list and no shell (inventory.py:277-280)'
+      expiration: '2027-12-31'
+    - rule_id: B607
+      path: 'examples/setup/cilium-bottlerocket/scripts/testlib/inventory.py'
+      line_start: 279
+      line_end: 279
+      reason: 'Offline test inventory: bash comes from PATH by design, because the harness gives each suite its own PATH of linked tools (testlib/harness.sh) (inventory.py:279)'
+      expiration: '2027-12-31'
 scanners:
   cdk-nag:
     enabled: false  # no CloudFormation or CDK here; it fails to parse the multi-document Kubernetes manifests

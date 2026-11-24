@@ -17,6 +17,7 @@ Node and cluster preparation the other blueprints treat as a prerequisite.
 - [Ubuntu AMI](examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an existing cluster, for readers who manage their own node OS instead of EKS Auto Mode.
 - [AL2023 AMI](examples/setup/al2023-ami/README.md): build a custom Amazon Linux 2023 node AMI with the upstream `amazon-eks-ami` Packer flow (`enable_pod_isolation=true`) and add it to a standard (non-Auto-Mode) cluster with a Karpenter `EC2NodeClass` and a managed node group, each enabling Nitro via the launch template's enclave option, then run an `isolated-sandbox` pod.
 - [Cilium on Ubuntu nodes](examples/setup/cilium-ubuntu/README.md): a dedicated disposable EKS cluster whose only CNI is Cilium, with two Ubuntu 24.04 node groups, and an `isolated-sandbox` pod that gets normal pod networking and the same enforced policy as an ordinary pod.
+- [Cilium on Bottlerocket nodes](examples/setup/cilium-bottlerocket/README.md): a dedicated disposable EKS cluster whose only CNI is Cilium, with a system node on the stock Bottlerocket AMI and a sandbox node on a Bottlerocket AMI that Packer builds from a custom variant, and an `isolated-sandbox` pod that gets normal pod networking.
 
 ## Isolation
 
