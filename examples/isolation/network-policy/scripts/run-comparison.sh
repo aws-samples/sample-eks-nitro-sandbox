@@ -131,9 +131,16 @@ fi
 
 # --- 3. Apply the policy ---------------------------------------------------------------
 say "Apply the egress NetworkPolicy and wait for its PolicyEndpoint"
-# DNS (port 53) is allowed to any address in the policy file already (#104), so there is no
-# address to look up or substitute here.
-kubectl apply -f "$DEPLOY/egress-policy.yaml"
+# The policy's DNS rule allows the cluster's DNS address only. Work it out from the
+# kubernetes Service (see coredns-cidr-from-service.sh); it stops here if that is not usable.
+# shellcheck source=coredns-cidr-from-service.sh
+. "$HERE/scripts/coredns-cidr-from-service.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kubectl)" || {
+  line "STOP: could not work out the cluster's DNS address (see the line above)."
+  exit 2
+}
+line "DNS egress is allowed to $COREDNS_CIDR only"
+sed "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" "$DEPLOY/egress-policy.yaml" | kubectl apply -f -
 # The controller programs the datapath a few seconds after the policy lands; the
 # PolicyEndpoint appearing shows it has handed the policy to the nodes.
 line "Waiting for the netpol-client-egress PolicyEndpoint ..."

@@ -14,11 +14,16 @@
 # reach other pods, AWS APIs or the rest of the internet. (Kubernetes always
 # allows a pod to reach its own node, which is not a path to the internet.)
 #
-# DNS (port 53) is allowed to any IP address. While CoreDNS typically runs on a
-# fixed cluster address, allowing any destination eliminates the need for address
-# lookup and substitution. This simplifies the setup and avoids issues with
-# missing or malformed cluster DNS addresses (#104).
-# __NAMESPACE__ is filled in at apply time by scripts/setup.sh, from NAMESPACE.
+# DNS (port 53) is allowed to one address only: <COREDNS_CIDR>, the cluster's DNS address,
+# which is the nameserver in every pod's resolv.conf. On EKS Auto Mode the node answers
+# it; there is no kube-dns Service. scripts/coredns-cidr-from-service.sh works it out from
+# the kubernetes Service's clusterIP (10.100.0.1 gives 10.100.0.10/32, fd12:3456:789a::1
+# gives fd12:3456:789a::a/128 on IPv6), and the setup fills it in. Port 53 to any address
+# would let code in the sandbox reach any DNS server on the internet, and so send data out
+# over DNS or reach a VPN listening on port 53 (#226).
+# scripts/setup.sh fills in two placeholders at apply time:
+#   __NAMESPACE__    from NAMESPACE
+#   <COREDNS_CIDR>   the cluster's DNS address
 apiVersion: networking.k8s.aws/v1alpha1
 kind: ApplicationNetworkPolicy
 metadata:
@@ -36,7 +41,7 @@ spec:
   # cluster. kubectl port-forward still works.
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

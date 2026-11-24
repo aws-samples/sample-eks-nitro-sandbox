@@ -79,7 +79,8 @@ The files:
 | File | What it is |
 |---|---|
 | [`deploy/s3-files.yaml`](deploy/s3-files.yaml) | The blueprint's non-default `nitro-sandbox-s3-files` StorageClass, two static access-point PVs (`tls,iam`, `s3files:` volume handles) and their PVCs, a workload ServiceAccount with no identity, and the writer (read-write) and reader (read-only) `isolated-sandbox` pods. |
-| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS on port 53 to any address and NFS (TCP 2049) to the mount targets, deny all ingress. |
+| [`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) | The egress `ApplicationNetworkPolicy`: DNS to the cluster's DNS address and NFS (TCP 2049) to the mount targets, deny all ingress. |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the egress policy |
 | [`iam/file-system-policy.json`](iam/file-system-policy.json) | The S3 Files file system policy template: the CSI node principal gets read-write via the writer access point and read-only via the reader access point, by the `s3files:AccessPointArn` condition; never `ClientRootAccess`. |
 | [`iam/bucket-policy.json`](iam/bucket-policy.json) | The backing bucket's policy template: TLS required. |
 | [`iam/sync-role-trust.json`](iam/sync-role-trust.json) / [`iam/sync-role-permissions.json`](iam/sync-role-permissions.json) | The synchronization role's trust (the S3 Files service, this file system) and permissions (this bucket only). |
@@ -479,11 +480,12 @@ restricts their egress with an `ApplicationNetworkPolicy`, an EKS Auto Mode Netw
 does not set `sandbox.amazonaws.com/network-isolated` on them, because that would remove the
 device used to reach the mount target.
 
-[`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) allows DNS on port 53 to any address
+[`deploy/egress-policy.yaml`](deploy/egress-policy.yaml) allows DNS to the cluster's DNS address
 and NFS to the mount targets, and denies everything else, including all ingress. It is shown
-here as it is in the repository, with its one placeholder: `setup.sh` (Step 5, the deploy)
-expands `<MOUNT_TARGET_BLOCK>` into one `ipBlock` line per mount-target IP, from the addresses
-it recorded in `.env`. The DNS rule is a literal `0.0.0.0/0` and needs no substitution.
+here as it is in the repository, with its two placeholders: `setup.sh` (Step 5, the deploy)
+fills `<COREDNS_CIDR>` with the cluster's DNS address and expands `<MOUNT_TARGET_BLOCK>` into one `ipBlock` line per mount-target IP, from the addresses
+it recorded in `.env`. It reads the DNS address in Step 1 and stops there if the service CIDR
+is missing or malformed.
 
 ```yaml
 spec:
@@ -495,7 +497,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -509,7 +511,7 @@ spec:
 | --- | --- |
 | `podSelector: app=s3-files-shared` | Selects the writer and reader pods. |
 | `policyTypes: [Ingress, Egress]` | Governs both directions; with no ingress rule, all ingress is denied. |
-| First egress rule, `0.0.0.0/0` port 53 | Allows egress to any address on UDP and TCP 53. This is a project choice to keep the blueprint simple: it does not depend on how a given cluster serves DNS (on EKS Auto Mode the resolver is node-local rather than a pod behind a ClusterIP). What it allows is wider than DNS resolution: any process in the sandbox can reach any host on UDP or TCP 53, so it can send data out over DNS or to anything listening on port 53. What it costs is that port-53 egress is not confined to the cluster's own resolver. It still opens only port 53; every other port and protocol stays denied. |
+| First egress rule, `<COREDNS_CIDR>` port 53 | DNS on UDP and TCP 53 to the cluster's DNS address only. It is the nameserver in every pod's `resolv.conf`. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. [`coredns-cidr.sh`](scripts/coredns-cidr.sh) reads the service CIDR with `aws eks describe-cluster`. It applies the rule in the Amazon EKS User Guide, [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4 that is the `.10` address, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6 it is the network address with `a` appended, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. Port 53 to any address would let code in the sandbox reach any DNS server on the internet. That code could then send data out over DNS or reach a VPN listening on port 53. |
 | Second egress rule, `<MOUNT_TARGET_BLOCK>` | NFS (TCP 2049) to each S3 Files mount-target IP, one per Availability Zone. `setup.sh` expands one `- ipBlock: { cidr: <ip>/32 }` line per address from `aws s3files list-mount-targets`. |
 
 The direct read-from-S3 optimization that S3 Files can enable runs in the driver on the node,
@@ -520,10 +522,10 @@ over NFS.
 Network policy is turned on once per cluster through the `amazon-vpc-cni` ConfigMap, as the
 [coding agent](../../getting-started/coding-agent/README.md) page describes; `setup.sh` waits for
 the policy's `PolicyEndpoint` to appear before it starts the pods. The policy is enforced on the
-node, outside the guest, so a command inside the sandbox cannot change it. Its limit: DNS is
-open on port 53 to any address, so a resolver is always reachable, and a pod can always reach
-its own node; that also means port-53 egress is not confined to the cluster's resolver (see the
-first egress rule above). Everything beyond port 53 and the mount targets is denied.
+node, outside the guest, so a command inside the sandbox cannot change it. Its limits: a pod
+can always reach its own node. The cluster's resolver also still answers any name, so a process
+in the sandbox can still encode data in the names it looks up. Everything beyond DNS to the
+cluster's DNS address and the mount targets is denied.
 
 With only DNS and NFS allowed, an outbound internet connection from inside the sandbox is
 refused:

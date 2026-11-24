@@ -274,9 +274,15 @@ fi
 echo "Step 4/4: add the push rules to the egress policy"
 push_rules="$(sed -e "s|<AWS_REGION>|$AWS_REGION|g" -e "s|<ACCOUNT_ID>|$ACCOUNT_ID|g" deploy/egress-push-rules.yaml)"
 [[ -n "$push_rules" ]] || die "deploy/egress-push-rules.yaml rendered empty, so the egress policy would get no push rules"
+# The policy is applied again with the push rules, so its DNS rule needs the cluster's DNS
+# address again (see coredns-cidr-from-service.sh).
+# shellcheck source=coredns-cidr-from-service.sh
+. "$SAMPLE_DIR/scripts/coredns-cidr-from-service.sh"
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kc)" \
+  || die "could not work out the DNS address of the cluster (see the line above)"
 # The block goes in through the environment, not awk -v: BSD awk, which macOS ships, rejects a
 # newline in a -v value.
-sed -e "s|<NAMESPACE>|$NAMESPACE|g" deploy/egress-policy.yaml \
+sed -e "s|<NAMESPACE>|$NAMESPACE|g" -e "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" deploy/egress-policy.yaml \
   | PUSH_RULES="$push_rules" awk '{ if ($0 == "<ECR_PUSH_RULES>") print ENVIRON["PUSH_RULES"]; else print }' \
   | kc apply -f -
 

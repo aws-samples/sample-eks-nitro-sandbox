@@ -5,11 +5,12 @@
 # and all egress are denied except DNS to CoreDNS, the Pod Identity credential
 # address, and HTTPS to the three names below.
 #
-# DNS (port 53) is allowed to any address, not pinned to one CoreDNS Service IP. On EKS
-# Auto Mode CoreDNS runs locally on each instance rather than behind a single ClusterIP,
-# so a rule pinned to one looked-up address would not reliably reach the resolver a pod
-# actually uses; allowing the port to any destination keeps name resolution working
-# without that lookup. The rule still opens only port 53.
+# DNS (port 53) is allowed to one address only: <COREDNS_CIDR>, the cluster's DNS address,
+# which is the nameserver in every pod's resolv.conf. On EKS Auto Mode the node answers
+# it; there is no kube-dns Service. coredns-cidr.sh works it out from the service CIDR
+# (10.100.0.10/32, or fd12:3456:789a::a/128 on IPv6), and the README's step 5 fills it in. Port 53 to
+# any address would let the agent reach any DNS server on the internet, and so send data
+# out over DNS or reach a VPN listening on port 53 (#226).
 # If you run in a Region other than us-west-2, change the Bedrock hostname to match.
 #
 # The Pod Identity rule is what lets the agent get its Bedrock credentials. A Nitro
@@ -29,7 +30,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }   # the cluster's DNS address (README step 5)
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

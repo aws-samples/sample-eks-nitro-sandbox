@@ -15,17 +15,82 @@
 # the namespace and the signing profile are read back after the delete; the IAM role, the
 # ECR repository and the Pod Identity association rest on their delete call returning
 # success, which under set -e stops the script when it does not.
+#
+# Before any of that, on every run, it removes the two registry credential directories
+# setup.sh and new-version.sh write (write_registry_credentials in lib.sh): genpolicy-home
+# and docker-config in this checkout's tmp/signer-policy. It removes them by those two
+# fixed names and never reads them. If it cannot, it says so and stops before touching the
+# cluster or AWS. That holds for every run that gets past loading lib.sh; it cannot cover a
+# run killed outright, or credentials a setup.sh running at the same time writes again.
 set -euo pipefail
 
 # shellcheck source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+# Where this checkout physically is, taken from this script's own location once, here.
+# Not from REPO_ROOT or TMP_DIR, and never from the environment, .env or state.env, which
+# can set any name and are read only after the credentials are gone.
+cred_root_rc=0
+cred_root="$(script_dir="$(dirname -- "${BASH_SOURCE[0]}")" &&
+  script_dir="$(CDPATH='' cd -P -- "$script_dir" && pwd -P)" &&
+  CDPATH='' cd -P -- "$script_dir/../../../.." && pwd -P)" || cred_root_rc=$?
+
 delete_aws=false
+usage_rc=0
 case "${1:-}" in
   "") ;;
   --delete-aws-resources) delete_aws=true ;;
-  *) echo "unknown argument: $1" >&2; exit 2 ;;
+  *) echo "unknown argument: $1" >&2; usage_rc=2 ;;
 esac
+if [[ "$usage_rc" == 0 && $# -gt 1 ]]; then
+  echo "unknown argument: $2" >&2; usage_rc=2
+fi
+
+# Run in a subshell, so the cd stays here. Each step's status is checked by hand, because
+# the caller's || turns set -e off inside it.
+remove_registry_credentials() (
+  root="$1"
+  refuse() { echo "  INCOMPLETE: $1, so the registry credentials under it were not removed" >&2; exit 1; }
+  [[ "$cred_root_rc" == 0 && "$root" == /* ]] ||
+    refuse "could not find this checkout's own directory"
+  # A tmp/ or tmp/signer-policy that is not there means no credentials were written.
+  # One that is there must be a plain directory, entered as itself: a symbolic link, or a
+  # path that resolves anywhere else once entered, is refused rather than followed.
+  [[ -e "$root/tmp" || -L "$root/tmp" ]] || exit 0
+  [[ -d "$root/tmp" && ! -L "$root/tmp" ]] || refuse "$root/tmp is not a plain directory"
+  CDPATH='' cd -P -- "$root/tmp" 2>/dev/null && [[ "$(pwd -P)" == "$root/tmp" ]] ||
+    refuse "could not enter $root/tmp as itself"
+  [[ -e ./signer-policy || -L ./signer-policy ]] || exit 0
+  [[ -d ./signer-policy && ! -L ./signer-policy ]] ||
+    refuse "$root/tmp/signer-policy is not a plain directory"
+  CDPATH='' cd -P -- ./signer-policy 2>/dev/null &&
+    [[ "$(pwd -P)" == "$root/tmp/signer-policy" ]] ||
+    refuse "could not enter $root/tmp/signer-policy as itself"
+  # Each fixed name on its own, so the second is tried even when the first fails. A name
+  # that is a symbolic link is removed as the link; what it points to is left alone.
+  rc=0
+  gh_rc=0
+  rm -rf -- genpolicy-home || gh_rc=$?
+  if [[ "$gh_rc" != 0 || -e genpolicy-home || -L genpolicy-home ]]; then
+    echo "  INCOMPLETE: could not remove $root/tmp/signer-policy/genpolicy-home (a registry credential)" >&2
+    rc=1
+  fi
+  dc_rc=0
+  rm -rf -- docker-config || dc_rc=$?
+  if [[ "$dc_rc" != 0 || -e docker-config || -L docker-config ]]; then
+    echo "  INCOMPLETE: could not remove $root/tmp/signer-policy/docker-config (a registry credential)" >&2
+    rc=1
+  fi
+  exit "$rc"
+)
+
+local_rc=0
+remove_registry_credentials "$cred_root" || local_rc=$?
+if [[ "$local_rc" != 0 ]]; then
+  echo "Clean up INCOMPLETE: the registry credentials may still be on this machine (see above), so nothing in the cluster or AWS was touched." >&2
+fi
+[[ "$usage_rc" == 0 ]] || exit "$usage_rc"
+[[ "$local_rc" == 0 ]] || exit 1
 
 load_env
 require_commands aws kubectl jq

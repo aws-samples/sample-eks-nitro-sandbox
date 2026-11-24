@@ -59,6 +59,7 @@ examples/
 ├── integrations/
 │   ├── temporal/
 │   ├── istio/
+│   ├── coder/
 │   └── opensandbox/
 └── confidential/
     ├── encrypted-image/
@@ -191,6 +192,7 @@ Other platforms that create and manage sandboxes.
 
 - [temporal](../examples/integrations/temporal/README.md) (available now): Temporal workflows that create, drive, suspend, resume and remove sandboxes. Spec: [#26](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/26).
 - [istio](../examples/integrations/istio/README.md) (available now): Istio sidecars with the `istio-init` init container on Nitro sandboxes, with strict mutual TLS and an authorization policy, and what does not work today: the Istio CNI plugin (not on the roadmap for now) and ambient mesh (on the roadmap). Spec: [#239](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/239).
+- [coder](../examples/integrations/coder/README.md) (available now): Coder Community Edition, where every developer workspace Coder creates from a Terraform template is its own sandbox with Claude Code on Amazon Bedrock and a home volume that survives stop and start, reached over HTTPS through Amazon CloudFront with Keycloak sign-in. Spec: [#278](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/278).
 - opensandbox (blocked until GA): Nitro sandboxes as a secure runtime for OpenSandbox. Waits for Nitro sandboxes to be generally available and the runtime to be added upstream in OpenSandbox. Spec: [#22](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/22).
 
 ### Confidential (`confidential`)

@@ -1,7 +1,23 @@
-# AWS Nitro Sandbox on Amazon EKS
+# AWS Nitro Sandbox on Amazon EKS Blueprints
 
-This site holds the code from the blog post
-[Introducing Nitro Sandboxes: Hardware-Enforced Workload Isolation on Amazon EKS](<BLOG_URL>).
+In a standard Amazon EKS cluster, pods on the same node share a Linux kernel. A container
+escape or kernel vulnerability can expose one workload to another. Isolated and confidential
+pods address this by running each pod inside its own Nitro sandbox, a dedicated
+hardware-isolated environment backed by the AWS Nitro System. The feature is based on
+[Amazon EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html).
+Each sandbox runs as a first-level guest with direct hardware-assisted virtualization, not
+through emulation or nested virtualization. The Nitro hypervisor enforces memory and CPU
+isolation between sandboxes, providing a hardware trust boundary around every pod.
+
+Isolated and confidential pods are opt-in. You select the feature per pod by setting
+`runtimeClassName` to `isolated-sandbox` or `confidential-sandbox` in the pod spec. Pods
+without this setting continue to use the default container runtime. For requirements and
+concepts, see
+[Sandboxing on Amazon EKS with isolated and confidential pods](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)
+in the Amazon EKS User Guide.
+
+This site holds runnable blueprints for the feature, including the code from the blog post
+[AWS Nitro Sandboxes: Hardware-enforced workload isolation on Amazon EKS](https://aws.amazon.com/blogs/containers/aws-nitro-sandboxes-hardware-enforced-workload-isolation-on-amazon-eks/).
 
 The Getting started blueprints build on each other:
 
