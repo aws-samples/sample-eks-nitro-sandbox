@@ -940,6 +940,22 @@ export TENANT_NAMESPACE="$(
       end
     '
 )"
+export TENANT_NAMESPACE_UID="$(
+  kubectl --context "$KUBE_CONTEXT" get namespace "$TENANT_NAMESPACE" \
+    --output=jsonpath='{.metadata.uid}'
+)"
+export TENANT_NAMESPACE_IDENTITY_FILE="$(
+  printf '%s/%s-namespace-identity.json' \
+    "$OCE_STATE_DIR" "$TENANT_NAMESPACE"
+)"
+(
+  umask 077
+  set -o noclobber
+  jq -n \
+    --arg name "$TENANT_NAMESPACE" \
+    --arg uid "$TENANT_NAMESPACE_UID" \
+    '{name:$name,uid:$uid}' >"$TENANT_NAMESPACE_IDENTITY_FILE"
+)
 ```
 
 Give the OCE worker and API only the Kubernetes permissions required in that
@@ -1352,8 +1368,9 @@ The command exits zero only after it verifies:
    reuse.
 2. Each sandbox has a distinct kernel, boot identity, PVC, and PV.
 3. Neither runtime receives an AWS credential path.
-4. A cross-tenant PVC mount, forged pod, forged revision ConfigMap, and
-   ephemeral-container update are denied.
+4. The runtimes bind to distinct namespace-local PVCs and PVs. Forged pod,
+   forged revision ConfigMap, and ephemeral-container update requests are
+   denied.
 5. Each sandbox exposes a virtio block device and partition, the temporary
    ordinary pod exposes no virtio device and has an NVMe block device and
    partition, and all three boot identities differ.
@@ -1419,20 +1436,24 @@ relay is gone. By default, cleanup refuses to change the deployment while an
 OCE-managed tenant namespace exists. To delete the disposable validation
 tenants and their data, run cleanup with the original state, receipts, context,
 exact tenant namespace list, Pod Identity values, and the explicit
-`--delete-tenant-data` opt-in. Capture each namespace UID immediately before
-cleanup so a deleted and recreated same-name namespace cannot be mistaken for
-the original:
+`--delete-tenant-data` opt-in. Use the namespace identity files captured when
+the tenants were created so a deleted and recreated same-name namespace cannot
+be mistaken for the original:
 
 ```bash
-TENANT_A_NAMESPACE='<tenant-a-kubernetes-namespace>'
-TENANT_B_NAMESPACE='<tenant-b-kubernetes-namespace>'
+TENANT_A_NAMESPACE_IDENTITY_FILE='<tenant-a-namespace-identity-file>'
+TENANT_B_NAMESPACE_IDENTITY_FILE='<tenant-b-namespace-identity-file>'
+TENANT_A_NAMESPACE="$(
+  jq -er '.name' "$TENANT_A_NAMESPACE_IDENTITY_FILE"
+)"
 TENANT_A_NAMESPACE_UID="$(
-  kubectl --kubeconfig "$KUBECONFIG" --context "$KUBE_CONTEXT" \
-    get namespace "$TENANT_A_NAMESPACE" --output=jsonpath='{.metadata.uid}'
+  jq -er '.uid' "$TENANT_A_NAMESPACE_IDENTITY_FILE"
+)"
+TENANT_B_NAMESPACE="$(
+  jq -er '.name' "$TENANT_B_NAMESPACE_IDENTITY_FILE"
 )"
 TENANT_B_NAMESPACE_UID="$(
-  kubectl --kubeconfig "$KUBECONFIG" --context "$KUBE_CONTEXT" \
-    get namespace "$TENANT_B_NAMESPACE" --output=jsonpath='{.metadata.uid}'
+  jq -er '.uid' "$TENANT_B_NAMESPACE_IDENTITY_FILE"
 )"
 
 "$SAMPLE_DIR/scripts/cleanup.sh" \
@@ -1475,8 +1496,9 @@ and tenant-bound persistent volume, temporarily blocks namespaced `CREATE` and
 namespaces. It waits until the tenant namespaces, PVCs, and recorded PVs are
 absent before removing the temporary freeze or the original Nitro admission
 controls. If cleanup stops partway through, rerun the same command and private
-state; the deletion record prevents a same-name replacement from being
-accepted.
+state. You may omit the `--tenant-namespace-uid` flags on a retry; cleanup uses
+the protected deletion record created by the first attempt. That record
+prevents a same-name replacement from being accepted.
 
 The script removes the Pod Identity association before its Kubernetes identity,
 then uninstalls OCE and deletes only receipt-matched system, adapter,

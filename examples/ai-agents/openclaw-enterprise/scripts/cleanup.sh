@@ -112,13 +112,6 @@ def parse_args():
         fail("a reserved namespace was supplied as a tenant namespace.")
     if args.delete_tenant_data and not args.tenant_namespace:
         fail("--delete-tenant-data requires at least one --tenant-namespace.")
-    if args.delete_tenant_data and (
-        set(args.tenant_namespace_uids) != set(args.tenant_namespace)
-    ):
-        fail(
-            "--delete-tenant-data requires one "
-            "--tenant-namespace-uid NAME=UID for every supplied tenant namespace."
-        )
     aws_fields = (
         "aws_region", "aws_account_id", "eks_cluster_name",
         "pod_identity_association_id", "iam_role_name", "iam_inline_policy_name",
@@ -1138,7 +1131,7 @@ class Cleanup:
                 "cleanup tenant namespace set (" + "; ".join(detail) + ")."
             )
         if deletion:
-            if supplied_targets != deletion["namespaces"]:
+            if supplied_targets and supplied_targets != deletion["namespaces"]:
                 fail(
                     "the supplied tenant namespace identities do not exactly "
                     "match the recorded tenant deletion identities."
@@ -1159,6 +1152,12 @@ class Cleanup:
                 "listed tenant namespaces and their data."
             )
         if self.a.delete_tenant_data:
+            if set(self.a.tenant_namespace_uids) != supplied:
+                fail(
+                    "--delete-tenant-data requires one "
+                    "--tenant-namespace-uid NAME=UID for every supplied tenant "
+                    "namespace on the first cleanup attempt."
+                )
             live = self.require_tenant_namespaces_unchanged(supplied_targets)
             return live, supplied_targets
         return tenant_plans, self.tenant_namespace_targets(tenant_plans)
@@ -1320,8 +1319,7 @@ class Cleanup:
                 )
             time.sleep(2)
 
-    def delete_tenant_data(self, tenant_plans, protected_targets):
-        state = self.prepare_tenant_deletion(protected_targets)
+    def delete_tenant_data(self, tenant_plans, protected_targets, state):
         if state["complete"]:
             self.wait_for_tenant_data_deletion(state)
             if self.tenant_freeze_exists():
@@ -1833,6 +1831,7 @@ class Cleanup:
             # Keep the tenant freeze active until the exact namespace UIDs and
             # their recorded storage have gone. The OCE release is removed
             # first so its controllers cannot recreate a deleted tenant.
+            tenant_deletion = self.prepare_tenant_deletion(tenant_targets)
             self.ensure_tenant_freeze(tenant_plans, tenant_targets)
             tenant_plans = self.require_tenant_namespaces_unchanged(
                 tenant_targets, allow_absent=self.tenant_deletion_exists()
@@ -1843,7 +1842,11 @@ class Cleanup:
                     "--namespace", self.a.namespace, "--wait", "--timeout", "10m",
                 ])
                 helm = False
-            self.delete_tenant_data(tenant_plans, tenant_targets)
+            self.delete_tenant_data(
+                tenant_plans,
+                tenant_targets,
+                tenant_deletion,
+            )
 
         # Remove the AWS identity binding before deleting its Kubernetes
         # ServiceAccount or namespace. A failed AWS deletion therefore leaves

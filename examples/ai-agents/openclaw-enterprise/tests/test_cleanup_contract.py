@@ -1311,9 +1311,13 @@ def test_tenant_delete_requires_a_captured_uid_for_every_namespace(
     assert result.returncode == 1
     assert result.stderr == (
         "cleanup: --delete-tenant-data requires one "
-        "--tenant-namespace-uid NAME=UID for every supplied tenant namespace.\n"
+        "--tenant-namespace-uid NAME=UID for every supplied tenant namespace "
+        "on the first cleanup attempt.\n"
     )
-    assert _state(env) == before
+    after = _state(env)
+    after["tenantDiscoveryCount"] = before["tenantDiscoveryCount"]
+    after["aws"]["policyGetCount"] = before["aws"]["policyGetCount"]
+    assert after == before
 
 
 def test_replacement_same_name_namespace_fails_before_any_mutation(
@@ -1413,6 +1417,13 @@ def test_tenant_uid_replacement_is_rejected_before_control_plane_removal(
         current["resources"][f"namespace/{tenant_namespace}"]["metadata"]["uid"]
         == "replacement-tenant-uid"
     )
+    deletion_state = json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )
+    assert deletion_state["namespaces"] == [
+        {"name": tenant_namespace, "uid": f"uid-{tenant_namespace}"}
+    ]
+    assert deletion_state["complete"] is False
     assert any(
         resource.startswith("clusterrole.rbac.authorization.k8s.io/")
         for resource in current["resources"]
@@ -1541,7 +1552,16 @@ def test_partial_tenant_delete_rerun_uses_recorded_uids_and_keeps_controls(
     )
     assert deletion_state["complete"] is False
 
-    recovered = _run(destructive_command, env)
+    retry_command = [
+        *command,
+        *[
+            argument
+            for tenant in tenants
+            for argument in ("--tenant-namespace", tenant)
+        ],
+        "--delete-tenant-data",
+    ]
+    recovered = _run(retry_command, env)
 
     assert recovered.returncode == 0, recovered.stderr
     final = _state(env)
