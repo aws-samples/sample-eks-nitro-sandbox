@@ -97,6 +97,7 @@ The files:
 | [`deploy/rbac.yaml`](deploy/rbac.yaml) | The identities, and what the launcher may do: manage `SandboxClaims` and read `Sandboxes` |
 | [`scripts/setup_agent.py`](scripts/setup_agent.py), [`submit.py`](scripts/submit.py), [`cleanup.py`](scripts/cleanup.py) | Run on your machine with the application key: create the agent, start a session, clean up sessions and claims |
 | [`scripts/check-egress.py`](scripts/check-egress.py) | The egress check (the two allowed hosts and two refused), piped into a sandbox from your machine |
+| [`scripts/coredns-cidr.sh`](scripts/coredns-cidr.sh) | Works out the cluster's DNS address for the network policy. Run it on your machine. |
 | `.env.example` | The values the blueprint needs; copy it to `.env`, which git ignores |
 
 ## How the hand-off works
@@ -364,7 +365,7 @@ spec:
   ingress: []        # deny all ingress; the sandbox has no network intake
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -376,12 +377,29 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-Apply both policies, and wait for the sandbox policy's `PolicyEndpoint`:
+The DNS rule allows the cluster's DNS address only. The Amazon EKS User Guide gives the rule in
+[Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). For IPv4, take the `.10` address of the
+service CIDR, so `10.100.0.0/16` gives `10.100.0.10/32`. For IPv6, append `a` to the network
+address, so `fd12:3456:789a::/108` gives `fd12:3456:789a::a/128`. To see your cluster's IP
+family and service CIDRs:
 
 ```bash
-kubectl apply -f deploy/egress-policy.yaml
-kubectl apply -f deploy/launcher-ingress.yaml
-until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/openai-sandbox-executor-egress-'; do sleep 2; done
+aws eks describe-cluster --name $CLUSTER_NAME --region $AWS_REGION --output text \
+  --query 'cluster.kubernetesNetworkConfig.[ipFamily,serviceIpv4Cidr,serviceIpv6Cidr]'
+```
+
+[`coredns-cidr.sh`](scripts/coredns-cidr.sh) runs that command and applies the rule. It stops
+with an error if the service CIDR is missing or malformed, and each command below runs only if
+the one before it worked, so nothing is applied after that error.
+
+Apply both policies, the sandbox policy with that address filled in, and wait for the sandbox
+policy's `PolicyEndpoint`:
+
+```bash
+COREDNS_CIDR=$(scripts/coredns-cidr.sh $CLUSTER_NAME $AWS_REGION) &&
+  sed "s|<COREDNS_CIDR>|$COREDNS_CIDR|" deploy/egress-policy.yaml | kubectl apply -f - &&
+  kubectl apply -f deploy/launcher-ingress.yaml &&
+  until kubectl get policyendpoints -o name | grep -q '^policyendpoint.networking.k8s.aws/openai-sandbox-executor-egress-'; do sleep 2; done
 ```
 
 **Step 6: Deploy the sandbox and the launcher.** Here is the part of
@@ -472,17 +490,17 @@ kubectl exec $POD -- sh -c 'env | cut -d= -f1 | grep -E "^(OPENAI_|CODEX_)" | so
 
 ```text
 isolated-sandbox
-6.18.54 #1 SMP PREEMPT_DYNAMIC Thu Oct 22 17:38:11 UTC 2026
-205.67
+6.18.62 #1 SMP PREEMPT_DYNAMIC Thu Nov 12 22:44:15 UTC 2026
+60.39
 dm-0 vda vdb vdc
 CODEX_HOME
 CODEX_PATH
 ```
 
 The sandbox runs its own kernel. It booted with the pod, after the pod was scheduled onto its
-node, so its uptime, about 206 seconds here, is shorter than the pod's age. In the run on this
+node, so its uptime, about 60 seconds here, is shorter than the pod's age. In the run on this
 page the clock was read right after the uptime, and then the pod's creation time, its
-container's start time and its node (the node's name is replaced with `<NODE>`):
+container's start time and its node (node names are replaced with `<NODE_A>` and `<NODE_B>`):
 
 ```bash
 date -u +%FT%TZ
@@ -490,14 +508,48 @@ kubectl get pod $POD -o jsonpath='{.metadata.creationTimestamp} {.status.contain
 ```
 
 ```text
-2026-11-10T03:46:21Z
-2026-11-10T03:42:06Z 2026-11-10T03:43:31Z <NODE>
+2026-11-16T18:28:31Z
+2026-11-16T18:26:12Z 2026-11-16T18:28:12Z <NODE_A>
 ```
 
-The pod was about 255 seconds old when its uptime read 205.67 seconds. The sandbox also sees
-virtio disks (`vda`, `vdb`, `vdc`). On the
-same node, an ordinary pod reports the node's kernel build, a `#2 SMP ...` string with a
-different date, and the instance's `nvme` disks; the version string may match, but the build
+The pod was about 139 seconds old when its uptime read 60.39 seconds. The sandbox also sees
+virtio disks (`vda`, `vdb`, `vdc`).
+
+The launcher is an ordinary pod from the same image, so it gives the comparison. Take the same
+readings in it, then its own creation time, start time and node, and the node of every pod:
+
+```bash
+kubectl exec deploy/openai-launcher -- sh -c 'uname -rv; cut -d" " -f1 /proc/uptime; ls /sys/block | tr "\n" " "; echo'
+kubectl get pods -l app=openai-launcher -o jsonpath='{.items[0].metadata.creationTimestamp} {.items[0].status.containerStatuses[0].state.running.startedAt} {.items[0].spec.nodeName}{"\n"}'
+kubectl get pods -l 'app in (openai-sandbox-executor,openai-launcher)' -o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName,RUNTIMECLASS:.spec.runtimeClassName'
+```
+
+```text
+6.18.62 #2 SMP PREEMPT_DYNAMIC Thu Nov 12 22:49:16 UTC 2026
+199.89
+dm-0 nvme0n1 nvme1n1 zram0
+2026-11-16T18:26:12Z 2026-11-16T18:26:34Z <NODE_B>
+NAME                               NODE       RUNTIMECLASS
+openai-launcher-6f5d8856c9-r9znk   <NODE_B>   <none>
+openai-sandbox-executor-dcdpk      <NODE_A>   isolated-sandbox
+openai-sandbox-executor-h5pfm      <NODE_A>   isolated-sandbox
+```
+
+The launcher's uptime was read within five seconds of the sandbox's, and both pods were
+created at 18:26:12. Side by side:
+
+| Reading | The warm sandbox | The launcher, an ordinary pod |
+|---|---|---|
+| `uname -rv` | `6.18.62 #1 ... 22:44:15`, its own kernel | `6.18.62 #2 ... 22:49:16`, the node's kernel |
+| `/proc/uptime` | 60 s, booted about 79 s *after* its pod was created | 200 s, booted about 60 s *before* its pod was created |
+| `ls /sys/block` | `vda vdb vdc`, virtio disks | `nvme0n1 nvme1n1`, the instance's disks |
+
+The sandbox's clock started after its pod existed, because the pod booted a kernel of its own.
+The launcher's clock started before its pod existed, because that clock is its node's: the
+node joined the cluster at 18:25:32, and an ordinary pod shares the node's kernel and boots
+none. On a node that has run for days the launcher's uptime reads days. In this run the
+launcher and the sandboxes landed on different nodes, as the scheduler chose; the readings
+compare a pod with the kernel it runs on either way. The version string matches, but the build
 and the boot do not. A warm sandbox holds no *credential*: the two `CODEX_*` variables it does
 print are filesystem paths set in the image (`CODEX_HOME=/workspace/.codex`,
 `CODEX_PATH=/usr/local/bin/codex`), not secrets. There is no `CODEX_API_KEY` and no `OPENAI_*`
@@ -722,7 +774,7 @@ its YAML does one job:
 | `podSelector`, `app: openai-sandbox-executor` | Selects the sandbox pods. The launcher is not selected. |
 | `policyTypes`, `Ingress` and `Egress` | Makes the selected pods default-deny in both directions, so only the rules below are allowed. |
 | `ingress`, empty | No pod may connect to a sandbox. The launcher delivers the session through the claim env, not the network, so a sandbox needs no inbound rule. |
-| `egress`, to `0.0.0.0/0` on UDP and TCP 53 | Lets the sandbox look up names, with DNS allowed to any address. |
+| `egress`, to `<COREDNS_CIDR>` on UDP and TCP 53 | Lets the sandbox look up names at the cluster's DNS address only, the nameserver in every pod's `resolv.conf`. Port 53 to any address would let a command the model runs reach any DNS server on the internet. That command could then send data out over DNS or reach a VPN listening on port 53. |
 | `egress`, to the two `domainNames` on TCP 443 | Lets the executor's forwarder register at `api.openai.com` and exchange commands and results with `codex-cloud-environments.chatgpt.com`. |
 
 Anything that matches no rule is refused: the public internet, AWS service endpoints such as

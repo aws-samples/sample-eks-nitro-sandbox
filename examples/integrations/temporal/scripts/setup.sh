@@ -9,6 +9,10 @@
 # cluster may depend on, so this script reads them, reuses them exactly as they
 # stand, and stops with the command when one is missing or is set up differently
 # from what this sample needs.
+# Stop here on bash 3.2 (macOS): the rest of this script needs bash 4.
+# shellcheck source=../../../../scripts/lib/require-bash.sh
+. "$(dirname "$0")/../../../../scripts/lib/require-bash.sh" \
+  || { echo "error: cannot load the bash version check (../../../../scripts/lib/require-bash.sh); run this script by its own path." >&2; exit 1; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "$HERE/common.sh"

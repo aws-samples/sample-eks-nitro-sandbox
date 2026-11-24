@@ -15,6 +15,7 @@ Start from the [site home page](examples/README.md) for what a Nitro sandbox is 
 Node and cluster preparation the other blueprints treat as a prerequisite.
 
 - [Ubuntu AMI](examples/setup/ubuntu-ami/README.md): build a custom Ubuntu 24.04 node AMI for EKS Pod Isolation and add one dedicated, tainted managed node group to an existing cluster, for readers who manage their own node OS instead of EKS Auto Mode.
+- [AL2023 AMI](examples/setup/al2023-ami/README.md): build a custom Amazon Linux 2023 node AMI with the upstream `amazon-eks-ami` Packer flow (`enable_pod_isolation=true`) and add it to a standard (non-Auto-Mode) cluster with a Karpenter `EC2NodeClass` and a managed node group, each enabling Nitro via the launch template's enclave option, then run an `isolated-sandbox` pod.
 - [Cilium on Ubuntu nodes](examples/setup/cilium-ubuntu/README.md): a dedicated disposable EKS cluster whose only CNI is Cilium, with two Ubuntu 24.04 node groups, and an `isolated-sandbox` pod that gets normal pod networking and the same enforced policy as an ordinary pod.
 
 ## Isolation
@@ -77,6 +78,8 @@ The same procurement analyst, with four choices for confining its tool processes
 ## Integrations
 
 - [Temporal workflows](examples/integrations/temporal/README.md): a self-hosted Temporal server where one durable workflow creates a sandbox, runs a step in it, suspends it, resumes it onto a new guest with its workspace intact and deletes it, retrying a failed activity and carrying on through its Worker pod being deleted mid-run.
+- [Istio sidecars](examples/integrations/istio/README.md): Istio with the `istio-init` init container and Envoy sidecar on Nitro sandboxes, with strict mutual TLS and an authorization policy, and a plain statement of what does not work today (the Istio CNI plugin, which is not on the roadmap for now, and ambient mesh, which is on the roadmap).
+- [Coder workspaces](examples/integrations/coder/README.md): Coder Community Edition on EKS, where every developer workspace is its own sandbox with Claude Code on Amazon Bedrock through EKS Pod Identity and a home volume that survives stop and start, reached over HTTPS through Amazon CloudFront and an internal Application Load Balancer, with every admin and developer signing in through Keycloak.
 
 ## Confidential
 

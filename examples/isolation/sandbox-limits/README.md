@@ -201,16 +201,17 @@ The comparison script checks this setting rather than changing this shared setti
 
 **Step 2: Deploy the namespace, the egress policy and the two probe pods.** The probe pods are
 identical but for one line: `probe-sandboxed` sets `runtimeClassName: isolated-sandbox`,
-`probe-standard` does not. The egress policy selects both and allows DNS on port 53 to any
-address: it is a literal `0.0.0.0/0` in the file, so there is no cluster-specific address to
-look up or substitute.
+`probe-standard` does not. The egress policy selects both and allows DNS on port 53 to the
+cluster's DNS address only. The commands below fill `<COREDNS_CIDR>` in first. They stop without applying anything if the `kubernetes` Service address is not one they expect.
 
 `kubectl create` refuses a `sandbox-limits` namespace that already exists, so a namespace this
 blueprint did not make is never relabeled as its own:
 
 ```bash
 kubectl create -f deploy/namespace.yaml &&
-kubectl apply -f deploy/egress-policy.yaml &&
+. scripts/coredns-cidr-from-service.sh &&
+COREDNS_CIDR="$(cluster_coredns_cidr_from_service kubectl)" &&
+sed "s|<COREDNS_CIDR>|$COREDNS_CIDR|g" deploy/egress-policy.yaml | kubectl apply -f - &&
 kubectl apply -f deploy/probe-standard.yaml &&
 kubectl apply -f deploy/probe-sandboxed.yaml &&
 for p in probe-standard probe-sandboxed; do
@@ -315,10 +316,7 @@ namespace, applies the policy and the two pods, and prints each probe's answered
 The probe pods have a network, so the blueprint restricts their egress with a standard
 `networking.k8s.io/v1` `NetworkPolicy` and shows the whole policy here. It allows just two things,
 the DNS the DNS probe needs and the TCP egress to the sink the connection probe needs, and denies
-everything else. DNS (port 53) is allowed to any IP address: a literal `0.0.0.0/0` in the file,
-with no cluster-specific address to look up or substitute. While CoreDNS typically runs on a
-fixed cluster address, allowing any destination eliminates the need for address lookup and
-substitution and avoids issues with missing or malformed cluster DNS addresses.
+everything else. DNS on port 53 goes to the cluster's DNS address only. On EKS Auto Mode the node answers it, so there is no `kube-dns` Service to look up. The Amazon EKS User Guide gives the rule in [Determining the CoreDNS IP address](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html#_determining_the_coredns_ip_address). IPv4 uses the `.10` address of the service CIDR. IPv6 uses its network address with `a` appended. [`scripts/coredns-cidr-from-service.sh`](scripts/coredns-cidr-from-service.sh) reads the `kubernetes` Service, which holds the first address of that CIDR. It turns `10.100.0.1` into `10.100.0.10/32` and `fd12:3456:789a::1` into `fd12:3456:789a::a/128`. It stops on an empty address or one that does not end in `.1` or `::1`. Port 53 to any address would let code in the sandbox reach any DNS server on the internet.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -335,7 +333,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -352,13 +350,13 @@ spec:
 | `podSelector: app: dns-probe` | Selects every probe pod, the sandboxed and the ordinary one alike |
 | `policyTypes: [Ingress, Egress]` | Makes both directions default-deny for the selected pods, so anything not allowed below is refused |
 | no `ingress:` rule | Denies all ingress to the probe pods |
-| `egress` to `0.0.0.0/0` on UDP and TCP 53 | DNS to any address, which the DNS probe needs. An `ipBlock`, as [Getting started > Coding agent](../../getting-started/coding-agent/README.md) uses |
+| `egress` to `<COREDNS_CIDR>` on UDP and TCP 53 | DNS on UDP and TCP 53 to the cluster's DNS address only, as the paragraph above explains. The DNS probe needs it. An `ipBlock`, as [Getting started > Coding agent](../../getting-started/coding-agent/README.md) uses |
 | `egress` to the `conntrack-sink` pod on TCP 9000 | The connection sink, which the connection-limit probe opens held-open outbound flows to. Nothing else is reachable, so the probe cannot leave the cluster |
 
 The policy is enforced on the node, outside the guest: the node's network policy agent attaches
 the enforcement to the pod's host-side interface, so a command run inside the sandbox, even as
-root, is subject to it. Its limit: DNS is open on port 53 to any address, so a resolver is
-always reachable; everything beyond DNS and the conntrack sink is denied. A pod can always
+root, is subject to it. Its limit: DNS is open on port 53 to the cluster's DNS address, so the
+cluster resolver is always reachable; everything beyond DNS and the conntrack sink is denied. A pod can always
 reach its own node.
 
 Apply the policy and wait for its `PolicyEndpoint` before relying on enforcement: it shows the

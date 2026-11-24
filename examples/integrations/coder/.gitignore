@@ -1,0 +1,7 @@
+# Local values. Only .env.example is committed. The scripts write their files to the
+# repository's tmp/coder, which the root .gitignore already covers.
+.env
+.env.*
+!.env.example
+# Terraform's working directory, if you run terraform init in a template folder yourself.
+.terraform/

@@ -5,11 +5,12 @@
 # selects (app: efs-shared), all ingress and all egress are denied except DNS on UDP and
 # TCP 53 and NFS (TCP 2049) to the EFS mount-target addresses.
 #
-# DNS is allowed to any address (0.0.0.0/0 on port 53), not pinned to the CoreDNS
-# Service IP. On EKS Auto Mode CoreDNS runs as a per-node systemd service rather than a
-# pod behind a ClusterIP, so the resolver a pod actually reaches is node-local; allowing
-# port 53 to any address keeps name resolution working wherever Auto Mode places it. The
-# rule is still narrow: it opens only the DNS ports, and everything else stays denied.
+# DNS (port 53) is allowed to one address only: <COREDNS_CIDR>, the cluster's DNS address,
+# which is the nameserver in every pod's resolv.conf. On EKS Auto Mode the node answers
+# it; there is no kube-dns Service. scripts/coredns-cidr.sh works it out from the service
+# CIDR (10.100.0.10/32, or fd12:3456:789a::a/128 on IPv6), and setup.sh fills it in.
+# Port 53 to any address would let code in the sandbox reach any DNS server on the
+# internet, and so send data out over DNS or reach a VPN listening on port 53 (#226).
 #
 # test.sh renders this file before applying it:
 #   <MOUNT_TARGET_BLOCK>  one `- ipBlock: { cidr: <ip>/32 }` line per EFS mount-target IP,
@@ -34,7 +35,7 @@ spec:
     - Egress
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

@@ -8,4 +8,7 @@ RUN CGO_ENABLED=0 go build -o /hello main.go
 
 FROM public.ecr.aws/docker/library/alpine:3.24.3
 COPY --from=build /hello /hello
+# A high numeric UID and GID with no entry in /etc/passwd: the binary only prints, so it
+# needs no home and writes nothing.
+USER 10001:10001
 ENTRYPOINT ["/hello"]
