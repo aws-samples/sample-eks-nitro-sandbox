@@ -10,10 +10,12 @@
 # passes credential requests to 169.254.170.23 on to the Pod Identity Agent on the
 # node, and this policy applies to them: without the rule they time out.
 #
-# DNS (port 53) is allowed to any IP address. While CoreDNS typically runs on a fixed
-# cluster address, allowing any destination eliminates the need for address lookup and
-# substitution. This simplifies the setup and avoids issues with missing or malformed
-# cluster DNS addresses (#104).
+# DNS (port 53) is allowed to one address only: <COREDNS_CIDR>, the cluster's DNS address,
+# which is the nameserver in every pod's resolv.conf. On EKS Auto Mode the node answers
+# it; there is no kube-dns Service. scripts/coredns-cidr.sh works it out from the service
+# CIDR (10.100.0.10/32, or fd12:3456:789a::a/128 on IPv6), and the README's Claude Platform on AWS section
+# fills it in. Port 53 to any address would let code in the sandbox reach any DNS server
+# on the internet, and so send data out over DNS or reach a VPN listening on port 53 (#226).
 # <AWS_REGION> is your workspace's Region.
 apiVersion: networking.k8s.aws/v1alpha1
 kind: ApplicationNetworkPolicy
@@ -35,7 +37,7 @@ spec:
         - { protocol: TCP, port: 8080 }
   egress:
     - to:
-        - ipBlock: { cidr: 0.0.0.0/0 }
+        - ipBlock: { cidr: <COREDNS_CIDR> }
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }

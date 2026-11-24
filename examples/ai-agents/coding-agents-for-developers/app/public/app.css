@@ -182,6 +182,18 @@ td .name-cell { font-weight: 500; }
 }
 .term-titlebar button:hover { background: var(--border-strong); }
 .term-titlebar button[data-act="close"]:hover { background: var(--danger); color: #fff; }
+.term-tabs {
+  display: flex; gap: var(--space-1); padding: var(--space-1) var(--space-3) 0;
+  background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.term-tab {
+  padding: var(--space-1) var(--space-3); font-size: 12px; color: var(--muted);
+  background: transparent; border: 1px solid transparent; border-bottom: none;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0; cursor: pointer;
+}
+.term-tab:hover { color: var(--text); }
+.term-tab.active { color: var(--text); background: #000; border-color: var(--border); }
+.term-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .term-body { flex: 1; padding: var(--space-2); min-height: 0; }
 .resize-handle {
   position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;

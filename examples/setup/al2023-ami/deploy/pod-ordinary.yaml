@@ -1,0 +1,40 @@
+# The side-by-side ordinary pod: no runtimeClassName, so it runs under runc on the node's shared
+# kernel. The page shows this beside the isolated pod so a reader sees the difference: this pod's
+# uname -r is the node's host kernel and its /sys/block shows the node's real disks, while the
+# isolated pod reports its own guest kernel and virtio disks.
+#
+# It has no network-isolated annotation because an ordinary pod cannot take one; it is here only
+# to contrast kernel and devices, and it tolerates the same node taint so it lands on the same node.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ordinary-hello
+  namespace: al2023-ami-sample
+  labels:
+    app: ordinary-hello
+spec:
+  nodeSelector:
+    "@NODE_SELECTOR_KEY@": "@NODE_SELECTOR_VALUE@"
+  tolerations:
+    - key: sandbox.blueprint/al2023-ami
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  containers:
+    - name: main
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      command: ["sh", "-ec"]
+      args:
+        - |
+          echo "Host kernel: $(uname -r)"
+          echo "Host block devices:"
+          ls -1 /sys/block
+          sleep infinity
+      resources:
+        requests:
+          cpu: "200m"
+          memory: 256Mi
