@@ -33,11 +33,26 @@ spec:
         app.kubernetes.io/name: temporal-sandbox-worker
         app.kubernetes.io/managed-by: temporal
     spec:
+      # The Worker authenticates to the Kubernetes API with this ServiceAccount's
+      # projected token, so the token stays mounted (no
+      # automountServiceAccountToken: false here). The Role in rbac.yaml bounds
+      # what it can do.
       serviceAccountName: temporal-sandbox-worker
       # A Worker that is deleted mid-run should go away promptly: the workflow's
       # state is in the server's history, so there is nothing on this pod worth
       # waiting for.
       terminationGracePeriodSeconds: 10
+      # UID 10001 is the image's own non-root user (worker/Dockerfile, USER 10001).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # No liveness or readiness probe, and no port: the Worker is one process
+      # that polls the Temporal task queue. No Service sends it traffic, so
+      # readiness would gate no Service traffic. When the process exits
+      # Kubernetes restarts the container; detecting a hung Worker would need
+      # a heartbeat the harness does not expose.
       containers:
         - name: worker
           image: __WORKER_IMAGE__
@@ -77,3 +92,6 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+            # The Worker writes nothing to its image filesystem: the image sets
+            # PYTHONDONTWRITEBYTECODE, and every step's file is in the sandbox.
+            readOnlyRootFilesystem: true
