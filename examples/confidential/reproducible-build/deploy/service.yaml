@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: reproducible-build
+  # setup.sh fills in the namespace at apply time.
+  labels:
+    app.kubernetes.io/managed-by: reproducible-build
+spec:
+  # ClusterIP only: no Ingress, LoadBalancer or NodePort. Reach the service from inside
+  # the cluster with kubectl port-forward or from another pod by its DNS name.
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: reproducible-build
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reproducible-build-demo
+  # setup.sh fills in the namespace, the image digest, the Region, and the KMS key ARN at
+  # apply time, and adds the sandbox.amazonaws.com/policy annotation. That annotation is
+  # one long base64 string, so it is never kept in this file; the rendered pod setup.sh
+  # applies is written to the repository's tmp/.
+  labels:
+    app.kubernetes.io/name: reproducible-build
+    app.kubernetes.io/managed-by: reproducible-build
+spec:
+  # Confidential mode treats the node as untrusted. It is what binds key release to the
+  # Cedar policy this pod carries: the guest measures that policy into PCR17, and the KMS
+  # key policy releases the data key only to the measurement it was set to expect.
+  runtimeClassName: confidential-sandbox
+  serviceAccountName: reproducible-build-pod
+  # The service runs until it is stopped; a Never restart policy keeps a failed pod for
+  # inspection rather than restarting it and asking KMS to attest again.
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    # Numeric user and group IDs, and supplementalGroupsPolicy: Strict, so the generator
+    # can pin the identity exactly rather than permitting additional groups.
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    supplementalGroupsPolicy: Strict
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: main
+      # The application image this sample builds, in its own ECR repository. setup.sh
+      # renders this placeholder with the digest URI it pushed.
+      image: <IMAGE_REPO>@<IMAGE_DIGEST>
+      ports:
+        - containerPort: 8080
+      env:
+        # Both names, set to the same Region, on purpose. With only AWS_REGION declared,
+        # the EKS Pod Identity webhook leaves out the AWS_DEFAULT_REGION it would otherwise
+        # inject, while a policy generated with --with-pod-identity still expects it in the
+        # pinned environment, and the guest then refuses to create the container. Declaring
+        # both keeps the manifest and the policy agreed.
+        - name: AWS_REGION
+          value: <REGION>
+        - name: AWS_DEFAULT_REGION
+          value: <REGION>
+        # The KMS key the caller asks the service to decrypt with.
+        - name: KMS_KEY_ARN
+          value: <KMS_KEY_ARN>
+        # The service defaults to 127.0.0.1:8080, which is unreachable through the
+        # ClusterIP Service. 0.0.0.0:8080 is reachable only inside the cluster network:
+        # the only way in is the ClusterIP Service, and the sample has no Ingress,
+        # LoadBalancer or NodePort.
+        - name: LISTEN_ADDR
+          value: "0.0.0.0:8080"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      # The sandbox sizes the guest VM from requests, so a limit above the request would
+      # not give the VM more. cpu 1 and memory 1Gi give the guest enough room to unpack
+      # the image and run the Rust binary.
+      resources:
+        requests:
+          cpu: "1"
+          memory: 1Gi
