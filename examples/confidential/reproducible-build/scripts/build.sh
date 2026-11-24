@@ -39,6 +39,10 @@ IMAGE_ATTR="${IMAGE_ATTR:-image}"
 # Runs inside the container as sh. $1 is the mode, $2 the push reference.
 # shellcheck disable=SC2016  # expanded by the container's shell, not this one
 INNER='set -eu
+# Hand /out back to whoever owns the mount point. Under rootful Docker on Linux that is the
+# host user, who could not otherwise remove the root-owned OCI layout; under rootless
+# runtimes and Docker Desktop it is root inside, which already maps to the host user.
+trap "chown -R \"\$(stat -c %u:%g /out)\" /out" EXIT
 mode="$1"
 ref="${2:-}"
 cp -r /src /work

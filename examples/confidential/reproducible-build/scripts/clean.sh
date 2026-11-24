@@ -18,9 +18,10 @@
 #     be checked.
 #
 # The KMS key is scheduled for deletion with a 7-day waiting period (the minimum AWS
-# allows); there is no way to destroy it sooner. Its alias is deleted at once so the name
-# is reusable on the next run. The IAM role deletion is refused when any identity policy
-# is attached; detach them first or set a new ROLE_NAME in .env.
+# allows); there is no way to destroy it sooner. Its alias is deleted once the key is
+# scheduled, so the name is reusable on the next run; a failed schedule keeps it for a
+# retry. The IAM role deletion is refused when any identity policy is attached; detach
+# them first or set a new ROLE_NAME in .env.
 # -e is omitted on purpose: note_fail() accumulates failures and continues; -e would exit
 # at the first failed command before note_fail can fire.
 set -uo pipefail
@@ -102,16 +103,24 @@ main() {
           note_fail "the KMS key behind ${kms_alias} does not carry ManagedBy=${MANAGED_BY}" \
             "(found '${key_tag}'); left it and its alias alone"
         else
-          echo "Deleting the alias ${kms_alias}..."
-          aws kms delete-alias --alias-name "${kms_alias}" \
-            || note_fail "could not delete the KMS alias ${kms_alias}"
+          # Schedule first, then drop the alias: the alias is how the next clean up finds the
+          # key, so a failed schedule must leave it in place for a retry.
+          local scheduled=true
           if [[ "${key_state}" == "PendingDeletion" ]]; then
             echo "The KMS key ${key_id} is already scheduled for deletion."
           else
             echo "Scheduling the KMS key ${key_id} for deletion in 7 days (the shortest AWS allows)..."
             aws kms schedule-key-deletion --key-id "${key_id}" --pending-window-in-days 7 \
               --query '[KeyId,DeletionDate]' --output text \
-              || note_fail "could not schedule the KMS key ${key_id} for deletion"
+              || {
+                scheduled=false
+                note_fail "could not schedule the KMS key ${key_id} for deletion; kept ${kms_alias} for a retry"
+              }
+          fi
+          if [[ "${scheduled}" == true ]]; then
+            echo "Deleting the alias ${kms_alias}..."
+            aws kms delete-alias --alias-name "${kms_alias}" \
+              || note_fail "could not delete the KMS alias ${kms_alias}"
           fi
         fi
       fi
@@ -320,7 +329,7 @@ main() {
       note_fail "could not determine whether IAM role ${role_name} exists"
     fi
 
-    # KMS keys: delete each alias at once so the name is reusable, then schedule the key.
+    # KMS keys: schedule each key, then delete its alias so the name is reusable.
     clean_kms_key "${debug_kms_alias}"
     clean_kms_key "${kms_alias}"
 

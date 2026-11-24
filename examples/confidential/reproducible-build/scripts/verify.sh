@@ -5,7 +5,7 @@
 #
 # Read-only AWS calls this script makes:
 #   ecr:GetAuthorizationToken  -- auth for the policy generator's ECR pull
-#   ecr:DescribeImages  -- confirm rebuilt digest is in ECR; find v1-* tag and its digest
+#   ecr:DescribeImages  -- confirm the rebuilt digest and its v1-<digest12> tag are in ECR
 #   ecr:BatchGetImage  -- fetch manifests when tag digest differs from rebuilt
 #   kms:ListAliases  -- find the alias ARN for the KMS key
 #   kms:GetKeyPolicy  -- read the live gate on the KMS key
@@ -112,8 +112,9 @@ echo "  rebuilt: ${rebuilt}"
 # -------------------------------------------------------------- 2/4 compare ECR
 echo "== step 2/4 compare with ECR =="
 
-# IMAGE_REPO is the full ECR repository URI; the name is the last path component.
-repo_name="${IMAGE_REPO##*/}"
+# IMAGE_REPO is the full ECR repository URI; the name is everything after the registry host,
+# so a slash-delimited name such as team/reproducible-build stays whole.
+repo_name="${IMAGE_REPO#*/}"
 
 # Confirm the rebuilt digest is in ECR.
 ecr_rc=0
@@ -128,8 +129,8 @@ if [[ "${ecr_rc}" == 1 ]]; then
 fi
 [[ "${ecr_rc}" == 0 ]] || exit 2
 
-# Find the v1-* tag. The tag embeds the first 12 hex digits of the pushed digest, so the
-# expected tag is predictable from the rebuilt digest.
+# Check the v1-<digest12> tag, which embeds the first 12 hex digits of the pushed digest, so
+# it is predictable from the rebuilt digest. A missing tag fails verification.
 digest12="${rebuilt:7:12}"
 expected_tag="v1-${digest12}"
 tag_rc=0
@@ -141,22 +142,8 @@ tag_json="$(lookup ImageNotFoundException ecr describe-images \
 if [[ "${tag_rc}" == 2 ]]; then
   exit 2
 elif [[ "${tag_rc}" == 1 ]]; then
-  # Expected tag absent; look for any v1-* tag to compare against.
-  all_rc=0
-  all_json="$(aws ecr describe-images --repository-name "${repo_name}" \
-    --filter tagStatus=TAGGED --output json 2>/dev/null)" || all_rc=$?
-  if [[ "${all_rc}" != 0 ]]; then
-    echo "ERROR: could not list images in ${repo_name} to find a v1-* tag" >&2
-    exit 2
-  fi
-  v1_digest="$(jq -r '[.imageDetails[] | select(.imageTags != null)
-    | select(.imageTags[] | startswith("v1-"))] | .[0].imageDigest // empty' \
-    <<<"${all_json}")"
-  if [[ -z "${v1_digest}" ]]; then
-    echo "  no v1-* tag found in ECR; rebuilt digest confirmed present"
-  else
-    save_manifests_and_fail "${rebuilt}" "${v1_digest}" "${repo_name}"
-  fi
+  echo "ERROR: the expected tag ${expected_tag} is not in ECR repository ${repo_name}" >&2
+  exit 1
 else
   tagged_digest="$(jq -r '.imageDetails[0].imageDigest' <<<"${tag_json}")"
   if [[ "${tagged_digest}" != "${rebuilt}" ]]; then

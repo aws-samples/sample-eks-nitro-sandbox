@@ -273,7 +273,7 @@ settle_key_policy_principal() {
   return 0
 }
 
-# Forward <local-port> to <target> (pod/x or svc/x) in NAMESPACE and wait until it accepts TCP.
+# Forward <local-port> to <target> (pod/x or svc/x) in NAMESPACE and wait for kubectl to report it is forwarding.
 # kubectl itself is backgrounded, not kc, so PF_PID is kubectl and not a subshell.
 # shellcheck disable=SC2154  # NAMESPACE set by the caller (via .env or state.env)
 start_port_forward() { # start_port_forward <target> <local-port> <log-file> <timeout-s>
@@ -285,7 +285,9 @@ start_port_forward() { # start_port_forward <target> <local-port> <log-file> <ti
   trap "kill ${PF_PID} 2>/dev/null || true" EXIT
   deadline=$((SECONDS + timeout))
   while ((SECONDS < deadline)) && kill -0 "${PF_PID}" 2>/dev/null; do
-    if (echo >"/dev/tcp/127.0.0.1/${port}") 2>/dev/null; then return 0; fi
+    # kubectl's own bind message, not a TCP probe: a probe also succeeds against some other
+    # process already listening on the port, before this kubectl fails to bind it.
+    if grep -q '^Forwarding from 127.0.0.1' "${log}" 2>/dev/null; then return 0; fi
     sleep 1
   done
   sed 's/^/  kubectl: /' "${log}" >&2 || true

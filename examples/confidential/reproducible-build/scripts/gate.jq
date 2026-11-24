@@ -54,6 +54,9 @@ def denies_decrypt: actions | any(action_matches("kms:decrypt"));
     # the count would also be 1 if this statement had been cut back to, say,
     # kms:DescribeKey and an unconditional decrypt allow added elsewhere.
     | select(actions | any(reaches_decrypt))
+    # And it reaches it only through Decrypt: kms:*, CreateGrant or ReEncryptFrom here would
+    # still count as the one decrypt-reaching action above, while granting something else.
+    | select(actions | map(ascii_downcase) == ["kms:decrypt"])
     # The ARN or the role unique id: KMS stores the id when the put lands while the role is
     # still propagating. Both name this one role and nothing else.
     | select((.Principal.AWS | if type == "array" then . else [.] end)
@@ -75,6 +78,9 @@ def denies_decrypt: actions | any(action_matches("kms:decrypt"));
     # so a single deny listing two registers fires only when BOTH fail to match, and a
     # request matching one and not the other slips past it.
     | select(.Condition.StringNotEqualsIgnoreCase | length == 1)
+    # Nothing beside it: another operator (Bool, ...) would be ANDed in and narrow the deny.
+    | select(.Condition | keys == ["StringNotEqualsIgnoreCase"])
+    | select(.Resource == "*")
   ] | length) as $pcr17_denies
 | ([.Statement[] | select(.Sid == "DenyUnlessTheAttestationComesFromAnEKSSandbox")
     | select(.Effect == "Deny") | select(.Principal == "*")
@@ -82,6 +88,9 @@ def denies_decrypt: actions | any(action_matches("kms:decrypt"));
     | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"]
              == "eks.amazonaws.com")
     | select(.Condition.StringNotEqualsIgnoreCase | length == 1)
+    # Nothing beside it: another operator (Bool, ...) would be ANDed in and narrow the deny.
+    | select(.Condition | keys == ["StringNotEqualsIgnoreCase"])
+    | select(.Resource == "*")
   ] | length) as $pcr8_denies
 | $allow_actions_reaching_decrypt == 1
   and $allows == 1 and $pcr17_denies == 1 and $pcr8_denies == 1

@@ -35,6 +35,7 @@ the Linux binary for your machine's architecture (`aarch64` on Apple silicon) an
 
 ```bash
 GENPOLICY_BIN=/path/to/eks-nitro-sandbox-genpolicy
+GENPOLICY_PLATFORM=linux/arm64   # only with the aarch64 binary; the default is linux/amd64
 GENPOLICY=/path/to/sample-eks-nitro-sandbox/examples/confidential/reproducible-build/scripts/genpolicy-container.sh
 ```
 
@@ -386,8 +387,10 @@ Service, and sends the ciphertext as a `PUT /decrypt` request to the sandbox pod
 ask the service to decrypt any ciphertext whose data key came from this KMS key. Three
 bounds define the scope in this blueprint:
 
-1. The service listens on a ClusterIP only. The only path in from outside the cluster is
-   `kubectl port-forward`, which requires cluster credentials.
+1. The sample puts no public endpoint on it: the Service is ClusterIP, with no Ingress,
+   LoadBalancer or NodePort, and this walkthrough reaches it with `kubectl port-forward`.
+   The pod also answers on its pod IP, so other pods in the cluster, and hosts in the VPC
+   that the security groups allow, can call it directly; the sample ships no network policy.
 2. The HTTP response carries `{"ok":true,"sha256":"..."}` and never carries the plaintext.
    The service logs only `decrypted sha256=…` on success; the plaintext is not retained.
 3. KMS releases the data key only to this exact measurement. A pod running any other build,

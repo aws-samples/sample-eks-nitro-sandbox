@@ -51,9 +51,10 @@ spec:
         - name: KMS_KEY_ARN
           value: <KMS_KEY_ARN>
         # The service defaults to 127.0.0.1:8080, which is unreachable through the
-        # ClusterIP Service. 0.0.0.0:8080 is reachable only inside the cluster network:
-        # the only way in is the ClusterIP Service, and the sample has no Ingress,
-        # LoadBalancer or NodePort.
+        # ClusterIP Service. 0.0.0.0:8080 also answers on the pod IP, so anything that can
+        # route to it (other pods, and VPC hosts the security groups allow) can call it
+        # without the Service. The sample has no Ingress, LoadBalancer or NodePort and no
+        # network policy; the response only ever carries a sha256.
         - name: LISTEN_ADDR
           value: "0.0.0.0:8080"
       securityContext:
