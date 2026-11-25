@@ -474,6 +474,15 @@ def aws():
             values[mutation["key"]] = mutation["value"]
             state["mutateAfterAssociationDelete"] = None
     elif action == ["iam", "get-role"]:
+        if data.get("roleDeleted"):
+            data["roleGetsAfterDelete"] = data.get("roleGetsAfterDelete", 0) + 1
+            remaining = data.get("rolesAfterDelete", [])
+            if remaining:
+                live = remaining.pop(0)
+                save()
+                print(json.dumps({"Role": live}))
+                return
+            save()
         if data["role"] is None:
             print("NoSuchEntity", file=sys.stderr)
             raise SystemExit(1)
@@ -510,6 +519,7 @@ def aws():
             raise SystemExit(1)
         changed = data["role"] is not None
         data["role"] = None
+        data["roleDeleted"] = True
     else:
         raise SystemExit(f"unsupported aws command: {command}")
     if changed:
@@ -1365,6 +1375,39 @@ def test_iam_delete_denial_occurs_after_kubernetes_cleanup(
     assert current["aws"]["association"] is None
     assert current["aws"]["policyDocument"] is None
     assert current["aws"]["role"] is not None
+
+
+def test_role_deletion_waits_for_exact_absence(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    role = dict(state["aws"]["role"])
+    state["aws"]["rolesAfterDelete"] = [role, role]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["aws"]["role"] is None
+    assert current["aws"].get("roleGetsAfterDelete", 0) == 3
+    assert current["aws"]["rolesAfterDelete"] == []
+
+
+def test_role_replaced_after_deletion_fails_closed(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["rolesAfterDelete"] = [
+        {**state["aws"]["role"], "RoleId": "replacement-role-id"}
+    ]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "cleanup: IAM role was replaced while deletion was in progress.\n"
+    )
+    assert _state(env)["aws"]["roleGetsAfterDelete"] == 1
 
 
 def test_association_delete_denial_preserves_kubernetes_identity(

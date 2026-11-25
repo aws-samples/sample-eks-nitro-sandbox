@@ -1889,6 +1889,21 @@ class Cleanup:
         ).get("InstanceProfiles", []):
             fail("IAM role still has instance profiles; refusing deletion.")
         self.aws("iam", "delete-role", "--role-name", self.a.iam_role_name)
+        # A successful delete-role call does not prove the role is gone. Read until IAM answers NoSuchEntity,
+        # and stop if a role with another RoleId appears under the same name.
+        deadline = time.monotonic() + 120
+        while True:
+            live = self.aws_json(
+                "iam", "get-role", "--role-name", self.a.iam_role_name,
+                absent=("NoSuchEntity",),
+            )
+            if not live:
+                return
+            if live.get("Role", {}).get("RoleId") != role_receipt.get("roleId"):
+                fail("IAM role was replaced while deletion was in progress.")
+            if time.monotonic() >= deadline:
+                fail("IAM role still exists after deletion.")
+            time.sleep(2)
 
     def run(self):
         self.validate_paths()
