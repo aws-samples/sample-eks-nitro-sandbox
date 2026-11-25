@@ -418,6 +418,8 @@ case "$*" in
   *"eks list-tags-for-resource"*)
     printf '%s\\n' "$TEST_CLUSTER_TAGS" ;;
   *"cluster.endpoint"*) printf 'https://eks.example.test\\n' ;;
+  *"cluster.certificateAuthority.data"*)
+    printf '%s\\n' "${{TEST_CLUSTER_CA:-dGVzdC1jbHVzdGVyLWNh}}" ;;
   *) exit 2 ;;
 esac
 """,
@@ -616,6 +618,8 @@ handoff_pod_json() {
 case "$*" in
   *"config get-contexts"*) printf 'oce-test\\n' ;;
   *"config current-context"*) printf 'oce-test\\n' ;;
+  *"config view"*"certificate-authority-data"*)
+    printf '%s' "${TEST_CONTEXT_CA:-dGVzdC1jbHVzdGVyLWNh}" ;;
   *"config view"*) printf 'https://eks.example.test' ;;
   *"get namespace kube-system"*) printf 'namespace/kube-system\\n' ;;
   *"get storageclass gp3 -o json")
@@ -1013,6 +1017,24 @@ def test_external_database_uses_verified_tls_and_mounted_ca(tmp_path: Path) -> N
         assert b"sslmode=verify-full" in decoded
         assert f"sslrootcert={DATABASE_CA_PATH}".encode() in decoded
         assert not decoded.endswith(b"\n")
+
+
+def test_kube_context_ca_must_match_the_eks_cluster_ca(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_CLUSTER_CA"] = "b3RoZXItY2x1c3Rlci1jYQ=="
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert (
+        "install-oce: kube context certificate authority does not match EKS cluster oce-test."
+        in result.stderr
+    )
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert any("cluster.certificateAuthority.data" in call for call in calls)
+    assert any("certificate-authority-data" in call for call in calls)
+    assert not any(" apply " in call or " create " in call for call in calls)
+    assert not any("occ installation install" in call for call in calls)
 
 
 def test_lookup_error_that_mentions_not_found_fails_closed(tmp_path: Path) -> None:

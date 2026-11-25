@@ -1220,6 +1220,15 @@ context_endpoint=$(kubectl --kubeconfig "$kubeconfig" config view --raw --minify
   --context "$kube_context" -o 'jsonpath={.clusters[0].cluster.server}')
 [[ "$context_endpoint" == "$cluster_endpoint" ]] ||
   die "kube context endpoint does not match EKS cluster $eks_cluster_name."
+# The endpoint alone does not identify the cluster's API server; its CA must match too.
+cluster_ca=$(aws eks describe-cluster --region "$aws_region" \
+  --name "$eks_cluster_name" --query cluster.certificateAuthority.data --output text)
+[[ "$cluster_ca" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] ||
+  die "EKS cluster returned an invalid certificate authority."
+context_ca=$(kubectl --kubeconfig "$kubeconfig" config view --raw --minify --flatten \
+  --context "$kube_context" -o 'jsonpath={.clusters[0].cluster.certificate-authority-data}')
+[[ "$context_ca" == "$cluster_ca" ]] ||
+  die "kube context certificate authority does not match EKS cluster $eks_cluster_name."
 
 KUBE=(kubectl --kubeconfig "$kubeconfig" --context "$kube_context" --request-timeout=20s)
 HELM_RELEASE_STATES=(
