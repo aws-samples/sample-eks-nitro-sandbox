@@ -988,7 +988,10 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     )
     assert '--build-arg "OWNERSHIP_HELPER_BUILDER_IMAGE=' in script
     assert "--target runtime" in script
-    assert '--build-arg "NODE_BUILD_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE"' in script
+    assert (
+        '--build-arg "NODE_BUILD_BASE_IMAGE=$CONTROLLER_NODE_BUILD_BASE_IMAGE"'
+        in script
+    )
     assert (
         '--build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE"' in script
     )
@@ -1029,6 +1032,109 @@ def test_build_script_builds_each_image_from_the_expected_source() -> None:
     )
     assert "docker pull" not in script
     assert "skopeo copy" not in script
+
+
+@pytest.mark.parametrize("version", ["24.22.1", "24.22.2"])
+def test_controller_build_mirror_preserves_validated_tag_and_digest(
+    version: str,
+) -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    validation = script.split("require_matching_oce_node_bases() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    mapping = script.split(
+        "readonly OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE\n", 1
+    )[1].split("\nREGISTRY=", 1)[0]
+    digest = "f1e034976f948cf212ef1f659c12e5dd58ac7eab947831813e81a62401ca38be"
+    canonical = f"docker.io/library/node:{version}-trixie@sha256:{digest}"
+    runtime = f"docker.io/library/node:{version}-trixie-slim@sha256:{'b' * 64}"
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail\n'
+            'die() { echo "$*" >&2; exit 1; }\n'
+            f"require_matching_oce_node_bases() {{{validation}\n}}\n"
+            'OCE_NODE_BUILD_BASE_IMAGE="$1"\n'
+            'OCE_NODE_RUNTIME_BASE_IMAGE="$2"\n'
+            f"{mapping}\n"
+            'printf "%s\\n" "$CONTROLLER_NODE_BUILD_BASE_IMAGE"\n',
+            "controller-mirror-contract",
+            canonical,
+            runtime,
+        ],
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert result.stdout.strip() == (
+        f"public.ecr.aws/docker/library/node:{version}-trixie@sha256:{digest}"
+    )
+    assert mapping.index("require_matching_oce_node_bases") < mapping.index(
+        "readonly CONTROLLER_NODE_BUILD_BASE_IMAGE="
+    )
+    controller_build = script.split(
+        '--metadata-file "$metadata_dir/controller.json"', 1
+    )[1].split('\n  "$OCE_SOURCE_DIR"', 1)[0]
+    assert (
+        '--build-arg "NODE_BUILD_BASE_IMAGE=$CONTROLLER_NODE_BUILD_BASE_IMAGE"'
+        in controller_build
+    )
+    assert (
+        '--build-arg "NODE_BUILD_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE"'
+        not in script
+    )
+    assert "export CONTROLLER_NODE_BUILD_BASE_IMAGE\n" in script
+    controller_metadata = script.split('"controller": {', 1)[1].split(
+        '\n    },', 1
+    )[0]
+    assert (
+        '"buildBaseImage": os.environ["CONTROLLER_NODE_BUILD_BASE_IMAGE"]'
+        in controller_metadata
+    )
+
+
+@pytest.mark.parametrize(
+    "build_image",
+    [
+        "docker.io/library/node:24.22.1-trixie",
+        f"public.ecr.aws/docker/library/node:24.22.1-trixie@sha256:{'a' * 64}",
+        f"docker.io/library/node:24.22.2-trixie@sha256:{'a' * 64}",
+    ],
+)
+def test_controller_build_mirror_requires_canonical_validation(
+    build_image: str,
+) -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    validation = script.split("require_matching_oce_node_bases() {", 1)[1].split(
+        "\n}\n", 1
+    )[0]
+    mapping = script.split(
+        "readonly OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE\n", 1
+    )[1].split("\nREGISTRY=", 1)[0]
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -euo pipefail\n'
+            'die() { echo "$*" >&2; exit 1; }\n'
+            f"require_matching_oce_node_bases() {{{validation}\n}}\n"
+            'OCE_NODE_BUILD_BASE_IMAGE="$1"\n'
+            f'OCE_NODE_RUNTIME_BASE_IMAGE="docker.io/library/node:24.22.1-trixie-slim@sha256:{"b" * 64}"\n'
+            f"{mapping}\n"
+            'printf "%s\\n" "$CONTROLLER_NODE_BUILD_BASE_IMAGE"\n',
+            "controller-mirror-contract",
+            build_image,
+        ],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert (
+        "must be a digest-pinned Node.js Trixie image" in result.stderr
+        or "Node build and runtime base versions must match" in result.stderr
+    )
 
 
 def test_oce_runtime_base_metadata_preserves_both_source_revisions() -> None:

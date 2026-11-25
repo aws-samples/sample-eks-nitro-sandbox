@@ -170,6 +170,7 @@ final image and copies the tested, repaired Node.js executable, OpenSSL
 libraries, and genuine installed `libssl3t64` package record from that runtime's
 immutable digest. The controller entry in `image-digests.json` records this
 source as `repairedRuntimeImage`.
+The controller build pulls its validated Node.js build base from AWS's Docker Official Images mirror (`public.ecr.aws/docker/library/node`) with the same tag and immutable digest, recorded as `buildBaseImage` in its `image-digests.json` entry.
 
 The runtime installs Git 2.56.1 and Expat 2.11.0 as Debian packages, preserving
 package records, licenses, and source provenance. Git retains Debian's epoch
