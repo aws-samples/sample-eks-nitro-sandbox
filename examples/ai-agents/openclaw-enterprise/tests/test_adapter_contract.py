@@ -374,6 +374,11 @@ def test_readme_prerequisites_exclude_sample_namespaces_from_auto_monitor() -> N
         readme.split("## Prerequisites", 1)[1].split("## Overview", 1)[0].split()
     )
     assert "CloudWatch Application Signals auto-monitor" in prerequisites
+    # The exclusion setting lives in the add-on's documented advanced configuration.
+    assert (
+        "[advanced configuration](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/"
+        "CloudWatch-Application-Signals-Enable-EKS.html#CloudWatch-Application-Signals-Enable-EKS-Addon)"
+    ) in prerequisites
     for namespace in (
         "openclaw-system",
         "openclaw-enterprise-adapter",

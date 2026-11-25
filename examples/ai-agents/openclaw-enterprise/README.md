@@ -56,7 +56,10 @@ Editable diagrams:
   whole cluster. To turn it on, follow the
   [network policy](../../isolation/network-policy/README.md) blueprint.
 - If the cluster runs CloudWatch Application Signals auto-monitor, exclude this
-  blueprint's namespaces from it before setup: `openclaw-system` (or your
+  blueprint's namespaces from it before setup, in the CloudWatch Observability
+  add-on's
+  [advanced configuration](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Application-Signals-Enable-EKS.html#CloudWatch-Application-Signals-Enable-EKS-Addon):
+  `openclaw-system` (or your
   `OCE_NAMESPACE`), `openclaw-enterprise-adapter`, `openclaw-enterprise-agw`,
   and each OCE tenant namespace. Auto-monitor injects an instrumentation init
   container into the Pods it monitors, and the admission adapter refuses every
