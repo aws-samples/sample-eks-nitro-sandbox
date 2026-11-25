@@ -1389,10 +1389,27 @@ class Cleanup:
                     "claim that names it; refusing tenant deletion."
                 )
 
-    def prepare_tenant_deletion(self, protected_targets):
-        self.require_tenant_volumes_deletable(
-            {item["name"] for item in protected_targets}
+    def require_recorded_volumes_unchanged(self, state):
+        # A resumed deletion may find its claims already gone while a recorded volume is still Released or
+        # terminating; that is the wait's normal input. A surviving recorded volume must still be the one the
+        # record names.
+        result = json.loads(
+            self.kubectl("get", "persistentvolumes", "--output=json")
         )
+        items = result.get("items")
+        if not isinstance(items, list):
+            fail("persistent volume discovery returned an unexpected result.")
+        recorded = {item["name"]: item["uid"] for item in state["persistentVolumes"]}
+        for item in items:
+            metadata = item.get("metadata", {})
+            name = metadata.get("name")
+            if name in recorded and metadata.get("uid") != recorded[name]:
+                fail(
+                    f"persistentvolume/{name} was replaced since the tenant "
+                    "deletion record was written; refusing to continue."
+                )
+
+    def prepare_tenant_deletion(self, protected_targets):
         state = self.read_tenant_deletion()
         if state:
             if state["namespaces"] != protected_targets:
@@ -1400,8 +1417,11 @@ class Cleanup:
                     "tenant deletion state does not match the recorded "
                     "namespace identities."
                 )
+            self.require_recorded_volumes_unchanged(state)
             return state
         names = {item["name"] for item in protected_targets}
+        # Only a new deletion record needs every tenant claim Bound to its own Delete EBS volume.
+        self.require_tenant_volumes_deletable(names)
         state = {
             "version": 1,
             "context": self.a.kube_context,

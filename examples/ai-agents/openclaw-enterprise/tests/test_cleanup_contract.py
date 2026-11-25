@@ -228,6 +228,18 @@ def kubectl():
         return
     if command[:2] == ["get", "persistentvolumes"]:
         print(json.dumps({"items": state.get("pvs", [])}))
+        # A Released volume that the CSI driver deletes after this many more listings.
+        listings = state.get("releasedPvListingsLeft", {})
+        for name in list(listings):
+            listings[name] -= 1
+            if listings[name] <= 0:
+                del listings[name]
+                state["pvs"] = [
+                    pv for pv in state.get("pvs", [])
+                    if pv["metadata"]["name"] != name
+                ]
+        if listings or "releasedPvListingsLeft" in state:
+            save()
         return
     if command[:2] == ["get", "namespaces"] and "--selector" in command:
         state["tenantDiscoveryCount"] = state.get("tenantDiscoveryCount", 0) + 1
@@ -1807,8 +1819,16 @@ def test_opt_in_deletes_exact_tenant_namespaces_and_storage_idempotently(
     assert _state(env)["mutations"] == mutation_count
 
 
+@pytest.mark.parametrize(
+    "resume",
+    [
+        "namespace-delete-failed",
+        # Kubernetes already removed tenant A's claim, but its recorded volume is still Released.
+        "released-volume-without-claim",
+    ],
+)
 def test_partial_tenant_delete_rerun_uses_recorded_uids_and_keeps_controls(
-    tmp_path: Path,
+    tmp_path: Path, resume: str
 ) -> None:
     _, command, env = _prepare(tmp_path, created=_all_created())
     tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
@@ -1816,6 +1836,11 @@ def test_partial_tenant_delete_rerun_uses_recorded_uids_and_keeps_controls(
         _add_tenant(env, tenant)
         _add_tenant_storage(env, tenant)
     state = _state(env)
+    # A copy, so the first run's volume deletion does not reach it.
+    released_volume = json.loads(json.dumps(
+        next(item for item in state["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-a")
+    ))
+    released_volume["status"] = {"phase": "Released"}
     state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
     destructive_command = [
@@ -1844,6 +1869,15 @@ def test_partial_tenant_delete_rerun_uses_recorded_uids_and_keeps_controls(
         (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
     )
     assert deletion_state["complete"] is False
+    if resume == "released-volume-without-claim":
+        assert not [
+            item
+            for item in partial["pvcs"]
+            if item["metadata"]["namespace"] == "openclaw-tenant-a"
+        ]
+        partial["pvs"].append(released_volume)
+        partial["releasedPvListingsLeft"] = {"pv-openclaw-tenant-a": 3}
+        Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
 
     retry_command = [
         *command,
@@ -1864,6 +1898,52 @@ def test_partial_tenant_delete_rerun_uses_recorded_uids_and_keeps_controls(
     assert json.loads(
         (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
     )["complete"] is True
+
+
+def test_partial_tenant_delete_rerun_refuses_a_replaced_recorded_volume(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    failed = _run(
+        [*command, *_tenant_identity_args(*tenants), "--delete-tenant-data"], env
+    )
+    assert failed.returncode == 1
+    partial = _state(env)
+    # Tenant B's recorded volume now carries another UID under the same name.
+    volume = next(
+        item for item in partial["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b"
+    )
+    volume["metadata"]["uid"] = "uid-pv-replacement"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    mutations = partial["mutations"]
+
+    retry = _run(
+        [
+            *command,
+            *[argument for tenant in tenants for argument in ("--tenant-namespace", tenant)],
+            "--delete-tenant-data",
+        ],
+        env,
+    )
+
+    assert retry.returncode == 1
+    assert retry.stderr.endswith(
+        "cleanup: persistentvolume/pv-openclaw-tenant-b was replaced since the tenant "
+        "deletion record was written; refusing to continue.\n"
+    )
+    after = _state(env)
+    assert after["mutations"] == mutations
+    assert "namespace/openclaw-tenant-b" in after["resources"]
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["complete"] is False
 
 
 @pytest.mark.parametrize(
