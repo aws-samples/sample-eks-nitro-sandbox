@@ -21,6 +21,9 @@ RELAY_NAME=""
 EGRESS_POLICY=""
 API_INGRESS_POLICY=""
 CREATED="false"
+RELAY_UID=""
+EGRESS_POLICY_UID=""
+API_INGRESS_POLICY_UID=""
 PORT_FORWARD_PID=""
 PORT_FORWARD_LOG=""
 TUNNEL_READY="false"
@@ -103,6 +106,67 @@ resources_absent() {
   [[ -z "$output" ]]
 }
 
+record_created_uids() {
+  local created="$1" kind name uid
+  [[ -n "$created" ]] || return 0
+  while IFS=$'\t' read -r kind name uid; do
+    case "$kind/$name" in
+      "Pod/$RELAY_NAME") RELAY_UID="$uid" ;;
+      "NetworkPolicy/$EGRESS_POLICY") EGRESS_POLICY_UID="$uid" ;;
+      "NetworkPolicy/$API_INGRESS_POLICY") API_INGRESS_POLICY_UID="$uid" ;;
+    esac
+  done < <(
+    jq -rs '
+      [.[] | if .kind == "List" then .items[] else . end]
+      | .[]
+      | [.kind, .metadata.name, .metadata.uid]
+      | @tsv
+    ' <<<"$created" 2>/dev/null || true
+  )
+}
+
+# Delete one created object only while it still has the UID this run recorded at create time, and wait
+# until that object is gone. A same-name object with another UID, or one this run did not record, is kept.
+# shellcheck disable=SC2329  # Invoked by the trap-driven cleanup path.
+delete_created_object() {
+  local resource="$1" api_path="$2" recorded_uid="$3"
+  local live live_uid live_version delete_options deadline
+  live="$(
+    kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" \
+      --request-timeout="${CLEANUP_TIMEOUT_SECONDS}s" get "$resource" \
+      --ignore-not-found=true -o json
+  )" || return 1
+  [[ -n "$live" ]] || return 0
+  live_uid="$(jq -r '.metadata.uid // empty' <<<"$live")" || return 1
+  if [[ -z "$recorded_uid" || "$live_uid" != "$recorded_uid" ]]; then
+    printf 'ERROR: %s was replaced or not created by this run; preserving it\n' "$resource" >&2
+    return 1
+  fi
+  live_version="$(jq -r '.metadata.resourceVersion // empty' <<<"$live")" || return 1
+  delete_options="$(
+    jq -cn --arg uid "$recorded_uid" --arg version "$live_version" '{
+      kind: "DeleteOptions",
+      apiVersion: "v1",
+      preconditions: {uid: $uid, resourceVersion: $version}
+    }'
+  )" || return 1
+  kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" \
+    --request-timeout="${CLEANUP_TIMEOUT_SECONDS}s" delete \
+    --raw="$api_path" -f - <<<"$delete_options" >/dev/null 2>&1 || return 1
+  deadline=$((SECONDS + CLEANUP_TIMEOUT_SECONDS))
+  while ((SECONDS <= deadline)); do
+    live="$(
+      kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" \
+        --request-timeout="${CLEANUP_TIMEOUT_SECONDS}s" get "$resource" \
+        --ignore-not-found=true -o json
+    )" || return 1
+    [[ -n "$live" ]] || return 0
+    [[ "$(jq -r '.metadata.uid // empty' <<<"$live")" == "$recorded_uid" ]] || return 0
+    sleep 0.5
+  done
+  return 1
+}
+
 # shellcheck disable=SC2329  # Invoked indirectly by the signal and exit traps.
 cleanup() {
   local status=$?
@@ -118,13 +182,16 @@ cleanup() {
     PORT_FORWARD_LOG=""
   fi
   if [[ "$CREATED" == "true" ]]; then
-    kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" \
-      --request-timeout="${CLEANUP_TIMEOUT_SECONDS}s" delete \
-      "pod/$RELAY_NAME" \
-      "networkpolicy/$EGRESS_POLICY" \
-      "networkpolicy/$API_INGRESS_POLICY" \
-      --ignore-not-found=true --wait=true \
-      --timeout="${CLEANUP_TIMEOUT_SECONDS}s" >/dev/null 2>&1 ||
+    delete_created_object "pod/$RELAY_NAME" \
+      "/api/v1/namespaces/$NAMESPACE/pods/$RELAY_NAME" "$RELAY_UID" ||
+      cleanup_failed="true"
+    delete_created_object "networkpolicy/$EGRESS_POLICY" \
+      "/apis/networking.k8s.io/v1/namespaces/$NAMESPACE/networkpolicies/$EGRESS_POLICY" \
+      "$EGRESS_POLICY_UID" ||
+      cleanup_failed="true"
+    delete_created_object "networkpolicy/$API_INGRESS_POLICY" \
+      "/apis/networking.k8s.io/v1/namespaces/$NAMESPACE/networkpolicies/$API_INGRESS_POLICY" \
+      "$API_INGRESS_POLICY_UID" ||
       cleanup_failed="true"
     resources_absent || cleanup_failed="true"
   fi
@@ -446,11 +513,19 @@ manifest="$(
 refresh_startup_budget
 
 CREATED="true"
-printf '%s\n' "$manifest" |
-  kubectl --context "$KUBE_CONTEXT" \
-    --request-timeout="${STARTUP_SECONDS_REMAINING}s" \
-    create -f - >/dev/null ||
+# Record each created object's UID, also from a partial create, so cleanup deletes only these objects.
+create_status=0
+created_objects="$(
+  printf '%s\n' "$manifest" |
+    kubectl --context "$KUBE_CONTEXT" \
+      --request-timeout="${STARTUP_SECONDS_REMAINING}s" \
+      create -f - -o json
+)" || create_status=$?
+record_created_uids "$created_objects"
+((create_status == 0)) ||
   die "could not create the temporary API relay"
+[[ -n "$RELAY_UID" && -n "$EGRESS_POLICY_UID" && -n "$API_INGRESS_POLICY_UID" ]] ||
+  die "could not record the temporary API relay object UIDs"
 
 refresh_startup_budget
 kubectl --context "$KUBE_CONTEXT" \

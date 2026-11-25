@@ -924,7 +924,9 @@ Open the private OCE API on loopback in a dedicated terminal:
 The helper creates a temporary relay that can connect only to the selected,
 Ready OCE API pod. A network policy permits that API pod to accept traffic only
 from this relay. The local listener binds only to `127.0.0.1`. Press `Ctrl-C`
-when onboarding is complete; the helper removes the relay and both policies.
+when onboarding is complete; the helper removes the relay and both policies,
+each only while it still has the UID recorded when the helper created it, and
+fails rather than delete a same-name replacement.
 
 In another terminal:
 
