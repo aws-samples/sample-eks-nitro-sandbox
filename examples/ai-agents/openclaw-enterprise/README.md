@@ -1438,7 +1438,10 @@ Validation passed. Sanitized evidence: <private-evidence-directory>/live-validat
   tracks native support for private model service egress.
 - Do not run setup, rotation, and cleanup concurrently. Receipts and ownership
   checks refuse mismatched resources, but the separate AWS and Kubernetes API
-  calls are not one atomic transaction.
+  calls are not one atomic transaction. `install-oce.sh` holds the lock
+  directory `.install-oce.lock` in its state directory, so a second install
+  with the same state directory stops before it changes anything. If an install
+  was killed, confirm that none is running, then remove only that directory.
 - The validation procedure is destructive to tenant A's runtime pod. Use
   retained validation tenants.
 - The blueprint does not validate human SSO, sustained load, high

@@ -1135,6 +1135,37 @@ receipt=$(python3 -c \
 [[ "$receipt" == "$state_dir/"* ]] ||
   die "--receipt must be below --state-dir."
 
+# One install at a time per state directory: a second run would race this one's receipt, journal and cluster
+# changes. A hard kill leaves the lock; remove it only after confirming no install is running.
+install_lock="$state_dir/.install-oce.lock"
+install_lock_acquired=false
+install_lock_token=
+release_install_lock() {
+  [[ "$install_lock_acquired" == true ]] || return 0
+  local owner_file="$install_lock/owner"
+  if [[ -f "$owner_file" && ! -L "$owner_file" && "$(<"$owner_file")" == "$install_lock_token" ]]; then
+    rm -f -- "$owner_file"
+    rmdir -- "$install_lock" 2>/dev/null || true
+  else
+    printf 'install-oce: install lock ownership changed; preserving %s.\n' "$install_lock" >&2
+  fi
+  install_lock_acquired=false
+}
+[[ ! -L "$install_lock" ]] ||
+  die "install lock must not be a symbolic link: $install_lock."
+install_lock_token=$(openssl rand -hex 32) ||
+  die "could not generate the install lock token."
+mkdir -- "$install_lock" 2>/dev/null ||
+  die "state directory is already in use or has a stale install lock: $install_lock."
+install_lock_acquired=true
+trap release_install_lock EXIT
+chmod 700 "$install_lock" ||
+  die "could not secure the install lock $install_lock."
+printf '%s\n' "$install_lock_token" >"$install_lock/owner" ||
+  die "could not record the install lock owner."
+chmod 600 "$install_lock/owner" ||
+  die "could not secure the install lock owner."
+
 database_app_url_value="$state_dir/database-application-url"
 database_migration_url_value="$state_dir/database-migration-url"
 database_ca_value="$state_dir/database-ca.pem"
@@ -1151,7 +1182,7 @@ if [[ "$build_occ" == true ]]; then
   occ_binary="$state_dir/occ-$OCE_SOURCE_PIN"
   if [[ ! -e "$occ_binary" ]]; then
     occ_tmp=$(mktemp "$state_dir/.occ.XXXXXXXX")
-    trap 'rm -f "${occ_tmp:-}"' EXIT
+    trap 'rm -f "${occ_tmp:-}"; release_install_lock' EXIT
     (
       cd "$oce_source"
       CGO_ENABLED=0 go build -trimpath -buildvcs=true -o "$occ_tmp" ./cmd/occ

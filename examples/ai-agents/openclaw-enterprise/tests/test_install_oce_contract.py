@@ -1019,6 +1019,37 @@ def test_external_database_uses_verified_tls_and_mounted_ca(tmp_path: Path) -> N
         assert not decoded.endswith(b"\n")
 
 
+def test_second_install_stops_while_the_state_lock_is_held(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    lock = state / ".install-oce.lock"
+    lock.mkdir(mode=0o700)
+    (lock / "owner").write_text("another-install\n")
+    (lock / "owner").chmod(0o600)
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert (
+        "install-oce: state directory is already in use or has a stale install lock: "
+        f"{lock}." in result.stderr
+    )
+    assert (tmp_path / "calls.log").read_text().splitlines() == ["helm version --short"]
+    assert (lock / "owner").read_text() == "another-install\n"
+    assert sorted(path.name for path in state.iterdir()) == [".install-oce.lock"]
+
+
+def test_install_releases_its_state_lock_on_exit(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "state" / ".install-oce.lock").exists()
+    assert ".install-oce.lock" in README.read_text()
+
+
 def test_kube_context_ca_must_match_the_eks_cluster_ca(tmp_path: Path) -> None:
     env, source, kubeconfig, occ = _fake_environment(tmp_path)
     env["TEST_CLUSTER_CA"] = "b3RoZXItY2x1c3Rlci1jYQ=="
