@@ -137,8 +137,15 @@ def test_complete_current_inventory_accepted(tmp_path):
     ("version", "3.5.9+unreviewed"),
     ("epoch", 1),
     ("epoch", "0"),
+    ("epoch", 0.0),
+    ("epoch", -0.0),
+    ("epoch", None),
     ("release", "unreviewed"),
+    ("release", None),
     ("arch", "ARM64"),
+    ("arch", None),
+    ("version", None),
+    ("version", ["3.5.9"]),
     ("packageManager", "OS"),
     ("fixedInVersion", "3.5.11"),
     ("filePath", PATHS[0] + ".changed"),
@@ -147,14 +154,11 @@ def test_complete_current_inventory_accepted(tmp_path):
 def test_changed_package_signature_rejected(tmp_path, cve, field, value):
     finding = current_finding(cve)
     packages = finding["packageVulnerabilityDetails"]["vulnerablePackages"]
-    # Use uniform metadata for added fields/types so the exact comparison is
-    # reached rather than the existing mixed-type sorting error.
-    targets = packages if field in {"release", "arch"} or value == "0" else packages[:1]
-    for package in targets:
-        package[field] = value
+    packages[0][field] = value
     result = run_checker(tmp_path, [finding])
     assert result.returncode != 0
     assert "scan found HIGH finding sanitized-finding" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize("cve", REFERENCES)

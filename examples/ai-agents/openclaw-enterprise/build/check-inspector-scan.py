@@ -324,8 +324,14 @@ def validate_resource(finding: dict[str, Any]) -> None:
         fail("finding does not match the requested image")
 
 
-def package_signature(package: dict[str, Any]) -> tuple[Any, ...]:
-    return tuple(package.get(field) for field in PACKAGE_FIELDS)
+def package_signature(package: dict[str, Any]) -> str:
+    # Preserve JSON types and distinguish omitted fields from explicit nulls.
+    return json.dumps(
+        {field: package[field] for field in PACKAGE_FIELDS if field in package},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def is_reviewed_backport(finding: dict[str, Any]) -> bool:
@@ -354,7 +360,10 @@ def is_reviewed_backport(finding: dict[str, Any]) -> bool:
     # JSON booleans must not compare equal to the reviewed integer epoch 0.
     if any(isinstance(package.get("epoch"), bool) for package in packages):
         return False
-    actual_packages = sorted(package_signature(package) for package in packages)
+    try:
+        actual_packages = sorted(package_signature(package) for package in packages)
+    except (TypeError, ValueError):
+        return False
     expected_package_sets = policy.get("package_sets")
     if expected_package_sets is None:
         expected_package_sets = [policy["packages"]]
