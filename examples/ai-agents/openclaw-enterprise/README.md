@@ -1744,22 +1744,23 @@ binding also guard the PVs that claim a target namespace:
 
 Both freezes deny namespaced `CREATE` and `UPDATE` in the namespaces they
 protect, but a namespace deletion needs some objects' finalizers removed
-before it can finish. Each freeze therefore allows exactly one kind of update:
-removing finalizers from an object that is already being deleted.
+before it can finish. Both freezes therefore allow removing finalizers from an
+object that is already being deleted. The tenant freeze also allows one more
+update, described below: the status update of a Pod already being deleted.
 
 - **The kinds.** The exemption covers the main resource only, never a
   subresource:
-  - `persistentvolumeclaims` in both freezes. Every PVC carries
+  - `persistentvolumeclaims`. Every PVC carries
     `kubernetes.io/pvc-protection`, which the PVC protection controller in
     the Kubernetes controller manager removes once no Pod uses the claim.
     Tenant namespaces hold the runtime PVCs. `openclaw-system` holds the
     bootstrap output PVC and, with the validation database, its PVC.
-  - `pods` in the per-namespace freeze only. In `openclaw-system`, the OCE
-    chart's initialization hook Job and the sample's bootstrap volume
-    preparation Job run Pods. A Job Pod carries
-    `batch.kubernetes.io/job-tracking` until the Job controller has counted
-    it. The Job controller removes that finalizer, and normally it has done
-    so when the Job finished. Tenant namespaces run no Jobs.
+  - `pods`. A Job Pod carries `batch.kubernetes.io/job-tracking` until the
+    Job controller has counted it, and the Job controller then removes that
+    finalizer. In `openclaw-system`, the OCE chart's initialization hook Job
+    and the sample's bootstrap volume preparation Job run Pods. A tenant
+    namespace can run Jobs too, and cleanup does not require tenant
+    workloads to be gone first.
 
   No other object in these namespaces carries a finalizer when cleanup
   deletes the namespace. Deployments, ReplicaSets, Services (all
@@ -1771,8 +1772,11 @@ removing finalizers from an object that is already being deleted.
   subresource, which neither freeze matches.
 
   A Pod that is still running or terminating when a freeze goes on also needs
-  the kubelet's `pods/status` updates to finish, and neither freeze allows
-  those. So before cleanup puts the per-namespace freeze on a namespace, it
+  the kubelet's `pods/status` updates to finish. The tenant freeze admits
+  only the status updates of Pods already being deleted, so live tenant Pods
+  can finish when their namespace is deleted (see **Pod status in the tenant
+  freeze** below). The per-namespace freeze admits no `pods/status` update.
+  So before cleanup puts the per-namespace freeze on a namespace, it
   waits, read-only, for that namespace's Pods. It lists them every 2 seconds
   for up to 600 seconds, and goes on only when the namespace has no Pods, or
   every Pod is `Succeeded` or `Failed` and none is being deleted. A
@@ -1815,6 +1819,17 @@ removing finalizers from an object that is already being deleted.
   the exemption, with the same comparison, for the kinds listed above, and
   keep the API server's defaults in their specs. The tenant freeze's
   PersistentVolume rule is unchanged.
+- **Pod status in the tenant freeze.** The tenant freeze also admits an
+  `UPDATE` of the `pods/status` subresource (core group, `v1`) when the old
+  Pod already has `metadata.deletionTimestamp` and nothing but `status`
+  changes: `apiVersion`, `kind`, every `metadata` field except the three
+  above, including `finalizers`, and the whole `spec` must be unchanged. That
+  is the kubelet's final status for a Pod it is finishing; after it, the
+  kubelet deletes the Pod, or the Job controller removes the job-tracking
+  finalizer first. Pod `CREATE`, every other Pod update, a status update of
+  a Pod that is not being deleted, every other subresource (such as
+  `pods/ephemeralcontainers` or `pods/resize`) and every other resource's
+  status stay denied. The per-namespace freeze is unchanged.
 - **Tests and limits.** The offline tests model the exemption in the cleanup
   fake, as they model the PV rule. No CEL engine is available offline, so the
   CEL itself is checked only by its exact text and, in a cluster, by a live
@@ -1823,7 +1838,11 @@ removing finalizers from an object that is already being deleted.
   these is still denied: a spec change, a label, annotation or
   `ownerReferences` change, a `deletionTimestamp` change, an added finalizer,
   a removal on an object that is not being deleted, and a removal through a
-  subresource.
+  subresource. For the tenant freeze's Pod status rule, the tests show that a
+  running tenant Pod's final status is admitted and the namespace goes, and
+  that a running tenant Job Pod gets its final status and then its
+  job-tracking removal. In the same window each other kind of request listed
+  above is still denied, as is a change to any compared field.
 
 The script stops the AgentGateway Deployment and waits until it is gone, then
 removes the Pod Identity association before its Kubernetes identity, then

@@ -50,6 +50,20 @@ FINALIZER_REMOVAL_UNCHANGED = (
     "spec",
     "status",
 )
+# Fields a status update of a Pod already being deleted must leave unchanged: every field outside status, with
+# the same three fields not compared.
+POD_STATUS_UPDATE_UNCHANGED = (
+    *(path for path in FINALIZER_REMOVAL_UNCHANGED if path != "status"),
+    "metadata.finalizers",
+)
+
+
+def unchanged_expression(path):
+    """CEL that is true when path is absent on both objects, or present on both with the same value."""
+    return (
+        f"(has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
+        f" : !has(oldObject.{path}))"
+    )
 
 
 def finalizer_removal_expression(resources):
@@ -59,24 +73,34 @@ def finalizer_removal_expression(resources):
     request stays denied. The new finalizers must be a strict subset of the old ones, and every other field must
     be unchanged; each optional field is compared through has().
     """
-
-    def unchanged(path):
-        return (
-            f"(has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
-            f" : !has(oldObject.{path}))"
-        )
-
     return (
         "request.operation == 'UPDATE' && request.subResource == ''"
         " && request.resource.group == ''"
         f" && request.resource.resource in {json.dumps(list(resources))}"
         " && has(oldObject.metadata.deletionTimestamp)"
         " && object.apiVersion == oldObject.apiVersion && object.kind == oldObject.kind"
-        + "".join(f" && {unchanged(path)}" for path in FINALIZER_REMOVAL_UNCHANGED)
+        + "".join(f" && {unchanged_expression(path)}" for path in FINALIZER_REMOVAL_UNCHANGED)
         + " && has(oldObject.metadata.finalizers) && size(oldObject.metadata.finalizers) > 0"
         " && (!has(object.metadata.finalizers) || (object.metadata.finalizers.all("
         "finalizer, finalizer in oldObject.metadata.finalizers)"
         " && size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)))"
+    )
+
+
+def pod_status_update_expression():
+    """CEL that is true only for a status update of a Pod already being deleted.
+
+    It checks the operation, the status subresource and the core v1 pods resource before it reads any field, so
+    every other request stays denied. Every field outside status must be unchanged; each optional field is
+    compared through has(). The kubelet sends this update before it can finish a Pod that is being deleted.
+    """
+    return (
+        "request.operation == 'UPDATE' && request.subResource == 'status'"
+        " && request.resource.group == '' && request.resource.version == 'v1'"
+        " && request.resource.resource == 'pods'"
+        " && has(oldObject.metadata.deletionTimestamp)"
+        " && object.apiVersion == oldObject.apiVersion && object.kind == oldObject.kind"
+        + "".join(f" && {unchanged_expression(path)}" for path in POD_STATUS_UPDATE_UNCHANGED)
     )
 SETUP_KEY = "openclaw-enterprise.aws.dev/setup-token"
 POD_SETUP_KEY = "openclaw.enterprise/setup-invocation"
@@ -1117,18 +1141,20 @@ class Cleanup:
                         " && variables.oldFields[4] in variables.targets))"
                     ),
                 },
-                # Only finalizer removal from a PVC already being deleted passes, so PVC protection can let a
-                # tenant namespace go. Tenant Pods are not refused, and this freeze denies their pods/status
-                # updates, so a tenant Pod that is still running when the freeze goes on can stall the namespace
-                # deletion.
+                # Tenant Pods are not refused, so a tenant Pod can still be running when this freeze goes on. Only
+                # finalizer removal from a PVC or Pod already being deleted passes, so PVC protection and the Job
+                # controller's job-tracking removal can let a tenant namespace go.
                 {
                     "name": "finalizerRemoval",
-                    "expression": finalizer_removal_expression(["persistentvolumeclaims"]),
+                    "expression": finalizer_removal_expression(["persistentvolumeclaims", "pods"]),
                 },
+                # Only a status update of a Pod already being deleted passes, so the kubelet can send a running
+                # tenant Pod's final status and finish it.
+                {"name": "podStatusUpdate", "expression": pod_status_update_expression()},
             ],
             "validations": [
                 {
-                    "expression": "variables.pv || variables.finalizerRemoval",
+                    "expression": "variables.pv || variables.finalizerRemoval || variables.podStatusUpdate",
                     "message": state["denialMessage"],
                 },
                 {

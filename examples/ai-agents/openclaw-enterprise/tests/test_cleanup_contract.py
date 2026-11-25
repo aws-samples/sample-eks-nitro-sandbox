@@ -585,13 +585,15 @@ def finish_namespace_delete(namespace):
 def begin_namespace_termination(namespace):
     # The namespace and its finalizer-bearing objects stay, terminating, until their finalizers are removed.
     state["resources"][f"namespace/{namespace}"]["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:00Z"
-    for items in (state.get("pvcs", []), state.get("jobPods", [])):
+    for items in (state.get("pvcs", []), state.get("jobPods", []), state.get("namespacePods", [])):
         for item in items:
             metadata = item.setdefault("metadata", {})
             if metadata.get("namespace") == namespace:
                 metadata["deletionTimestamp"] = "2026-01-01T00:00:00Z"
                 if item["kind"] == "PersistentVolumeClaim":
                     metadata.setdefault("finalizers", ["kubernetes.io/pvc-protection"])
+                else:
+                    metadata.setdefault("deletionGracePeriodSeconds", 30)
     state.setdefault("terminatingNamespaces", []).append(namespace)
 
 def freeze_policies_for(namespace):
@@ -684,15 +686,187 @@ def finalizer_request(item, variant):
         subresource = "status"
     return old, new, subresource
 
+def pod_status_request(pod, variant):
+    # The kubelet's final status update for a Pod being deleted, or a request that differs from it in one way.
+    old = json.loads(json.dumps(pod))
+    for marker in ("variantTried", "statusVariantTried"):
+        old["metadata"].pop(marker, None)
+    new = json.loads(json.dumps(old))
+    new["metadata"]["resourceVersion"] = str(int(old["metadata"].get("resourceVersion", "1")) + 1)
+    new["metadata"]["managedFields"] = [
+        {"manager": "kubelet", "operation": "Update", "subresource": "status", "time": "2026-01-01T00:00:31Z"}
+    ]
+    new["status"] = {
+        "phase": "Succeeded",
+        "containerStatuses": [{"name": "agent", "state": {"terminated": {"exitCode": 0}}}],
+    }
+    request = {"operation": "UPDATE", "group": "", "version": "v1", "resource": "pods", "subresource": "status"}
+    if variant == "create":
+        request.update(operation="CREATE", subresource="")
+        old = None
+    elif variant == "mainResource":
+        request["subresource"] = ""
+    elif variant == "notDeleting":
+        for name in ("deletionTimestamp", "deletionGracePeriodSeconds"):
+            old["metadata"].pop(name, None)
+            new["metadata"].pop(name, None)
+    elif variant in ("ephemeralcontainers", "resize"):
+        request["subresource"] = variant
+    elif variant == "otherStatus":
+        claim = next(
+            item for item in state["pvcs"] if item["metadata"]["namespace"] == pod["metadata"]["namespace"]
+        )
+        old = json.loads(json.dumps(claim))
+        old["metadata"].pop("variantTried", None)
+        new = json.loads(json.dumps(old))
+        new["status"] = {"phase": "Lost"}
+        request["resource"] = "persistentvolumeclaims"
+    elif variant == "spec":
+        new["spec"]["nodeName"] = "node-b"
+    elif variant in ("labels", "annotations"):
+        new["metadata"].setdefault(variant, {})["example.com/changed"] = "yes"
+    elif variant == "finalizers":
+        # An added finalizer with the status: finalizerRemoval needs no subresource and a strict subset, and
+        # podStatusUpdate needs the finalizers unchanged, so neither admits it.
+        new["metadata"]["finalizers"] = [*old["metadata"].get("finalizers", []), "example.com/extra"]
+    elif variant == "ownerReferences":
+        new["metadata"]["ownerReferences"] = [
+            {"apiVersion": "v1", "kind": "ConfigMap", "name": "adopter", "uid": "uid-adopter"}
+        ]
+    elif variant == "deletionTimestamp":
+        new["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:01Z"
+    elif variant == "deletionGracePeriodSeconds":
+        new["metadata"]["deletionGracePeriodSeconds"] = 0
+    elif variant == "generation":
+        new["metadata"]["generation"] = old["metadata"].get("generation", 1) + 1
+    elif variant == "generateName":
+        new["metadata"]["generateName"] = "other-"
+    elif variant == "creationTimestamp":
+        new["metadata"]["creationTimestamp"] = "2026-01-01T00:00:02Z"
+    elif variant in ("name", "namespace", "uid"):
+        new["metadata"][variant] = f"other-{old['metadata'][variant]}"
+    elif variant != "pure":
+        raise SystemExit(f"unknown pod status variant: {variant}")
+    return request, old, new
+
+ERROR = object()
+
+def split_clauses(expression):
+    # The top-level && clauses of a CEL conjunction.
+    clauses, depth, start = [], 0, 0
+    for index, char in enumerate(expression):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if depth == 0 and expression.startswith(" && ", index):
+            clauses.append(expression[start:index])
+            start = index + 4
+    return [*clauses, expression[start:]]
+
+def unchanged_path(clause):
+    # The field of a has()-guarded comparison clause, or None.
+    if not clause.startswith("(has(object."):
+        return None
+    path = clause[len("(has(object."):].split(")", 1)[0]
+    expected = (
+        f"(has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
+        f" : !has(oldObject.{path}))"
+    )
+    return path if clause == expected else None
+
+def clause_value(clause, request, old, new):
+    # One clause of podStatusUpdate, from a fixed table. Reading the null oldObject of a CREATE is an error.
+    request_clauses = {
+        "request.operation == 'UPDATE'": request["operation"] == "UPDATE",
+        "request.subResource == 'status'": request["subresource"] == "status",
+        "request.resource.group == ''": request["group"] == "",
+        "request.resource.version == 'v1'": request["version"] == "v1",
+        "request.resource.resource == 'pods'": request["resource"] == "pods",
+    }
+    if clause in request_clauses:
+        return request_clauses[clause]
+    if clause == "has(oldObject.metadata.deletionTimestamp)":
+        paths = None
+    elif clause in ("object.apiVersion == oldObject.apiVersion", "object.kind == oldObject.kind"):
+        paths = clause.split(" == ", 1)[0].split(".", 1)[1]
+    else:
+        paths = unchanged_path(clause)
+        if paths is None:
+            raise SystemExit(f"unmodelled podStatusUpdate clause: {clause}")
+    if old is None:
+        return ERROR
+    if paths is None:
+        return field(old, "metadata.deletionTimestamp") is not MISSING
+    return field(new, paths) == field(old, paths)
+
+def pod_status_update_allowed(policy, request, old, new):
+    # A model of the tenant freeze's podStatusUpdate rule that reads the live policy clause by clause; its CEL is
+    # not evaluated here. A false clause wins over an error, and an error denies (failurePolicy Fail).
+    spec = policy["spec"]
+    variables = {item["name"]: item["expression"] for item in spec.get("variables", [])}
+    if "podStatusUpdate" not in variables or "variables.podStatusUpdate" not in spec["validations"][0]["expression"]:
+        return False
+    values = [clause_value(clause, request, old, new) for clause in split_clauses(variables["podStatusUpdate"])]
+    return not any(value is False for value in values) and not any(value is ERROR for value in values)
+
+def run_kubelet(namespace):
+    # The kubelet sends the final status of each running Pod that is being deleted; once it is admitted the Pod
+    # is finished and goes, unless a finalizer still holds it. A requested variant is tried once first, in the
+    # same window, then the pure update. Returns whether a pure update was denied.
+    stuck = False
+    for pod in list(state.get("namespacePods", [])):
+        metadata = pod.get("metadata", {})
+        if (
+            metadata.get("namespace") != namespace
+            or "deletionTimestamp" not in metadata
+            or pod.get("status", {}).get("phase") not in ("Pending", "Running")
+        ):
+            continue
+        variants = [] if metadata.get("statusVariantTried") else state.get("podStatusVariants", [])
+        metadata["statusVariantTried"] = True
+        for variant in [*variants, "pure"]:
+            request, old, new = pod_status_request(pod, variant)
+            policies = freeze_policies_for(namespace)
+            allowed = all(
+                finalizer_removal_allowed(policy, request["resource"], request["subresource"], old, new)
+                or pod_status_update_allowed(policy, request, old, new)
+                for policy in policies
+            )
+            state.setdefault("podStatusAdmission", []).append({
+                "namespace": namespace,
+                "pod": metadata.get("name"),
+                "variant": variant,
+                "frozen": bool(policies),
+                "allowed": allowed,
+            })
+            if variant != "pure":
+                continue
+            if not allowed:
+                stuck = True
+            elif new["metadata"].get("finalizers"):
+                pod["status"] = new["status"]
+                metadata["resourceVersion"] = new["metadata"]["resourceVersion"]
+            else:
+                state["namespacePods"] = [
+                    other for other in state["namespacePods"]
+                    if other["metadata"].get("uid") != metadata.get("uid")
+                ]
+    return stuck
+
 def run_finalizer_controllers():
     # The PVC protection and Job controllers: each removes its finalizer from a terminating object. A requested
-    # variant is tried once first, in the same window, then the pure removal.
+    # variant is tried once first, in the same window, then the pure removal. The Job controller removes a
+    # running Pod's job-tracking finalizer only after the kubelet's final status.
     for namespace in list(state.get("terminatingNamespaces", [])):
-        stuck = False
-        for resource, items_key in (("persistentvolumeclaims", "pvcs"), ("pods", "jobPods")):
+        stuck = run_kubelet(namespace)
+        for resource, items_key in (
+            ("persistentvolumeclaims", "pvcs"), ("pods", "jobPods"), ("pods", "namespacePods")
+        ):
             for item in list(state.get(items_key, [])):
                 metadata = item.get("metadata", {})
                 if metadata.get("namespace") != namespace or not metadata.get("finalizers"):
+                    continue
+                if items_key == "namespacePods" and item.get("status", {}).get("phase") not in (
+                    "Succeeded", "Failed"
+                ):
                     continue
                 variants = [] if metadata.get("variantTried") else state.get("finalizerVariants", [])
                 metadata["variantTried"] = True
@@ -722,7 +896,7 @@ def run_finalizer_controllers():
                             stuck = True
         if not any(
             item.get("metadata", {}).get("namespace") == namespace
-            for key in ("pvcs", "jobPods")
+            for key in ("pvcs", "jobPods", "namespacePods")
             for item in state.get(key, [])
         ):
             finish_namespace_delete(namespace)
@@ -2935,7 +3109,11 @@ def test_both_freezes_carry_the_finalizer_removal_rule_before_any_field_read(tmp
     }
     for freeze, resources, validation in (
         ("namespace", '["persistentvolumeclaims", "pods"]', "variables.finalizerRemoval"),
-        ("tenant", '["persistentvolumeclaims"]', "variables.pv || variables.finalizerRemoval"),
+        (
+            "tenant",
+            '["persistentvolumeclaims", "pods"]',
+            "variables.pv || variables.finalizerRemoval || variables.podStatusUpdate",
+        ),
     ):
         spec = policies[freeze]
         expression = {item["name"]: item["expression"] for item in spec["variables"]}["finalizerRemoval"]
@@ -3194,6 +3372,176 @@ def test_pod_wait_proceeds_when_every_pod_has_finished(tmp_path: Path, pods: lis
     result = _run(command, env)
 
     _assert_listed_then_frozen(tmp_path, env, result, listings=1)
+
+
+TENANT = "openclaw-tenant-a"
+
+
+def _tenant_pod(name: str, *, job: bool = False) -> dict[str, Any]:
+    owner = (
+        {"apiVersion": "batch/v1", "kind": "Job", "name": "openclaw-agent-task", "uid": "uid-agent-job"}
+        if job
+        else {"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "openclaw-agent-7d9f6", "uid": "uid-agent-rs"}
+    )
+    pod: dict[str, Any] = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": name,
+            "generateName": name.rsplit("-", 1)[0] + "-",
+            "namespace": TENANT,
+            "uid": f"uid-{name}",
+            "resourceVersion": "7",
+            "generation": 1,
+            "creationTimestamp": "2026-01-01T00:00:00Z",
+            "labels": {"app.kubernetes.io/name": "openclaw-agent"},
+            "annotations": {"example.com/revision": "1"},
+            "ownerReferences": [{**owner, "controller": True}],
+            "managedFields": [{"manager": "kube-controller-manager", "operation": "Update"}],
+        },
+        "spec": {"nodeName": "node-a", "containers": [{"name": "agent", "image": "example.com/agent:1"}]},
+        "status": {"phase": "Running"},
+    }
+    if job:
+        pod["metadata"]["finalizers"] = ["batch.kubernetes.io/job-tracking"]
+    return pod
+
+
+def _tenant_pod_run(
+    tmp_path: Path, pod: dict[str, Any], variants: tuple[str, ...] = ()
+) -> tuple[list[str], dict[str, str]]:
+    """A tenant deletion whose namespace still runs a Pod when the tenant freeze goes on."""
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    _add_tenant(env, TENANT)
+    _add_tenant_storage(env, TENANT)
+    state = _state(env)
+    state["finalizerProtection"] = True
+    state["namespacePods"] = [pod]
+    state["podStatusVariants"] = list(variants)
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    return [*command, *_tenant_identity_args(TENANT), "--delete-tenant-data"], env
+
+
+def _pod_status_admission(env: dict[str, str]) -> list[tuple[str, bool, bool]]:
+    return [
+        (entry["variant"], entry["frozen"], entry["allowed"])
+        for entry in _state(env).get("podStatusAdmission", [])
+        if entry["namespace"] == TENANT
+    ]
+
+
+def test_tenant_freeze_admits_the_final_status_of_a_running_pod(tmp_path: Path) -> None:
+    command, env = _tenant_pod_run(tmp_path, _tenant_pod("openclaw-agent-7d9f6-abcde"))
+
+    result = _run(command, env)
+
+    # Under the active tenant freeze the kubelet's final status update is admitted, so the Pod and its namespace go.
+    assert _pod_status_admission(env) == [("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    after = _state(env)
+    assert f"namespace/{TENANT}" not in after["resources"]
+    assert after["namespacePods"] == []
+
+
+def test_tenant_freeze_admits_a_running_job_pods_status_then_its_finalizer_removal(tmp_path: Path) -> None:
+    command, env = _tenant_pod_run(tmp_path, _tenant_pod("openclaw-agent-task-fghij", job=True))
+
+    result = _run(command, env)
+
+    # The kubelet's final status goes through first; then the Job controller removes job-tracking, and the
+    # namespace goes.
+    assert _pod_status_admission(env) == [("pure", True, True)]
+    assert _finalizer_admission(env, TENANT, "pods") == [("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    after = _state(env)
+    assert f"namespace/{TENANT}" not in after["resources"]
+    assert after["namespacePods"] == []
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "create",
+        "mainResource",
+        "notDeleting",
+        "ephemeralcontainers",
+        "resize",
+        "otherStatus",
+        "spec",
+        "labels",
+        "annotations",
+        "finalizers",
+        "ownerReferences",
+        "deletionTimestamp",
+        "deletionGracePeriodSeconds",
+        "generation",
+        "generateName",
+        "creationTimestamp",
+        "name",
+        "namespace",
+        "uid",
+    ],
+)
+def test_tenant_freeze_denies_every_other_pod_status_change(tmp_path: Path, variant: str) -> None:
+    command, env = _tenant_pod_run(tmp_path, _tenant_pod("openclaw-agent-7d9f6-abcde"), variants=(variant,))
+
+    result = _run(command, env)
+
+    # In the same window the variant is denied and the kubelet's pure update is admitted, so the namespace goes.
+    # `finalizers` adds a finalizer with the status, which neither finalizerRemoval nor podStatusUpdate admits.
+    assert _pod_status_admission(env) == [(variant, True, False), ("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{TENANT}" not in _state(env)["resources"]
+
+
+def test_tenant_freeze_carries_the_pod_status_rule_before_any_field_read(tmp_path: Path) -> None:
+    command, env = _tenant_pod_run(tmp_path, _tenant_pod("openclaw-agent-7d9f6-abcde"))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    created = [
+        json.loads(entry["stdin"])
+        for entry in _fake_log(tmp_path)
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    policies = {
+        "tenant" if "cleanup-freeze-tenants-" in document["metadata"]["name"] else "namespace": document["spec"]
+        for document in created
+        if document["kind"] == "ValidatingAdmissionPolicy"
+    }
+    tenant = {item["name"]: item["expression"] for item in policies["tenant"]["variables"]}
+    expression = tenant["podStatusUpdate"]
+    # The operation, the status subresource and the core v1 pods resource come first, before any field is read.
+    assert expression.startswith(
+        "request.operation == 'UPDATE' && request.subResource == 'status'"
+        " && request.resource.group == '' && request.resource.version == 'v1'"
+        " && request.resource.resource == 'pods'"
+        " && has(oldObject.metadata.deletionTimestamp)"
+        " && object.apiVersion == oldObject.apiVersion && object.kind == oldObject.kind"
+    )
+    paths = [
+        f"metadata.{name}"
+        for name in (
+            "name", "namespace", "uid", "generateName", "creationTimestamp", "deletionTimestamp",
+            "deletionGracePeriodSeconds", "generation", "labels", "annotations", "ownerReferences",
+        )
+    ] + ["spec", "metadata.finalizers"]
+    assert expression.endswith(
+        "".join(
+            f" && (has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
+            f" : !has(oldObject.{path}))"
+            for path in paths
+        )
+    )
+    for path in ("status", "resourceVersion", "managedFields", "selfLink"):
+        assert path not in expression.replace("request.subResource == 'status'", "")
+    assert policies["tenant"]["validations"][0]["expression"] == (
+        "variables.pv || variables.finalizerRemoval || variables.podStatusUpdate"
+    )
+    # The per-namespace freeze is unchanged.
+    assert "podStatusUpdate" not in {item["name"] for item in policies["namespace"]["variables"]}
+    assert policies["namespace"]["validations"][0]["expression"] == "variables.finalizerRemoval"
 
 
 @pytest.mark.parametrize(
