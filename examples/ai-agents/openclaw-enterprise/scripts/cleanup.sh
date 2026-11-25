@@ -1398,6 +1398,12 @@ class Cleanup:
             if not item:
                 continue
             self.raw_delete(item)
+        for target in protected_targets:
+            self.require_namespace_deletion_started(target["name"], target["uid"])
+        # NamespaceLifecycle now refuses new content. Release the temporary
+        # update freeze so Kubernetes controllers can finish finalization.
+        self.recover_tenant_freeze()
+        for target in protected_targets:
             self.wait_absent(f"namespace/{target['name']}", target["uid"])
         self.wait_for_tenant_data_deletion(state)
         if self.discover_managed_tenant_namespaces():
@@ -1407,7 +1413,6 @@ class Cleanup:
             )
         state["complete"] = True
         self.write_tenant_deletion(state)
-        self.recover_tenant_freeze()
 
     def require_tenant_quiescence(self, tenant_plans):
         for namespace in tenant_plans:
@@ -1508,6 +1513,16 @@ class Cleanup:
                 fail(f"{resource} still exists after deletion.")
             time.sleep(2)
 
+    def require_namespace_deletion_started(self, name, uid):
+        live = self.get(f"namespace/{name}")
+        if not live:
+            return
+        metadata = live.get("metadata", {})
+        if metadata.get("uid") != uid:
+            fail(f"namespace/{name} was replaced while deletion was starting.")
+        if not metadata.get("deletionTimestamp") or live.get("status", {}).get("phase") != "Terminating":
+            fail(f"namespace/{name} has not entered deletion; refusing to release the admission freeze.")
+
     def delete_namespace(self, planned):
         if not planned:
             return
@@ -1542,8 +1557,9 @@ class Cleanup:
             fail(f"namespace/{name} identity changed while admission was frozen.")
         validate_live(live, "while admission was frozen")
         self.raw_delete(live)
-        self.wait_absent(f"namespace/{name}", uid)
+        self.require_namespace_deletion_started(name, uid)
         self.recover_freeze()
+        self.wait_absent(f"namespace/{name}", uid)
 
     def helm_present(self):
         releases = json.loads(run([
@@ -1890,9 +1906,9 @@ class Cleanup:
         storage = self.validate_storage(deleting_namespaces)
 
         if self.a.delete_tenant_data:
-            # Keep the tenant freeze active until the exact namespace UIDs and
-            # their recorded storage have gone. The OCE release is removed
-            # first so its controllers cannot recreate a deleted tenant.
+            # Freeze tenants until deletion has started for the exact UIDs,
+            # then let NamespaceLifecycle guard creation during finalization.
+            # Remove OCE first so its controllers cannot recreate a tenant.
             tenant_deletion = self.prepare_tenant_deletion(tenant_targets)
             self.ensure_tenant_freeze(tenant_plans, tenant_targets)
             tenant_plans = self.require_tenant_namespaces_unchanged(

@@ -174,6 +174,45 @@ def admission_defaults(document):
             match_resources.setdefault("matchPolicy", "Equivalent")
             match_resources.setdefault("objectSelector", {})
 
+def namespace_frozen(name):
+    labels = state["resources"][f"namespace/{name}"]["metadata"].get("labels", {})
+    for key, binding in state["resources"].items():
+        if "cleanup-freeze-" not in key or binding["kind"] != "ValidatingAdmissionPolicyBinding":
+            continue
+        policy_name = binding["spec"]["policyName"]
+        policy = state["resources"].get(
+            "validatingadmissionpolicies.admissionregistration.k8s.io/" + policy_name
+        )
+        if not policy:
+            continue
+        selector = binding["spec"].get("matchResources", {}).get(
+            "namespaceSelector", {}
+        ).get("matchLabels")
+        if selector and all(labels.get(k) == v for k, v in selector.items()):
+            return True
+        if not selector and any(
+            json.dumps(name) in condition["expression"]
+            for condition in policy["spec"].get("matchConditions", [])
+        ):
+            return True
+    return False
+
+def finalize_namespace(namespace):
+    state["resources"].pop(f"namespace/{namespace}", None)
+    for child in list(state["resources"]):
+        if child.startswith(f"{namespace}|"):
+            del state["resources"][child]
+    state.get("tenantWorkloads", {}).pop(namespace, None)
+    state["pvcs"] = [
+        pvc for pvc in state.get("pvcs", [])
+        if pvc.get("metadata", {}).get("namespace") != namespace
+    ]
+    if namespace not in state.get("retainTenantPvs", []):
+        state["pvs"] = [
+            pv for pv in state.get("pvs", [])
+            if pv.get("spec", {}).get("claimRef", {}).get("namespace") != namespace
+        ]
+
 def key_from_raw(path):
     name = path.rsplit("/", 1)[-1]
     if "/serviceaccounts/" in path:
@@ -291,6 +330,25 @@ def kubectl():
         if "--namespace" in command:
             namespace = command[command.index("--namespace") + 1]
         item = state["resources"].get(object_key(resource, namespace))
+        if item and resource.startswith("namespace/") and state.get("delayedNamespaceDeletion"):
+            name = resource.split("/", 1)[1]
+            pending = state.get("pendingNamespaceDeletes", {})
+            if name in pending:
+                if namespace_frozen(name):
+                    pending[name] += 1
+                    state["namespaceLifecycleEvents"].append(["blocked", name])
+                    save()
+                    if pending[name] > 1:
+                        raise SystemExit("namespace finalization blocked by cleanup freeze")
+                elif (
+                    item["metadata"].get("deletionTimestamp")
+                    and item.get("status", {}).get("phase") == "Terminating"
+                ):
+                    state["namespaceLifecycleEvents"].append(["finalized", name])
+                    finalize_namespace(name)
+                    del pending[name]
+                    save()
+                    return
         if item:
             print(json.dumps(item))
         return
@@ -303,6 +361,14 @@ def kubectl():
             print(json.dumps(document))
             return
         namespace = document["metadata"]["namespace"]
+        namespace_item = state["resources"].get(f"namespace/{namespace}", {})
+        if namespace_item.get("status", {}).get("phase") == "Terminating":
+            print(
+                f'Forbidden: unable to create new content in namespace "{namespace}" '
+                "because it is being terminated",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         for key, binding in state["resources"].items():
             if not key.startswith(
                 "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
@@ -398,23 +464,31 @@ def kubectl():
             print("Conflict", file=sys.stderr)
             raise SystemExit(1)
         if item:
-            del state["resources"][key]
             if key.startswith("namespace/"):
                 namespace = key.split("/", 1)[1]
-                for child in list(state["resources"]):
-                    if child.startswith(f"{namespace}|"):
-                        del state["resources"][child]
-                state.get("tenantWorkloads", {}).pop(namespace, None)
-                state["pvcs"] = [
-                    pvc for pvc in state.get("pvcs", [])
-                    if pvc.get("metadata", {}).get("namespace") != namespace
-                ]
-                if namespace not in state.get("retainTenantPvs", []):
-                    state["pvs"] = [
-                        pv for pv in state.get("pvs", [])
-                        if pv.get("spec", {}).get("claimRef", {}).get("namespace")
-                        != namespace
-                    ]
+                if state.get("delayedNamespaceDeletion"):
+                    item["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+                    item["status"] = {"phase": "Terminating"}
+                    state.setdefault("pendingNamespaceDeletes", {})[namespace] = 0
+                    state.setdefault("namespaceLifecycleEvents", []).append(
+                        ["delete-requested", namespace]
+                    )
+                    tamper = state.get("namespaceDeleteTamper", {})
+                    if tamper.get("name") == namespace:
+                        if "uid" in tamper:
+                            item["metadata"]["uid"] = tamper["uid"]
+                        if "phase" in tamper:
+                            item["status"]["phase"] = tamper["phase"]
+                        if "deletionTimestamp" in tamper:
+                            item["metadata"]["deletionTimestamp"] = tamper["deletionTimestamp"]
+                else:
+                    finalize_namespace(namespace)
+            else:
+                if "cleanup-freeze-" in key and item["kind"] == "ValidatingAdmissionPolicyBinding":
+                    state.setdefault("namespaceLifecycleEvents", []).append(
+                        ["binding-deleted", item["metadata"]["name"]]
+                    )
+                del state["resources"][key]
             state["mutations"] += 1
             save()
         log(bool(item))
@@ -2246,6 +2320,110 @@ def test_recorded_tenant_freeze_uid_missing_refuses_replacement(
         and "create" in entry["args"]
         for line in recovery_log
     )
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_namespace_controllers_finalize_only_after_defrost(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    names = ["openclaw-tenant-a", "openclaw-tenant-b"] if delete_tenant else [
+        SYSTEM_NAMESPACE
+    ]
+    if delete_tenant:
+        for name in names:
+            _add_tenant(env, name)
+            _add_tenant_storage(env, name)
+        command += [*_tenant_identity_args(*names), "--delete-tenant-data"]
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["resources"] == {}
+    assert current["pvcs"] == []
+    assert current["pvs"] == []
+    assert current["pendingNamespaceDeletes"] == {}
+    events = current["namespaceLifecycleEvents"]
+    binding_removed = next(
+        index for index, event in enumerate(events)
+        if event[0] == "binding-deleted"
+    )
+    for name in names:
+        assert events.index(["delete-requested", name]) < binding_removed
+        assert events.index(["blocked", name]) < binding_removed
+        assert events.index(["finalized", name]) > binding_removed
+    assert not (tmp_path / "state" / "cleanup-freeze.json").exists()
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+@pytest.mark.parametrize("tamper", ["uid", "phase", "deletionTimestamp"])
+def test_namespace_deletion_transition_rejects_identity_or_lifecycle_drift(
+    tmp_path: Path,
+    delete_tenant: bool,
+    tamper: str,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    name = "openclaw-tenant-a" if delete_tenant else SYSTEM_NAMESPACE
+    if delete_tenant:
+        _add_tenant(env, name)
+        command += [*_tenant_identity_args(name), "--delete-tenant-data"]
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    value = {
+        "uid": "replacement-uid",
+        "phase": "Active",
+        "deletionTimestamp": None,
+    }[tamper]
+    state["namespaceDeleteTamper"] = {"name": name, tamper: value}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    diagnostic = (
+        "was replaced while deletion was starting."
+        if tamper == "uid" else
+        "has not entered deletion; refusing to release the admission freeze."
+    )
+    assert result.stderr.splitlines()[0] == f"cleanup: namespace/{name} {diagnostic}"
+    current = _state(env)
+    assert f"namespace/{name}" in current["resources"]
+    assert ["finalized", name] not in current["namespaceLifecycleEvents"]
+
+
+def test_namespace_lifecycle_denies_create_without_cleanup_binding(
+    tmp_path: Path,
+) -> None:
+    _, _, env = _prepare(tmp_path)
+    state = _state(env)
+    namespace = state["resources"][f"namespace/{SYSTEM_NAMESPACE}"]
+    namespace["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+    namespace["status"] = {"phase": "Terminating"}
+    assert not any(
+        "cleanup-freeze-" in key for key in state["resources"]
+    )
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    result = subprocess.run(
+        [
+            str(tmp_path / "bin" / "kubectl"),
+            "--kubeconfig", str(tmp_path / "kubeconfig"),
+            "--context", CONTEXT, "--request-timeout=20s",
+            "create", "--dry-run=server", "-f", "-",
+        ],
+        input=json.dumps(_object(
+            "ConfigMap", "probe", "probe-uid", namespace=SYSTEM_NAMESPACE,
+        )),
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "because it is being terminated" in result.stderr
+    assert _state(env) == state
 
 
 def test_private_freeze_state_mode_is_fail_closed_with_exact_diagnostic(
