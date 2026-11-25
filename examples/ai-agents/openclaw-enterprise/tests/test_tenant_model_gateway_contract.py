@@ -79,6 +79,20 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
             and command[-1] == "--output=jsonpath={.spec.clusterIP}"
         ):
             print(state.get("agentgateway_service_ip", "10.100.42.17"))
+        elif command and command[0] == "get" and command[-1] == "--output=json":
+            resource = command[1]
+            if resource == "networkpolicy.networking.k8s.io/oce-private-service-egress":
+                pass
+            elif resource != "configmap/agentgateway-ca":
+                print(f"unsupported kubectl call: {args}", file=sys.stderr)
+                raise SystemExit(41)
+            document = state.get("objects", {}).get(resource)
+            if document is None or resource not in state.get("resources", {}):
+                print(f"Error from server (NotFound): {resource}", file=sys.stderr)
+                raise SystemExit(1)
+            name = resource.rsplit("/", 1)[1]
+            document["metadata"]["uid"] = state.get("uids", {}).get(resource, f"uid-{name}")
+            print(json.dumps(document))
         elif command and command[0] == "get":
             resource = command[1]
             if resource == state.get("fail_get"):
@@ -90,7 +104,27 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
                 uid = state.get("uids", {}).get(resource, f"uid-{name}")
                 print(f"{name}|{owner}|{uid}")
         elif command[:2] == ["label", f"namespace/{state['tenant']}"]:
-            pass
+            # An object that appears after the preflight read and before the first-run create.
+            resource = state.pop("appear_on_label", None)
+            if resource is not None:
+                owner = "openclaw-enterprise-blueprint"
+                state.setdefault("resources", {})[resource] = owner
+                state.setdefault("uids", {})[resource] = "uid-intruder"
+                state.setdefault("objects", {})[resource] = {
+                    "apiVersion": "networking.k8s.io/v1",
+                    "kind": "NetworkPolicy",
+                    "metadata": {
+                        "name": resource.rsplit("/", 1)[1],
+                        "namespace": state["tenant"],
+                        "labels": {"app.kubernetes.io/managed-by": owner},
+                    },
+                    "spec": {
+                        "podSelector": {},
+                        "policyTypes": ["Egress"],
+                        "egress": [{"to": [{"ipBlock": {"cidr": "10.0.0.0/8"}}]}],
+                    },
+                }
+                state_path.write_text(json.dumps(state))
         elif command[:3] == ["create", "configmap", "agentgateway-ca"]:
             print(
                 json.dumps(
@@ -105,23 +139,38 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
                     }
                 )
             )
-        elif command == ["create", "--filename", "-"]:
+        elif command[:3] == ["create", "--filename", "-"] or (
+            command[:1] == ["apply"] and command[-2:] == ["--filename", "-"]
+        ):
             document = json.loads(stdin)
-            resource = f"configmap/{document['metadata']['name']}"
-            state.setdefault("resources", {})[resource] = document["metadata"][
-                "labels"
-            ]["app.kubernetes.io/managed-by"]
-            state_path.write_text(json.dumps(state))
-        elif command[:1] == ["apply"] and command[-2:] == ["--filename", "-"]:
-            document = json.loads(stdin)
+            name = document["metadata"]["name"]
             resource = (
-                "networkpolicy.networking.k8s.io/"
-                f"{document['metadata']['name']}"
+                f"configmap/{name}"
+                if document["kind"] == "ConfigMap"
+                else f"networkpolicy.networking.k8s.io/{name}"
             )
+            exists = resource in state.get("resources", {})
+            if command[0] == "create" and exists:
+                print(
+                    f"Error from server (AlreadyExists): {resource} already exists",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1)
             state.setdefault("resources", {})[resource] = document["metadata"][
                 "labels"
             ]["app.kubernetes.io/managed-by"]
+            uid = state.get("uids", {}).get(resource, f"uid-{name}")
+            document["metadata"]["uid"] = uid
+            state.setdefault("objects", {})[resource] = document
+            # A delete and same-name recreate between this mutation and the script's next read.
+            if resource in state.get("replace_after_create", []):
+                state["replace_after_create"].remove(resource)
+                state.setdefault("uids", {})[resource] = "uid-replacement"
             state_path.write_text(json.dumps(state))
+            if command[-1] == "--output=json":
+                created = json.loads(json.dumps(document))
+                created["metadata"]["uid"] = uid
+                print(json.dumps(created))
         else:
             print(f"unsupported kubectl call: {args}", file=sys.stderr)
             raise SystemExit(41)
@@ -215,22 +264,23 @@ def test_configure_marks_the_created_tenant_resource(
     result, calls = _run_configure(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    created = next(
+    # A first run creates both objects exclusively and reads each UID from the create response.
+    created = [
         call
         for call in calls
-        if call["args"][2:] == ["create", "--filename", "-"]
-    )
-    config_map = json.loads(created["stdin"])
+        if call["args"][2:] == ["create", "--filename", "-", "--output=json"]
+    ]
+    assert [json.loads(call["stdin"])["kind"] for call in created] == [
+        "ConfigMap",
+        "NetworkPolicy",
+    ]
+    assert not any(call["args"][2:3] == ["apply"] for call in calls)
+    config_map = json.loads(created[0]["stdin"])
     assert config_map["metadata"]["labels"] == {
         "app.kubernetes.io/managed-by": OWNER
     }
     assert config_map["immutable"] is True
-    applied = next(
-        call
-        for call in calls
-        if call["args"][2:3] == ["apply"]
-        and call["args"][-2:] == ["--filename", "-"]
-    )
+    applied = created[1]
     policy = json.loads(applied["stdin"])
     assert policy["metadata"] == {
         "name": "oce-private-service-egress",
@@ -468,6 +518,59 @@ def test_configure_refuses_to_adopt_an_unrecorded_object(
     assert "does not record it; refusing to adopt it." in result.stderr
     assert _mutating_calls(calls) == []
     assert not _receipt(tmp_path).exists()
+
+
+@pytest.mark.parametrize("resource", TENANT_RESOURCES)
+def test_configure_first_run_refuses_an_object_replaced_after_its_create(
+    tmp_path: pathlib.Path,
+    resource: str,
+) -> None:
+    # The object is deleted and recreated under the same name between the create and the follow-up read.
+    result, _ = _run_configure(
+        tmp_path,
+        state={
+            "context": CONTEXT,
+            "tenant": TENANT,
+            "resources": {},
+            "replace_after_create": [resource],
+        },
+    )
+
+    assert result.returncode != 0
+    assert (
+        f"configure-tenant-model-gateway: {resource} in {TENANT} is not the object this run "
+        "created or recorded, or its content differs from what this run wrote; refusing to "
+        "continue."
+    ) in result.stderr
+    assert sorted(path.name for path in _receipt(tmp_path).parent.iterdir()) == []
+
+
+def test_configure_first_run_refuses_a_policy_that_appears_before_its_create(
+    tmp_path: pathlib.Path,
+) -> None:
+    policy = TENANT_RESOURCES[1]
+    # A same-name policy with the sample's owner label appears after the preflight read.
+    result, calls = _run_configure(
+        tmp_path,
+        state={
+            "context": CONTEXT,
+            "tenant": TENANT,
+            "resources": {},
+            "appear_on_label": policy,
+        },
+    )
+
+    assert result.returncode != 0
+    assert (
+        "configure-tenant-model-gateway: could not create "
+        f"networkpolicy/oce-private-service-egress in {TENANT} as a new object."
+    ) in result.stderr
+    assert not any(call["args"][2:3] == ["apply"] for call in calls)
+    state = json.loads((tmp_path / "kube-state.json").read_text(encoding="utf-8"))
+    assert state["objects"][policy]["spec"]["egress"] == [
+        {"to": [{"ipBlock": {"cidr": "10.0.0.0/8"}}]}
+    ]
+    assert sorted(path.name for path in _receipt(tmp_path).parent.iterdir()) == []
 
 
 def test_readme_step_7_recovers_an_interrupted_first_run() -> None:

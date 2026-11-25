@@ -283,26 +283,69 @@ fi
   pod-security.kubernetes.io/warn=restricted \
   --overwrite
 
+# A first run creates each object exclusively and takes its UID from the create response. The follow-up read
+# must return that UID and the content this run wrote, so an object that appeared after the preflight read, or
+# a replacement made between the create and the read, is refused before the receipt is published. Server-side
+# apply is used only on a receipt-backed rerun, after the live UIDs matched the receipt.
+created_uid() {
+  jq -er --arg kind "$1" --arg name "$2" --arg namespace "${TENANT_NAMESPACE}" '
+    if .kind == $kind
+      and .metadata.name == $name
+      and .metadata.namespace == $namespace
+      and (.metadata.uid | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"))
+    then .metadata.uid
+    else error("unexpected create response")
+    end
+  ' <<<"$3" 2>/dev/null
+}
+
+# verify_live_object RESOURCE UID FILTER [JQ_ARGS...]: read RESOURCE back and require FILTER, which sees $uid,
+# $owner and $namespace, to hold for the live object.
+verify_live_object() {
+  local resource="$1"
+  local uid="$2"
+  local filter="$3"
+  shift 3
+  local live
+  live="$("${KUBECTL[@]}" get "${resource}" --namespace "${TENANT_NAMESPACE}" --output=json)" ||
+    die "could not read ${resource} in ${TENANT_NAMESPACE} back."
+  jq -e \
+    --arg uid "${uid}" \
+    --arg owner "${OWNER_LABEL_VALUE}" \
+    --arg namespace "${TENANT_NAMESPACE}" \
+    "$@" "${filter}" <<<"${live}" >/dev/null ||
+    die "${resource} in ${TENANT_NAMESPACE} is not the object this run created or recorded, or its content differs from what this run wrote; refusing to continue."
+}
+
 if [[ "${ca_config_map_exists}" == false ]]; then
-  "${KUBECTL[@]}" create configmap agentgateway-ca \
-    --namespace "${TENANT_NAMESPACE}" \
-    --from-file=ca.crt="${ca_file}" \
-    --dry-run=client \
-    --output json |
-    jq \
-      --arg owner "${OWNER_LABEL_VALUE}" \
-      '.immutable = true
-       | .metadata.labels = ((.metadata.labels // {})
-         + {"app.kubernetes.io/managed-by": $owner})' |
-    "${KUBECTL[@]}" create --filename -
-  owned_resource_exists \
-    "configmap/agentgateway-ca" \
-    "${TENANT_NAMESPACE}" \
-    "${OWNER_LABEL_VALUE}" ||
-    die "created ConfigMap agentgateway-ca could not be verified."
-  recorded_ca_uid="${owned_uid}"
+  ca_created="$(
+    "${KUBECTL[@]}" create configmap agentgateway-ca \
+      --namespace "${TENANT_NAMESPACE}" \
+      --from-file=ca.crt="${ca_file}" \
+      --dry-run=client \
+      --output json |
+      jq \
+        --arg owner "${OWNER_LABEL_VALUE}" \
+        '.immutable = true
+         | .metadata.labels = ((.metadata.labels // {})
+           + {"app.kubernetes.io/managed-by": $owner})' |
+      "${KUBECTL[@]}" create --filename - --output=json
+  )" || die "could not create configmap/agentgateway-ca in ${TENANT_NAMESPACE} as a new object. If the first run was interrupted, follow README Step 7."
+  recorded_ca_uid="$(created_uid ConfigMap agentgateway-ca "${ca_created}")" ||
+    die "the create response for configmap/agentgateway-ca in ${TENANT_NAMESPACE} has no valid identity."
+  verify_live_object configmap/agentgateway-ca "${recorded_ca_uid}" '
+    .kind == "ConfigMap"
+    and .metadata.name == "agentgateway-ca"
+    and .metadata.namespace == $namespace
+    and .metadata.uid == $uid
+    and .metadata.labels["app.kubernetes.io/managed-by"] == $owner
+    and .immutable == true
+    and .data == {"ca.crt": $ca}
+    and (has("binaryData") | not)
+  ' --rawfile ca "${ca_file}"
 fi
 
+readonly policy_file="${work_dir}/networkpolicy.json"
 jq -n \
   --arg namespace "${TENANT_NAMESPACE}" \
   --arg owner "${OWNER_LABEL_VALUE}" \
@@ -341,22 +384,29 @@ jq -n \
         }
       ]
     }
-  }' |
+  }' >"${policy_file}"
+if [[ -e "${RECEIPT_PATH}" ]]; then
   "${KUBECTL[@]}" apply \
     --server-side \
     --field-manager="${OWNER_LABEL_VALUE}" \
-    --filename -
-owned_resource_exists \
-  "networkpolicy.networking.k8s.io/oce-private-service-egress" \
-  "${TENANT_NAMESPACE}" \
-  "${OWNER_LABEL_VALUE}" ||
-  die "created NetworkPolicy oce-private-service-egress could not be verified."
-if [[ -n "${recorded_policy_uid}" ]]; then
-  [[ "${owned_uid}" == "${recorded_policy_uid}" ]] ||
-    die "networkpolicy/oce-private-service-egress in ${TENANT_NAMESPACE} was replaced during this run; refusing to record it."
+    --filename - <"${policy_file}"
 else
-  recorded_policy_uid="${owned_uid}"
+  policy_created="$(
+    "${KUBECTL[@]}" create --filename - --output=json <"${policy_file}"
+  )" || die "could not create networkpolicy/oce-private-service-egress in ${TENANT_NAMESPACE} as a new object. If the first run was interrupted, follow README Step 7."
+  recorded_policy_uid="$(
+    created_uid NetworkPolicy oce-private-service-egress "${policy_created}"
+  )" ||
+    die "the create response for networkpolicy/oce-private-service-egress in ${TENANT_NAMESPACE} has no valid identity."
 fi
+verify_live_object networkpolicy.networking.k8s.io/oce-private-service-egress "${recorded_policy_uid}" '
+  .kind == "NetworkPolicy"
+  and .metadata.name == "oce-private-service-egress"
+  and .metadata.namespace == $namespace
+  and .metadata.uid == $uid
+  and .metadata.labels["app.kubernetes.io/managed-by"] == $owner
+  and .spec == $policy[0].spec
+' --slurpfile policy "${policy_file}"
 
 if [[ ! -e "${RECEIPT_PATH}" ]]; then
   # Link a fully written private file into place; link(2) fails if anything appeared at the path meanwhile.
