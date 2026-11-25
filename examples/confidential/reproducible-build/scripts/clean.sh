@@ -166,10 +166,24 @@ main() {
   }
   export AWS_REGION AWS_DEFAULT_REGION="${AWS_REGION}"
 
+  # Every lookup below is account-scoped. In another account they come back not-found, and
+  # the clean up would report the sample's resources gone while they are still there.
+  # No recorded account is not a pass: the pin would never run. --keep-aws-resources makes
+  # no AWS call, so it needs none.
+  if [[ "${keep_aws}" != true ]]; then
+    [[ -n "${AWS_ACCOUNT_ID:-}" ]] \
+      || die "no AWS_ACCOUNT_ID in ${STATE_FILE} or .env, so it is unknown which account setup.sh used; set AWS_ACCOUNT_ID in .env to that account; changed nothing"
+    local caller_account
+    caller_account="$(aws sts get-caller-identity --query Account --output text)" \
+      || die "could not read the AWS account, so it is unknown whether these credentials are for the account setup.sh used; changed nothing"
+    [[ "${caller_account}" == "${AWS_ACCOUNT_ID}" ]] \
+      || die "these credentials are for account ${caller_account}, but setup.sh ran in ${AWS_ACCOUNT_ID}; changed nothing"
+  fi
+
   # Say which cluster and Region this is about to act on: an empty KUBE_CONTEXT means
   # "whatever is current", which on a shared machine is not always this sample's cluster.
   local clean_context
-  clean_context="$(kc config current-context 2>/dev/null || true)"
+  clean_context="$(kc config view --minify -o jsonpath='{.current-context}' 2>/dev/null || true)"
   [[ -n "${clean_context}" ]] || {
     echo "ERROR: could not read the current kube context; set KUBE_CONTEXT in .env" >&2
     exit 1

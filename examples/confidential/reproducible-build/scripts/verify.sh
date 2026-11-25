@@ -183,7 +183,7 @@ if [[ "${KEY_ARN}" == *":alias/"* ]]; then
   kms_alias_arn="${KEY_ARN}"
 else
   kms_alias_arn="$(aws kms list-aliases --key-id "${key_arn}" --output json 2>/dev/null \
-    | jq -r '[.Aliases[] | select(.AliasName | startswith("alias/aws/") | not)
+    | jq -r --arg a "${KMS_ALIAS}" '[.Aliases[] | select(.AliasName == $a)
               | .AliasArn] | .[0] // empty')" \
     || {
       echo "ERROR: could not list aliases for ${key_arn}" >&2

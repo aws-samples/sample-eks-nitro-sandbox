@@ -92,13 +92,13 @@ registry="${account_id}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
 if [[ -n "${KUBE_CONTEXT:-}" ]]; then
   # shellcheck disable=SC2310  # the || fallback handles a failed lookup
-  current_ctx="$(kc config current-context 2>/dev/null)" || current_ctx="(unknown)"
+  current_ctx="$(kc config view --minify -o jsonpath='{.current-context}' 2>/dev/null)" || current_ctx="(unknown)"
   [[ "${current_ctx}" == "${KUBE_CONTEXT}" ]] \
     || die "kubectl current-context is '${current_ctx}', expected '${KUBE_CONTEXT}'; set KUBE_CONTEXT in .env to the cluster you mean"
   echo "  context:  ${current_ctx}"
 else
   # shellcheck disable=SC2310,SC2312  # the || fallback handles a failed lookup
-  echo "  context:  $(kc config current-context 2>/dev/null || echo '(unknown)')"
+  echo "  context:  $(kc config view --minify -o jsonpath='{.current-context}' 2>/dev/null || echo '(unknown)')"
 fi
 # shellcheck disable=SC2310  # the || die is the check
 kc get runtimeclass confidential-sandbox -o name >/dev/null 2>&1 \
@@ -108,6 +108,7 @@ kc get runtimeclass confidential-sandbox -o name >/dev/null 2>&1 \
 chmod 600 "${STATE_FILE}"
 state_put NAMESPACE "${NAMESPACE}"
 state_put AWS_REGION "${AWS_REGION}"
+state_put AWS_ACCOUNT_ID "${account_id}"
 state_put CLUSTER_NAME "${CLUSTER_NAME}"
 
 # --------------------------------------------------------------------- 2/8 ECR repo

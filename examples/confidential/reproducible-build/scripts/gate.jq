@@ -69,10 +69,15 @@ def denies_decrypt: actions | any(action_matches("kms:decrypt"));
     # gating on something it never predicted or printed.
     | select(.Condition | keys == ["StringEqualsIgnoreCase"])
     | select(.Condition.StringEqualsIgnoreCase | length == 2)
+    # In a key policy "*" is this key. Anything else names no key and grants nothing here.
+    | select(.Resource == "*")
   ] | length) as $allows
 | ([.Statement[] | select(.Sid == "DenyUnlessThePolicyMeasurementMatches")
     | select(.Effect == "Deny") | select(.Principal == "*")
     | select(denies_decrypt)
+    # Exactly Decrypt and ReEncryptFrom: without ReEncryptFrom a mismatched measurement could
+    # re-encrypt the ciphertext under another key; an extra action changes what is refused.
+    | select(actions | map(ascii_downcase) | sort == ["kms:decrypt", "kms:reencryptfrom"])
     | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR17"] == $pcr17)
     # One deny per register. The keys in a StringNotEqualsIgnoreCase block are ANDed too,
     # so a single deny listing two registers fires only when BOTH fail to match, and a
@@ -85,6 +90,9 @@ def denies_decrypt: actions | any(action_matches("kms:decrypt"));
 | ([.Statement[] | select(.Sid == "DenyUnlessTheAttestationComesFromAnEKSSandbox")
     | select(.Effect == "Deny") | select(.Principal == "*")
     | select(denies_decrypt)
+    # Exactly Decrypt and ReEncryptFrom: without ReEncryptFrom a mismatched measurement could
+    # re-encrypt the ciphertext under another key; an extra action changes what is refused.
+    | select(actions | map(ascii_downcase) | sort == ["kms:decrypt", "kms:reencryptfrom"])
     | select(.Condition.StringNotEqualsIgnoreCase["kms:RecipientAttestation:PCR8:ServiceName"]
              == "eks.amazonaws.com")
     | select(.Condition.StringNotEqualsIgnoreCase | length == 1)

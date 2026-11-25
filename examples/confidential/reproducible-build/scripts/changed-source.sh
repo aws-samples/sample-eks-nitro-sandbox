@@ -235,10 +235,40 @@ main() {
   [[ "${changed_pcr17}" =~ ^[0123456789abcdef]{96}$ ]] \
     || die "could not read a predicted PCR17 for the changed pod (${changed_dir}/changed-genpolicy.log)"
 
+  [[ "${changed_pcr17}" =~ [123456789abcdef] ]] \
+    || die "the changed PCR17 is all zeros, which no sandbox can match; a denial would prove nothing"
   [[ "${changed_pcr17}" != "${PREDICTED_PCR17}" ]] \
     || die "the changed pod's measurement equals the approved pod's, so the gate would release the key and this would show nothing"
-  echo "  approved PCR17: ${PREDICTED_PCR17}"
-  echo "  changed  PCR17: ${changed_pcr17}"
+
+  # The policy pins the pod name, so the changed pod's own name moves PCR17 too. Measure the
+  # changed image once more under the approved pod's name and label, which is the approved
+  # render with only the image different, to show the source change alone moves PCR17.
+  # shellcheck disable=SC2312  # json_string wraps a jq call; failure of jq is caught by set -euo
+  render "${sample_dir}/deploy/pod.yaml" "$(printf '
+    .metadata.namespace = %s
+    | .spec.containers[0].image = %s
+    | (.spec.containers[0].env[] | select(.name == "AWS_REGION").value) = %s
+    | (.spec.containers[0].env[] | select(.name == "AWS_DEFAULT_REGION").value) = %s
+    | (.spec.containers[0].env[] | select(.name == "KMS_KEY_ARN").value) = %s
+  ' "$(json_string "${NAMESPACE}")" "$(json_string "${changed_image_uri}")" \
+    "$(json_string "${AWS_REGION}")" "$(json_string "${AWS_REGION}")" \
+    "$(json_string "${kms_alias_arn}")")" "${changed_dir}/changed-image-only-input.json"
+  HOME="${genpolicy_home}" "${genpolicy}" \
+    --profile "${profile}" --with-pod-identity \
+    --output-file-b64 "${changed_dir}/changed-image-only-policy.b64" \
+    "${changed_dir}/changed-image-only-input.json" >"${changed_dir}/changed-image-only-genpolicy.log"
+  local image_only_pcr17
+  image_only_pcr17="$(read_predicted_pcr17 "${changed_dir}/changed-image-only-genpolicy.log")"
+  [[ "${image_only_pcr17}" =~ ^[0123456789abcdef]{96}$ ]] \
+    || die "could not read a predicted PCR17 for the changed image under the approved pod name (${changed_dir}/changed-image-only-genpolicy.log)"
+  [[ "${image_only_pcr17}" =~ [123456789abcdef] ]] \
+    || die "the changed image's PCR17 under the approved pod name is all zeros"
+  [[ "${image_only_pcr17}" != "${PREDICTED_PCR17}" ]] \
+    || die "the changed image under the approved pod name has the approved PCR17, so the source change does not move the measurement"
+
+  echo "  approved PCR17:                         ${PREDICTED_PCR17}"
+  echo "  changed image, approved pod name PCR17: ${image_only_pcr17}"
+  echo "  changed pod (${CHANGED_POD_NAME}) PCR17: ${changed_pcr17}"
 
   # Confirm the live gate still carries the approved measurement.
   echo "== 3b verify the gate still expects the approved measurement =="

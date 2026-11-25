@@ -1,7 +1,7 @@
 # Reproduce the build and verify the KMS gate
 
 A confidential sandbox boots its Cedar policy inside the guest VM and measures it into
-PCR17. A KMS key policy that gates on that measurement releases the data key only to a pod
+PCR17. A KMS key policy that gates on that measurement decrypts a value encrypted under the key only for a pod
 that presents the expected attestation. Because the Cedar policy embeds the image digest,
 the measurement is determined entirely by the build.
 
@@ -73,7 +73,65 @@ This blueprint shows:
 
 *Figure 1: The build chain, the attestation gate, and the independent verify path.*
 
-![The build chain. Left of the diagram: a source box and a nixos/nix build container outside the AWS Cloud, connected by a build arrow. The nix build pushes to Amazon ECR inside the cloud. A policy generator outside the cloud reads the image digest from ECR and feeds the predicted PCR17 to AWS KMS. The KMS key policy gates on that PCR17. Inside an EKS cluster frame and a Nitro sandbox pod frame, a Decrypt service receives the data key on match. Below: a Verifier and a fresh Nix rebuild, with compare-digest arrows to ECR and predict-PCR17 arrows to the generator.](images/architecture.png)
+![The build chain. Left of the diagram: a source box and a nixos/nix build container outside the AWS Cloud, connected by a build arrow. The nix build pushes to Amazon ECR inside the cloud. A policy generator outside the cloud reads the image digest from ECR and feeds the predicted PCR17 to AWS KMS. The KMS key policy gates on that PCR17. Inside an EKS cluster frame and a Nitro sandbox pod frame, a Decrypt service receives the decrypted value on match. Below: a Verifier and a fresh Nix rebuild, with compare-digest arrows to ECR and predict-PCR17 arrows to the generator.](images/architecture.png)
+
+### What makes a pod reproducible
+
+The PCR17 that KMS checks depends on two inputs: the image and the pod spec. Both must be
+fixed for the measurement to be predictable. The key checks PCR17 rather than PCR0 because
+on EKS PCR0 measures the AWS guest system image, which is the same for every confidential
+pod, while PCR17 measures this pod's Cedar policy and so changes with your build
+([Why the key checks PCR17, not PCR0](#why-the-key-checks-pcr17-not-pcr0)).
+The practices below apply to any workload.
+
+1. **Choose a language you can build deterministically.** No language is reproducible by
+   default. A compiled language with a lockfile yields one binary from pinned inputs; an
+   interpreted one also ships an interpreter and packages, each a separate thing to pin,
+   plus installers and bytecode caches that can add versions or timestamps of their own.
+2. **Pin every build input**: the package set (here the nixpkgs commit), the builder image
+   by digest, and the dependency lockfile (`src/Cargo.lock`).
+3. **Build only from named source files**, so an edit to an unrelated file changes neither
+   the digest nor PCR17.
+4. **Remove nondeterminism from the output**: build paths embedded in the binary, and
+   timestamps.
+5. **Keep the image minimal and fully specified**: only what the service needs, and an
+   explicit `Env`, so the runtime adds nothing the generator did not predict.
+6. **Reference the image by digest**, `image@sha256:…`, from a repository with immutable
+   tags, never by tag alone.
+7. **Fix the pod spec too.** The Cedar policy measures the manifest as well as the image:
+   its name, namespace, environment values and runtime profile. Changing any of them
+   changes PCR17, even with the same image. Generate the policy from the pod's final spec,
+   after any mutating admission webhook has changed it: a spec mutated afterwards no longer
+   matches, and the pod is denied (Amazon EKS User Guide,
+   [*Run a pod in confidential mode*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-confidential-setup.html)).
+   Here the only mutation is the EKS Pod Identity webhook's, which `--with-pod-identity`
+   covers.
+8. **Predict, gate, then run.** Generate the policy from the digest, the manifest and the
+   profile, write the predicted PCR17 into the key policy, and only then start the pod.
+9. **Let anyone check it.** A third party rebuilds from an empty store, compares the digest
+   with the registry, predicts PCR17 again and compares it with the live key policy.
+
+### The decrypt service
+
+The image runs one small Rust HTTP server, from `src/`. It has two endpoints:
+
+- **`PUT /decrypt`** takes a KMS ciphertext as the request body. For each request the
+  service generates a fresh 2048-bit RSA key pair. It asks the Nitro Security Module
+  (`/dev/nsm`) for an attestation document that carries the public key, and calls KMS
+  `Decrypt` with that document as the `Recipient`. KMS checks the document's PCRs against
+  the key policy and returns the plaintext as `CiphertextForRecipient`: a CMS envelope
+  encrypted to that public key (RSAES-OAEP SHA-256 key transport, AES-256-CBC content).
+  The service unwraps the envelope with the private key and returns only the plaintext's
+  SHA-256.
+- **`GET /readings`** returns the kernel release, uptime, block devices and DMI product
+  name the pod sees. Step 4 uses them to show where the pod ran.
+
+Any other request gets 404. The service listens on `LISTEN_ADDR`, which defaults to
+`127.0.0.1:8080`; `deploy/pod.yaml` sets it to `0.0.0.0:8080` so the Service can reach it.
+It takes credentials from EKS Pod Identity and its Region from `AWS_REGION`. The source
+files map one to one onto these steps: `http.rs` (requests), `attest.rs` (NSM), `kms.rs`
+(`Decrypt`), `cms.rs` (the envelope), `readings.rs` and `main.rs` (the routes and
+`BANNER`).
 
 ## Versions
 
@@ -104,10 +162,10 @@ Both nixpkgs and nix2container commits are in `flake.lock`. The builder image di
 | `deploy/plain-pod.yaml` | Ordinary pod for the sandbox-vs-node comparison |
 | `deploy/service.yaml` | ClusterIP Service fronting the decrypt endpoint |
 | `deploy/production-profile.yaml` | Cedar runtime profile for the production pod: logs and exec denied |
-| `deploy/debug-profile.yaml` | Cedar runtime profile for the debug pod: exec allowed |
+| `deploy/debug-profile.yaml` | Cedar runtime profile for the debug pod: exec, logs and termination logs allowed |
 | `src/` | Rust source for the decrypt service |
-| `../confidential/_shared/kms-key-policy.json` | Five-statement KMS key policy template |
-| `../confidential/_shared/pod-identity/role-trust-policy.json` | Pod Identity IAM trust policy |
+| `../_shared/kms-key-policy.json` | Five-statement KMS key policy template |
+| `../_shared/pod-identity/role-trust-policy.json` | Pod Identity IAM trust policy |
 
 ## Step 1: Run the setup.
 
@@ -171,7 +229,8 @@ Both pods are running. Next:
 The eight steps:
 
 1. Check the tools, the cluster, and the Region.
-2. Create the ECR repository (`reproducible-build`, or the name in `REPO_NAME`).
+2. Create the ECR repository (`reproducible-build`, or the name in `REPO_NAME`) with
+   immutable tags, so a pushed tag always names the same digest.
 3. Build the image inside the pinned nixos/nix container and push it to ECR.
 4. Run the Cedar policy generator to predict PCR17.
 5. Create the IAM role with the Pod Identity trust policy.
@@ -183,12 +242,29 @@ Pass `--no-pods` to stop after step 7 and return before the pods start.
 
 ## Step 2: How the build stays deterministic.
 
-The Nix flake in `flake.nix` builds the Rust binary and assembles the OCI image. Three
+**Why Rust.** The decrypt service is written in Rust for four reasons:
+
+- **Reproducibility.** Cargo builds one binary from the sources and `Cargo.lock`, and
+  nothing is installed or resolved when the image is built or started.
+- **Memory safety.** The service parses untrusted HTTP and CMS input in the process that
+  holds the plaintext. Its own code has no `unsafe` blocks, so the compiler rules out
+  buffer overflows and use-after-free there.
+- **Efficiency.** There is no interpreter or garbage collector, so the service uses little
+  CPU and memory and fits easily in the guest VM, which is sized from the pod's requests
+  (1 CPU, 1 GiB).
+- **Pod size.** The image holds the binary, what it links and the CA bundle, and nothing
+  else: no shell, no package manager, no runtime.
+
+Rust is not deterministic out of the box either; the build directory fix below is the one
+change it needed.
+
+The Nix flake in `flake.nix` builds the Rust binary and assembles the OCI image. These
 properties keep the output identical on every machine.
 
 **A locked dependency graph.** `flake.lock` pins nixpkgs to a single commit, so the Rust
 toolchain, the C runtime, the CA certificates, and every system library come from a fixed
-set of store paths. nix2container is pinned to the same commit for the same reason. Any
+set of store paths. nix2container is pinned in the same lock file and builds against that
+same nixpkgs. Any
 toolchain upgrade requires an explicit `flake.lock` update that changes the commit and with
 it the image digest.
 
@@ -242,6 +318,11 @@ derivation fails to start. Turning it off does not affect content addressing.
 **No timestamp in the image.** nix2container writes epoch 1 for all layer timestamps when
 no creation time is supplied. The image has no random or time-based metadata.
 
+**A minimal, fully specified image.** `copyToRoot` holds only `pkgs.cacert`, and an `assert`
+in the flake fails the evaluation if the production image gets anything else. The image
+config sets `PATH` itself: without it containerd adds its default `PATH`, which the policy
+generator does not predict, and the Cedar policy then refuses to create the container.
+
 The result: two operators who run `./scripts/build.sh` on the same commit, one on Apple
 Silicon and one on x86_64 Linux, get the same `sha256:...` digest.
 
@@ -252,8 +333,8 @@ Silicon and one on x86_64 Linux, get the same `sha256:...` digest.
 
 | Statement | Effect | Principal | Actions |
 |-----------|--------|-----------|---------|
-| `KeyAdministration` | Allow | Account root | Key management actions. `kms:Decrypt` and `kms:ReEncryptFrom` are intentionally absent: a key administrator who could use `ReEncryptFrom` could wrap the data key under a second, ungated key and decrypt it there. |
-| `BuildTimeEncrypt` | Allow | Account root | `kms:Encrypt` only. Any caller in the account can encrypt a value; the ciphertext cannot be decrypted outside an approved sandbox. |
+| `KeyAdministration` | Allow | Account root | Key management actions. `kms:Decrypt` and `kms:ReEncryptFrom` are intentionally absent: a key administrator who could use `ReEncryptFrom` could re-encrypt the ciphertext under a second, ungated key and decrypt it there. |
+| `BuildTimeEncrypt` | Allow | Account root | `kms:Encrypt` only. The root principal delegates to IAM: any principal in the account whose IAM policy allows `kms:Encrypt` on this key can encrypt a value; the ciphertext cannot be decrypted outside an approved sandbox. |
 | `AttestedDecryptOnly` | Allow | Pod Identity role | `kms:Decrypt`, conditional on `kms:RecipientAttestation:PCR17` equalling the predicted measurement, and `kms:RecipientAttestation:PCR8:ServiceName` equalling `eks.amazonaws.com`. Both conditions must hold. |
 | `DenyUnlessThePolicyMeasurementMatches` | Deny | `*` | `kms:Decrypt` and `kms:ReEncryptFrom` when `PCR17` does not match. A negated condition operator is also true when the key is absent, so a request with no attestation document is caught here too. |
 | `DenyUnlessTheAttestationComesFromAnEKSSandbox` | Deny | `*` | `kms:Decrypt` and `kms:ReEncryptFrom` when `PCR8:ServiceName` is not `eks.amazonaws.com`. |
@@ -388,7 +469,7 @@ under the `BuildTimeEncrypt` statement, opens a `kubectl port-forward` to the Cl
 Service, and sends the ciphertext as a `PUT /decrypt` request to the sandbox pod.
 
 **The endpoint is a decryption oracle.** Any caller with network access to the endpoint can
-ask the service to decrypt any ciphertext whose data key came from this KMS key. Three
+ask the service to decrypt any ciphertext encrypted under this KMS key. Three
 bounds define the scope in this blueprint:
 
 1. The sample puts no public endpoint on it: the Service is ClusterIP, with no Ingress,
@@ -397,29 +478,28 @@ bounds define the scope in this blueprint:
    that the security groups allow, can call it directly; the sample ships no network policy.
 2. The HTTP response carries `{"ok":true,"sha256":"..."}` and never carries the plaintext.
    The service logs only `decrypted sha256=…` on success; the plaintext is not retained.
-3. KMS releases the data key only to this exact measurement. A pod running any other build,
+3. KMS decrypts only for this exact measurement. A pod running any other build,
    or one with no Cedar policy at all, is refused before it can reach the endpoint.
 
 The decrypt service runs until the pod is deleted. It does not restart.
 
 ### The operator cannot log in or read logs
 
-The production Cedar profile (`deploy/production-profile.yaml`) adds `logs: deny` and
-`termination_logs: deny` to the shared confidential profile. `exec`, `stdin`, and
-`stream_agent_logs` are already denied in the shared profile. It also sets `imds: deny`:
-the service takes its credentials from EKS Pod Identity and its Region from `AWS_REGION`,
-so it has no use for the instance metadata service, and the denial is part of the measured
-policy rather than a rule an operator could remove. The production image has no
-shell: the `mkImage {}` call in `flake.nix` holds only `pkgs.cacert` in `copyToRoot`, and
-an `assert` in the flake enforces this at eval time.
+The production Cedar profile (`deploy/production-profile.yaml`) changes three settings of
+the shared confidential profile to `deny`: `logs`, `termination_logs` and `imds`
+([Network](#network)). `exec`, `stdin`, and `stream_agent_logs` are already denied in the
+shared profile. Because the profile is measured into PCR17, these denials are part of
+what KMS checks, not rules an operator could remove. The production image has no shell
+either (Step 2, *A minimal, fully specified image*).
 
-`setup.sh` and `decrypt.sh` both confirm that an operator with cluster access cannot read
-the sandbox pod's logs or run commands in it:
+`setup.sh` and `decrypt.sh` both end by trying `kubectl logs` and `kubectl exec` on the
+sandbox pod; the two `refused` lines in the output above are the policy's answers.
 
-```text
-  kubectl logs refused: Container logs are disabled by policy.
-  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "19bcf920c5fb97b569d3571e01d2011745495391ab4540c249b8a26a15b4f932": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
-```
+Here the operator is anyone with administrative access to the cluster or its worker nodes.
+Confidential mode limits what they can do to the pod. It "doesn't change the AWS operator
+access properties of the Nitro System, which apply to all Amazon EKS worker nodes" (Amazon
+EKS User Guide,
+[*Sandboxing on Amazon EKS with isolated and confidential pods*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)).
 
 ## Step 7: Show the gate refuses a changed build.
 
@@ -444,8 +524,9 @@ pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build:v2-d50f87
   changed  digest: sha256:d50f87d41a9ec25a409b1191ea6387bf61ba924941dbaad395e323101c46410e
 == 3/5 generate policy for the changed image and confirm PCR17 differs ==
 [... generated Cedar policy omitted ...]
-  approved PCR17: ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
-  changed  PCR17: 9294918758e5e80d4f14585a4f37e9d6e20e17e0a772c9c024534736083e1b643b867a04d4479bb4341a1bf8ce6ac28e
+  approved PCR17:                         ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
+  changed image, approved pod name PCR17: 2a35e558691b0d51b4a7135ce63ab3a5d68aece7df989bf657bae7aa11fc3487f0c2262b6f71e846e3441056e0efa17b
+  changed pod (reproducible-build-changed) PCR17: 9294918758e5e80d4f14585a4f37e9d6e20e17e0a772c9c024534736083e1b643b867a04d4479bb4341a1bf8ce6ac28e
 == 3b verify the gate still expects the approved measurement ==
   the gate is bound to the approved measurement, unchanged
 == 4/5 run the changed pod and wait for the kms:Decrypt denial ==
@@ -471,7 +552,9 @@ copy of the source under `tmp/reproducible-build/changed/`. It verifies that exa
 diff lines result from the change.
 
 The changed image has a different OCI digest. The Cedar policy the generator produces for it
-has a different PCR17. The KMS key policy expects the original PCR17 and refuses a pod whose
+has a different PCR17. The pod name is measured too (`pin_hostname`), so the script also
+generates a policy for the changed image under the approved pod's name: that PCR17 differs
+as well, so the source change alone moves the measurement. The KMS key policy expects the original PCR17 and refuses a pod whose
 attestation document carries the changed measurement.
 
 If the response from the changed pod is 403, the script confirms the response body carries
@@ -596,9 +679,8 @@ Delete the debug pod before you finish:  ./scripts/debug.sh --delete
    in `.env`) and gates it on the debug PCR17.
 4. Runs the debug pod (`reproducible-build-debug`) and waits for it to be Ready.
 5. Confirms debug works: `kubectl logs` shows the readings and startup; `kubectl exec` opens
-   a shell; from that shell the instance metadata service (169.254.169.254) does not answer,
-   because both profiles set `imds: deny`, while the Pod Identity endpoint (169.254.170.23)
-   does; a throwaway demo secret encrypted with the debug key decrypts to the expected
+   a shell; from that shell the instance metadata service does not answer while the Pod
+   Identity endpoint does ([Network](#network)); a throwaway demo secret encrypted with the debug key decrypts to the expected
    sha256.
 6. Confirms the production secret is out of reach: sends the production ciphertext to the
    debug pod. KMS evaluates the production key's policy against the debug PCR17 and refuses
@@ -617,15 +699,6 @@ The debug key is left for `clean.sh` to remove.
 
 ## Good to know
 
-- **The key is created with the full policy from the start.** PCR17 is predicted in step 4
-  before the KMS key is created in step 6. The KMS alias ARN is predictable from the account
-  ID, Region, and alias name, so the pod manifest and the Cedar policy can reference it
-  before the key exists. There is no window where the key exists without the gate.
-
-- **The pod role carries no identity policies.** All the pod's permissions on the KMS key
-  come from the key policy, not from an attached identity policy. `setup.sh` checks that
-  the role has zero inline and zero attached policies and refuses to continue if it finds any.
-
 - **`verify.sh` is read-only.** It calls `ecr:GetAuthorizationToken`, `ecr:DescribeImages`,
   `ecr:BatchGetImage`, `kms:ListAliases`, and `kms:GetKeyPolicy`. It does not write to any
   AWS resource. An outside auditor needs only ECR and KMS read access.
@@ -638,11 +711,51 @@ The debug key is left for `clean.sh` to remove.
 - **`restartPolicy: Never`.** A pod that reaches KMS and is refused does not restart
   automatically. The refused pod stays in place until it is deleted.
 
+### Why the key checks PCR17, not PCR0
+
+A Nitro sandbox on Amazon EC2 and a confidential pod on Amazon EKS share one attestation
+mechanism: the Nitro Secure Module signs a document with the sandbox's platform
+configuration registers (PCRs), and a KMS key policy checks them with
+`kms:RecipientAttestation:PCR<N>` conditions. What differs is *whose* code each register
+measures. On EC2 you build the boot image, so the image registers measure your code, and the
+Amazon EC2 User Guide says to "always include PCR0, PCR1, or
+`kms:RecipientAttestation:ImageSha384`"
+([*Attest a Nitro Sandbox*](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/nitro-sandboxes-attestation.html)).
+On EKS, AWS provides the guest system image, and your code is the container inside it, which
+the pod's Cedar policy pins by digest
+([*Sandboxing on Amazon EKS with isolated and confidential pods*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html),
+*Shared responsibility* and *Attestation*). So the registers that identify your workload are
+different:
+
+| PCR | On an EC2 Nitro sandbox | On an EKS confidential pod | Use it in this key policy? |
+|---|---|---|---|
+| PCR0, PCR1, PCR2 | Your kernel, command line and initial RAM disks | The AWS guest system image. The same for every confidential pod on that image, and changed when AWS updates it | No. It says nothing about which container runs |
+| PCR3 | IAM role of the parent instance | The node's instance role | No. It names the node, which confidential mode treats as untrusted, and keeps its value in debug mode |
+| PCR4 | Instance ID of the parent instance | The node's instance ID | No. It changes whenever a node is replaced |
+| PCR5 | PCI functions at boot | Devices of the node's sandbox launch | No. It describes the launch configuration, not the workload |
+| PCR6 | The whole boot image file, including its build time | The AWS guest image file | No. The EC2 guide itself says to use PCR0 instead |
+| PCR8 | Not listed for EC2 | The certificate that signed the guest system image | Yes, as `PCR8:ServiceName` = `eks.amazonaws.com`: the pod booted the EKS-signed image. This is the EKS counterpart of pinning PCR0 |
+| PCR17 | Free for your workload (PCRs 16 to 31) | The pod's Cedar policy, which pins the image digest, environment, mounts and the profile's settings | Yes. It is the only register that changes with your build, and the policy generator predicts it before any pod runs |
+
+The EKS User Guide gives the same pair: "Always configure
+`kms:RecipientAttestation:PCR17` (policy hash) and
+`kms:RecipientAttestation:PCR8:ServiceName` (system image signer) conditions on any KMS key
+that protects confidential data"
+([*Sandboxing on Amazon EKS with isolated and confidential pods*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html),
+*Attestation*). That is why a reproducible build matters here: anyone who rebuilds the image
+from this source gets the same digest, so the generator gives the same PCR17 that the key
+expects.
+
+The debug pod in [Step 8](#step-8-debug-mode) is not the EC2 *debug mode* that reads PCR0 to
+PCR2 as zero. It uses a different Cedar profile, so it gets a different PCR17 and is refused
+the production key.
+
 ## Network
 
 This blueprint applies no network policy. The sandbox pod can reach the cluster network
 and the internet. Both Cedar profiles set `imds: deny`, so the guest blocks the instance
-metadata service; the setting is measured into PCR17 with the rest of the profile, so a pod
+metadata service: the service takes its credentials from EKS Pod Identity and its Region
+from `AWS_REGION`, so it has no use for it. The setting is measured into PCR17 with the rest of the profile, so a pod
 without it does not get the production key. The debug run shows the metadata service timing
 out while the Pod Identity endpoint, which the service takes its credentials from, still
 answers. The KMS attestation gate is the boundary this blueprint creates.
@@ -652,7 +765,10 @@ To restrict where the pod can connect, see the
 
 ## Clean up
 
-Set the values again if you are in a new shell, then run:
+Set the values again if you are in a new shell, and use the same AWS credentials as for
+`setup.sh`: `clean.sh` reads the account setup ran in from its state file and stops,
+changing nothing, if your credentials are for another account, or if it finds no account
+(set `AWS_ACCOUNT_ID` in `.env` when the state file is gone). Then run:
 
 ```bash
 ./scripts/clean.sh
