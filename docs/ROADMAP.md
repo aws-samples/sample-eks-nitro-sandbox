@@ -1,6 +1,6 @@
 # Roadmap
 
-These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. Entries marked "available now" are ready to run. Work-in-progress entries state their current status; the rest are planned.
+These samples show Amazon EKS Nitro sandboxes (`runtimeClassName: isolated-sandbox`) running AI agents and untrusted code. A sample whose entry links to its page is ready to run, and is marked "available now" on its entry or in its section heading. The rest are planned.
 
 ## Layout
 
@@ -134,7 +134,7 @@ Agent frameworks on Amazon Bedrock:
 Agent harnesses:
 
 - hermes: the Hermes Agent harness, always on in its own sandbox with root inside it, memory on EBS kept across suspend and resume, and Amazon Bedrock with no API key in the sandbox. Spec: [#14](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/14).
-- [openclaw-enterprise](../examples/ai-agents/openclaw-enterprise/README.md) (available now): OpenClaw Enterprise on EKS with a controller-bound admission trust chain for gateway Deployments, ReplicaSets, and Pods. Upstream tracking is in OCE issues [#4252](https://github.com/openclaw/openclaw-enterprise/issues/4252)-[#4254](https://github.com/openclaw/openclaw-enterprise/issues/4254); the sample's admission adapter supplies the missing Nitro sandbox pod configuration. Spec: [#133](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/133).
+- openclaw-enterprise: OpenClaw Enterprise on EKS, each Agent in a Nitro sandbox, with the model call going through agentgateway to Amazon Bedrock. Spec: [#133](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/133).
 
 ### Managed agents (`managed-agents`)
 
