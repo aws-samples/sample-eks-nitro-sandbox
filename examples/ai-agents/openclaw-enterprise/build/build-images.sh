@@ -97,8 +97,10 @@ require_digest CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST
   die "CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST is not the reviewed distroless Node runtime"
 
 [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || die "AWS_ACCOUNT_ID must be 12 digits"
-[[ "${TARGET_PLATFORM:-linux/amd64}" =~ ^linux/(amd64|arm64)$ ]] ||
-  die "TARGET_PLATFORM must be linux/amd64 or linux/arm64"
+# The reviewed Inspector exceptions in check-inspector-scan.py match only AMD64 package records and x86-64
+# Node.js header paths, so an image for any other platform could not pass the scan gate.
+[[ "${TARGET_PLATFORM:-linux/amd64}" == linux/amd64 ]] ||
+  die "TARGET_PLATFORM must be linux/amd64; the image scan policy covers only AMD64 images"
 [[ -d "$SAMPLE_SOURCE_DIR/.git" ]] || die "SAMPLE_SOURCE_DIR is not a Git checkout"
 
 for command in aws docker git node python3 sha256sum; do

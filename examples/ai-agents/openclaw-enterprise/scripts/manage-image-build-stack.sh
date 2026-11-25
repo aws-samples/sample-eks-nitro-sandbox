@@ -19,14 +19,16 @@ Usage:
   manage-image-build-stack.sh create --receipt FILE --region REGION \
     --sample-revision SHA --builder-repository NAME --builder-digest SHA \
     --trusted-build-invoker-arn ARN \
-    [--target-platform linux/amd64|linux/arm64]
+    [--target-platform linux/amd64]
 
   manage-image-build-stack.sh delete --receipt FILE
 
 Create assigns a random run identity to a new CloudFormation stack and records
-the exact stack ARN in a private receipt. Delete verifies the caller, Region,
-stack ARN, and ownership tags before removing that stack. Both run only as the
-principal in OPENCLAW_EXPECTED_CALLER_ARN.
+the exact stack ARN in a private receipt. It builds linux/amd64 images only:
+the image scan policy reviews AMD64 package records alone. Delete verifies the
+caller, Region, stack ARN, and ownership tags before removing that stack; it
+also accepts a receipt that records linux/arm64. Both run only as the principal
+in OPENCLAW_EXPECTED_CALLER_ARN.
 EOF
 }
 
@@ -293,6 +295,11 @@ while (($#)); do
   esac
 done
 
+# Refuse before any AWS call: the reviewed Inspector exceptions in check-inspector-scan.py match only AMD64
+# package records and x86-64 Node.js header paths, so another platform's images could not pass the scan gate.
+[[ "$action" != create || "${target_platform:-linux/amd64}" == linux/amd64 ]] ||
+  die "--target-platform must be linux/amd64; the image scan policy covers only AMD64 images."
+
 [[ -n "$receipt" && "$receipt" = /* ]] ||
   die "--receipt must be an absolute path."
 receipt_parent=$(dirname -- "$receipt")
@@ -322,8 +329,6 @@ if [[ "$action" == create ]]; then
     die "--builder-repository is not a valid ECR repository name."
   [[ "$trusted_invoker_arn" =~ ^arn:(aws|aws-us-gov|aws-cn):iam::[0-9]{12}:(role|user)/[A-Za-z0-9+=,.@_/-]+$ ]] ||
     die "--trusted-build-invoker-arn is not a valid IAM principal ARN."
-  [[ "$target_platform" =~ ^linux/(amd64|arm64)$ ]] ||
-    die "--target-platform must be linux/amd64 or linux/arm64."
 
   account_id=$(
     aws sts get-caller-identity --query Account --output text

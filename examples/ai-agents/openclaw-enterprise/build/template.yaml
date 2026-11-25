@@ -51,7 +51,9 @@ Parameters:
     Default: linux/amd64
     AllowedValues:
       - linux/amd64
-      - linux/arm64
+    Description: >-
+      Image platform. Only linux/amd64: the reviewed Inspector exceptions match AMD64 package records and
+      x86-64 Node.js header paths.
 
 Resources:
   ImageEncryptionKey:

@@ -386,10 +386,7 @@ def test_create_and_delete_use_the_same_verified_stack_arn(
     )
 
 
-@pytest.mark.parametrize("target_platform", ["linux/amd64", "linux/arm64"])
-def test_create_passes_and_records_target_platform(
-    tmp_path: pathlib.Path, target_platform: str
-) -> None:
+def test_create_passes_and_records_target_platform(tmp_path: pathlib.Path) -> None:
     private_dir = tmp_path / "private"
     private_dir.mkdir(mode=0o700)
     receipt = private_dir / "image-build-stack.json"
@@ -397,7 +394,7 @@ def test_create_passes_and_records_target_platform(
     environment = _environment(tmp_path, bin_dir, aws_log)
 
     result = subprocess.run(
-        _create_command(receipt, target_platform),
+        _create_command(receipt, "linux/amd64"),
         check=False,
         text=True,
         capture_output=True,
@@ -406,8 +403,40 @@ def test_create_passes_and_records_target_platform(
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(receipt.read_text(encoding="utf-8"))
-    assert payload["targetPlatform"] == target_platform
-    assert f"TargetPlatform={target_platform}" in aws_log.read_text(encoding="utf-8")
+    assert payload["targetPlatform"] == "linux/amd64"
+    assert "TargetPlatform=linux/amd64" in aws_log.read_text(encoding="utf-8")
+
+
+def test_template_allows_only_the_amd64_platform() -> None:
+    # The reviewed Inspector exceptions match only AMD64 package records and x86-64 Node.js header paths.
+    target_platform = _template()["Parameters"]["TargetPlatform"]
+
+    assert target_platform["Default"] == "linux/amd64"
+    assert target_platform["AllowedValues"] == ["linux/amd64"]
+
+
+def test_create_refuses_arm64_before_any_aws_call(tmp_path: pathlib.Path) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+
+    result = subprocess.run(
+        _create_command(receipt, "linux/arm64"),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "image-build-stack: --target-platform must be linux/amd64; the image scan "
+        "policy covers only AMD64 images.\n"
+    )
+    assert not aws_log.exists()
+    assert sorted(path.name for path in private_dir.iterdir()) == []
 
 
 def test_create_fails_closed_when_builder_has_a_high_finding(

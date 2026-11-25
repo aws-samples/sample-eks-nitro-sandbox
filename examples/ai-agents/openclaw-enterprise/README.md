@@ -428,6 +428,12 @@ export IMAGE_BUILD_STACK_ID="$(
 )"
 ```
 
+The stack builds `linux/amd64` images only. The reviewed Inspector exceptions
+match AMD64 package records and x86-64 Node.js header paths, so `create`
+refuses `--target-platform linux/arm64` before any AWS call. `delete` still
+accepts a receipt that records `linux/arm64`, so an existing stack can be
+removed.
+
 Use new builder-repository and image-build-stack receipt files for each build.
 Both `create` actions refuse to replace an existing receipt. If either manager
 cannot confirm creation or deletion, rerun its `delete` command in Cleanup with

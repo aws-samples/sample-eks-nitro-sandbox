@@ -1079,6 +1079,64 @@ def test_build_script_checks_bash_four_before_using_mapfile() -> None:
     )
 
 
+def test_build_script_refuses_arm64_before_any_aws_or_docker_call(
+    tmp_path: pathlib.Path,
+) -> None:
+    # The reviewed Inspector exceptions match only AMD64 package records and x86-64 Node.js header paths.
+    script = SCRIPT.read_text(encoding="utf-8")
+    controller_digest = re.search(
+        r'^readonly CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST="(sha256:[0-9a-f]{64})"$',
+        script,
+        re.MULTILINE,
+    )
+    assert controller_digest
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls.log"
+    for tool in ("aws", "docker", "git", "node"):
+        fake = bin_dir / tool
+        fake.write_text(
+            f'#!/bin/sh\nprintf "%s %s\\n" {tool} "$*" >>"{calls}"\nexit 0\n',
+            encoding="utf-8",
+        )
+        fake.chmod(0o700)
+    source = tmp_path / "sample-source"
+    (source / ".git").mkdir(parents=True)
+    environment = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "CODEBUILD_BUILD_ARN": "build-under-test",
+        "CODEBUILD_SRC_DIR": str(tmp_path),
+        "AWS_ACCOUNT_ID": "123456789012",
+        "AWS_DEFAULT_REGION": "us-west-2",
+        "SAMPLE_SOURCE_DIR": str(source),
+        "ADAPTER_REPOSITORY": "openclaw-enterprise/adapter",
+        "CONTROLLER_REPOSITORY": "openclaw-enterprise/controller",
+        "OWNERSHIP_HELPER_REPOSITORY": "openclaw-enterprise/ownership-helper",
+        "RUNTIME_REPOSITORY": "openclaw-enterprise/runtime",
+        "BUILD_OUTPUT_ENV": str(tmp_path / "image-build.env"),
+        "SAMPLE_GIT_REVISION": "a" * 40,
+        "OCE_GIT_REVISION": "b" * 40,
+        "CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST": controller_digest.group(1),
+        "TARGET_PLATFORM": "linux/arm64",
+    }
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert not calls.exists(), calls.read_text(encoding="utf-8")
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "image build: TARGET_PLATFORM must be linux/amd64; the image scan policy "
+        "covers only AMD64 images\n"
+    )
+
+
 def test_adapter_base_image_is_allowlisted_and_digest_pinned() -> None:
     dockerfile = ADAPTER_DOCKERFILE.read_text(encoding="utf-8")
     base_images = re.findall(r"^FROM\s+(\S+)", dockerfile, re.MULTILINE)
