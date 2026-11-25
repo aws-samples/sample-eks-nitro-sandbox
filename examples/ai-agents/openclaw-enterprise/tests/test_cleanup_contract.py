@@ -163,6 +163,28 @@ def metadata(name, uid, namespace=None, owner=None):
         result["labels"] = {"app.kubernetes.io/managed-by": owner}
     return result
 
+def apply_admission_defaults(document):
+    # What the API server stores and returns for a created policy or binding: the values that
+    # kubernetes pkg/apis/admissionregistration/v1 SetObjectDefaults_ValidatingAdmissionPolicy and
+    # SetObjectDefaults_ValidatingAdmissionPolicyBinding write when they are unset.
+    spec = document.setdefault("spec", {})
+
+    def match_defaults(match):
+        match.setdefault("matchPolicy", "Equivalent")
+        match.setdefault("namespaceSelector", {})
+        match.setdefault("objectSelector", {})
+        for key in ("resourceRules", "excludeResourceRules"):
+            for rule in match.get(key, []):
+                rule.setdefault("scope", "*")
+
+    if document["kind"] == "ValidatingAdmissionPolicy":
+        spec.setdefault("failurePolicy", "Fail")
+        if spec.get("matchConstraints") is not None:
+            match_defaults(spec["matchConstraints"])
+    elif spec.get("matchResources") is not None:
+        match_defaults(spec["matchResources"])
+    state.setdefault("defaultedFreezeObjects", []).append(document["metadata"]["name"])
+
 def tenant_freeze_policy():
     for key, item in state["resources"].items():
         if (
@@ -446,6 +468,7 @@ def kubectl():
             kind = "binding"
         document["metadata"]["uid"] = f"uid-freeze-{kind}"
         document["metadata"]["resourceVersion"] = "1"
+        apply_admission_defaults(document)
         state["resources"][f"{prefix}/{name}"] = document
         state["mutations"] += 1
         # Storage that a controller creates, binds or changes while the tenant freeze is being installed.
@@ -2550,6 +2573,56 @@ def test_freeze_that_denies_an_unclaimed_volume_fails_closed(tmp_path: Path) -> 
     assert f"namespace/{tenant}" in _state(env)["resources"]
     assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
     _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, 0)
+
+
+def _freeze_run(tmp_path: Path, freeze: str, kill_after: str | None = None) -> tuple[list[str], dict[str, str]]:
+    """A cleanup that creates the per-namespace freeze (system namespaces) or, first, the tenant freeze."""
+    if freeze == "namespace":
+        _, command, env = _prepare(tmp_path, kill_after=kill_after)
+        return command, env
+    _, command, env = _prepare(tmp_path, created=_all_created(), kill_after=kill_after)
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    return [*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env
+
+
+def _defaulted_freeze_names(env: dict[str, str], freeze: str) -> list[str]:
+    return [
+        name
+        for name in _state(env).get("defaultedFreezeObjects", [])
+        if ("cleanup-freeze-tenants-" in name) == (freeze == "tenant")
+    ]
+
+
+@pytest.mark.parametrize("freeze", ["namespace", "tenant"])
+def test_freeze_read_back_with_api_defaults_validates(tmp_path: Path, freeze: str) -> None:
+    command, env = _freeze_run(tmp_path, freeze)
+
+    result = _run(command, env)
+
+    # The fake stores and returns each freeze object with the API server's defaults, as a cluster does.
+    assert result.returncode == 0, result.stderr
+    assert len(_defaulted_freeze_names(env, freeze)) == 2
+    assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+
+
+@pytest.mark.parametrize("freeze", ["namespace", "tenant"])
+def test_recovery_removes_a_freeze_read_back_with_api_defaults(tmp_path: Path, freeze: str) -> None:
+    command, env = _freeze_run(tmp_path, freeze, kill_after="binding")
+    killed = _run(command, env)
+    assert killed.returncode == -9
+    freeze_state = tmp_path / "state" / (
+        "cleanup-tenant-freeze.json" if freeze == "tenant" else "cleanup-freeze.json"
+    )
+    assert freeze_state.exists()
+    assert len(_defaulted_freeze_names(env, freeze)) == 2
+
+    recovered = _run(command, env)
+
+    assert recovered.returncode == 0, recovered.stderr
+    assert not freeze_state.exists()
+    assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
 
 
 @pytest.mark.parametrize(

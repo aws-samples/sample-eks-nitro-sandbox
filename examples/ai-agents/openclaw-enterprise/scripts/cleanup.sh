@@ -661,13 +661,21 @@ class Cleanup:
     def freeze_spec(self, state, kind):
         if kind == "binding":
             return {"policyName": state["name"], "validationActions": ["Deny"]}
+        # The spec carries every value the API server's admissionregistration/v1 defaulters write
+        # (SetDefaults_MatchResources: matchPolicy, namespaceSelector, objectSelector), so the exact compare
+        # against the object read back holds. The binding has no matchResources, which the server leaves unset.
         return {
             "failurePolicy": "Fail",
-            "matchConstraints": {"resourceRules": [{
-                "apiGroups": ["*"], "apiVersions": ["*"],
-                "operations": ["CREATE", "UPDATE"],
-                "resources": ["*", "*/*"], "scope": "Namespaced",
-            }]},
+            "matchConstraints": {
+                "resourceRules": [{
+                    "apiGroups": ["*"], "apiVersions": ["*"],
+                    "operations": ["CREATE", "UPDATE"],
+                    "resources": ["*", "*/*"], "scope": "Namespaced",
+                }],
+                "matchPolicy": "Equivalent",
+                "namespaceSelector": {},
+                "objectSelector": {},
+            },
             "matchConditions": [{
                 "name": "target-namespace",
                 "expression": f"request.namespace == {json.dumps(state['namespace'])}",
@@ -967,6 +975,9 @@ class Cleanup:
         }
 
     def tenant_freeze_spec(self, state, kind):
+        # Both specs carry every value the API server's admissionregistration/v1 defaulters write
+        # (SetDefaults_MatchResources: matchPolicy, namespaceSelector, objectSelector), so the exact compare
+        # against the objects read back holds.
         if kind == "binding":
             return {
                 "policyName": state["name"],
@@ -975,6 +986,8 @@ class Cleanup:
                     "namespaceSelector": {
                         "matchLabels": {OWNER_KEY: OCE_OWNER},
                     },
+                    "matchPolicy": "Equivalent",
+                    "objectSelector": {},
                 },
             }
         # PersistentVolumes are cluster-scoped, so the namespaced block does not cover them, and the binding's
@@ -1021,7 +1034,10 @@ class Cleanup:
                         "resources": ["persistentvolumes"],
                         "scope": "Cluster",
                     },
-                ]
+                ],
+                "matchPolicy": "Equivalent",
+                "namespaceSelector": {},
+                "objectSelector": {},
             },
             "variables": [
                 {
