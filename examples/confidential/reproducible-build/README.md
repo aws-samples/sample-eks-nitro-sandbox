@@ -13,9 +13,11 @@ source change produces a different measurement the gate refuses.
 [Prerequisites](../../README.md#prerequisites) — the same cluster from Getting started, plus
 two more tools:
 
-- `eks-nitro-sandbox-genpolicy` — the Cedar policy generator. The Amazon EKS User Guide,
-  [*Cedar policies*](https://docs.aws.amazon.com/eks/latest/userguide/confidential-pods-cedar.html),
-  explains what it generates and where to get it.
+- `eks-nitro-sandbox-genpolicy` — the Cedar policy generator. The Amazon EKS User Guide
+  explains what it generates in
+  [*Run a pod in confidential mode*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-confidential-setup.html#sandboxing-cedar-profiles)
+  and where to get it in
+  [*Download and verify the runtime binaries*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-download-binaries.html).
 - Docker or Podman, for the Nix build container.
 
 ```bash
@@ -130,7 +132,7 @@ pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build:v1-b0399b
   published <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build@sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281 (tag v1-b0399b41350e)
 == 4/8 generate the Cedar policy ==
 [... generated Cedar policy omitted ...]
-  predicted PCR17: 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+  predicted PCR17: ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
   image digest pinned under CreateContainer permit: <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build@sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
 == 5/8 create the pod's IAM role ==
   created IAM role arn:aws:iam::<ACCOUNT_ID>:role/reproducible-build-pod
@@ -154,12 +156,12 @@ pod/reproducible-build-demo condition met
 pod/reproducible-build-plain condition met
   the plain pod is Running
 reading kernel=6.18.62	reading kernel=6.18.62
-reading uptime_s=18.77	reading uptime_s=19.39
+reading uptime_s=17.25	reading uptime_s=18.99
 reading disks=dm-0,dm-1,dm-2,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,vda,vdb,vdc	reading disks=dm-0,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,nvme0n1,nvme1n1,zram0
 reading dmi_product=c8a.enclave	reading dmi_product=c8a.large
 == the operator cannot read logs or run commands in the approved pod ==
   kubectl logs refused: Container logs are disabled by policy.
-  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "f421891bfff7deb06a8bdd856b1cc9d594bf053a9ce078c7f41247e6121c1a25": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
+  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "996c26b22a93b611c38dc554ccdb1ee422fede5c20678a1c704748a28a6c3b07": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 
 Both pods are running. Next:
   ./scripts/decrypt.sh   # PUT /decrypt through a port-forward to the Service
@@ -259,7 +261,7 @@ Silicon and one on x86_64 Linux, get the same `sha256:...` digest.
 Sources: AWS KMS Developer Guide,
 [*AWS KMS condition keys for AWS Nitro Enclaves*](https://docs.aws.amazon.com/kms/latest/developerguide/conditions-nitro-enclaves.html);
 Amazon EKS User Guide,
-[*Cedar policies*](https://docs.aws.amazon.com/eks/latest/userguide/confidential-pods-cedar.html);
+[*Run a pod in confidential mode*](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-confidential-setup.html);
 AWS Nitro Enclaves User Guide,
 [*Cryptographic attestation support in AWS KMS*](https://docs.aws.amazon.com/enclaves/latest/user/kms.html).
 
@@ -297,7 +299,7 @@ other, the sandbox pod on the left and the plain pod on the right:
 
 ```text
 reading kernel=6.18.62	reading kernel=6.18.62
-reading uptime_s=18.77	reading uptime_s=19.39
+reading uptime_s=17.25	reading uptime_s=18.99
 reading disks=dm-0,dm-1,dm-2,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,vda,vdb,vdc	reading disks=dm-0,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,nvme0n1,nvme1n1,zram0
 reading dmi_product=c8a.enclave	reading dmi_product=c8a.large
 ```
@@ -337,13 +339,13 @@ Abridged where marked `[...]`, with the same placeholders as in Step 1.
   ECR tag v1-b0399b41350e digest matches rebuilt: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
 == step 3/4 predict PCR17 ==
 [... generated Cedar policy omitted ...]
-  predicted PCR17: 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+  predicted PCR17: ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
 == step 4/4 compare PCR17 with the live KMS key policy ==
 
 rebuilt digest:    sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
 found in ECR:      sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
-predicted PCR17:   8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
-key-policy PCR17:  8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+predicted PCR17:   ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
+key-policy PCR17:  ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
 verified
 ```
 
@@ -374,10 +376,10 @@ Abridged where marked `[...]`, with the same placeholders as in Step 1.
 
 ```text
 ciphertext: <REPO>/tmp/reproducible-build/run/ciphertext.bin
-{"ok":true,"sha256":"04b77458af8946e791cfb3681ee61e85aff48dfc0a4fdfc9d0ae73e3206fad50"}
-sha256 check passed: 04b77458af8946e791cfb3681ee61e85aff48dfc0a4fdfc9d0ae73e3206fad50
+{"ok":true,"sha256":"1ab70658faaf6e62b18c1df35046619c06ed767dfe9669d8ba8ae9ac40f3c03c"}
+sha256 check passed: 1ab70658faaf6e62b18c1df35046619c06ed767dfe9669d8ba8ae9ac40f3c03c
   kubectl logs refused: Container logs are disabled by policy.
-  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "ca6656b11209059b50598d8cba635d1b1f87923220f5f8672c6916786bb0a5b9": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
+  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "19bcf920c5fb97b569d3571e01d2011745495391ab4540c249b8a26a15b4f932": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 decrypt verified
 ```
 
@@ -404,7 +406,10 @@ The decrypt service runs until the pod is deleted. It does not restart.
 
 The production Cedar profile (`deploy/production-profile.yaml`) adds `logs: deny` and
 `termination_logs: deny` to the shared confidential profile. `exec`, `stdin`, and
-`stream_agent_logs` are already denied in the shared profile. The production image has no
+`stream_agent_logs` are already denied in the shared profile. It also sets `imds: deny`:
+the service takes its credentials from EKS Pod Identity and its Region from `AWS_REGION`,
+so it has no use for the instance metadata service, and the denial is part of the measured
+policy rather than a rule an operator could remove. The production image has no
 shell: the `mkImage {}` call in `flake.nix` holds only `pkgs.cacert` in `copyToRoot`, and
 an `assert` in the flake enforces this at eval time.
 
@@ -413,7 +418,7 @@ the sandbox pod's logs or run commands in it:
 
 ```text
   kubectl logs refused: Container logs are disabled by policy.
-  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "ca6656b11209059b50598d8cba635d1b1f87923220f5f8672c6916786bb0a5b9": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
+  kubectl exec refused: error: Internal error occurred: Internal error occurred: error executing command in container: failed to exec in container: failed to create exec "19bcf920c5fb97b569d3571e01d2011745495391ab4540c249b8a26a15b4f932": policy denied Agent::Action::"Exec" on container "main" reasons=[] errors=[]
 ```
 
 ## Step 7: Show the gate refuses a changed build.
@@ -439,8 +444,8 @@ pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build:v2-d50f87
   changed  digest: sha256:d50f87d41a9ec25a409b1191ea6387bf61ba924941dbaad395e323101c46410e
 == 3/5 generate policy for the changed image and confirm PCR17 differs ==
 [... generated Cedar policy omitted ...]
-  approved PCR17: 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
-  changed  PCR17: aec9a4bc794893e6ade8542a7ed86349413e7daeb644f6a2dde426a6df447e384f589ef40975334e6ab35d6d404dd213
+  approved PCR17: ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
+  changed  PCR17: 9294918758e5e80d4f14585a4f37e9d6e20e17e0a772c9c024534736083e1b643b867a04d4479bb4341a1bf8ce6ac28e
 == 3b verify the gate still expects the approved measurement ==
   the gate is bound to the approved measurement, unchanged
 == 4/5 run the changed pod and wait for the kms:Decrypt denial ==
@@ -454,8 +459,8 @@ pod/reproducible-build-changed condition met
 == 5/5 summary ==
   approved digest: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281
   changed  digest: sha256:d50f87d41a9ec25a409b1191ea6387bf61ba924941dbaad395e323101c46410e
-  approved PCR17:  8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
-  changed  PCR17:  aec9a4bc794893e6ade8542a7ed86349413e7daeb644f6a2dde426a6df447e384f589ef40975334e6ab35d6d404dd213
+  approved PCR17:  ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
+  changed  PCR17:  9294918758e5e80d4f14585a4f37e9d6e20e17e0a772c9c024534736083e1b643b867a04d4479bb4341a1bf8ce6ac28e
 
 The changed pod was refused the key by KMS: its measurement differs from the gate.
 Delete it before you finish:  ./scripts/changed-source.sh --delete
@@ -501,7 +506,7 @@ roots = [ pkgs.cacert ] ++ pkgs.lib.optional debug pkgs.busybox;
 ```diff
 --- deploy/production-profile.yaml
 +++ deploy/debug-profile.yaml
-@@ -44,11 +44,11 @@
+@@ -46,11 +45,11 @@
    pin_sysctls: true
    pin_oci_hardening: false
  runtime:
@@ -513,7 +518,7 @@ roots = [ pkgs.cacert ] ++ pkgs.lib.optional debug pkgs.busybox;
    stats: allow
 -  termination_logs: deny
 +  termination_logs: allow
-   imds: allow
+   imds: deny
    oom: allow
    sa_token: infer
 ```
@@ -543,18 +548,18 @@ pushed <ACCOUNT_ID>.dkr.ecr.us-west-2.amazonaws.com/reproducible-build:v1-debug-
   debug      digest: sha256:a1c7a3e07e232a8e563f0a55d741baea636a845e8a6f52607ca6eebc7ca6fe05
 == 2/6 generate the debug policy and confirm its PCR17 differs ==
 [... generated Cedar policy omitted ...]
-  production PCR17: 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
-  debug      PCR17: 06b74f2f6c9288bdf0e1aba6efaaace6179a253a7f0d39f73f4411ef13426fdd125cdadb050bd8db62596ed86f684a0d
+  production PCR17: ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
+  debug      PCR17: 321e55502cc2cf7d03380f00f55250b82e2965db104a631b1e00d97ba1e645c89fe54138933c59bbb4d5a61ff6e177c0
 == 3/6 gate a separate debug key on the debug PCR17 ==
   created KMS key arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/<DEBUG_KEY_ID>
   the production key is still gated on the production PCR17:
-  ok: alias/reproducible-build-sample still gated on 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b
+  ok: alias/reproducible-build-sample still gated on ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91
 == 4/6 run the debug pod ==
 pod/reproducible-build-debug created
 pod/reproducible-build-debug condition met
 == 5/6 debug works: logs, a shell, and a decrypt with the debug key ==
   log: reading kernel=6.18.62
-  log: reading uptime_s=3.53
+  log: reading uptime_s=3.45
   log: reading disks=dm-0,dm-1,dm-2,loop0,loop1,loop2,loop3,loop4,loop5,loop6,loop7,vda,vdb,vdc
   log: reading dmi_product=c8a.enclave
   sh: uid=65534 gid=65534 groups=65534
@@ -569,13 +574,15 @@ pod/reproducible-build-debug condition met
   sh: sbin
   sh: sys
   sh: var
-  debug ciphertext -> HTTP 200, sha256=470372da1a318b462fca9fbead3846fdc7d878dbf3bcc3b9c349168e24d3d46f
+  169.254.169.254/latest/meta-data/ -> wget: download timed out
+  169.254.170.23/ -> HTTP/1.1 404 Not Found
+  debug ciphertext -> HTTP 200, sha256=818da05b20659fb60742651dcba3a9ae4bbb85d7ea7c0fd723336115c5f68e73
 == 6/6 the production ciphertext is refused to the debug pod ==
   production ciphertext -> HTTP 403, kms-denied
 
 == summary ==
-  production: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281  PCR17 8930fa7f4bf7a9865abb865480e366b190f1e9c4d8bed99c9582e5632fd7cc9a83cd24cae38df2fffb5765883b74bf8b  key alias/reproducible-build-sample
-  debug:      sha256:a1c7a3e07e232a8e563f0a55d741baea636a845e8a6f52607ca6eebc7ca6fe05  PCR17 06b74f2f6c9288bdf0e1aba6efaaace6179a253a7f0d39f73f4411ef13426fdd125cdadb050bd8db62596ed86f684a0d  key alias/reproducible-build-debug
+  production: sha256:b0399b41350e036038e38b60d6d9f8c699b30525a35eb15ff6fb27a8a3e1e281  PCR17 ebe14f04aab0324784012e9e8da7b7bb62c28888f794bf47fc8aa80b733520578864e425d9fb7681ddd189ceccc9fe91  key alias/reproducible-build-sample
+  debug:      sha256:a1c7a3e07e232a8e563f0a55d741baea636a845e8a6f52607ca6eebc7ca6fe05  PCR17 321e55502cc2cf7d03380f00f55250b82e2965db104a631b1e00d97ba1e645c89fe54138933c59bbb4d5a61ff6e177c0  key alias/reproducible-build-debug
 Delete the debug pod before you finish:  ./scripts/debug.sh --delete
 ```
 
@@ -589,7 +596,9 @@ Delete the debug pod before you finish:  ./scripts/debug.sh --delete
    in `.env`) and gates it on the debug PCR17.
 4. Runs the debug pod (`reproducible-build-debug`) and waits for it to be Ready.
 5. Confirms debug works: `kubectl logs` shows the readings and startup; `kubectl exec` opens
-   a shell; a throwaway demo secret encrypted with the debug key decrypts to the expected
+   a shell; from that shell the instance metadata service (169.254.169.254) does not answer,
+   because both profiles set `imds: deny`, while the Pod Identity endpoint (169.254.170.23)
+   does; a throwaway demo secret encrypted with the debug key decrypts to the expected
    sha256.
 6. Confirms the production secret is out of reach: sends the production ciphertext to the
    debug pod. KMS evaluates the production key's policy against the debug PCR17 and refuses
@@ -631,9 +640,12 @@ The debug key is left for `clean.sh` to remove.
 
 ## Network
 
-This blueprint applies no network policy. The sandbox pod can reach the cluster network,
-the instance metadata service, and the internet. The KMS attestation gate is the boundary
-this blueprint creates.
+This blueprint applies no network policy. The sandbox pod can reach the cluster network
+and the internet. Both Cedar profiles set `imds: deny`, so the guest blocks the instance
+metadata service; the setting is measured into PCR17 with the rest of the profile, so a pod
+without it does not get the production key. The debug run shows the metadata service timing
+out while the Pod Identity endpoint, which the service takes its credentials from, still
+answers. The KMS attestation gate is the boundary this blueprint creates.
 
 To restrict where the pod can connect, see the
 [network policy](../../isolation/network-policy/README.md) blueprint.
@@ -649,7 +661,9 @@ Set the values again if you are in a new shell, then run:
 ```text
 Cleaning up in context <KUBE_CONTEXT>, Region us-west-2, namespace reproducible-build.
 Deleting pod reproducible-build/reproducible-build-debug...
+pod "reproducible-build-debug" deleted from reproducible-build namespace
 Deleting pod reproducible-build/reproducible-build-changed...
+pod "reproducible-build-changed" deleted from reproducible-build namespace
 Deleting pod reproducible-build/reproducible-build-plain...
 pod "reproducible-build-plain" deleted from reproducible-build namespace
 Deleting pod reproducible-build/reproducible-build-demo...
@@ -660,12 +674,12 @@ Deleting Pod Identity association <ASSOCIATION_ID>...
 Deleting namespace reproducible-build (carries app.kubernetes.io/managed-by=reproducible-build)...
 namespace "reproducible-build" deleted
 Deleting IAM role reproducible-build-pod...
-Deleting the alias alias/reproducible-build-debug...
 Scheduling the KMS key <DEBUG_KEY_ID> for deletion in 7 days (the shortest AWS allows)...
 arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/<DEBUG_KEY_ID>	<DELETION_DATE>
-Deleting the alias alias/reproducible-build-sample...
+Deleting the alias alias/reproducible-build-debug...
 Scheduling the KMS key <KEY_ID> for deletion in 7 days (the shortest AWS allows)...
 arn:aws:kms:us-west-2:<ACCOUNT_ID>:key/<KEY_ID>	<DELETION_DATE>
+Deleting the alias alias/reproducible-build-sample...
 Deleting ECR repository reproducible-build and the application image in it...
 Deleting the run files under <REPO>/tmp/reproducible-build/run...
 

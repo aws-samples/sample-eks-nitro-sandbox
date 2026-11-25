@@ -1,7 +1,9 @@
 # Production profile for the reproducible-build sample: a standalone copy of
 # _shared/confidential-profile.yaml with logs and termination logs denied, so an operator
 # with cluster access cannot read the pod's output. exec, stdin and stream_agent_logs are
-# denied here too, as in the shared profile.
+# denied here too, as in the shared profile. imds is denied as well: the service takes its
+# credentials from EKS Pod Identity and its Region from AWS_REGION, so it never needs the
+# instance metadata service, and the denial is measured into PCR17 with the rest.
 #
 # It matches the generator's built-in `confidential` profile except for the fields the
 # current preview guest's policy schema does not define yet. The Amazon EKS User Guide,
@@ -49,7 +51,7 @@ runtime:
   stdin: deny
   stats: allow
   termination_logs: deny
-  imds: allow
+  imds: deny
   oom: allow
   sa_token: infer
   mount_host_image: deny

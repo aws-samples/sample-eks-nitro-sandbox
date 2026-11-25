@@ -217,6 +217,27 @@ main() {
   # shellcheck disable=SC2001  # sed is cleaner than bash substitution for multi-line prefixing
   sed 's/^/  sh: /' <<<"${shell_out}"
 
+  # imds: deny is measured with the rest of the profile. Any HTTP status line means the
+  # endpoint answered; the Pod Identity endpoint is probed the same way to show the probe
+  # can see an answer. The debug profile denies imds exactly as production does.
+  local probe first
+  for probe in 169.254.169.254/latest/meta-data/:closed 169.254.170.23/:open; do
+    # The trailing marker shows the probe ran in the pod, so a failed exec is not read as closed.
+    # It does not show wget exists; the debug image's busybox provides it.
+    # shellcheck disable=SC2016,SC2310  # $1 expands in the pod; output is judged, not status
+    shell_out="$(kc exec "${DEBUG_POD_NAME}" -n "${NAMESPACE}" -c main -- \
+      sh -c 'wget -S -T 5 -O /dev/null "$1" 2>&1; echo probe-ran' sh "http://${probe%:*}")" \
+      || die "kubectl exec for the ${probe%:*} probe failed"
+    grep -qx 'probe-ran' <<<"${shell_out}" || die "the ${probe%:*} probe did not run: ${shell_out}"
+    if grep -q 'HTTP/' <<<"${shell_out}"; then
+      [[ "${probe##*:}" == open ]] || die "the metadata service answered the debug pod: ${shell_out}"
+    else
+      [[ "${probe##*:}" == closed ]] || die "the probe saw no answer from ${probe%:*}: ${shell_out}"
+    fi
+    first="$(grep -m1 -E 'HTTP/|wget:' <<<"${shell_out}" || true)"
+    echo "  ${probe%:*} -> ${first#"${first%%[! ]*}"}"
+  done
+
   (
     umask 077
     # shellcheck disable=SC2312  # openssl rand is standalone; failure exits the subshell

@@ -278,17 +278,23 @@ settle_key_policy_principal() {
 # shellcheck disable=SC2154  # NAMESPACE set by the caller (via .env or state.env)
 start_port_forward() { # start_port_forward <target> <local-port> <log-file> <timeout-s>
   local target="$1" port="$2" log="$3" timeout="$4" deadline
-  kubectl ${KUBE_CONTEXT:+--context "${KUBE_CONTEXT}"} port-forward "${target}" "${port}:8080" \
-    -n "${NAMESPACE}" >"${log}" 2>&1 &
-  PF_PID=$!
-  # shellcheck disable=SC2064  # expand PF_PID now, not at trap time
-  trap "kill ${PF_PID} 2>/dev/null || true" EXIT
   deadline=$((SECONDS + timeout))
-  while ((SECONDS < deadline)) && kill -0 "${PF_PID}" 2>/dev/null; do
-    # kubectl's own bind message, not a TCP probe: a probe also succeeds against some other
-    # process already listening on the port, before this kubectl fails to bind it.
-    if grep -q '^Forwarding from 127.0.0.1' "${log}" 2>/dev/null; then return 0; fi
-    sleep 1
+  while :; do
+    kubectl ${KUBE_CONTEXT:+--context "${KUBE_CONTEXT}"} port-forward "${target}" "${port}:8080" \
+      -n "${NAMESPACE}" >"${log}" 2>&1 &
+    PF_PID=$!
+    # shellcheck disable=SC2064  # expand PF_PID now, not at trap time
+    trap "kill ${PF_PID} 2>/dev/null || true" EXIT
+    while ((SECONDS < deadline)) && kill -0 "${PF_PID}" 2>/dev/null; do
+      # kubectl's own bind message, not a TCP probe: a probe also succeeds against some other
+      # process already listening on the port, before this kubectl fails to bind it.
+      if grep -q '^Forwarding from 127.0.0.1' "${log}" 2>/dev/null; then return 0; fi
+      sleep 1
+    done
+    # A pod on a node that just joined can be Ready before the kubelet's serving certificate
+    # is issued; until then every kubelet connection fails with this. Retry only that.
+    if ((SECONDS + 5 >= deadline)) || ! grep -q 'tls: internal error' "${log}" 2>/dev/null; then break; fi
+    sleep 5
   done
   sed 's/^/  kubectl: /' "${log}" >&2 || true
   die "port-forward to ${target} on ${port} stopped or was not ready within ${timeout} s (kubectl output above)"

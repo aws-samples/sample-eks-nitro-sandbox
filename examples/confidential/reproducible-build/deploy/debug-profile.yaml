@@ -1,5 +1,6 @@
 # Debug profile: a standalone copy of _shared/confidential-profile.yaml with exec allowed
-# (logs and termination logs stay allowed, as in the shared profile).
+# (logs and termination logs stay allowed, as in the shared profile) and imds denied, as in
+# the production profile, so the two differ only in exec, logs and termination logs.
 # A pod generated with this profile measures to a different PCR17, so the production key's
 # policy never releases to it.
 #
@@ -49,7 +50,7 @@ runtime:
   stdin: deny
   stats: allow
   termination_logs: allow
-  imds: allow
+  imds: deny
   oom: allow
   sa_token: infer
   mount_host_image: deny
