@@ -84,14 +84,35 @@ def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
               exit 0
             fi
             if [[ "$1 $2" == "inspector2 list-coverage" ]]; then
+              reads=0
+              if [[ -f "${FAKE_AWS_STATE}.coverage-reads" ]]; then
+                reads=$(<"${FAKE_AWS_STATE}.coverage-reads")
+              fi
+              reads=$((reads + 1))
+              printf '%s\\n' "$reads" >"${FAKE_AWS_STATE}.coverage-reads"
+              reason=SUCCESSFUL
+              if [[ "$reads" == "${FAKE_BUILDER_PENDING_READ:-0}" ]]; then
+                reason=SCAN_IN_PROGRESS
+              fi
               resource_id="arn:aws:ecr:us-west-2:123456789012:repository/openclaw-enterprise/codebuild-builder/sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
               printf \
-                '{"coveredResources":[{"resourceType":"AWS_ECR_CONTAINER_IMAGE","resourceId":"%s","accountId":"123456789012","scanType":"PACKAGE","resourceMetadata":{"ecrRepository":{"name":"openclaw-enterprise/codebuild-builder"}},"scanStatus":{"statusCode":"ACTIVE","reason":"SUCCESSFUL"},"lastScannedAt":"2026-01-01T00:00:00Z"}]}\\n' \
-                "$resource_id"
+                '{"coveredResources":[{"resourceType":"AWS_ECR_CONTAINER_IMAGE","resourceId":"%s","accountId":"123456789012","scanType":"PACKAGE","resourceMetadata":{"ecrRepository":{"name":"openclaw-enterprise/codebuild-builder"}},"scanStatus":{"statusCode":"ACTIVE","reason":"%s"},"lastScannedAt":"2026-01-01T00:00:00Z"}]}\\n' \
+                "$resource_id" "$reason"
               exit 0
             fi
             if [[ "$1 $2" == "inspector2 list-findings" ]]; then
-              if [[ "${FAKE_BUILDER_HIGH_FINDING:-0}" == 1 ]]; then
+              reads=0
+              if [[ -f "${FAKE_AWS_STATE}.findings-reads" ]]; then
+                reads=$(<"${FAKE_AWS_STATE}.findings-reads")
+              fi
+              reads=$((reads + 1))
+              printf '%s\\n' "$reads" >"${FAKE_AWS_STATE}.findings-reads"
+              late_finding=0
+              if [[ -n "${FAKE_BUILDER_HIGH_FINDING_FROM_READ:-}" ]] &&
+                ((reads >= FAKE_BUILDER_HIGH_FINDING_FROM_READ)); then
+                late_finding=1
+              fi
+              if [[ "${FAKE_BUILDER_HIGH_FINDING:-0}" == 1 || "$late_finding" == 1 ]]; then
                 resource_id="arn:aws:ecr:us-west-2:123456789012:repository/openclaw-enterprise/codebuild-builder/sha256:4b98f5054863c6f18a3049d5ccebbfc6d34b6b5cf37152fb8bb50af81c390660"
                 printf \
                   '{"findings":[{"awsAccountId":"123456789012","status":"ACTIVE","severity":"HIGH","findingArn":"arn:aws:inspector2:us-west-2:123456789012:finding/example","resources":[{"type":"AWS_ECR_CONTAINER_IMAGE","id":"%s","details":{"awsEcrContainerImage":{"repositoryName":"openclaw-enterprise/codebuild-builder","imageHash":"%s","registry":"123456789012"}}}]}]}\\n' \
@@ -183,6 +204,13 @@ def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
         encoding="utf-8",
     )
     openssl.chmod(0o700)
+    # The tests do not wait out the five-second Inspector poll interval; every other sleep is real.
+    sleep = bin_dir / "sleep"
+    sleep.write_text(
+        '#!/usr/bin/env bash\n[[ "$*" == 5 ]] && exit 0\nexec /bin/sleep "$@"\n',
+        encoding="utf-8",
+    )
+    sleep.chmod(0o700)
     return bin_dir, aws_log
 
 
@@ -397,6 +425,65 @@ def test_create_fails_closed_when_builder_has_a_high_finding(
     assert "Inspector rejected the privileged builder image" in result.stderr
     assert "cloudformation deploy" not in aws_log.read_text(encoding="utf-8")
     assert not receipt.exists()
+
+
+def test_create_fails_closed_when_a_builder_finding_appears_after_a_clean_read(
+    tmp_path: pathlib.Path,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    # Read 1 is clean; the HIGH finding becomes queryable at read 2.
+    environment["FAKE_BUILDER_HIGH_FINDING_FROM_READ"] = "2"
+
+    result = subprocess.run(
+        _create_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert "Inspector rejected the privileged builder image" in result.stderr
+    calls = aws_log.read_text(encoding="utf-8")
+    assert calls.count("inspector2 list-findings") == 2
+    assert "cloudformation deploy" not in calls
+    assert not receipt.exists()
+
+
+def test_builder_scan_needs_consecutive_clean_reads_after_a_pending_scan(
+    tmp_path: pathlib.Path,
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    # Two clean reads, then a pending scan, which starts the count of 13 clean reads again.
+    environment["FAKE_BUILDER_PENDING_READ"] = "3"
+
+    result = subprocess.run(
+        _create_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    calls = aws_log.read_text(encoding="utf-8").splitlines()
+    coverage_reads = [
+        index for index, call in enumerate(calls) if call.startswith("inspector2 list-coverage")
+    ]
+    deploys = [
+        index for index, call in enumerate(calls) if call.startswith("cloudformation deploy")
+    ]
+    assert len(coverage_reads) == 2 + 1 + 13
+    assert len(deploys) == 1
+    assert coverage_reads[-1] < deploys[0]
 
 
 def test_create_refuses_to_adopt_an_existing_stack(tmp_path: pathlib.Path) -> None:

@@ -5,6 +5,8 @@ umask 077
 
 readonly MANAGED_BY="openclaw-enterprise-sample"
 readonly OCE_SOURCE_PIN="86c8c12310f691bb21651118ffffd6bfd460e9ff" # pragma: allowlist secret -- public source revision
+readonly INSPECTOR_SCAN_POLL_SECONDS=5
+readonly INSPECTOR_SCAN_STABLE_OBSERVATIONS=13
 error_file=""
 scan_dir=""
 operation_lock=""
@@ -186,6 +188,11 @@ verify_builder_scan() {
       ]
     }' >"$scan_dir/findings-filter.json"
 
+  # The same gate as build/build-images.sh: Inspector can mark coverage successful before all findings are
+  # queryable, so accept only INSPECTOR_SCAN_STABLE_OBSERVATIONS consecutive clean reads at five-second
+  # intervals (a full minute from first to last), start over when the scan is pending, and stop at the first
+  # finding. 120 reads leave room for that run after a long pending scan.
+  local clean_observations=0
   for _ in {1..120}; do
     aws inspector2 list-coverage \
       --region "$region" \
@@ -206,13 +213,17 @@ verify_builder_scan() {
       "$account_id" \
       "$repository" \
       "$digest"; then
-      return 0
+      ((clean_observations += 1))
+      if ((clean_observations >= INSPECTOR_SCAN_STABLE_OBSERVATIONS)); then
+        return 0
+      fi
     else
       scan_result=$?
+      [[ "$scan_result" -eq 10 ]] ||
+        die "Inspector rejected the privileged builder image."
+      clean_observations=0
     fi
-    [[ "$scan_result" -eq 10 ]] ||
-      die "Inspector rejected the privileged builder image."
-    sleep 5
+    sleep "$INSPECTOR_SCAN_POLL_SECONDS"
   done
   die "Inspector did not complete the privileged builder image scan."
 }
