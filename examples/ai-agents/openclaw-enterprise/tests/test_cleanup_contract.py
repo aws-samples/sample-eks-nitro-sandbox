@@ -163,6 +163,86 @@ def metadata(name, uid, namespace=None, owner=None):
         result["labels"] = {"app.kubernetes.io/managed-by": owner}
     return result
 
+def tenant_freeze_policy():
+    for key, item in state["resources"].items():
+        if (
+            key.startswith("validatingadmissionpolicies.admissionregistration.k8s.io/")
+            and "cleanup-freeze-tenants-" in key
+            and key.replace("validatingadmissionpolicies.", "validatingadmissionpolicybindings.", 1)
+            in state["resources"]
+        ):
+            return item
+    return None
+
+def pv_fields(volume):
+    spec = (volume or {}).get("spec", {})
+    csi = spec.get("csi") or {}
+    claim = spec.get("claimRef")
+    reference = claim or {}
+    return [
+        spec.get("persistentVolumeReclaimPolicy", ""),
+        csi.get("driver", ""),
+        csi.get("volumeHandle", ""),
+        "claimRef" if claim is not None else "",
+        reference.get("namespace", ""),
+        reference.get("name", ""),
+        reference.get("uid", ""),
+    ]
+
+def pv_freeze_denial(operation, old, new, subresource=""):
+    # A model of the tenant freeze PV rule for these tests; its CEL is not evaluated here. It applies only when
+    # the live freeze policy carries the PersistentVolume resource rule.
+    policy = tenant_freeze_policy()
+    if not policy or subresource:
+        return None
+    spec = policy["spec"]
+    if not any(
+        rule.get("resources") == ["persistentvolumes"]
+        and rule.get("scope") == "Cluster"
+        and operation in rule.get("operations", [])
+        for rule in spec["matchConstraints"]["resourceRules"]
+    ):
+        return None
+    variables = {item["name"]: item["expression"] for item in spec.get("variables", [])}
+    targets = json.loads(variables["targets"])
+    new_fields = pv_fields(new)
+    old_fields = pv_fields(old) if operation == "UPDATE" else None
+    claims = new_fields[4] in targets or (old_fields is not None and old_fields[4] in targets)
+    if claims and not (operation == "UPDATE" and new_fields == old_fields):
+        return spec["validations"][1]["message"]
+    return None
+
+def admit_pv_requests(requests):
+    # Requests that controllers or other users send while cleanup runs, through the freeze model.
+    for request in requests:
+        operation, name = request["operation"], request.get("name")
+        if operation == "CREATE":
+            current, new = None, json.loads(json.dumps(request["object"]))
+            name = new["metadata"]["name"]
+        else:
+            current = next(pv for pv in state["pvs"] if pv["metadata"]["name"] == name)
+            new = json.loads(json.dumps(current))
+            target = new
+            for key in request["path"][:-1]:
+                target = target.setdefault(key, {})
+            if request.get("remove"):
+                target[request["path"][-1]] = [
+                    value for value in target.get(request["path"][-1], [])
+                    if value != request["remove"]
+                ]
+            else:
+                target[request["path"][-1]] = request["value"]
+        message = pv_freeze_denial(operation, current, new, request.get("subresource", ""))
+        if message is None:
+            state["pvs"] = [pv for pv in state["pvs"] if pv["metadata"]["name"] != name] + [new]
+        state.setdefault("pvAdmission", []).append({
+            "operation": operation,
+            "name": name,
+            "subresource": request.get("subresource", ""),
+            "denied": message is not None,
+            "message": message,
+        })
+
 def key_from_raw(path):
     name = path.rsplit("/", 1)[-1]
     if "/serviceaccounts/" in path:
@@ -241,6 +321,13 @@ def kubectl():
                 ]
         if listings or "releasedPvListingsLeft" in state:
             save()
+        # PV requests that arrive right after a given listing has returned its bytes.
+        state["pvListCount"] = state.get("pvListCount", 0) + 1
+        requests = state.get("pvRequestsAfterList")
+        if requests and requests["count"] == state["pvListCount"]:
+            admit_pv_requests(requests["requests"])
+            state["pvRequestsAfterList"] = None
+        save()
         return
     if command[:2] == ["get", "namespaces"] and "--selector" in command:
         state["tenantDiscoveryCount"] = state.get("tenantDiscoveryCount", 0) + 1
@@ -297,6 +384,18 @@ def kubectl():
         return
     if command[:2] == ["create", "--dry-run=server"]:
         document = json.loads(stdin)
+        if document["kind"] == "PersistentVolume":
+            claims = (document["spec"].get("claimRef") or {}).get("namespace")
+            message = pv_freeze_denial("CREATE", None, document)
+            if claims is None and state.get("denyUnclaimedPvProbe"):
+                message = "a misconfigured rule denied this volume"
+            state.setdefault("pvProbes", []).append({"claims": claims, "denied": message is not None})
+            save()
+            if message is not None:
+                print(message, file=sys.stderr)
+                raise SystemExit(1)
+            print(json.dumps(document))
+            return
         namespace = document["metadata"]["namespace"]
         for key, binding in state["resources"].items():
             if not key.startswith(
@@ -389,6 +488,12 @@ def kubectl():
             del state["resources"][key]
             if key.startswith("namespace/"):
                 namespace = key.split("/", 1)[1]
+                if any(
+                    pv.get("spec", {}).get("claimRef", {}).get("namespace") == namespace
+                    and pv.get("spec", {}).get("persistentVolumeReclaimPolicy") != "Delete"
+                    for pv in state.get("pvs", [])
+                ):
+                    state["unsafeVolumeAtNamespaceDelete"] = True
                 for child in list(state["resources"]):
                     if child.startswith(f"{namespace}|"):
                         del state["resources"][child]
@@ -2221,6 +2326,226 @@ def test_failed_volume_check_under_the_freeze_removes_it_and_changes_nothing_els
     assert result.stderr.endswith(
         "cleanup: persistentvolumeclaim/openclaw-tenant-a/openclaw-workspace is not bound "
         "to its persistent volume; refusing tenant deletion.\n"
+    )
+    assert f"namespace/{tenant}" in _state(env)["resources"]
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, 0)
+
+
+def _pv_requests_after_under_freeze_list(env: dict[str, str], requests: list[dict[str, Any]]) -> None:
+    """The second PV listing is the snapshot under the freeze; the requests arrive after its bytes return."""
+    state = _state(env)
+    state["pvRequestsAfterList"] = {"count": 2, "requests": requests}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+TENANT_PV_DENIAL = (
+    "OpenClaw Enterprise cleanup admission freeze protects the persistent volumes of tenant namespaces."
+)
+
+
+def test_freeze_denies_a_recorded_volume_turning_retain_after_the_snapshot(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    _pv_requests_after_under_freeze_list(env, [{
+        "operation": "UPDATE",
+        "name": f"pv-{tenant}",
+        "path": ["spec", "persistentVolumeReclaimPolicy"],
+        "value": "Retain",
+    }])
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    after = _state(env)
+    # The change made after the snapshot never lands, so no namespace is deleted over a Retain volume.
+    assert after.get("unsafeVolumeAtNamespaceDelete") is not True
+    assert after["pvAdmission"] == [{
+        "operation": "UPDATE",
+        "name": f"pv-{tenant}",
+        "subresource": "",
+        "denied": True,
+        "message": TENANT_PV_DENIAL,
+    }]
+    assert result.returncode == 0, result.stderr
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["persistentVolumes"] == [{"name": f"pv-{tenant}", "uid": f"uid-pv-{tenant}"}]
+    assert after["pvs"] == []
+
+
+def test_freeze_denies_a_new_volume_that_claims_a_tenant_namespace(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    late = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": f"pv-{tenant}-late", "uid": "uid-pv-late"},
+        "spec": {
+            "claimRef": {"name": "openclaw-late", "namespace": tenant, "uid": "uid-pvc-late"},
+            "persistentVolumeReclaimPolicy": "Retain",
+            "csi": {"driver": "ebs.csi.eks.amazonaws.com", "volumeHandle": "vol-test-late"},
+        },
+    }
+    _pv_requests_after_under_freeze_list(env, [{"operation": "CREATE", "object": late}])
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    after = _state(env)
+    assert after["pvAdmission"] == [{
+        "operation": "CREATE",
+        "name": f"pv-{tenant}-late",
+        "subresource": "",
+        "denied": True,
+        "message": TENANT_PV_DENIAL,
+    }]
+    assert after.get("unsafeVolumeAtNamespaceDelete") is not True
+    assert result.returncode == 0, result.stderr
+    assert after["pvs"] == []
+
+
+def test_freeze_allows_status_and_finalizer_progress_of_tenant_volumes(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    state = _state(env)
+    volume = next(pv for pv in state["pvs"] if pv["metadata"]["name"] == f"pv-{tenant}")
+    volume["metadata"]["finalizers"] = [
+        "kubernetes.io/pv-protection",
+        "external-provisioner.volume.kubernetes.io/finalizer",
+    ]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    name = f"pv-{tenant}"
+    _pv_requests_after_under_freeze_list(env, [
+        # The PV controller's status update goes to the status subresource.
+        {
+            "operation": "UPDATE",
+            "name": name,
+            "subresource": "status",
+            "path": ["status", "phase"],
+            "value": "Released",
+        },
+        # The protection controller and the CSI provisioner remove their finalizers.
+        {
+            "operation": "UPDATE",
+            "name": name,
+            "path": ["metadata", "finalizers"],
+            "remove": "kubernetes.io/pv-protection",
+        },
+        {
+            "operation": "UPDATE",
+            "name": name,
+            "path": ["metadata", "annotations", "pv.kubernetes.io/provisioned-by"],
+            "value": "ebs.csi.eks.amazonaws.com",
+        },
+        # In the same window a safety-relevant change is still denied, so the rule is active.
+        {
+            "operation": "UPDATE",
+            "name": name,
+            "path": ["spec", "csi", "volumeHandle"],
+            "value": "vol-test-other",
+        },
+    ])
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    after = _state(env)
+    assert [(entry["subresource"], entry["denied"]) for entry in after["pvAdmission"]] == [
+        ("status", False),
+        ("", False),
+        ("", False),
+        ("", True),
+    ]
+    assert after["pvAdmission"][3]["message"] == TENANT_PV_DENIAL
+    assert result.returncode == 0, result.stderr
+    assert after["pvs"] == []
+
+
+def _tenant_freeze_policy_document(tmp_path: Path) -> dict[str, Any]:
+    created = [
+        json.loads(entry["stdin"])
+        for entry in _fake_log(tmp_path)
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    return next(
+        document
+        for document in created
+        if document["kind"] == "ValidatingAdmissionPolicy"
+        and "cleanup-freeze-tenants-" in document["metadata"]["name"]
+    )
+
+
+def test_tenant_freeze_policy_guards_every_pv_field_and_probes_an_unclaimed_volume(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    assert result.returncode == 0, result.stderr
+    spec = _tenant_freeze_policy_document(tmp_path)["spec"]
+    assert spec["matchConstraints"]["resourceRules"][1] == {
+        "apiGroups": [""],
+        "apiVersions": ["v1"],
+        "operations": ["CREATE", "UPDATE"],
+        "resources": ["persistentvolumes"],
+        "scope": "Cluster",
+    }
+    variables = {item["name"]: item["expression"] for item in spec["variables"]}
+    assert json.loads(variables["targets"]) == [tenant]
+    text = " ".join(
+        [item["expression"] for item in spec["variables"]]
+        + [item["expression"] for item in spec["validations"]]
+    )
+    # Every PV field the rule reads is guarded with has(), on the new and the old object.
+    for root in ("object", "oldObject"):
+        for path in (
+            "persistentVolumeReclaimPolicy",
+            "csi.driver",
+            "csi.volumeHandle",
+            "claimRef.namespace",
+            "claimRef.name",
+            "claimRef.uid",
+        ):
+            guarded = f"has({root}.spec.{path}) ? {root}.spec.{path}"
+            assert guarded in text, guarded
+            text = text.replace(guarded, "")
+        for parent in ("spec.csi", "spec.claimRef", "spec"):
+            text = text.replace(f"has({root}.{parent})", "")
+    assert "object.spec" not in text
+    assert "oldObject.spec" not in text
+    # The install check denies a PV that claims the target and allows one that claims nothing.
+    assert _state(env)["pvProbes"] == [
+        {"claims": tenant, "denied": True},
+        {"claims": None, "denied": False},
+    ]
+
+
+def test_freeze_that_denies_an_unclaimed_volume_fails_closed(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    state = _state(env)
+    # A rule that denies PVs outside the target namespaces would block other projects in a shared cluster.
+    state["denyUnclaimedPvProbe"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "cleanup: tenant admission freeze denied a persistent volume that claims no tenant "
+        "namespace; refusing to continue.\n"
     )
     assert f"namespace/{tenant}" in _state(env)["resources"]
     assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()

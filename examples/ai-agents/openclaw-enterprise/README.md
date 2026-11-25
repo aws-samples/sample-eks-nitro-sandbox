@@ -1701,6 +1701,45 @@ state. You may omit the `--tenant-namespace-uid` flags on a retry; cleanup uses
 the protected deletion record created by the first attempt. That record
 prevents a same-name replacement from being accepted.
 
+**How the tenant freeze protects persistent volumes**
+
+PersistentVolumes are cluster-scoped, so the namespaced block does not cover
+them. While the tenant freeze is in place, the same admission policy and
+binding also guard the PVs that claim a target namespace:
+
+- **The rule.** The policy also matches `CREATE` and `UPDATE` of
+  `persistentvolumes` in the core API group, version `v1`. It denies a `CREATE`
+  whose `spec.claimRef.namespace` is a target namespace. It denies an `UPDATE`
+  when the old or the new object's `spec.claimRef.namespace` is a target
+  namespace and any of these changes: `spec.persistentVolumeReclaimPolicy`,
+  `spec.csi.driver`, `spec.csi.volumeHandle`, or the claim reference.
+- **The claim reference.** It counts by `namespace`, `name`, and `uid`,
+  including adding or removing the claim reference. Its other fields
+  (`apiVersion`, `kind`, `resourceVersion`, `fieldPath`) do not identify the
+  claim and do not count.
+- **The target namespaces.** The policy carries the target namespace names as
+  a fixed list in its expression. They come from the same private freeze state
+  that names the freeze. The binding's namespace selector never skips a
+  cluster-scoped object
+  ([`MatchResources`](https://github.com/kubernetes/api/blob/master/admissionregistration/v1/types.go)),
+  so every PV request reaches the rule, and only that list decides.
+- **Allowed progress.** The PV rule does not block the PV controller, the
+  protection finalizers, or `DELETE`. It does not match the
+  `persistentvolumes/status` subresource, so the PV controller can still mark a
+  volume `Released`. Finalizer and annotation changes leave the guarded fields
+  alone, so the PV protection controller and the EBS CSI provisioner can still
+  remove their finalizers. `DELETE` is not matched, so the provisioner can
+  still delete the EBS volume and the PV object.
+- **The check.** When cleanup installs the freeze, it sends a server-side
+  dry-run `CREATE` of a probe PV that claims each live target namespace and
+  requires the PV denial, as it already does with a probe ConfigMap. It also
+  sends one dry-run `CREATE` of a probe PV with no claim reference, which must
+  be allowed. The rule sees every PV in the cluster and fails closed, so every
+  field it reads is guarded and a PV of another project is never denied.
+- **Removal.** The rule is part of the tenant freeze policy. The existing
+  recovery path and the normal freeze removal delete that policy and its
+  binding, so they also remove the PV rule.
+
 The script stops the AgentGateway Deployment and waits until it is gone, then
 removes the Pod Identity association before its Kubernetes identity, then
 uninstalls OCE and deletes only receipt-matched system, adapter,

@@ -30,6 +30,9 @@ AGW_SERVICE_ACCOUNT = "agentgateway"
 STORAGE_CLASS = "openclaw-enterprise-gp3"
 FREEZE_PREFIX = "openclaw-enterprise-cleanup-freeze-"
 FREEZE_KEY = "cleanup.openclaw.aws/"
+TENANT_PV_FREEZE_MESSAGE = (
+    "OpenClaw Enterprise cleanup admission freeze protects the persistent volumes of tenant namespaces."
+)
 SETUP_KEY = "openclaw-enterprise.aws.dev/setup-token"
 POD_SETUP_KEY = "openclaw.enterprise/setup-invocation"
 INVOCATION_TAG = "OpenClawSetupInvocation"
@@ -974,6 +977,32 @@ class Cleanup:
                     },
                 },
             }
+        # PersistentVolumes are cluster-scoped, so the namespaced block does not cover them, and the binding's
+        # namespace selector never skips a cluster-scoped object. The PV rule therefore decides by the claim
+        # reference: it denies a CREATE that claims a target namespace, and an UPDATE that changes the reclaim
+        # policy, CSI driver, volume handle or claim reference (namespace, name, uid, or its presence) while the
+        # old or new object claims one. It does not match persistentvolumes/status or DELETE, so the PV
+        # controller, the protection finalizers and the CSI provisioner can still finish a deletion. The rule
+        # sees every PV in the cluster and fails closed, so every field it reads is guarded with has().
+        targets = json.dumps(sorted(item["name"] for item in state["namespaces"]))
+
+        def guarded_fields(root):
+            spec = f"has({root}.spec)"
+            csi = f"{spec} && has({root}.spec.csi)"
+            claim = f"{spec} && has({root}.spec.claimRef)"
+            return (
+                "["
+                f"{spec} && has({root}.spec.persistentVolumeReclaimPolicy)"
+                f" ? {root}.spec.persistentVolumeReclaimPolicy : '', "
+                f"{csi} && has({root}.spec.csi.driver) ? {root}.spec.csi.driver : '', "
+                f"{csi} && has({root}.spec.csi.volumeHandle) ? {root}.spec.csi.volumeHandle : '', "
+                f"{claim} ? 'claimRef' : '', "
+                f"{claim} && has({root}.spec.claimRef.namespace) ? {root}.spec.claimRef.namespace : '', "
+                f"{claim} && has({root}.spec.claimRef.name) ? {root}.spec.claimRef.name : '', "
+                f"{claim} && has({root}.spec.claimRef.uid) ? {root}.spec.claimRef.uid : ''"
+                "]"
+            )
+
         return {
             "failurePolicy": "Fail",
             "matchConstraints": {
@@ -984,11 +1013,54 @@ class Cleanup:
                         "operations": ["CREATE", "UPDATE"],
                         "resources": ["*", "*/*"],
                         "scope": "Namespaced",
-                    }
+                    },
+                    {
+                        "apiGroups": [""],
+                        "apiVersions": ["v1"],
+                        "operations": ["CREATE", "UPDATE"],
+                        "resources": ["persistentvolumes"],
+                        "scope": "Cluster",
+                    },
                 ]
             },
+            "variables": [
+                {
+                    "name": "pv",
+                    "expression": (
+                        "request.resource.group == '' && request.resource.resource == 'persistentvolumes'"
+                    ),
+                },
+                {"name": "targets", "expression": targets},
+                {
+                    "name": "newFields",
+                    "expression": f"variables.pv ? {guarded_fields('object')} : []",
+                },
+                {
+                    "name": "oldFields",
+                    "expression": (
+                        "variables.pv && request.operation == 'UPDATE' && oldObject != null"
+                        f" ? {guarded_fields('oldObject')} : []"
+                    ),
+                },
+                {
+                    "name": "claimsTarget",
+                    "expression": (
+                        "variables.pv && (variables.newFields[4] in variables.targets"
+                        " || (size(variables.oldFields) == 7"
+                        " && variables.oldFields[4] in variables.targets))"
+                    ),
+                },
+            ],
             "validations": [
-                {"expression": "false", "message": state["denialMessage"]}
+                {"expression": "variables.pv", "message": state["denialMessage"]},
+                {
+                    "expression": (
+                        "!variables.claimsTarget || (request.operation == 'UPDATE'"
+                        " && size(variables.oldFields) == 7"
+                        " && variables.newFields == variables.oldFields)"
+                    ),
+                    "message": TENANT_PV_FREEZE_MESSAGE,
+                },
             ],
         }
 
@@ -1067,6 +1139,52 @@ class Cleanup:
                     f"tenant admission freeze could not be verified for "
                     f"namespace/{target['name']}."
                 )
+            # A PV that claims the target namespace must be denied.
+            result = self.dry_run_create(self.freeze_probe_volume(state, target["name"]))
+            if result.returncode == 0 or TENANT_PV_FREEZE_MESSAGE not in result.stderr:
+                fail(
+                    "tenant admission freeze could not be verified for persistent "
+                    f"volumes of namespace/{target['name']}."
+                )
+        if live_targets:
+            # A PV that claims no namespace must be allowed: the rule sees every PV in the cluster.
+            result = self.dry_run_create(self.freeze_probe_volume(state, None))
+            if result.returncode != 0:
+                fail(
+                    "tenant admission freeze denied a persistent volume that claims no "
+                    "tenant namespace; refusing to continue."
+                )
+
+    def freeze_probe_volume(self, state, namespace):
+        spec = {
+            "capacity": {"storage": "1Gi"},
+            "accessModes": ["ReadWriteOnce"],
+            "persistentVolumeReclaimPolicy": "Delete",
+            "csi": {
+                "driver": "ebs.csi.eks.amazonaws.com",
+                "volumeHandle": f"openclaw-cleanup-freeze-probe-{state['token'][:12]}",
+            },
+        }
+        if namespace is not None:
+            spec["claimRef"] = {
+                "namespace": namespace,
+                "name": "openclaw-cleanup-freeze-probe",
+            }
+        return {
+            "apiVersion": "v1",
+            "kind": "PersistentVolume",
+            "metadata": {"name": f"openclaw-cleanup-freeze-probe-{state['token'][:12]}"},
+            "spec": spec,
+        }
+
+    def dry_run_create(self, document):
+        return subprocess.run(
+            [*self.k, "create", "--dry-run=server", "-f", "-"],
+            input=json.dumps(document),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
 
     def ensure_tenant_freeze(self, tenant_plans, protected_targets):
         live_targets = self.tenant_namespace_targets(tenant_plans)
