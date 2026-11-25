@@ -1011,6 +1011,51 @@ def test_external_database_uses_verified_tls_and_mounted_ca(tmp_path: Path) -> N
         assert not decoded.endswith(b"\n")
 
 
+def test_private_input_file_rejects_hard_links(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    args = _external_args(tmp_path, source, kubeconfig, occ)
+    os.link(tmp_path / "application-url", tmp_path / "application-url-alias")
+
+    result = run_script(*args, env=env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "install-oce: --database-app-url-file must have exactly one hard link.\n"
+    )
+    assert not (tmp_path / "calls.log").exists()
+    assert not (tmp_path / "state").exists()
+
+
+def test_private_input_file_must_be_owned_by_the_current_user() -> None:
+    # A file owned by another user cannot be created without root, so the check is pinned in the script text.
+    body = SCRIPT.read_text().split("require_private_file() {\n", 1)[1].split("\n}\n", 1)[0]
+    assert '[[ -O "$path" ]] ||' in body
+    assert "must be owned by the current user." in body
+    assert "must have exactly one hard link." in body
+
+
+def test_install_disables_xtrace_before_generating_secrets(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+
+    result = subprocess.run(
+        ["bash", "-x", str(SCRIPT), *_base_args(tmp_path, source, kubeconfig, occ)],
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    auth_secret = (tmp_path / "state" / "auth-secret").read_text().strip()
+    assert len(auth_secret) == 64
+    assert auth_secret not in result.stderr
+    assert SCRIPT.read_text().splitlines()[:3] == [
+        "#!/usr/bin/env bash",
+        "set -euo pipefail",
+        "set +x",
+    ]
+
+
 @pytest.mark.parametrize(
     "tags, accepted",
     [

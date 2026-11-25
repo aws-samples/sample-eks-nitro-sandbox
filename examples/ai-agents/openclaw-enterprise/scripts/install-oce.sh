@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set +x
 IFS=$'\n\t'
 umask 077
 
@@ -178,7 +179,7 @@ print(f"{network.network_address + 1}/32")
 }
 
 require_private_file() {
-  local flag=$1 path=$2 mode
+  local flag=$1 path=$2 mode links
   [[ -f "$path" && ! -L "$path" && -r "$path" ]] ||
     die "$flag must be a readable regular file, not a symlink."
   if mode=$(stat -c '%a' "$path" 2>/dev/null) &&
@@ -192,6 +193,18 @@ require_private_file() {
   fi
   [[ "$mode" =~ ^[0-7]00$ ]] ||
     die "$flag must not be readable or writable by group or other (mode is $mode)."
+  [[ -O "$path" ]] ||
+    die "$flag must be owned by the current user."
+  # A second hard link is another name for the same secret, outside this check.
+  if links=$(stat -c '%h' "$path" 2>/dev/null) && [[ "$links" =~ ^[0-9]+$ ]]; then
+    :
+  elif links=$(stat -f '%l' "$path" 2>/dev/null) && [[ "$links" =~ ^[0-9]+$ ]]; then
+    :
+  else
+    die "could not inspect the link count for $flag."
+  fi
+  [[ "$links" == 1 ]] ||
+    die "$flag must have exactly one hard link."
 }
 
 install_postgres_url() {
