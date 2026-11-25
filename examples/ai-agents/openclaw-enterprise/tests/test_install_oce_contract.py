@@ -1087,14 +1087,101 @@ def test_second_install_stops_while_the_state_lock_is_held(tmp_path: Path) -> No
     assert sorted(path.name for path in state.iterdir()) == [".install-oce.lock"]
 
 
+def _install_lock_chmod(tmp_path: Path, env: dict[str, str], fault: str = "") -> Path:
+    """Put a logging chmod first on PATH that can fail one install-lock step or signal the install."""
+    real_chmod = shutil.which("chmod", path=env["PATH"])
+    assert real_chmod
+    fake_bin = Path(env["PATH"].split(os.pathsep)[0])
+    chmod_log = tmp_path / "chmod.log"
+    _write_executable(
+        fake_bin / "chmod",
+        f"""#!/usr/bin/env python3
+import os
+import signal
+import sys
+
+with open({str(chmod_log)!r}, "a", encoding="utf-8") as log:
+    log.write(" ".join(sys.argv[1:]) + "\\n")
+fault = {fault!r}
+target = sys.argv[-1]
+if target.endswith("/.install-oce.lock"):
+    if fault == "lock-chmod":
+        sys.exit(1)
+    if fault == "owner-write":
+        # The owner write that follows then fails.
+        os.chmod(target, 0o500)
+        sys.exit(0)
+if target.endswith("/.install-oce.lock/owner"):
+    if fault == "owner-chmod":
+        sys.exit(1)
+    if fault == "foreign-entry":
+        open(os.path.join(os.path.dirname(target), "foreign"), "w").close()
+        sys.exit(1)
+    if fault == "owner-replaced":
+        with open(target, "w", encoding="utf-8") as owner:
+            owner.write("another-install\\n")
+        sys.exit(1)
+    if fault == "signal":
+        os.kill(os.getppid(), signal.SIGTERM)
+os.execv({real_chmod!r}, ["chmod", *sys.argv[1:]])
+""",
+    )
+    return chmod_log
+
+
 def test_install_releases_its_state_lock_on_exit(tmp_path: Path) -> None:
     env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    chmod_log = _install_lock_chmod(tmp_path, env)
+    lock = tmp_path / "state" / ".install-oce.lock"
 
     result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
 
     assert result.returncode == 0, result.stderr
-    assert not (tmp_path / "state" / ".install-oce.lock").exists()
+    calls = chmod_log.read_text().splitlines()
+    assert f"700 {lock}" in calls
+    assert f"600 {lock}/owner" in calls
+    assert not lock.exists()
     assert ".install-oce.lock" in README.read_text()
+
+
+@pytest.mark.parametrize(
+    ("fault", "kept"),
+    [
+        ("lock-chmod", None),
+        ("owner-write", None),
+        ("owner-chmod", None),
+        ("signal", None),
+        ("foreign-entry", ["foreign", "owner"]),
+        ("owner-replaced", ["owner"]),
+    ],
+)
+def test_install_lock_release_after_each_initialization_step(
+    tmp_path: Path, fault: str, kept: list[str] | None
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    _install_lock_chmod(tmp_path, env, fault)
+    lock = tmp_path / "state" / ".install-oce.lock"
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    if fault == "signal":
+        # Bash runs the EXIT trap, then ends with SIGTERM.
+        assert result.returncode in (-15, 143)
+    # The install stops at the lock: no cluster change has started.
+    assert not any(
+        verb in call.split()
+        for call in (tmp_path / "calls.log").read_text().splitlines()
+        for verb in ("apply", "create", "patch", "install")
+    )
+    if kept is None:
+        # This run's own lock, empty or holding only its owner token, is removed.
+        assert not lock.exists()
+        assert "preserving" not in result.stderr
+    else:
+        # Any other content is preserved, and so is the lock.
+        assert sorted(path.name for path in lock.iterdir()) == kept
+        assert f"install-oce: install lock ownership changed; preserving {lock}." in result.stderr
 
 
 def test_kube_context_ca_must_match_the_eks_cluster_ca(tmp_path: Path) -> None:

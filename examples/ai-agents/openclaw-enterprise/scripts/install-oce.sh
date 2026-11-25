@@ -1157,16 +1157,20 @@ receipt=$(python3 -c \
 install_lock="$state_dir/.install-oce.lock"
 install_lock_acquired=false
 install_lock_token=
+# Release only the lock this run created, and only while it is still empty or holds nothing but this run's
+# owner file and token; rmdir never removes a non-empty directory. Anything else is preserved.
 release_install_lock() {
   [[ "$install_lock_acquired" == true ]] || return 0
-  local owner_file="$install_lock/owner"
-  if [[ -f "$owner_file" && ! -L "$owner_file" && "$(<"$owner_file")" == "$install_lock_token" ]]; then
-    rm -f -- "$owner_file"
-    rmdir -- "$install_lock" 2>/dev/null || true
-  else
-    printf 'install-oce: install lock ownership changed; preserving %s.\n' "$install_lock" >&2
-  fi
   install_lock_acquired=false
+  local owner_file="$install_lock/owner"
+  if [[ -d "$install_lock" && ! -L "$install_lock" ]]; then
+    if [[ -f "$owner_file" && ! -L "$owner_file" && "$(<"$owner_file")" == "$install_lock_token" &&
+      -z "$(find "$install_lock" -mindepth 1 -maxdepth 1 ! -name owner -print)" ]]; then
+      rm -f -- "$owner_file"
+    fi
+    rmdir -- "$install_lock" 2>/dev/null && return 0
+  fi
+  printf 'install-oce: install lock ownership changed; preserving %s.\n' "$install_lock" >&2
 }
 [[ ! -L "$install_lock" ]] ||
   die "install lock must not be a symbolic link: $install_lock."
