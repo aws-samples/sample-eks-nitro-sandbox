@@ -138,33 +138,6 @@ context_name="$(
 [[ "${context_name}" == "${KUBE_CONTEXT}" ]] ||
   die "kube context ${KUBE_CONTEXT} does not exist exactly."
 
-kubeconfig_snapshot_dir="$(
-  mktemp -d "${TMPDIR:-/tmp}/.setup-storage-class-kubeconfig.XXXXXX"
-)" || die "could not create a private kubeconfig snapshot directory."
-chmod 700 "${kubeconfig_snapshot_dir}" ||
-  die "could not secure the kubeconfig snapshot directory."
-kubeconfig_snapshot="${kubeconfig_snapshot_dir}/config"
-if ! "${BOOTSTRAP_KUBECTL[@]}" config view \
-  --raw \
-  --minify \
-  --flatten \
-  --context "${KUBE_CONTEXT}" >"${kubeconfig_snapshot}"; then
-  die "could not snapshot kube context ${KUBE_CONTEXT}."
-fi
-chmod 600 "${kubeconfig_snapshot}" ||
-  die "could not secure the kubeconfig snapshot."
-[[ -s "${kubeconfig_snapshot}" ]] ||
-  die "kube context ${KUBE_CONTEXT} produced an empty kubeconfig snapshot."
-
-readonly -a KUBECTL=(
-  kubectl
-  --kubeconfig "${kubeconfig_snapshot}"
-  --context "${KUBE_CONTEXT}"
-)
-
-"${KUBECTL[@]}" get --raw=/readyz >/dev/null ||
-  die "could not reach kube context ${KUBE_CONTEXT}."
-
 file_mode() {
   local mode
   if mode="$(stat -c '%a' "$1" 2>/dev/null)" &&
@@ -351,6 +324,35 @@ finally:
     die "lifecycle receipt ${RECEIPT_PATH} is published, but its parent directory could not be synced; the StorageClass remains committed."
 }
 prepare_receipt
+
+# The flattened snapshot can hold credentials, so keep it beside the private receipt, not in TMPDIR, where a
+# hard kill that skips the exit trap would leave it.
+kubeconfig_snapshot_dir="$(
+  mktemp -d "${receipt_parent:-${TMPDIR:-/tmp}}/.setup-storage-class-kubeconfig.XXXXXX"
+)" || die "could not create a private kubeconfig snapshot directory."
+chmod 700 "${kubeconfig_snapshot_dir}" ||
+  die "could not secure the kubeconfig snapshot directory."
+kubeconfig_snapshot="${kubeconfig_snapshot_dir}/config"
+if ! "${BOOTSTRAP_KUBECTL[@]}" config view \
+  --raw \
+  --minify \
+  --flatten \
+  --context "${KUBE_CONTEXT}" >"${kubeconfig_snapshot}"; then
+  die "could not snapshot kube context ${KUBE_CONTEXT}."
+fi
+chmod 600 "${kubeconfig_snapshot}" ||
+  die "could not secure the kubeconfig snapshot."
+[[ -s "${kubeconfig_snapshot}" ]] ||
+  die "kube context ${KUBE_CONTEXT} produced an empty kubeconfig snapshot."
+
+readonly -a KUBECTL=(
+  kubectl
+  --kubeconfig "${kubeconfig_snapshot}"
+  --context "${KUBE_CONTEXT}"
+)
+
+"${KUBECTL[@]}" get --raw=/readyz >/dev/null ||
+  die "could not reach kube context ${KUBE_CONTEXT}."
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly manifest_path="${script_dir}/../deploy/storage-class.yaml"

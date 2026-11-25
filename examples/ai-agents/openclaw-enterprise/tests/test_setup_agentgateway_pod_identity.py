@@ -726,6 +726,33 @@ def test_creates_custom_named_role_and_records_it(
     assert create[create.index("--role-name") + 1] == role_name
 
 
+def test_kubeconfig_snapshots_live_in_the_receipt_directory(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    empty_tmpdir = tmp_path / "tmpdir"
+    empty_tmpdir.mkdir(mode=0o700)
+
+    result, _, kube_calls, _ = _run_setup(
+        tmp_path,
+        args=_receipt_args(receipt),
+        extra_env={"TMPDIR": str(empty_tmpdir)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    snapshots = {
+        pathlib.Path(call[call.index("--kubeconfig") + 1])
+        for call in kube_calls
+        if "--kubeconfig" in call
+    }
+    assert {path.name for path in snapshots} == {"source-kubeconfig", "kubeconfig.json"}
+    for path in snapshots:
+        assert path.parent.parent == receipt.parent
+        assert path.parent.name.startswith(".setup-agentgateway-pod-identity-kubeconfig.")
+        assert not path.parent.exists()
+    assert list(empty_tmpdir.iterdir()) == []
+
+
 def test_reuses_exact_resources_idempotently(tmp_path: pathlib.Path) -> None:
     receipt = tmp_path / "receipt.json"
     result, _, _, _ = _run_setup(tmp_path, args=_receipt_args(receipt))

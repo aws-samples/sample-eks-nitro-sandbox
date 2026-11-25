@@ -497,6 +497,34 @@ def test_kubectl_uses_a_private_stable_kubeconfig_snapshot(
     ]
 
 
+def test_kubeconfig_snapshot_lives_in_the_receipt_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt_dir = tmp_path / "receipts"
+    receipt_dir.mkdir(mode=0o700)
+    receipt = receipt_dir / "storage-class-receipt.json"
+    empty_tmpdir = tmp_path / "read-only-tmp"
+    empty_tmpdir.mkdir()
+    empty_tmpdir.chmod(0o500)
+    monkeypatch.setenv("TMPDIR", str(empty_tmpdir))
+
+    result, _, final_state = _run_script(
+        tmp_path,
+        None,
+        args=("--kube-context", CONTEXT, "--receipt", str(receipt)),
+    )
+
+    assert result.returncode == 0, result.stderr
+    snapshot_paths = {item["path"] for item in final_state["kubeconfig_observations"]}
+    assert len(snapshot_paths) == 1
+    snapshot = Path(snapshot_paths.pop())
+    assert snapshot.parent.parent == receipt_dir
+    assert snapshot.parent.name.startswith(".setup-storage-class-kubeconfig.")
+    assert not snapshot.parent.exists()
+    assert list(empty_tmpdir.iterdir()) == []
+
+
 def test_existing_receipt_lock_is_preserved(tmp_path: Path) -> None:
     receipt = tmp_path / "storage-class-receipt.json"
     lock = Path(f"{receipt}.lock")

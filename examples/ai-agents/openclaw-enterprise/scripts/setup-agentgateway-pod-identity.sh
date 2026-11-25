@@ -103,10 +103,12 @@ release_lock() {
   rm -f -- "${lock_path}/pid" "${lock_path}/token"
   rmdir -- "${lock_path}" 2>/dev/null || true
 }
+snapshot_dir=""
 cleanup() {
   local status="$?"
   release_lock
   rm -rf -- "${work_dir}"
+  [[ -z "${snapshot_dir}" ]] || rm -rf -- "${snapshot_dir}"
   trap - EXIT
   exit "${status}"
 }
@@ -207,9 +209,18 @@ fi
 
 # Pin every kubectl call to one private, flattened context snapshot. This avoids
 # context switching and prevents credential material leaking through a temp file.
+# With a receipt, the snapshots live beside it in its checked private directory,
+# not in TMPDIR, where a hard kill that skips the exit trap would leave them.
+snapshot_dir="${work_dir}"
+if [[ -n "${RECEIPT_PATH}" ]]; then
+  snapshot_dir="$(
+    mktemp -d "${RECEIPT_PATH%/*}/.setup-agentgateway-pod-identity-kubeconfig.XXXXXX"
+  )" || die "could not create a private kubeconfig snapshot directory."
+  chmod 700 "${snapshot_dir}"
+fi
 source_kubeconfig="${KUBECONFIG:-${HOME}/.kube/config}"
-source_snapshot="${work_dir}/source-kubeconfig"
-kubeconfig_file="${work_dir}/kubeconfig.json"
+source_snapshot="${snapshot_dir}/source-kubeconfig"
+kubeconfig_file="${snapshot_dir}/kubeconfig.json"
 [[ "${source_kubeconfig}" = /* && "${source_kubeconfig}" != *:* ]] ||
   die "KUBECONFIG must name one absolute file."
 python3 -I - "${source_kubeconfig}" "${source_snapshot}" <<'PY'
