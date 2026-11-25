@@ -675,7 +675,9 @@ RUN --mount=type=secret,id=build-ca,required=false \\
     sh /tmp/openssl/build.sh
 RUN --network=none sh /tmp/openssl/verify.sh
 
-FROM node-build-base AS dependency-build-base
+"""
+# These stages have no placeholders, so they stay a plain string outside the f-string above.
+npm_stage_insertion += """FROM node-build-base AS dependency-build-base
 RUN apt-get update --error-on=any \\
     && apt-get install -y --no-install-recommends \\
       build-essential dpkg-dev pkg-config libcurl4-openssl-dev zlib1g-dev \\
@@ -698,7 +700,8 @@ RUN --mount=type=secret,id=build-ca,required=false \\
     sh /tmp/expat/build.sh
 RUN --network=none sh /tmp/expat/verify.sh --packages /out
 
-{npm_stage_anchor}"""
+"""
+npm_stage_insertion += npm_stage_anchor
 curl_stage_before = """FROM node-build-base AS curl-packages
 COPY deploy/runtime/curl /tmp/curl
 RUN --mount=type=secret,id=build-ca,required=false \\
