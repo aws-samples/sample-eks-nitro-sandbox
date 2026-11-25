@@ -38,6 +38,23 @@ Editable diagrams:
   the shared setup. Before using the disposable database path, the cluster must
   already carry the tag `Environment=validation`; you need
   `eks:ListTagsForResource` to verify it.
+- Network policy enforcement turned on for the cluster. OCE's tenant
+  NetworkPolicies are what keep other Pods away from each tenant gateway, and
+  OCE trusts every Pod address as a gateway proxy source, so without
+  enforcement any Pod that reaches a gateway can present OCE's trusted identity
+  header. EKS Auto Mode accepts NetworkPolicies without enforcing them until
+  this prints `true`:
+
+  ```bash
+  kubectl --context "$KUBE_CONTEXT" --namespace kube-system \
+    get configmap amazon-vpc-cni \
+    --output jsonpath='{.data.enable-network-policy-controller}{"\n"}'
+  ```
+
+  `install-oce.sh` reads this setting and stops before it changes the cluster
+  when it is not `true`. It never changes the setting, which applies to the
+  whole cluster. To turn it on, follow the
+  [network policy](../../isolation/network-policy/README.md) blueprint.
 - Access to Amazon Bedrock model `amazon.nova-lite-v1:0` in `us-west-2`.
 - Private OCE authentication and Agent DNS names that resolve from the cluster.
 - [cert-manager](https://cert-manager.io/docs/installation/) `v1.21.3`
@@ -56,9 +73,10 @@ Editable diagrams:
   This sample was tested with Helm `v3.22.1`. The pinned OCE revision predates
   [upstream Helm 4 support](https://github.com/openclaw/openclaw-enterprise/pull/6691).
 - Kubernetes permissions for each phase:
-  - setup and install: read cluster discovery data; install the documented
-    cluster-scoped admission, storage, and RBAC resources; and manage the
-    blueprint namespaces and their workloads
+  - setup and install: read cluster discovery data and the `amazon-vpc-cni`
+    ConfigMap in `kube-system`; install the documented cluster-scoped
+    admission, storage, and RBAC resources; and manage the blueprint namespaces
+    and their workloads
   - validation: manage the two retained validation tenants and create
     `pods/portforward` requests
   - cleanup: delete only receipt-matched blueprint resources, create
@@ -1397,9 +1415,14 @@ The command exits zero only after it verifies:
    through AgentGateway and Amazon Bedrock, and records one unique `exec` tool
    call, at least one correlated successful result, and exactly one requested
    final reply.
-8. Each validator key reads its own OCE namespace and agent; both cross-tenant
+8. The temporary ordinary pod, which no gateway client selector matches,
+   cannot use a forged `x-occ-identity` header on either tenant gateway: the
+   connection is refused or times out, or the gateway answers `401` or `403`.
+   In the same run the OCE API's own tool session (item 7) and the loopback API
+   relay that item 9 uses still work.
+9. Each validator key reads its own OCE namespace and agent; both cross-tenant
    reads return HTTP `403` with code `FORBIDDEN`.
-9. Tenant A's `.openclaw` marker and model path survive controller-driven pod
+10. Tenant A's `.openclaw` marker and model path survive controller-driven pod
    replacement, while a generic home marker does not.
 
 Do not publish successful output until a fresh run has completed against the

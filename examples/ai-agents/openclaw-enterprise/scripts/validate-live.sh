@@ -2508,6 +2508,78 @@ verify_native_tool_execution "$WORK_DIR/native-tool-execution.json"
 record_pass "native-openclaw-tool-execution" \
   "one native OCE session recorded one successful exec tool call and its exact result"
 
+# OCE trusts every pod address as a gateway proxy source, so only its tenant NetworkPolicies, which admit no
+# gateway client in this topology, keep other pods from presenting the trusted identity header. The ordinary
+# control pod is such a peer; it must not get a gateway answer other than 401 or 403.
+probe_forged_gateway_identity() {
+  local tenant_alias="$1"
+  local pod_json="$2"
+  local output_file="$3"
+  local gateway_ip
+  gateway_ip="$(
+    jq -er '
+      .status.podIP
+      | select(type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))
+    ' "$pod_json"
+  )" || die "$tenant_alias gateway pod has no IPv4 pod address"
+  # Port 8080 is the gateway port install-oce.sh renders for OCE (gatewayPort).
+  # shellcheck disable=SC2016 # This JavaScript runs in the ordinary control pod.
+  exec_runtime_command "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" "" \
+    node -e '
+      const http = require("node:http");
+      const [host, port] = process.argv.slice(1);
+      if (!/^[0-9]{1,3}([.][0-9]{1,3}){3}$/.test(host || "") || port !== "8080") {
+        process.exit(64);
+      }
+      const marker = "LIVE_PEER_FORGED_IDENTITY";
+      let done = false;
+      const finish = (result) => {
+        if (done) return;
+        done = true;
+        process.stdout.write(JSON.stringify({ marker, ...result }) + "\n");
+        process.exit(0);
+      };
+      const request = http.request({
+        host,
+        port: Number(port),
+        path: "/v1/models",
+        method: "GET",
+        headers: {
+          "x-occ-identity": "occ-workspace-files",
+          "x-forwarded-for": "203.0.113.7"
+        }
+      }, response => {
+        response.resume();
+        finish({ result: "status", status: response.statusCode });
+      });
+      request.setTimeout(5000, () => {
+        request.destroy();
+        finish({ result: "timeout" });
+      });
+      request.on("error", error => finish({ result: "error", code: String(error.code || "unknown") }));
+      request.end();
+      setTimeout(() => finish({ result: "timeout" }), 8000).unref();
+    ' "$gateway_ip" 8080 >"$output_file" ||
+    die "forged identity probe for $tenant_alias did not run"
+  jq -e '
+    .marker == "LIVE_PEER_FORGED_IDENTITY"
+    and (
+      .result == "timeout"
+      or .result == "error"
+      or (.result == "status" and (.status == 401 or .status == 403))
+    )
+  ' "$output_file" >/dev/null ||
+    die "a non-proxy peer Pod reached the $tenant_alias gateway with a forged x-occ-identity header"
+}
+
+CURRENT_CHECK="tenant-gateway-peer-forged-identity"
+probe_forged_gateway_identity "tenant-a" "$WORK_DIR/tenant-a-pod.json" \
+  "$WORK_DIR/forged-identity-tenant-a.json"
+probe_forged_gateway_identity "tenant-b" "$WORK_DIR/tenant-b-pod.json" \
+  "$WORK_DIR/forged-identity-tenant-b.json"
+record_pass "tenant-gateway-peer-forged-identity" \
+  "a pod outside the gateway client selector could not use a forged x-occ-identity header on either tenant gateway"
+
 CURRENT_CHECK="oce-api-loopback-tunnel"
 start_oce_api_port_forward
 

@@ -199,6 +199,11 @@ FAKE_COMMAND = textwrap.dedent(
             }},
             "status": {{
                 "phase": "Running",
+                "podIP": {{
+                    "uid-a-old": "10.0.1.11",
+                    "uid-a-new": "10.0.1.12",
+                    "uid-b": "10.0.1.21",
+                }}.get(uid, "10.0.1.99"),
                 "initContainerStatuses": [{{
                     "name": "prepare-private-state",
                     "ready": True,
@@ -1115,6 +1120,26 @@ FAKE_COMMAND = textwrap.dedent(
         if remote[:3] == ["test", "!", "-e"]:
             clean = not (state_dir / "marker").exists() and not (state_dir / "ephemeral").exists()
             sys.exit(0 if clean else 1)
+        if "LIVE_PEER_FORGED_IDENTITY" in joined:
+            ordinary_file = state_dir / "ordinary_control_pod"
+            if (
+                namespace != "openclaw-enterprise-agw"
+                or not ordinary_file.exists()
+                or pod_name != ordinary_file.read_text()
+                or remote[:2] != ["node", "-e"]
+                or remote[-1] != "8080"
+            ):
+                print("invalid forged identity probe", file=sys.stderr)
+                sys.exit(108)
+            with (state_dir / "forged_identity_calls.jsonl").open("a") as calls:
+                calls.write(json.dumps({{"target": remote[-2], "port": remote[-1]}}) + "\\n")
+            if scenario == "forged_identity_accepted":
+                emit({{"marker": "LIVE_PEER_FORGED_IDENTITY", "result": "status", "status": 200}})
+            elif scenario == "forged_identity_denied_401":
+                emit({{"marker": "LIVE_PEER_FORGED_IDENTITY", "result": "status", "status": 401}})
+            else:
+                emit({{"marker": "LIVE_PEER_FORGED_IDENTITY", "result": "timeout"}})
+            sys.exit(0)
         print("unsupported fake exec", remote, file=sys.stderr)
         sys.exit(95)
 
@@ -1956,6 +1981,17 @@ def test_accepts_raw_one_line_service_keys_for_secret_manager_exports(
     assert result.returncode == 0, result.stderr
 
 
+def test_forged_identity_refused_with_401_passes(tmp_path: Path) -> None:
+    result = _run(tmp_path, "forged_identity_denied_401")
+
+    assert result.returncode == 0, result.stderr
+    evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
+    assert "PASS\ttenant-gateway-peer-forged-identity\t" in evidence
+    assert "PASS\tnative-openclaw-tool-execution\t" in evidence
+    assert "PASS\toce-api-loopback-tunnel\t" in evidence
+    assert "RESULT\tPASS" in evidence
+
+
 def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     tmp_path: Path,
 ) -> None:
@@ -2050,6 +2086,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         "agentgateway-key-authorization",
         "native-openclaw-model-turn",
         "native-openclaw-tool-execution",
+        "tenant-gateway-peer-forged-identity",
         "agentgateway-model-telemetry",
         "control-plane-evidence",
         "oce-api-loopback-tunnel",
@@ -2064,6 +2101,16 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         "temporary-artifact-cleanup",
     ):
         assert f"PASS\t{check}\t" in evidence
+    forged_identity_calls = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "forged_identity_calls.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    assert forged_identity_calls == [
+        {"target": "10.0.1.11", "port": "8080"},
+        {"target": "10.0.1.21", "port": "8080"},
+    ]
 
     sensitive_values = (
         "123456789012",
@@ -2527,6 +2574,7 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
         ("native_tool_result_marker_missing", "native-openclaw-tool-execution"),
         ("native_tool_wrong_final_reply", "native-openclaw-tool-execution"),
         ("native_tool_invalid_run_hash", "native-openclaw-tool-execution"),
+        ("forged_identity_accepted", "tenant-gateway-peer-forged-identity"),
     ],
 )
 def test_live_run_fails_closed_on_security_contract_mismatch(
@@ -2588,6 +2636,24 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
     for secret in ("tenant-a-secret", "tenant-b-secret"):
         assert secret not in command_log
         assert secret not in combined_output
+
+
+def test_forged_identity_probe_runs_from_the_ordinary_peer_pod() -> None:
+    source = SCRIPT.read_text()
+    probe = source.split("probe_forged_gateway_identity() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert '"x-occ-identity": "occ-workspace-files"' in probe
+    assert (
+        'exec_runtime_command "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" ""'
+        in probe
+    )
+    assert "127.0.0.1" not in probe
+    assert '.status == 401 or .status == 403' in probe
+    assert source.index('record_pass "native-openclaw-tool-execution"') < source.index(
+        'CURRENT_CHECK="tenant-gateway-peer-forged-identity"'
+    ) < source.index('CURRENT_CHECK="oce-api-loopback-tunnel"') < source.index(
+        "\ncleanup_ordinary_control_pod\n"
+    )
 
 
 def test_script_contains_destructive_and_api_contract_guards() -> None:

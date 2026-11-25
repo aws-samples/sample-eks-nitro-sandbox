@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import pathlib
+import re
 from types import ModuleType
 from typing import Any
 
@@ -251,7 +252,13 @@ def test_sample_adds_only_required_service_connectivity_network_policies() -> No
     )
 
     assert not any(document.get("kind") == "NetworkPolicy" for document in manifests)
-    assert "enable-network-policy-controller" not in scripts
+    # The scripts may read the cluster-wide enforcement setting, but never change it.
+    assert "get configmap amazon-vpc-cni" in scripts
+    assert not re.search(
+        r"\b(apply|patch|create|replace|edit|delete)\b.*amazon-vpc-cni", scripts
+    )
+    assert '"enable-network-policy-controller":"true"' not in scripts
+    assert 'enable-network-policy-controller: "true"' not in scripts
     assert "oce-eks-cluster-dns" in scripts
     assert "oce-private-service-egress" in scripts
     assert "../../isolation/network-policy/README.md" in sample

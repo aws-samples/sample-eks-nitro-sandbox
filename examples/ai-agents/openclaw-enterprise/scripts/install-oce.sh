@@ -755,6 +755,23 @@ require_storage_class_contract() {
     die "StorageClass $runtime_storage_class must be blueprint-owned encrypted gp3 with reclaimPolicy=Delete."
 }
 
+require_network_policy_enforcement() {
+  # OCE trusts the whole pod CIDR as a gateway proxy source; only its tenant NetworkPolicies keep other Pods
+  # from presenting the gateway's trusted identity header. EKS Auto Mode accepts those policies without
+  # enforcing them until this cluster-wide setting is on. This script reads it and never changes it.
+  local value status
+  set +e
+  value=$("${KUBE[@]}" --namespace kube-system get configmap amazon-vpc-cni \
+    -o 'jsonpath={.data.enable-network-policy-controller}' 2>&1)
+  status=$?
+  set -e
+  if ((status != 0)) && ! kubectl_error_is_not_found "$value"; then
+    die "could not read configmap/amazon-vpc-cni in kube-system: $value"
+  fi
+  [[ "$status" -eq 0 && "$value" == true ]] ||
+    die "network policy enforcement is off: configmap/amazon-vpc-cni in kube-system must set enable-network-policy-controller to \"true\" (README Prerequisites). This script does not change that shared setting."
+}
+
 validate_occ_receipt() {
   [[ -d "$receipt" && ! -L "$receipt" ]] ||
     die "OCC receipt must be a directory, not a symbolic link."
@@ -1273,6 +1290,7 @@ HELM_RELEASE_STATES=(
 "${KUBE[@]}" get namespace kube-system -o name >/dev/null ||
   die "cannot reach kube-system through the selected context."
 require_storage_class_contract
+require_network_policy_enforcement
 
 release_names=$(helm list --kubeconfig "$kubeconfig" --kube-context "$kube_context" \
   --namespace "$namespace" "${HELM_RELEASE_STATES[@]}" --short)

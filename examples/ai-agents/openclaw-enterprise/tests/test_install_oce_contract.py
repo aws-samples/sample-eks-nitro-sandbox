@@ -622,6 +622,11 @@ case "$*" in
     printf '%s' "${TEST_CONTEXT_CA:-dGVzdC1jbHVzdGVyLWNh}" ;;
   *"config view"*) printf 'https://eks.example.test' ;;
   *"get namespace kube-system"*) printf 'namespace/kube-system\\n' ;;
+  *"--namespace kube-system get configmap amazon-vpc-cni "*)
+    case "${TEST_NETWORK_POLICY_CONTROLLER-true}" in
+      absent) not_found configmap/amazon-vpc-cni ;;
+      *) printf '%s' "${TEST_NETWORK_POLICY_CONTROLLER-true}" ;;
+    esac ;;
   *"get storageclass gp3 -o json")
     printf '%s\\n' \
       '{"metadata":{"name":"gp3","labels":{"app.kubernetes.io/managed-by":"'"${TEST_STORAGE_OWNER:-openclaw-enterprise-blueprint}"'"}},"provisioner":"'"${TEST_STORAGE_PROVISIONER:-ebs.csi.eks.amazonaws.com}"'","parameters":{"type":"'"${TEST_STORAGE_TYPE:-gp3}"'","encrypted":"'"${TEST_STORAGE_ENCRYPTED:-true}"'"},"reclaimPolicy":"'"${TEST_STORAGE_RECLAIM:-Delete}"'","volumeBindingMode":"'"${TEST_STORAGE_BINDING:-WaitForFirstConsumer}"'"}'
@@ -1017,6 +1022,48 @@ def test_external_database_uses_verified_tls_and_mounted_ca(tmp_path: Path) -> N
         assert b"sslmode=verify-full" in decoded
         assert f"sslrootcert={DATABASE_CA_PATH}".encode() in decoded
         assert not decoded.endswith(b"\n")
+
+
+@pytest.mark.parametrize("controller", ["false", "", "absent"])
+def test_network_policy_enforcement_off_fails_before_cluster_mutation(
+    tmp_path: Path, controller: str
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_NETWORK_POLICY_CONTROLLER"] = controller
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "install-oce: network policy enforcement is off:" in result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert any(
+        "--namespace kube-system get configmap amazon-vpc-cni" in call for call in calls
+    )
+    assert not any(" apply " in call or " patch " in call for call in calls)
+    assert not any("occ installation install" in call for call in calls)
+
+
+def test_network_policy_enforcement_is_read_before_any_cluster_mutation(
+    tmp_path: Path,
+) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    read = next(
+        index
+        for index, call in enumerate(calls)
+        if "--namespace kube-system get configmap amazon-vpc-cni" in call
+    )
+    first_apply = next(index for index, call in enumerate(calls) if " apply " in call)
+    assert read < first_apply
+    assert not any(
+        "amazon-vpc-cni" in call
+        and any(verb in call.split() for verb in ("apply", "patch", "create", "edit", "replace"))
+        for call in calls
+    )
 
 
 def test_second_install_stops_while_the_state_lock_is_held(tmp_path: Path) -> None:
@@ -1880,6 +1927,19 @@ def test_invalid_service_cidr_fails_before_cluster_mutation(
     calls = (tmp_path / "calls.log").read_text()
     assert " apply " not in calls
     assert "occ installation install" not in calls
+
+
+def test_readme_prerequisites_require_network_policy_enforcement() -> None:
+    text = README.read_text()
+    prerequisites = " ".join(
+        text.split("## Prerequisites", 1)[1].split("## Overview", 1)[0].split()
+    )
+    assert "Network policy enforcement turned on for the cluster." in prerequisites
+    assert "get configmap amazon-vpc-cni" in prerequisites
+    assert "{.data.enable-network-policy-controller}" in prerequisites
+    assert "`install-oce.sh` reads this setting and stops" in prerequisites
+    assert "It never changes the setting" in prerequisites
+    assert "(../../isolation/network-policy/README.md)" in prerequisites
 
 
 def test_readme_targets_cert_manager_at_the_explicit_context() -> None:
