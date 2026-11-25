@@ -61,12 +61,18 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
         elif command[:2] == ["get", f"namespace/{state['tenant']}"]:
             print(
                 f"{state['tenant']}|"
-                f"{state.get('namespace_owner', 'openclaw-enterprise')}"
+                f"{state.get('namespace_owner', 'openclaw-enterprise')}|"
+                "uid-namespace"
             )
         elif command[:2] == ["wait", "--namespace"]:
             pass
         elif command[:3] == ["get", "secret", "agentgateway-ca"]:
             print(base64.b64encode(b"test-ca").decode())
+        elif (
+            command[:3] == ["get", "configmap", "agentgateway-ca"]
+            and command[-1] == "jsonpath={.data.ca\\\\.crt}"
+        ):
+            sys.stdout.write("test-ca")
         elif (
             command[:3] == ["get", "service", "agentgateway"]
             and command[-1] == "--output=jsonpath={.spec.clusterIP}"
@@ -79,7 +85,9 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
                 raise SystemExit(1)
             owner = state.get("resources", {}).get(resource)
             if owner is not None:
-                print(f"{resource.rsplit('/', 1)[1]}|{owner}")
+                name = resource.rsplit("/", 1)[1]
+                uid = state.get("uids", {}).get(resource, f"uid-{name}")
+                print(f"{name}|{owner}|{uid}")
         elif command[:2] == ["label", f"namespace/{state['tenant']}"]:
             pass
         elif command[:3] == ["create", "configmap", "agentgateway-ca"]:
@@ -123,31 +131,40 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
     )
 
 
+def _receipt(tmp_path: pathlib.Path) -> pathlib.Path:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700, exist_ok=True)
+    return private_dir / f"{TENANT}-model-gateway-receipt.json"
+
+
 def _run_configure(
     tmp_path: pathlib.Path,
     *,
     state: dict[str, Any] | None = None,
     context: str = CONTEXT,
+    rerun: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], list[dict[str, Any]]]:
+    """Run the script once; with rerun=True, run it again on the same cluster state and receipt."""
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    _install_fake_kubectl(bin_dir)
     state_path = tmp_path / "kube-state.json"
-    state_path.write_text(
-        json.dumps(
-            state
-            or {
-                "context": CONTEXT,
-                "tenant": TENANT,
-                "resources": {},
-            }
-        ),
-        encoding="utf-8",
-    )
+    if not rerun:
+        bin_dir.mkdir()
+        _install_fake_kubectl(bin_dir)
+        state_path.write_text(
+            json.dumps(
+                state
+                or {
+                    "context": CONTEXT,
+                    "tenant": TENANT,
+                    "resources": {},
+                }
+            ),
+            encoding="utf-8",
+        )
     log_path = tmp_path / "kubectl.log"
     log_path.write_text("", encoding="utf-8")
     result = subprocess.run(
-        ["bash", str(SCRIPT), context, TENANT, CLUSTER_DNS_CIDR],
+        ["bash", str(SCRIPT), context, TENANT, CLUSTER_DNS_CIDR, str(_receipt(tmp_path))],
         check=False,
         capture_output=True,
         text=True,
@@ -298,7 +315,7 @@ def test_configure_rejects_invalid_cluster_dns_cidr_before_mutation(
     log_path.write_text("", encoding="utf-8")
 
     result = subprocess.run(
-        ["bash", str(SCRIPT), CONTEXT, TENANT, cluster_dns_cidr],
+        ["bash", str(SCRIPT), CONTEXT, TENANT, cluster_dns_cidr, str(_receipt(tmp_path))],
         check=False,
         capture_output=True,
         text=True,
@@ -364,3 +381,89 @@ def test_configure_stops_when_a_tenant_resource_lookup_fails(
         call["args"][2:4] == ["get", "configmap/agentgateway-ca"] for call in calls
     )
     assert _mutating_calls(calls) == []
+
+
+def test_configure_records_the_uids_of_the_objects_it_creates(
+    tmp_path: pathlib.Path,
+) -> None:
+    result, _ = _run_configure(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    receipt = _receipt(tmp_path)
+    assert receipt.stat().st_mode & 0o777 == 0o600
+    assert json.loads(receipt.read_text(encoding="utf-8")) == {
+        "version": 1,
+        "operation": "configure-tenant-model-gateway",
+        "kubeContext": CONTEXT,
+        "namespace": TENANT,
+        "resources": [
+            {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "name": "agentgateway-ca",
+                "uid": "uid-agentgateway-ca",
+            },
+            {
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "NetworkPolicy",
+                "name": "oce-private-service-egress",
+                "uid": "uid-oce-private-service-egress",
+            },
+        ],
+    }
+    assert sorted(path.name for path in receipt.parent.iterdir()) == [receipt.name]
+
+
+def test_configure_rerun_changes_only_the_recorded_objects(
+    tmp_path: pathlib.Path,
+) -> None:
+    first, _ = _run_configure(tmp_path)
+    assert first.returncode == 0, first.stderr
+
+    result, calls = _run_configure(tmp_path, rerun=True)
+
+    assert result.returncode == 0, result.stderr
+    assert [call["args"][2] for call in _mutating_calls(calls)] == ["label", "apply"]
+
+
+@pytest.mark.parametrize("resource", TENANT_RESOURCES)
+def test_configure_refuses_a_same_name_replacement_before_mutation(
+    tmp_path: pathlib.Path,
+    resource: str,
+) -> None:
+    first, _ = _run_configure(tmp_path)
+    assert first.returncode == 0, first.stderr
+    receipt_before = _receipt(tmp_path).read_text(encoding="utf-8")
+    state_path = tmp_path / "kube-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    # Another object with the same name and the sample's owner label, as after a delete and recreate.
+    state.setdefault("uids", {})[resource] = "uid-replacement"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result, calls = _run_configure(tmp_path, rerun=True)
+
+    assert result.returncode != 0
+    assert "was replaced since" in result.stderr
+    assert "refusing to change it." in result.stderr
+    assert _mutating_calls(calls) == []
+    assert _receipt(tmp_path).read_text(encoding="utf-8") == receipt_before
+
+
+@pytest.mark.parametrize("resource", TENANT_RESOURCES)
+def test_configure_refuses_to_adopt_an_unrecorded_object(
+    tmp_path: pathlib.Path,
+    resource: str,
+) -> None:
+    result, calls = _run_configure(
+        tmp_path,
+        state={
+            "context": CONTEXT,
+            "tenant": TENANT,
+            "resources": {resource: OWNER},
+        },
+    )
+
+    assert result.returncode != 0
+    assert "does not record it; refusing to adopt it." in result.stderr
+    assert _mutating_calls(calls) == []
+    assert not _receipt(tmp_path).exists()

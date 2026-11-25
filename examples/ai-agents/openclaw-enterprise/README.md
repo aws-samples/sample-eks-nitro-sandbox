@@ -1033,8 +1033,15 @@ kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
 "$SAMPLE_DIR/scripts/configure-tenant-model-gateway.sh" \
   "$KUBE_CONTEXT" \
   "$TENANT_NAMESPACE" \
-  "$(<"$OCE_STATE_DIR/cluster-dns-cidr")"
+  "$(<"$OCE_STATE_DIR/cluster-dns-cidr")" \
+  "$OCE_STATE_DIR/$TENANT_NAMESPACE-model-gateway-receipt.json"
 ```
+
+The receipt records the UIDs of the `agentgateway-ca` ConfigMap and the
+`oce-private-service-egress` NetworkPolicy that the first run creates. A rerun
+with the same receipt changes them only while their UIDs still match, and it
+refuses a same-name object that the receipt does not record. Keep the receipt
+with the rest of the private state.
 
 OCE creates the tenant namespace with `restricted` Pod Security for
 `enforce`, `audit`, and `warn`. `configure-tenant-model-gateway.sh` lowers
