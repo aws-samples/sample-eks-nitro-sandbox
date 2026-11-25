@@ -322,3 +322,47 @@ def test_database_and_control_plane_claim_limit_is_explicitly_documented() -> No
     assert "row-level security" in text
     assert "cross-tenant" in text and "403" in text
     assert "per-tenant bedrock inference profiles are not required" in text
+
+
+def test_unselected_pod_reasons_do_not_claim_the_sample_ships_no_policy() -> None:
+    ash = yaml.safe_load(
+        (SAMPLE.parents[2] / ".ash" / ".ash.yaml").read_text(encoding="utf-8")
+    )
+    reasons = {
+        row["path"]: row["reason"]
+        for row in ash["global_settings"]["suppressions"]
+        if row["rule_id"] == "CKV2_K8S_6"
+        and row["path"].startswith("examples/ai-agents/openclaw-enterprise/deploy/")
+    }
+    manifests = {
+        "adapter-webhook.yaml": "admission adapter Pod",
+        "agentgateway.yaml": "AgentGateway Pods",
+        "oce-validation-postgres.yaml": "disposable validation database Pod",
+    }
+    scripts = "\n".join(
+        path.read_text(encoding="utf-8") for path in (SAMPLE / "scripts").glob("*.sh")
+    )
+    # Every pod selector of a NetworkPolicy the sample creates, as the scripts render it.
+    selectors = (
+        {"app.kubernetes.io/name": "openclaw-enterprise"},
+        {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise",
+            "openclaw.dev/workload-role": "gateway",
+        },
+        {"app.kubernetes.io/name": "oce-api-loopback-relay"},
+    )
+    assert "app.kubernetes.io/name: openclaw-enterprise\n" in scripts
+    assert '"app.kubernetes.io/managed-by": "openclaw-enterprise",' in scripts
+    assert '"app.kubernetes.io/name": "oce-api-loopback-relay",' in scripts
+    for name, subject in manifests.items():
+        reason = reasons[f"examples/ai-agents/openclaw-enterprise/deploy/{name}"]
+        assert "ships no NetworkPolicy" not in reason
+        assert reason.startswith(f"No NetworkPolicy selects the {subject}:")
+        for document in yaml.safe_load_all(
+            (SAMPLE / "deploy" / name).read_text(encoding="utf-8")
+        ):
+            if not document or document.get("kind") not in ("Deployment", "StatefulSet"):
+                continue
+            labels = document["spec"]["template"]["metadata"]["labels"]
+            for selector in selectors:
+                assert not selector.items() <= labels.items(), (name, selector)

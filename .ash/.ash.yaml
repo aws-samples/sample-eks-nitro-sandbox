@@ -2274,15 +2274,15 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
-      reason: 'By design: the admission adapter is an ordinary control-plane Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      reason: 'No NetworkPolicy selects the admission adapter Pod: the sample adds policies only for OCE control-plane, tenant gateway and API relay Pods; the adapter is reached only through its ClusterIP Service, and README.md links the dedicated network-policy sample'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
-      reason: 'By design: the shared stateless AgentGateway is an ordinary Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      reason: 'No NetworkPolicy selects the AgentGateway Pods: the sample adds policies only for OCE control-plane, tenant gateway and API relay Pods; AgentGateway is reached only through its ClusterIP Service and checks each tenant key, and README.md links the dedicated network-policy sample'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
-      reason: 'By design: the disposable validation database is an ordinary Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      reason: 'No NetworkPolicy selects the disposable validation database Pod: the sample and OCE policies select only OCE control-plane, tenant gateway and API relay Pods; the database is reached only through its ClusterIP Service with a generated password, and README.md links the dedicated network-policy sample'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_35
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
