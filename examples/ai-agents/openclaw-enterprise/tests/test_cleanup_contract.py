@@ -3262,6 +3262,26 @@ def test_both_freezes_carry_the_finalizer_count_clause(tmp_path: Path) -> None:
         assert expression.endswith(tail), freeze
 
 
+def test_readme_names_the_reviewed_finalizer_set_and_the_count_rule() -> None:
+    readme = " ".join((SAMPLE / "README.md").read_text().split())
+
+    assert (
+        "These two are the sample's reviewed finalizer set: `kubernetes.io/pvc-protection` on PVCs and"
+        " `batch.kubernetes.io/job-tracking` on Job Pods."
+    ) in readme
+    assert (
+        "A finalizer on any other kind, or any other finalizer that is not removed by an update the freeze"
+        " admits, keeps the namespace terminating, and cleanup stops, fail closed, when its 600-second wait for"
+        " that namespace times out."
+    ) in readme
+    assert (
+        "the new finalizer list is shorter than the old one, and no finalizer name occurs more often in it than"
+        " in the old list, so the update only removes entries;"
+    ) in readme
+    assert "No other object in these namespaces carries a finalizer" not in readme
+    assert "the new finalizer list is a strict subset of the old one" not in readme
+
+
 # Test-only: a python3 first on PATH for the deadline tests. It runs cleanup.sh's `python3 -I -` program under the
 # real interpreter with -I, with time.sleep(n) advancing a virtual offset that time.monotonic adds to the real clock,
 # so the 600 s Pod wait runs out in seconds. Every other python3 call passes straight through unchanged.

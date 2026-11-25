@@ -1762,14 +1762,20 @@ update, described below: the status update of a Pod already being deleted.
     namespace can run Jobs too, and cleanup does not require tenant
     workloads to be gone first.
 
-  No other object in these namespaces carries a finalizer when cleanup
-  deletes the namespace. Deployments, ReplicaSets, Services (all
+  These two are the sample's reviewed finalizer set:
+  `kubernetes.io/pvc-protection` on PVCs and
+  `batch.kubernetes.io/job-tracking` on Job Pods. In the reviewed inventory
+  of these namespaces, no other object carries a finalizer when cleanup
+  deletes the namespace: Deployments, ReplicaSets, Services (all
   `ClusterIP`), cert-manager Issuers and Certificates, Secrets, ConfigMaps,
   ServiceAccounts, Roles and NetworkPolicies have none. The namespace
   controller deletes contents with background propagation, so no
   `foregroundDeletion` finalizer is added. The Namespace's own `kubernetes`
   finalizer is removed through the cluster-scoped `namespaces/finalize`
-  subresource, which neither freeze matches.
+  subresource, which neither freeze matches. A finalizer on any other kind,
+  or any other finalizer that is not removed by an update the freeze
+  admits, keeps the namespace terminating, and cleanup stops, fail closed,
+  when its 600-second wait for that namespace times out.
 
   A Pod that is still running or terminating when a freeze goes on also needs
   the kubelet's `pods/status` updates to finish. The tenant freeze admits
@@ -1788,8 +1794,9 @@ update, described below: the status update of a Pod already being deleted.
   timeout.
 - **The comparison.** An `UPDATE` is allowed only when all of these hold:
   - the old object already has `metadata.deletionTimestamp`;
-  - the new finalizer list is a strict subset of the old one: every new
-    entry is in the old list and the new list is shorter;
+  - the new finalizer list is shorter than the old one, and no finalizer
+    name occurs more often in it than in the old list, so the update only
+    removes entries;
   - every other field is unchanged: `apiVersion`, `kind`,
     `metadata.name`, `namespace`, `uid`, `generateName`, `creationTimestamp`,
     `deletionTimestamp`, `deletionGracePeriodSeconds`, `generation`,
