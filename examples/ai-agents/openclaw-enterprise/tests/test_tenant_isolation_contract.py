@@ -366,3 +366,106 @@ def test_unselected_pod_reasons_do_not_claim_the_sample_ships_no_policy() -> Non
             labels = document["spec"]["template"]["metadata"]["labels"]
             for selector in selectors:
                 assert not selector.items() <= labels.items(), (name, selector)
+
+
+def test_baseline_pod_security_reason_matches_the_adapter_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = " ".join(DESIGN_NOTE.read_text(encoding="utf-8").split())
+    for claim in (
+        "lowers `enforce` to `baseline` and keeps `audit` and `warn` at `restricted`",
+        "`/home/node` mount root as mode `2777`, owned by root with GID 1000.",
+        "it cannot make UID 1000 the owner or set mode `0700`",
+        "adds `nitro-prepare-runtime-ownership`. It runs as root with only the",
+        "`CHOWN`, `DAC_OVERRIDE`, and `FOWNER` capabilities, a read-only root",
+        "file system, and no privilege escalation. It sets owner and group 1000",
+        "with mode `0700` on directories and `0600` on files",
+        "so the namespace enforces `baseline`.",
+        "admits a Pod create only from an allowed OCE controller identity",
+        "refuses every ephemeral container. It uses `failurePolicy: Fail`",
+        "Every runtime container runs as UID and GID 1000, non-root and not",
+        "privileged, with no privilege escalation, a read-only root file system,",
+        "all capabilities dropped, and the `RuntimeDefault` seccomp profile.",
+        "must differ from every runtime image, and it mounts only the two state",
+        "`hostNetwork`, `hostPID`, `hostIPC`, or `shareProcessNamespace`.",
+    ):
+        assert claim in page, claim
+
+    script = (SAMPLE / "scripts" / "configure-tenant-model-gateway.sh").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "  pod-security.kubernetes.io/enforce=baseline \\\n"
+        "  pod-security.kubernetes.io/audit=restricted \\\n"
+        "  pod-security.kubernetes.io/warn=restricted \\\n"
+    ) in script
+
+    adapter = _adapter()
+    helper = adapter._ownership_init(OWNERSHIP_IMAGE, [adapter.HOME_MOUNT_PATH])
+    assert helper["name"] == "nitro-prepare-runtime-ownership"
+    assert helper["securityContext"]["runAsUser"] == 0
+    assert helper["securityContext"]["capabilities"] == {
+        "drop": ["ALL"],
+        "add": ["CHOWN", "DAC_OVERRIDE", "FOWNER"],
+    }
+    assert helper["securityContext"]["readOnlyRootFilesystem"] is True
+    assert helper["securityContext"]["allowPrivilegeEscalation"] is False
+    assert [mount["name"] for mount in helper["volumeMounts"]] == [
+        adapter.RUNTIME_VOLUME,
+        adapter.STATE_VOLUME,
+    ]
+    helper_source = (SAMPLE / "ownership-helper" / "main.go").read_text(
+        encoding="utf-8"
+    )
+    assert "repairFD(fd, syscall.S_IFDIR, 0o700, false)" in helper_source
+    assert "repairFD(fd, syscall.S_IFREG, 0o600, true)" in helper_source
+
+    _, runtime_security = adapter._runtime_contract(
+        {
+            "image": RUNTIME_IMAGE,
+            "securityContext": {
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "capabilities": {"drop": ["ALL"]},
+            },
+        },
+        "spec.containers[0]",
+    )
+    assert runtime_security == {
+        "allowPrivilegeEscalation": False,
+        "capabilities": {"drop": ["ALL"]},
+        "privileged": False,
+        "readOnlyRootFilesystem": True,
+        "runAsGroup": 1000,
+        "runAsNonRoot": True,
+        "runAsUser": 1000,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
+    assert set(adapter.UNSAFE_POD_HOST_SHARING_FIELDS) == {
+        "hostIPC",
+        "hostNetwork",
+        "hostPID",
+        "shareProcessNamespace",
+    }
+    monkeypatch.setenv(adapter.RUNTIME_IMAGES_ENV, RUNTIME_IMAGE)
+    monkeypatch.setenv(adapter.OWNERSHIP_INIT_IMAGE_ENV, RUNTIME_IMAGE)
+    with pytest.raises(
+        adapter.AdmissionError, match="must not match a workload runtime image"
+    ):
+        adapter.build_patch(_fixture())
+
+    policy = _one(
+        _yaml_documents(SAMPLE / "deploy" / "adapter-webhook.yaml"),
+        "ValidatingWebhookConfiguration",
+        "openclaw-enterprise-nitro-policy",
+    )
+    pods = next(
+        webhook
+        for webhook in policy["webhooks"]
+        if webhook["name"].startswith("validate-pods.")
+    )
+    assert pods["failurePolicy"] == "Fail"
+    assert [(rule["resources"], rule["operations"]) for rule in pods["rules"]] == [
+        (["pods"], ["CREATE", "UPDATE"]),
+        (["pods/ephemeralcontainers"], ["UPDATE"]),
+    ]

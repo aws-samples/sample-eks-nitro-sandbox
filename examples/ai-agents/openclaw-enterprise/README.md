@@ -1033,6 +1033,37 @@ kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
   "$(<"$OCE_STATE_DIR/cluster-dns-cidr")"
 ```
 
+OCE creates the tenant namespace with `restricted` Pod Security for
+`enforce`, `audit`, and `warn`. `configure-tenant-model-gateway.sh` lowers
+`enforce` to `baseline` and keeps `audit` and `warn` at `restricted`, so the
+API server still audits and warns on every Pod that `restricted` would refuse.
+The reason is one init container. Nitro presents the OCE runtime's
+`/home/node` mount root as mode `2777`, owned by root with GID 1000. OCE's
+`fsGroup: 1000` can give the volume group 1000, but it cannot make UID 1000
+the owner or set mode `0700`. The adapter therefore adds
+`nitro-prepare-runtime-ownership`. It runs as root with only the `CHOWN`,
+`DAC_OVERRIDE`, and `FOWNER` capabilities, a read-only root file system, and
+no privilege escalation. It sets owner and group 1000 on `/home/node` and an
+explicit list of OpenClaw state paths beneath it, with mode `0700` on
+directories and `0600` on files, and it exits before OpenClaw starts.
+`restricted` refuses a container that runs as root or adds these
+capabilities, and `baseline` admits it, so the namespace enforces `baseline`.
+
+The adapter and its validating webhook still hold every Pod in an
+OCE-managed namespace to more than `baseline`:
+
+- The validating webhook admits a Pod create only from an allowed OCE
+  controller identity and in the shape the adapter produced. It keeps an
+  admitted Pod's spec immutable and refuses every ephemeral container. It
+  uses `failurePolicy: Fail`, so an unavailable adapter blocks these requests.
+- Every runtime container runs as UID and GID 1000, non-root and not
+  privileged, with no privilege escalation, a read-only root file system, all
+  capabilities dropped, and the `RuntimeDefault` seccomp profile.
+- The ownership helper comes from its own digest-pinned image, which must
+  differ from every runtime image, and it mounts only the two state volumes.
+- The adapter refuses Pods that set `hostNetwork`, `hostPID`, `hostIPC`, or
+  `shareProcessNamespace`.
+
 Set the tenant-specific key path and create the namespace-owned model Secret:
 
 ```bash
