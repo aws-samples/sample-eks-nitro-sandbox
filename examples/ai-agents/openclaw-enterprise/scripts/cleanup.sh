@@ -1353,16 +1353,34 @@ class Cleanup:
                 )
         for volume in pv_items:
             spec = volume.get("spec", {})
-            if spec.get("claimRef", {}).get("namespace") not in namespace_names:
+            reference = spec.get("claimRef", {})
+            if reference.get("namespace") not in namespace_names:
                 continue
+            name = volume.get("metadata", {}).get("name", "<unknown>")
             if (
                 spec.get("persistentVolumeReclaimPolicy") != "Delete"
                 or spec.get("csi", {}).get("driver") != "ebs.csi.eks.amazonaws.com"
             ):
-                name = volume.get("metadata", {}).get("name", "<unknown>")
                 fail(
                     f"persistentvolume/{name} must be an EBS CSI volume with "
                     "reclaim policy Delete; refusing tenant deletion."
+                )
+            # The volume must belong to exactly one Bound tenant claim that names it, or
+            # deleting the namespace would leave it waiting for a claim that is gone.
+            owners = [
+                claim
+                for claim in pvc_items
+                if claim.get("metadata", {}).get("namespace") == reference.get("namespace")
+                and claim.get("metadata", {}).get("name") == reference.get("name")
+                and reference.get("uid")
+                and claim.get("metadata", {}).get("uid") == reference.get("uid")
+                and claim.get("status", {}).get("phase") == "Bound"
+                and claim.get("spec", {}).get("volumeName") == name
+            ]
+            if len(owners) != 1:
+                fail(
+                    f"persistentvolume/{name} is not bound to exactly one tenant "
+                    "claim that names it; refusing tenant deletion."
                 )
 
     def prepare_tenant_deletion(self, protected_targets):

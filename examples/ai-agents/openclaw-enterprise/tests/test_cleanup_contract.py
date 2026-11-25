@@ -1096,6 +1096,13 @@ def _add_tenant_storage(env: dict[str, str], namespace: str) -> None:
                 "bound to its persistent volume; refusing tenant deletion."
             ),
         ),
+        (
+            "orphan-volume",
+            (
+                "persistentvolume/pv-openclaw-tenant-a is not bound to exactly one "
+                "tenant claim that names it; refusing tenant deletion."
+            ),
+        ),
     ],
 )
 def test_retain_or_foreign_tenant_volume_fails_before_any_tenant_deletion(
@@ -1117,6 +1124,9 @@ def test_retain_or_foreign_tenant_volume_fails_before_any_tenant_deletion(
         pvc["status"] = {"phase": "Pending"}
         del pvc["spec"]["volumeName"]
         state["pvs"].remove(pv)
+    elif defect == "orphan-volume":
+        # An EBS CSI Delete volume whose tenant claim is already gone.
+        state["pvcs"].remove(pvc)
     else:
         pv["spec"]["claimRef"]["uid"] = "uid-another-claim"
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
