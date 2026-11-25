@@ -1118,7 +1118,9 @@ class Cleanup:
                     ),
                 },
                 # Only finalizer removal from a PVC already being deleted passes, so PVC protection can let a
-                # tenant namespace go; tenant quiescence already refuses any Pod in a tenant namespace.
+                # tenant namespace go. Tenant Pods are not refused, and this freeze denies their pods/status
+                # updates, so a tenant Pod that is still running when the freeze goes on can stall the namespace
+                # deletion.
                 {
                     "name": "finalizerRemoval",
                     "expression": finalizer_removal_expression(["persistentvolumeclaims"]),
@@ -1834,6 +1836,48 @@ class Cleanup:
                 fail(f"{resource} still exists after deletion.")
             time.sleep(2)
 
+    def wait_for_finished_pods(self, name, seconds=600):
+        # The namespace freeze admits no pods/status update, so a Pod that is still pending, running or
+        # terminating when the freeze starts could hold the namespace deletion until wait_absent gives up.
+        # shortcut: a Pod created between this wait and the freeze can still do that; close the gap if it is seen
+        # in practice.
+        deadline = time.monotonic() + seconds
+        while True:
+            try:
+                items = json.loads(
+                    self.kubectl("get", "pods", "--namespace", name, "--output=json")
+                )["items"]
+            except (ValueError, TypeError, KeyError):
+                items = None
+            if not isinstance(items, list) or not all(
+                isinstance(item, dict)
+                and isinstance(item.get("metadata"), dict)
+                and isinstance(item.get("status", {}), dict)
+                for item in items
+            ):
+                fail(f"pod discovery for namespace/{name} returned an unexpected result.")
+            unfinished = []
+            for item in items:
+                pod = f"pod/{item['metadata'].get('name', '<unknown>')}"
+                phase = item.get("status", {}).get("phase")
+                if phase not in ("Pending", "Running", "Succeeded", "Failed"):
+                    fail(
+                        f"{pod} in namespace/{name} has "
+                        + (f"phase {phase}" if phase else "no phase")
+                        + "; refusing to freeze the namespace."
+                    )
+                if phase in ("Pending", "Running") or item["metadata"].get("deletionTimestamp"):
+                    unfinished.append(pod)
+            if not unfinished:
+                return
+            if time.monotonic() >= deadline:
+                fail(
+                    f"namespace/{name} still has pods that have not finished: "
+                    + ", ".join(sorted(unfinished))
+                    + "; refusing to freeze it."
+                )
+            time.sleep(2)
+
     def delete_namespace(self, planned):
         if not planned:
             return
@@ -1862,6 +1906,7 @@ class Cleanup:
         if not live:
             return
         validate_live(live, "before deletion")
+        self.wait_for_finished_pods(name)
         self.start_freeze(live)
         live = self.get(f"namespace/{name}")
         if not live:

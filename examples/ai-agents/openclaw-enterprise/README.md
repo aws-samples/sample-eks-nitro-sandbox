@@ -1770,10 +1770,18 @@ removing finalizers from an object that is already being deleted.
   finalizer is removed through the cluster-scoped `namespaces/finalize`
   subresource, which neither freeze matches.
 
-  This does not mean that namespace deletion always finishes under a freeze.
   A Pod that is still running or terminating when a freeze goes on also needs
-  the kubelet's `pods/status` updates to finish. Neither freeze allows those,
-  so that Pod and its namespace stay until cleanup's wait times out.
+  the kubelet's `pods/status` updates to finish, and neither freeze allows
+  those. So before cleanup puts the per-namespace freeze on a namespace, it
+  waits, read-only, for that namespace's Pods. It lists them every 2 seconds
+  for up to 600 seconds, and goes on only when the namespace has no Pods, or
+  every Pod is `Succeeded` or `Failed` and none is being deleted. A
+  `Pending`, `Running` or terminating Pod keeps it waiting. At the deadline,
+  cleanup stops before the freeze and names the Pods that are left. A failed
+  or malformed list, a Pod with no phase, or any other phase, including
+  `Unknown`, stops cleanup at once, before the freeze. A Pod that starts
+  between the wait and the freeze can still stall the deletion until the
+  timeout.
 - **The comparison.** An `UPDATE` is allowed only when all of these hold:
   - the old object already has `metadata.deletionTimestamp`;
   - the new finalizer list is a strict subset of the old one: every new

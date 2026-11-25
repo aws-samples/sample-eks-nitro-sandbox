@@ -397,6 +397,35 @@ def kubectl():
             "items": state.get("tenantWorkloads", {}).get(namespace, []),
         }))
         return
+    if command[:2] == ["get", "pods"]:
+        # The read-only Pod list that cleanup polls before it freezes a namespace.
+        namespace = command[command.index("--namespace") + 1]
+        log()
+        listings = state.setdefault("podListings", {})
+        listings[namespace] = listings.get(namespace, 0) + 1
+        if state.get("failPodList") == namespace:
+            save()
+            print("simulated pod list failure", file=sys.stderr)
+            raise SystemExit(1)
+        if state.get("malformedPodList") == namespace:
+            save()
+            print(json.dumps({"apiVersion": "v1", "kind": "List"}))
+            return
+        print(json.dumps({"apiVersion": "v1", "kind": "List", "items": [
+            pod for key in ("jobPods", "namespacePods") for pod in state.get(key, [])
+            if pod.get("metadata", {}).get("namespace") == namespace
+        ]}))
+        # A terminating Pod that the kubelet finishes and removes after this many more listings.
+        gone = state.get("podGoneAfterListings", {})
+        for name in list(gone):
+            gone[name] -= 1
+            if gone[name] <= 0:
+                del gone[name]
+                state["namespacePods"] = [
+                    pod for pod in state["namespacePods"] if pod["metadata"]["name"] != name
+                ]
+        save()
+        return
     if command[0] == "get":
         resource = command[1]
         namespace = None
@@ -541,10 +570,11 @@ def finish_namespace_delete(namespace):
         pvc for pvc in state.get("pvcs", [])
         if pvc.get("metadata", {}).get("namespace") != namespace
     ]
-    state["jobPods"] = [
-        pod for pod in state.get("jobPods", [])
-        if pod.get("metadata", {}).get("namespace") != namespace
-    ]
+    for key in ("jobPods", "namespacePods"):
+        state[key] = [
+            pod for pod in state.get(key, [])
+            if pod.get("metadata", {}).get("namespace") != namespace
+        ]
     if namespace not in state.get("retainTenantPvs", []):
         state["pvs"] = [
             pv for pv in state.get("pvs", [])
@@ -2924,6 +2954,246 @@ def test_both_freezes_carry_the_finalizer_removal_rule_before_any_field_read(tmp
         for path in ("resourceVersion", "managedFields", "selfLink"):
             assert path not in expression
         assert "size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)" in expression
+
+
+# Test-only: a python3 first on PATH for the deadline tests. It runs cleanup.sh's `python3 -I -` program under the
+# real interpreter with -I, with time.sleep(n) advancing a virtual offset that time.monotonic adds to the real clock,
+# so the 600 s Pod wait runs out in seconds. Every other python3 call passes straight through unchanged.
+FAKE_CLOCK_PYTHON = r'''#!@PYTHON@ -I
+import os
+import sys
+
+if sys.argv[1:3] != ["-I", "-"]:
+    os.execv("@PYTHON@", ["@PYTHON@", *sys.argv[1:]])
+
+import json
+import time
+
+offset = 0.0
+sleeps = []
+real_monotonic = time.monotonic
+start = real_monotonic()
+
+
+def monotonic():
+    return real_monotonic() + offset
+
+
+def sleep(seconds):
+    global offset
+    offset += seconds
+    sleeps.append(seconds)
+
+
+time.monotonic, time.sleep = monotonic, sleep
+source = sys.stdin.read()
+sys.argv = ["-", *sys.argv[3:]]
+try:
+    exec(compile(source, "<stdin>", "exec"), {"__name__": "__main__", "__file__": "<stdin>"})
+finally:
+    with open("@MARKER@", "w") as stream:
+        json.dump({"virtualElapsed": monotonic() - start, "sleeps": sorted(set(sleeps))}, stream)
+'''
+
+
+def _pod(name: str, phase: str | None, *, terminating: bool = False) -> dict[str, Any]:
+    pod: dict[str, Any] = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name, "namespace": SYSTEM_NAMESPACE, "uid": f"uid-{name}"},
+        "spec": {"nodeName": "node-a"},
+        "status": {} if phase is None else {"phase": phase},
+    }
+    if terminating:
+        pod["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+    return pod
+
+
+def _pod_wait_run(tmp_path: Path, pods: list[dict[str, Any]], **changes: Any) -> tuple[list[str], dict[str, str]]:
+    """A cleanup whose first per-namespace freeze is for openclaw-system, which holds pods."""
+    _, command, env = _prepare(tmp_path)
+    state = _state(env)
+    state["namespacePods"] = pods
+    state.update(changes)
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    return command, env
+
+
+def _run_with_fake_clock(
+    tmp_path: Path, command: list[str], env: dict[str, str]
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any], float]:
+    import sys
+    import time
+
+    clock_dir = tmp_path / "fake-clock"
+    clock_dir.mkdir()
+    marker = tmp_path / "fake-clock.json"
+    shim = clock_dir / "python3"
+    shim.write_text(FAKE_CLOCK_PYTHON.replace("@PYTHON@", sys.executable).replace("@MARKER@", str(marker)))
+    shim.chmod(0o755)
+    started = time.monotonic()
+    result = subprocess.run(
+        command,
+        check=False,
+        env={**env, "PATH": f"{clock_dir}{os.pathsep}{env['PATH']}"},
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    wall = time.monotonic() - started
+    # The marker exists only if the cleanup program itself ran under the fake clock.
+    return result, json.loads(marker.read_text()), wall
+
+
+def _pod_listings(tmp_path: Path, namespace: str) -> list[int]:
+    return [
+        index
+        for index, entry in enumerate(_fake_log(tmp_path))
+        if entry["tool"] == "kubectl" and entry["args"][5:9] == ["get", "pods", "--namespace", namespace]
+    ]
+
+
+def _freeze_creates(tmp_path: Path, namespace: str | None = None) -> list[int]:
+    indexes = []
+    for index, entry in enumerate(_fake_log(tmp_path)):
+        if "create" not in entry["args"] or "-f" not in entry["args"]:
+            continue
+        document = json.loads(entry["stdin"])
+        if document["kind"] not in ("ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"):
+            continue
+        if namespace is None or (
+            document["kind"] == "ValidatingAdmissionPolicy"
+            and json.dumps(namespace) in document["spec"]["matchConditions"][0]["expression"]
+        ):
+            indexes.append(index)
+    return indexes
+
+
+def _assert_stopped_before_any_freeze(tmp_path: Path, env: dict[str, str], result: Any, diagnostic: str) -> None:
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {diagnostic}\n")
+    assert _freeze_creates(tmp_path) == []
+    assert not (tmp_path / "state" / "cleanup-freeze.json").exists()
+    resources = _state(env)["resources"]
+    assert not any("cleanup-freeze-" in key for key in resources)
+    assert f"namespace/{SYSTEM_NAMESPACE}" in resources
+
+
+def _assert_listed_then_frozen(tmp_path: Path, env: dict[str, str], result: Any, listings: int) -> None:
+    assert result.returncode == 0, result.stderr
+    pod_lists = _pod_listings(tmp_path, SYSTEM_NAMESPACE)
+    freezes = _freeze_creates(tmp_path, SYSTEM_NAMESPACE)
+    assert len(pod_lists) == listings
+    assert freezes and pod_lists[-1] < freezes[0]
+    assert f"namespace/{SYSTEM_NAMESPACE}" not in _state(env)["resources"]
+    assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+
+
+@pytest.mark.parametrize(
+    ("pods", "gone", "left"),
+    [
+        pytest.param([_pod("oce-gateway-0", "Running")], {}, "pod/oce-gateway-0", id="running-pod-stays"),
+        pytest.param(
+            [_pod("oce-job-abcde", "Succeeded", terminating=True)],
+            {},
+            "pod/oce-job-abcde",
+            id="terminating-pod-stays",
+        ),
+        pytest.param(
+            [
+                _pod("oce-pending", "Pending"),
+                _pod("oce-running", "Running"),
+                _pod("oce-leaving", "Running", terminating=True),
+                _pod("oce-done", "Succeeded"),
+            ],
+            {"oce-leaving": 3},
+            "pod/oce-pending, pod/oce-running",
+            id="timeout-names-the-pods-left",
+        ),
+    ],
+)
+def test_pod_wait_stops_at_its_deadline_before_any_freeze(
+    tmp_path: Path, pods: list[dict[str, Any]], gone: dict[str, int], left: str
+) -> None:
+    command, env = _pod_wait_run(tmp_path, pods, podGoneAfterListings=gone)
+
+    result, clock, wall = _run_with_fake_clock(tmp_path, command, env)
+
+    _assert_stopped_before_any_freeze(
+        tmp_path,
+        env,
+        result,
+        f"namespace/{SYSTEM_NAMESPACE} still has pods that have not finished: {left}; refusing to freeze it.",
+    )
+    # Virtual time passed the 600 s deadline in 2 s polls: at most 301 listings, the last at or past 600 s.
+    listings = len(_pod_listings(tmp_path, SYSTEM_NAMESPACE))
+    assert clock["virtualElapsed"] >= 600
+    assert clock["sleeps"] == [2]
+    assert listings <= 301
+    assert 2 * (listings - 1) + wall >= 600
+
+
+@pytest.mark.parametrize(
+    ("changes", "diagnostic"),
+    [
+        pytest.param(
+            {"namespacePods": [_pod("oce-gateway-0", "Running"), _pod("oce-lost", "Unknown")]},
+            f"pod/oce-lost in namespace/{SYSTEM_NAMESPACE} has phase Unknown; refusing to freeze the namespace.",
+            id="unknown-phase",
+        ),
+        pytest.param(
+            {"namespacePods": [_pod("oce-gateway-0", "Running"), _pod("oce-new", None)]},
+            f"pod/oce-new in namespace/{SYSTEM_NAMESPACE} has no phase; refusing to freeze the namespace.",
+            id="missing-phase",
+        ),
+        pytest.param(
+            {"failPodList": SYSTEM_NAMESPACE},
+            "kubectl failed: simulated pod list failure",
+            id="list-error",
+        ),
+        pytest.param(
+            {"malformedPodList": SYSTEM_NAMESPACE},
+            f"pod discovery for namespace/{SYSTEM_NAMESPACE} returned an unexpected result.",
+            id="malformed-list",
+        ),
+    ],
+)
+def test_pod_wait_stops_at_once_before_any_freeze(
+    tmp_path: Path, changes: dict[str, Any], diagnostic: str
+) -> None:
+    command, env = _pod_wait_run(tmp_path, [], **changes)
+
+    result = _run(command, env)
+
+    _assert_stopped_before_any_freeze(tmp_path, env, result, diagnostic)
+    assert len(_pod_listings(tmp_path, SYSTEM_NAMESPACE)) == 1
+
+
+def test_pod_wait_proceeds_when_a_terminating_pod_goes_within_the_window(tmp_path: Path) -> None:
+    command, env = _pod_wait_run(
+        tmp_path,
+        [_pod("oce-gateway-0", "Running", terminating=True)],
+        podGoneAfterListings={"oce-gateway-0": 1},
+    )
+
+    result = _run(command, env)
+
+    _assert_listed_then_frozen(tmp_path, env, result, listings=2)
+
+
+@pytest.mark.parametrize(
+    "pods",
+    [
+        pytest.param([_pod("oce-job-abcde", "Succeeded"), _pod("oce-job-fghij", "Failed")], id="terminal-pods"),
+        pytest.param([], id="empty-namespace"),
+    ],
+)
+def test_pod_wait_proceeds_when_every_pod_has_finished(tmp_path: Path, pods: list[dict[str, Any]]) -> None:
+    command, env = _pod_wait_run(tmp_path, pods)
+
+    result = _run(command, env)
+
+    _assert_listed_then_frozen(tmp_path, env, result, listings=1)
 
 
 @pytest.mark.parametrize(
