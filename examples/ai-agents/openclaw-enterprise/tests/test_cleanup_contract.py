@@ -162,6 +162,18 @@ def metadata(name, uid, namespace=None, owner=None):
         result["labels"] = {"app.kubernetes.io/managed-by": owner}
     return result
 
+def admission_defaults(document):
+    if document["kind"] == "ValidatingAdmissionPolicy":
+        constraints = document["spec"]["matchConstraints"]
+        constraints.setdefault("matchPolicy", "Equivalent")
+        constraints.setdefault("namespaceSelector", {})
+        constraints.setdefault("objectSelector", {})
+    elif document["kind"] == "ValidatingAdmissionPolicyBinding":
+        match_resources = document["spec"].get("matchResources")
+        if match_resources is not None:
+            match_resources.setdefault("matchPolicy", "Equivalent")
+            match_resources.setdefault("objectSelector", {})
+
 def key_from_raw(path):
     name = path.rsplit("/", 1)[-1]
     if "/serviceaccounts/" in path:
@@ -284,6 +296,12 @@ def kubectl():
         return
     if command[:2] == ["create", "--dry-run=server"]:
         document = json.loads(stdin)
+        admission_defaults(document)
+        if document["kind"] in (
+            "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"
+        ):
+            print(json.dumps(document))
+            return
         namespace = document["metadata"]["namespace"]
         for key, binding in state["resources"].items():
             if not key.startswith(
@@ -322,6 +340,7 @@ def kubectl():
         return
     if command[:2] == ["create", "-f"]:
         document = json.loads(stdin)
+        admission_defaults(document)
         name = document["metadata"]["name"]
         if document["kind"] == "ValidatingAdmissionPolicy":
             for index, rule in enumerate(
@@ -2062,23 +2081,171 @@ def test_reused_inline_policy_preserves_complete_dependency_closure(
 
 
 @pytest.mark.parametrize("boundary", ["policy", "binding"])
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
 def test_sigkill_after_freeze_creation_is_recovered_on_rerun(
     tmp_path: Path,
     boundary: str,
+    delete_tenant: bool,
 ) -> None:
     _, command, env = _prepare(tmp_path, kill_after=boundary)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
     killed = _run(command, env)
     assert killed.returncode == -9
-    freeze_state = tmp_path / "state" / "cleanup-freeze.json"
+    freeze_state = tmp_path / "state" / (
+        "cleanup-tenant-freeze.json" if delete_tenant else "cleanup-freeze.json"
+    )
     assert freeze_state.exists()
     assert stat.S_IMODE(freeze_state.stat().st_mode) == 0o600
     live = _state(env)["resources"]
     assert any("cleanup-freeze-" in key for key in live)
+    policy = next(
+        item for key, item in live.items()
+        if "cleanup-freeze-" in key and item["kind"] == "ValidatingAdmissionPolicy"
+    )
+    constraints = policy["spec"]["matchConstraints"]
+    assert constraints["matchPolicy"] == "Equivalent"
+    assert constraints["namespaceSelector"] == {}
+    assert constraints["objectSelector"] == {}
+    if boundary == "binding":
+        binding = next(
+            item for key, item in live.items()
+            if "cleanup-freeze-" in key
+            and item["kind"] == "ValidatingAdmissionPolicyBinding"
+        )
+        if delete_tenant:
+            assert binding["spec"]["matchResources"] == {
+                "matchPolicy": "Equivalent",
+                "namespaceSelector": {
+                    "matchLabels": {"app.kubernetes.io/managed-by": OCE_OWNER},
+                },
+                "objectSelector": {},
+            }
+        else:
+            assert "matchResources" not in binding["spec"]
 
     recovered = _run(command, env)
     assert recovered.returncode == 0, recovered.stderr
     assert not freeze_state.exists()
     assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+    assert _state(env)["resources"] == {}
+
+
+@pytest.mark.parametrize(
+    ("delete_tenant", "kind", "tamper"),
+    [
+        (False, "policy", "match-policy"),
+        (True, "policy", "namespace-selector"),
+        (True, "binding", "object-selector"),
+        (False, "policy", "validation"),
+    ],
+    ids=[
+        "system-match-policy", "tenant-namespace-selector",
+        "tenant-binding-object-selector", "system-validation",
+    ],
+)
+def test_server_defaulted_freeze_spec_drift_refuses_recovery(
+    tmp_path: Path,
+    delete_tenant: bool,
+    kind: str,
+    tamper: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after=kind)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    target_kind = (
+        "ValidatingAdmissionPolicyBinding"
+        if kind == "binding" else "ValidatingAdmissionPolicy"
+    )
+    item = next(
+        item for key, item in state["resources"].items()
+        if "cleanup-freeze-" in key and item["kind"] == target_kind
+    )
+    if tamper == "match-policy":
+        item["spec"]["matchConstraints"]["matchPolicy"] = "Exact"
+    elif tamper == "namespace-selector":
+        item["spec"]["matchConstraints"]["namespaceSelector"] = {
+            "matchLabels": {"app.kubernetes.io/managed-by": "foreign-owner"},
+        }
+    elif tamper == "object-selector":
+        item["spec"]["matchResources"]["objectSelector"] = {
+            "matchLabels": {"app": "foreign-workload"},
+        }
+    else:
+        item["spec"]["validations"][0]["expression"] = "true"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    prefix = "tenant " if delete_tenant else ""
+    diagnostic = (
+        f"{prefix}admission-freeze {kind} identity/UID does not match "
+        "private state; refusing deletion."
+    )
+    expected_stderr = f"cleanup: {diagnostic}\n"
+    if delete_tenant:
+        expected_stderr += (
+            f"cleanup: failed to remove admission freeze: {diagnostic}\n"
+        )
+    assert result.stderr == expected_stderr
+    current = _state(env)
+    assert current["resources"] == state["resources"]
+    assert current["mutations"] == state["mutations"]
+    assert current["helm"] == state["helm"]
+
+
+@pytest.mark.parametrize("kind", ["policy", "binding"])
+def test_recorded_tenant_freeze_uid_missing_refuses_replacement(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after="binding")
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    target_kind = (
+        "ValidatingAdmissionPolicyBinding"
+        if kind == "binding" else "ValidatingAdmissionPolicy"
+    )
+    resource = next(
+        key for key, item in state["resources"].items()
+        if "cleanup-freeze-tenants-" in key and item["kind"] == target_kind
+    )
+    journal_path = tmp_path / "state" / "cleanup-tenant-freeze.json"
+    journal = json.loads(journal_path.read_text())
+    # Model a successfully recorded UID before the object disappears.
+    journal[f"{kind}Uid"] = state["resources"][resource]["metadata"]["uid"]
+    _write_json(journal_path, journal)
+    del state["resources"][resource]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    prior_log = Path(env["FAKE_LOG"]).read_text().splitlines()
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"cleanup: recorded tenant admission-freeze {kind} is absent; "
+        "refusing replacement.\n"
+    )
+    current = _state(env)
+    assert resource not in current["resources"]
+    assert current["helm"] is True
+    assert f"namespace/{tenant}" in current["resources"]
+    recovery_log = Path(env["FAKE_LOG"]).read_text().splitlines()[len(prior_log):]
+    assert not any(
+        (entry := json.loads(line))["tool"] == "kubectl"
+        and "create" in entry["args"]
+        for line in recovery_log
+    )
 
 
 def test_private_freeze_state_mode_is_fail_closed_with_exact_diagnostic(

@@ -635,7 +635,11 @@ class Cleanup:
             return {"policyName": state["name"], "validationActions": ["Deny"]}
         return {
             "failurePolicy": "Fail",
-            "matchConstraints": {"resourceRules": [{
+            "matchConstraints": {
+                "matchPolicy": "Equivalent",
+                "namespaceSelector": {},
+                "objectSelector": {},
+                "resourceRules": [{
                 "apiGroups": ["*"], "apiVersions": ["*"],
                 "operations": ["CREATE", "UPDATE"],
                 "resources": ["*/*"], "scope": "Namespaced",
@@ -944,6 +948,8 @@ class Cleanup:
                 "policyName": state["name"],
                 "validationActions": ["Deny"],
                 "matchResources": {
+                    "matchPolicy": "Equivalent",
+                    "objectSelector": {},
                     "namespaceSelector": {
                         "matchLabels": {OWNER_KEY: OCE_OWNER},
                     },
@@ -952,6 +958,9 @@ class Cleanup:
         return {
             "failurePolicy": "Fail",
             "matchConstraints": {
+                "matchPolicy": "Equivalent",
+                "namespaceSelector": {},
+                "objectSelector": {},
                 "resourceRules": [
                     {
                         "apiGroups": ["*"],
@@ -1052,43 +1061,38 @@ class Cleanup:
                     "tenant admission-freeze state does not match the recorded "
                     "tenant deletion targets."
                 )
-            self.tenant_freeze_started = True
-            for kind, resource_type in (
-                (
-                    "policy",
-                    "validatingadmissionpolicies.admissionregistration.k8s.io",
-                ),
-                (
-                    "binding",
-                    "validatingadmissionpolicybindings.admissionregistration.k8s.io",
-                ),
-            ):
-                self.validate_tenant_freeze(
-                    self.get(f"{resource_type}/{state['name']}"),
-                    state,
-                    kind,
-                )
-            self.verify_tenant_freeze(state, live_targets)
+        elif not live_targets:
             return
-        if not live_targets:
-            return
-
-        name, denial_message = self.tenant_freeze_identity(protected_targets)
-        state = {
-            "version": 1,
-            "context": self.a.kube_context,
-            "endpoint": self.endpoint,
-            "attempt": self.attempt,
-            "namespaces": protected_targets,
-            "name": name,
-            "token": secrets.token_hex(16),
-            "denialMessage": denial_message,
-            "policyUid": None,
-            "bindingUid": None,
-        }
-        self.write_tenant_freeze(state)
+        else:
+            name, denial_message = self.tenant_freeze_identity(protected_targets)
+            state = {
+                "version": 1,
+                "context": self.a.kube_context,
+                "endpoint": self.endpoint,
+                "attempt": self.attempt,
+                "namespaces": protected_targets,
+                "name": name,
+                "token": secrets.token_hex(16),
+                "denialMessage": denial_message,
+                "policyUid": None,
+                "bindingUid": None,
+            }
+            self.write_tenant_freeze(state)
         self.tenant_freeze_started = True
         for kind in ("policy", "binding"):
+            resource_type = (
+                "validatingadmissionpolicybindings.admissionregistration.k8s.io"
+                if kind == "binding"
+                else "validatingadmissionpolicies.admissionregistration.k8s.io"
+            )
+            item = self.get(f"{resource_type}/{state['name']}")
+            if item:
+                self.validate_tenant_freeze(item, state, kind)
+                state[f"{kind}Uid"] = item["metadata"]["uid"]
+                self.write_tenant_freeze(state)
+                continue
+            if state[f"{kind}Uid"] is not None:
+                fail(f"recorded tenant admission-freeze {kind} is absent; refusing replacement.")
             document = {
                 "apiVersion": "admissionregistration.k8s.io/v1",
                 "kind": (
@@ -1104,11 +1108,6 @@ class Cleanup:
                 "spec": self.tenant_freeze_spec(state, kind),
             }
             self.kubectl("create", "-f", "-", stdin=json.dumps(document))
-            resource_type = (
-                "validatingadmissionpolicybindings.admissionregistration.k8s.io"
-                if kind == "binding"
-                else "validatingadmissionpolicies.admissionregistration.k8s.io"
-            )
             item = self.get(f"{resource_type}/{state['name']}")
             self.validate_tenant_freeze(item, state, kind)
             state[f"{kind}Uid"] = item["metadata"]["uid"]
