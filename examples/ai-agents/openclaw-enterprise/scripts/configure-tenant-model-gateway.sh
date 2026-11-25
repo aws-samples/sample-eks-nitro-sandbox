@@ -386,10 +386,25 @@ jq -n \
     }
   }' >"${policy_file}"
 if [[ -e "${RECEIPT_PATH}" ]]; then
-  "${KUBECTL[@]}" apply \
-    --server-side \
-    --field-manager="${OWNER_LABEL_VALUE}" \
-    --filename - <"${policy_file}"
+  # A rerun writes the recorded policy with one atomic JSON Patch. Its first operation tests the recorded UID,
+  # so the API server applies nothing to a same-name replacement made after the preflight. The other
+  # operations set only the spec and the owner label. The patch stays in a private file, out of argv.
+  readonly policy_patch_file="${work_dir}/networkpolicy-patch.json"
+  jq -n \
+    --arg uid "${recorded_policy_uid}" \
+    --arg owner "${OWNER_LABEL_VALUE}" \
+    --slurpfile policy "${policy_file}" '
+      [
+        {op: "test", path: "/metadata/uid", value: $uid},
+        {op: "replace", path: "/spec", value: $policy[0].spec},
+        {op: "add", path: "/metadata/labels/app.kubernetes.io~1managed-by", value: $owner}
+      ]
+    ' >"${policy_patch_file}"
+  "${KUBECTL[@]}" patch networkpolicy.networking.k8s.io/oce-private-service-egress \
+    --namespace "${TENANT_NAMESPACE}" \
+    --type=json \
+    --patch-file="${policy_patch_file}" ||
+    die "networkpolicy/oce-private-service-egress in ${TENANT_NAMESPACE} is not the object ${RECEIPT_PATH} records, or could not be written; refusing to change it."
 else
   policy_created="$(
     "${KUBECTL[@]}" create --filename - --output=json <"${policy_file}"

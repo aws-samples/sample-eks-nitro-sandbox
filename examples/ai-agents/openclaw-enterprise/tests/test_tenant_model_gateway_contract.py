@@ -171,6 +171,51 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
                 created = json.loads(json.dumps(document))
                 created["metadata"]["uid"] = uid
                 print(json.dumps(created))
+        elif command[:1] == ["patch"] and "--type=json" in command:
+            # A JSON Patch is applied atomically: a failed operation leaves the object unchanged.
+            resource = command[1]
+            patch_file = next(
+                value.split("=", 1)[1]
+                for value in command
+                if value.startswith("--patch-file=")
+            )
+            patch = json.loads(pathlib.Path(patch_file).read_text())
+            state.setdefault("patches", []).append(patch)
+            state_path.write_text(json.dumps(state))
+            document = state.get("objects", {}).get(resource)
+            if document is None or resource not in state.get("resources", {}):
+                print(f"Error from server (NotFound): {resource}", file=sys.stderr)
+                raise SystemExit(1)
+            name = resource.rsplit("/", 1)[1]
+            working = json.loads(json.dumps(document))
+            working["metadata"]["uid"] = state.get("uids", {}).get(resource, f"uid-{name}")
+            for operation in patch:
+                *parents, last = [
+                    token.replace("~1", "/").replace("~0", "~")
+                    for token in operation["path"].split("/")[1:]
+                ]
+                target = working
+                for token in parents:
+                    target = target[token]
+                if operation["op"] == "test":
+                    if target.get(last) != operation["value"]:
+                        print(
+                            "The request is invalid: the server rejected our request "
+                            "due to an error in our request",
+                            file=sys.stderr,
+                        )
+                        raise SystemExit(1)
+                elif operation["op"] in ("add", "replace"):
+                    target[last] = operation["value"]
+                else:
+                    print(f"unsupported patch operation: {operation}", file=sys.stderr)
+                    raise SystemExit(41)
+            state["objects"][resource] = working
+            state["resources"][resource] = working["metadata"]["labels"][
+                "app.kubernetes.io/managed-by"
+            ]
+            state_path.write_text(json.dumps(state))
+            print(f"{resource} patched")
         else:
             print(f"unsupported kubectl call: {args}", file=sys.stderr)
             raise SystemExit(41)
@@ -232,7 +277,7 @@ def _run_configure(
 
 
 def _mutating_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    mutations = {"apply", "create", "label"}
+    mutations = {"apply", "create", "label", "patch"}
     return [
         call
         for call in calls
@@ -474,7 +519,63 @@ def test_configure_rerun_changes_only_the_recorded_objects(
     result, calls = _run_configure(tmp_path, rerun=True)
 
     assert result.returncode == 0, result.stderr
-    assert [call["args"][2] for call in _mutating_calls(calls)] == ["label", "apply"]
+    assert [call["args"][2] for call in _mutating_calls(calls)] == ["label", "patch"]
+    # One JSON Patch from a private file: test the recorded UID, then set only the spec and owner label.
+    patch_call = _mutating_calls(calls)[1]
+    assert patch_call["args"][2:6] == [
+        "patch",
+        TENANT_RESOURCES[1],
+        "--namespace",
+        TENANT,
+    ]
+    assert "--type=json" in patch_call["args"]
+    assert any(value.startswith("--patch-file=") for value in patch_call["args"])
+    assert not any("/metadata/uid" in value for value in patch_call["args"])
+    state = json.loads((tmp_path / "kube-state.json").read_text(encoding="utf-8"))
+    policy = state["objects"][TENANT_RESOURCES[1]]
+    assert state["patches"] == [
+        [
+            {"op": "test", "path": "/metadata/uid", "value": "uid-oce-private-service-egress"},
+            {"op": "replace", "path": "/spec", "value": policy["spec"]},
+            {
+                "op": "add",
+                "path": "/metadata/labels/app.kubernetes.io~1managed-by",
+                "value": OWNER,
+            },
+        ]
+    ]
+
+
+def test_configure_rerun_writes_nothing_to_a_replacement_made_after_the_preflight(
+    tmp_path: pathlib.Path,
+) -> None:
+    first, _ = _run_configure(tmp_path)
+    assert first.returncode == 0, first.stderr
+    receipt_before = _receipt(tmp_path).read_text(encoding="utf-8")
+    policy = TENANT_RESOURCES[1]
+    state_path = tmp_path / "kube-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    # A same-name policy replaces the recorded one during the namespace label call: after the receipt UID
+    # preflight and before the policy write.
+    state["appear_on_label"] = policy
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result, calls = _run_configure(tmp_path, rerun=True)
+
+    # No write lands on the replacement: no name-based apply, and the replacement keeps its own spec.
+    assert not any(call["args"][2:3] == ["apply"] for call in calls)
+    after = json.loads(state_path.read_text(encoding="utf-8"))
+    replacement = after["objects"][policy]
+    assert after["uids"][policy] == "uid-intruder"
+    assert replacement["spec"]["egress"] == [{"to": [{"ipBlock": {"cidr": "10.0.0.0/8"}}]}]
+    # The run fails closed and the receipt is unchanged.
+    assert result.returncode != 0
+    assert (
+        "configure-tenant-model-gateway: networkpolicy/oce-private-service-egress in "
+        f"{TENANT} is not the object {_receipt(tmp_path)} records, or could not be written; "
+        "refusing to change it."
+    ) in result.stderr
+    assert _receipt(tmp_path).read_text(encoding="utf-8") == receipt_before
 
 
 @pytest.mark.parametrize("resource", TENANT_RESOURCES)
