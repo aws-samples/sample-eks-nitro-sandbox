@@ -237,14 +237,17 @@ if owned_resource_exists \
   live_policy_uid="${owned_uid}"
 fi
 # Before any change: a rerun needs both recorded objects with their recorded UIDs, and a first run needs
-# neither object to exist yet.
+# neither object to exist yet. The mode decided here holds for the rest of the run; later steps do not test
+# the receipt path again to choose it.
 if [[ -e "${RECEIPT_PATH}" ]]; then
+  first_run=false
   [[ "${live_ca_uid}" == "${recorded_ca_uid}" ]] ||
     die "configmap/agentgateway-ca in ${TENANT_NAMESPACE} is missing or was replaced since ${RECEIPT_PATH} recorded it; refusing to change it."
   [[ "${live_policy_uid}" == "${recorded_policy_uid}" ]] ||
     die "networkpolicy/oce-private-service-egress in ${TENANT_NAMESPACE} is missing or was replaced since ${RECEIPT_PATH} recorded it; refusing to change it."
   ca_config_map_exists=true
 else
+  first_run=true
   for live in "configmap/agentgateway-ca|${live_ca_uid}" \
     "networkpolicy/oce-private-service-egress|${live_policy_uid}"; do
     [[ -z "${live#*|}" ]] ||
@@ -252,6 +255,7 @@ else
   done
   ca_config_map_exists=false
 fi
+readonly first_run
 
 work_dir="$(mktemp -d)"
 readonly ca_file="${work_dir}/ca.crt"
@@ -391,7 +395,7 @@ jq -n \
       ]
     }
   }' >"${policy_file}"
-if [[ -e "${RECEIPT_PATH}" ]]; then
+if [[ "${first_run}" == false ]]; then
   # A rerun writes the recorded policy with one atomic JSON Patch. Its first operation tests the recorded UID,
   # so the API server applies nothing to a same-name replacement made after the preflight. The other
   # operations set only the spec and the owner label. The patch stays in a private file, out of argv.
@@ -428,14 +432,19 @@ verify_live_object networkpolicy.networking.k8s.io/oce-private-service-egress "$
   and .metadata.labels["app.kubernetes.io/managed-by"] == $owner
   and .spec == $policy[0].spec
 ' --slurpfile policy "${policy_file}"
+# A rerun's receipt must still be in place, so that the CA read below stays a rerun's last step before success.
+if [[ "${first_run}" == false && ! -e "${RECEIPT_PATH}" ]]; then
+  die "the receipt ${RECEIPT_PATH} disappeared during this rerun; refusing to report success."
+fi
 # The rerun preflight read the CA ConfigMap's UID before the waits and the namespace label, and nothing since
 # has read it by UID. Read it back once more on every run, after the policy write: a same-name replacement made
 # meanwhile stops the run before a receipt is published or success is reported.
 verify_live_object configmap/agentgateway-ca "${recorded_ca_uid}" "${ca_config_map_filter}" \
   --rawfile ca "${ca_file}"
 
-if [[ ! -e "${RECEIPT_PATH}" ]]; then
-  # Link a fully written private file into place; link(2) fails if anything appeared at the path meanwhile.
+if [[ "${first_run}" == true ]]; then
+  # Link a fully written private file into place; link(2) fails if anything appeared at the path meanwhile,
+  # including a receipt created since the preflight, so such a run stops without reporting success.
   receipt_temp="$(mktemp "${receipt_parent}/.$(basename -- "${RECEIPT_PATH}").tmp.XXXXXX")" ||
     die "could not create a temporary receipt."
   chmod 600 "${receipt_temp}" || die "could not secure the temporary receipt."

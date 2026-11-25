@@ -100,6 +100,20 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
             if trigger and trigger["after"] == resource and trigger["count"] == reads[resource]:
                 state.setdefault("uids", {})[trigger["replace"]] = "uid-replacement"
                 state["replace_after_read"] = None
+            # Another local process creates or removes the receipt right after a given read returns.
+            receipt_trigger = state.get("receipt_after_read")
+            if (
+                receipt_trigger
+                and receipt_trigger["after"] == resource
+                and receipt_trigger["count"] == reads[resource]
+            ):
+                receipt = pathlib.Path(receipt_trigger["path"])
+                if receipt_trigger["action"] == "create":
+                    receipt.write_text("receipt written by another process", encoding="utf-8")
+                    receipt.chmod(0o600)
+                else:
+                    receipt.unlink()
+                state["receipt_after_read"] = None
             state_path.write_text(json.dumps(state))
         elif command and command[0] == "get":
             resource = command[1]
@@ -700,6 +714,67 @@ def test_configure_first_run_refuses_a_ca_config_map_replaced_during_receipt_pub
     ) in rerun.stderr
     assert _mutating_calls(calls) == []
     assert SUCCESS_LINE not in rerun.stdout
+
+
+def test_configure_first_run_refuses_a_receipt_that_appears_before_publication(
+    tmp_path: pathlib.Path,
+) -> None:
+    receipt_path = _receipt(tmp_path)
+    # Another process creates the receipt right after the first run's second exact CA read, the one before
+    # publication. The run is still a first run, so its exclusive publication must refuse the new file.
+    result, _ = _run_configure(
+        tmp_path,
+        state={
+            "context": CONTEXT,
+            "tenant": TENANT,
+            "resources": {},
+            "receipt_after_read": {
+                "after": TENANT_RESOURCES[0],
+                "count": 2,
+                "path": str(receipt_path),
+                "action": "create",
+            },
+        },
+    )
+
+    assert result.returncode != 0
+    assert (
+        f"configure-tenant-model-gateway: could not publish the receipt {receipt_path}; the created objects "
+        "are not recorded."
+    ) in result.stderr
+    assert SUCCESS_LINE not in result.stdout
+    assert receipt_path.read_text(encoding="utf-8") == "receipt written by another process"
+    assert sorted(path.name for path in receipt_path.parent.iterdir()) == [receipt_path.name]
+
+
+def test_configure_rerun_refuses_a_receipt_removed_before_its_final_ca_read(
+    tmp_path: pathlib.Path,
+) -> None:
+    first, _ = _run_configure(tmp_path)
+    assert first.returncode == 0, first.stderr
+    state_path = tmp_path / "kube-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    # Another process removes the receipt right after the rerun's NetworkPolicy read-back returns.
+    state["json_reads"] = {}
+    state["receipt_after_read"] = {
+        "after": TENANT_RESOURCES[1],
+        "count": 1,
+        "path": str(_receipt(tmp_path)),
+        "action": "remove",
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result, calls = _run_configure(tmp_path, rerun=True)
+
+    assert result.returncode != 0
+    assert (
+        f"configure-tenant-model-gateway: the receipt {_receipt(tmp_path)} disappeared during this rerun; "
+        "refusing to report success."
+    ) in result.stderr
+    assert SUCCESS_LINE not in result.stdout
+    # The rerun stops before the shared final CA read and publishes no new receipt.
+    assert calls[-1]["args"][2:4] == ["get", TENANT_RESOURCES[1]]
+    assert not _receipt(tmp_path).exists()
 
 
 def test_configure_unchanged_first_run_succeeds_and_publishes_the_receipt(
