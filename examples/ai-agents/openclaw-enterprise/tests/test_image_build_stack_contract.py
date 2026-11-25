@@ -837,3 +837,25 @@ def test_delete_records_absent_stack_as_deleted_after_wait_failure(
     assert resumed.returncode == 0, resumed.stderr
     assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "deleted"
     assert "cloudformation delete-stack" in aws_log.read_text(encoding="utf-8")
+
+
+def test_readme_cleanup_names_kms_keys_left_pending_deletion() -> None:
+    cleanup = " ".join(README.read_text(encoding="utf-8").split("## Clean up", 1)[1].split())
+    assert "does not remove the stack's two KMS keys at once" in cleanup
+    assert "`PendingDeletion` for 30 days" in cleanup
+    assert "`OpenClawValidationRun`" in cleanup
+    assert "ResourceType=='AWS::KMS::Key'" in cleanup
+    assert "aws kms describe-key" in cleanup
+    # The sentence stays true only while the template has exactly two keys on the 30-day default window.
+    resources = _template()["Resources"]
+    keys = [
+        resource
+        for resource in resources.values()
+        if isinstance(resource, dict) and resource.get("Type") == "AWS::KMS::Key"
+    ]
+    assert len(keys) == 2
+    assert all("PendingWindowInDays" not in key.get("Properties", {}) for key in keys)
+    assert all(
+        any(tag.get("Key") == "OpenClawValidationRun" for tag in key["Properties"]["Tags"])
+        for key in keys
+    )

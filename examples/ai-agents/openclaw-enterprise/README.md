@@ -1588,6 +1588,21 @@ builder repository manager separately deletes only the exact private builder
 recorded in its receipt after it verifies the AWS account, Region, repository
 ARN, and random ownership tag.
 
+The stack delete does not remove the stack's two KMS keys at once: AWS KMS
+keeps each key in `PendingDeletion` for 30 days and then deletes it. Each key
+carries the tag `OpenClawValidationRun` with the receipt's `runId`. To list
+them, read the deleted stack's resources by its ID, then each key's state and
+deletion date:
+
+```bash
+aws cloudformation list-stack-resources --region "$AWS_REGION" \
+  --stack-name "$IMAGE_BUILD_STACK_ID" \
+  --query "StackResourceSummaries[?ResourceType=='AWS::KMS::Key'].PhysicalResourceId" \
+  --output text
+aws kms describe-key --region "$AWS_REGION" --key-id '<key-id>' \
+  --query 'KeyMetadata.[KeyState,DeletionDate]' --output text
+```
+
 After all cluster and AWS cleanup checks pass, the script removes the local OCE
 administrator key/password and each explicitly supplied validator key. If a
 file cannot be verified or removed, cleanup exits non-zero with its exact path
