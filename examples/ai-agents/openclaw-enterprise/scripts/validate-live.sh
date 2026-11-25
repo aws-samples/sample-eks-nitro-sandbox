@@ -2288,59 +2288,54 @@ call_native_openclaw_model() {
     die "native OpenClaw gateway authentication or model response did not match the contract"
 }
 
+# This topology has no private gateway routing, so the OCE API Pod has no route to an Agent gateway (README
+# Step 8, "How the native tool turn runs without gateway routing"). The tool turn runs inside the exact tenant A
+# runtime Pod, with the same UID checks as the model turn, against that Pod's own gateway on loopback. It uses
+# the OpenClaw gateway SDK from the image's own install at /app, as OCE's runtime wrapper does to query its
+# running Gateway; there is no download and no other client. The script reads OPENCLAW_GATEWAY_PORT, the port
+# OCE starts the gateway with, and requires the gateway ready on 127.0.0.1 there; the SDK call then connects
+# the way OCE's wrapper call does. The password comes from the configuration's environment SecretRef, so it
+# stays in the container environment and never reaches argv or output.
 verify_native_tool_execution() {
   local output_file="$1"
-  local api_pod api_container="api"
-  api_pod="$(
-    jq -er '
-      [
-        .items[]
-        | select(
-            .metadata.labels["app.kubernetes.io/component"] == "api"
-            and .status.phase == "Running"
-            and ((.status.containerStatuses // []) | any(
-              .name == "api" and .ready == true and .state.running != null
-            ))
-          )
-        | .metadata.name
-      ]
-      | if length == 1 then .[0] else error("expected exactly one ready API pod") end
-    ' "$WORK_DIR/oce-system-pods.json"
-  )" || die "could not select exactly one ready OCE API pod for native tool validation"
-  [[ "$api_pod" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
-    die "OCE API pod name is invalid"
 
-  # shellcheck disable=SC2016 # This JavaScript runs inside the OCE API container.
-  kube -n "$OCE_SYSTEM_NAMESPACE" exec "$api_pod" -c "$api_container" -- \
-    env \
-      "OCE_TEST_NAMESPACE_ID=$TENANT_A_OCE_NAMESPACE" \
-      "OCE_TEST_AGENT_ID=$TENANT_A_AGENT_ID" \
-      "OCE_NATIVE_HISTORY_EVALUATOR_B64=$NATIVE_HISTORY_EVALUATOR_B64" \
-    node --input-type=module -e '
-      import { readFileSync } from "node:fs";
-      import { createRequire } from "node:module";
-      import { randomBytes, randomUUID, createHash } from "node:crypto";
+  # shellcheck disable=SC2016 # This JavaScript runs inside the tenant runtime container.
+  exec_in_exact_pod "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" "$TENANT_A_POD_UID" \
+    env "OCE_NATIVE_HISTORY_EVALUATOR_B64=$NATIVE_HISTORY_EVALUATOR_B64" \
+    node -e '
+      const http = require("node:http");
+      const { createRequire } = require("node:module");
+      const { randomBytes, randomUUID, createHash } = require("node:crypto");
 
+      (async () => {
+      const port = process.env.OPENCLAW_GATEWAY_PORT || "";
+      if (!/^[1-9][0-9]{0,4}$/.test(port) || Number(port) > 65535) process.exit(80);
+      if (!process.env.OPENCLAW_GATEWAY_PASSWORD) process.exit(81);
+      // The gateway in this Pod must answer its readiness path on that loopback port, as OCE checks it.
+      const ready = await new Promise(resolve => {
+        const probe = http.get(
+          { host: "127.0.0.1", port: Number(port), path: "/readyz", timeout: 5000 },
+          response => {
+            response.resume();
+            resolve(response.statusCode === 200);
+          }
+        );
+        probe.on("timeout", () => probe.destroy());
+        probe.on("error", () => resolve(false));
+      });
+      if (!ready) process.exit(86);
+      let gateway;
+      try {
+        gateway = createRequire("/app/")("openclaw/plugin-sdk/gateway-runtime");
+      } catch {
+        process.exit(87);
+      }
+      if (typeof gateway?.callGatewayFromCli !== "function") process.exit(87);
       const { evaluateNativeToolHistory } = await import(
         `data:text/javascript;base64,${
           process.env.OCE_NATIVE_HISTORY_EVALUATOR_B64 || ""
         }`
       );
-      const require = createRequire("/app/apps/controller/package.json");
-      const { GatewayClient } = await import(
-        require.resolve("@openclaw/gateway-client")
-      );
-      const { loadYaml } = require("@kubernetes/client-node");
-      const config = loadYaml(
-        readFileSync(process.env.OCC_CONFIG_PATH, "utf8")
-      );
-      const route = config.drivers.compute.configuration.gatewayRouting;
-      const port = route.endpointPort ?? 443;
-      const host = route.hostname + (port === 443 ? "" : `:${port}`);
-      const namespace = process.env.OCE_TEST_NAMESPACE_ID;
-      const agent = process.env.OCE_TEST_AGENT_ID;
-      if (!/^ns_[A-Za-z0-9-]+$/.test(namespace || "")) process.exit(80);
-      if (!/^agt_[A-Za-z0-9-]+$/.test(agent || "")) process.exit(81);
 
       const nonce = randomBytes(12).toString("hex");
       const toolMarker = `TOOL_${nonce}`;
@@ -2351,38 +2346,16 @@ verify_native_tool_execution() {
         `Run exactly this command: ${exactCommand}`,
         `After it succeeds, reply with exactly ${finalMarker} and no other text.`
       ].join(" ");
-      const sessionKey = `agent:main:api-tool-check-${randomUUID()}`;
-      const connected = Promise.withResolvers();
-      const client = new GatewayClient({
-        url: `wss://${host}/namespaces/${namespace}/agents/${agent}`,
-        edgeAuthHeaders: {
-          "x-api-key": readFileSync(
-            process.env.OCC_GATEWAY_API_KEY_PATH,
-            "utf8"
-          ).trim()
-        },
-        clientName: "gateway-client",
-        mode: "backend",
-        role: "operator",
-        scopes: [],
-        deviceIdentity: null,
-        minProtocol: 4,
-        maxProtocol: 4,
-        onHelloOk: connected.resolve,
-        onConnectError: connected.reject
-      });
-      const helloTimer = setTimeout(
-        () => connected.reject(new Error("hello timeout")),
-        20000
-      );
+      const sessionKey = `agent:main:tool-check-${randomUUID()}`;
+      const signal = AbortSignal.timeout(600000);
+      // The call shape OCE uses for its own loopback Gateway queries, without shared-state writes.
+      const call = (method, params) =>
+        gateway.callGatewayFromCli(method, { json: true, timeout: "30000" }, params, {
+          progress: false,
+          sharedStateMode: "read-only",
+          signal
+        });
 
-      try {
-        client.start();
-        await connected.promise;
-        clearTimeout(helloTimer);
-        const signal = AbortSignal.timeout(600000);
-        const call = (method, params) =>
-          client.request(method, params, { signal, timeoutMs: 30000 });
         const sent = await call("chat.send", {
           sessionKey,
           idempotencyKey: randomUUID(),
@@ -2440,10 +2413,7 @@ verify_native_tool_execution() {
             .update(String(sent.runId))
             .digest("hex")
         }));
-      } finally {
-        clearTimeout(helloTimer);
-        await client.stopAndWait({ timeoutMs: 1000 });
-      }
+      })().catch(() => process.exit(88));
     ' >"$output_file"
   jq -e '
     .marker == "LIVE_NATIVE_TOOL_EXECUTION"

@@ -640,7 +640,17 @@ FAKE_COMMAND = textwrap.dedent(
                 else 0
             ) + 1
             get_count_file.write_text(str(get_count))
-            if scenario == "pod_uid_changed_before_exec" and get_count > 1:
+            model_turns_file = state_dir / "model_call_count"
+            # A same-name replacement of tenant A's runtime Pod once both model turns are done, which is
+            # when the tool turn comes next.
+            replaced_for_tool_turn = (
+                scenario == "native_tool_pod_replaced"
+                and model_turns_file.exists()
+                and int(model_turns_file.read_text()) >= 2
+            )
+            if (
+                scenario == "pod_uid_changed_before_exec" and get_count > 1
+            ) or replaced_for_tool_turn:
                 changed_pod = json.loads(json.dumps(pod_a))
                 changed_pod["metadata"]["uid"] = "uid-a-substituted"
                 emit(changed_pod)
@@ -974,18 +984,14 @@ FAKE_COMMAND = textwrap.dedent(
             }})
             sys.exit(0)
         if "LIVE_NATIVE_TOOL_EXECUTION" in joined:
+            # The tool turn runs in the exact tenant A runtime Pod, after the in-container UID check above.
             if (
-                namespace != "oce-system"
-                or pod_name != "oce-api-0"
+                namespace != "tenant-a-k8s"
+                or pod_name != "tenant-a-pod"
+                or "__OCE_EXACT_POD_COMMAND__" not in args
                 or remote[:1] != ["env"]
-                or (
-                    "OCE_TEST_NAMESPACE_ID="
-                    "ns_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                ) not in remote
-                or (
-                    "OCE_TEST_AGENT_ID="
-                    "agt_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                ) not in remote
+                or remote[2:4] != ["node", "-e"]
+                or any(value.startswith("OCE_TEST_") for value in remote)
             ):
                 print("invalid native tool execution target", file=sys.stderr)
                 sys.exit(103)
@@ -2267,9 +2273,9 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         {"namespace": "tenant-b-k8s", "pod": "tenant-b-pod"},
     ]
     assert json.loads((state_dir / "native_tool_execution").read_text()) == {
-        "namespace": "oce-system",
-        "pod": "oce-api-0",
-        "container": "api",
+        "namespace": "tenant-a-k8s",
+        "pod": "tenant-a-pod",
+        "container": "gateway",
     }
     command_log = (state_dir / "commands.jsonl").read_text()
     assert "tenant-a-secret" not in command_log
@@ -2396,6 +2402,61 @@ def test_exact_pod_exec_fails_closed_on_uid_contract_changes(
         assert (
             tmp_path / "state" / "ordinary_deleted_uid"
         ).read_text() == "uid-ordinary-control"
+
+
+def _native_tool_function() -> str:
+    source = SCRIPT.read_text(encoding="utf-8")
+    return source.split("verify_native_tool_execution() {", 1)[1].split("\n}\n", 1)[0]
+
+
+def test_native_tool_turn_refuses_a_replacement_runtime_pod_before_exec(
+    tmp_path: Path,
+) -> None:
+    # Tenant A's runtime Pod is replaced under the same name after the model turns.
+    result = _run(tmp_path, "native_tool_pod_replaced")
+
+    assert result.returncode != 0
+    assert "pod identity changed before exec; refusing a name-reused workload" in result.stderr
+    evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
+    assert "FAIL\tnative-openclaw-tool-execution\t" in evidence
+    assert "RESULT\tPASS" not in evidence
+    commands = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "commands.jsonl").read_text().splitlines()
+    ]
+    assert not [
+        command
+        for command in commands
+        if command["tool"] == "kubectl"
+        and "exec" in command["args"]
+        and "LIVE_NATIVE_TOOL_EXECUTION" in " ".join(command["args"])
+    ]
+    assert not (tmp_path / "state" / "native_tool_execution").exists()
+
+
+def test_validator_never_reads_gateway_routing(tmp_path: Path) -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "gatewayRouting" not in source
+    assert "OCC_CONFIG_PATH" not in source
+    result = _run(tmp_path)
+    assert result.returncode == 0, result.stderr
+    command_log = (tmp_path / "state" / "commands.jsonl").read_text()
+    assert "gatewayRouting" not in command_log
+    assert "OCC_CONFIG_PATH" not in command_log
+
+
+def test_native_tool_turn_has_no_hard_coded_port() -> None:
+    function = _native_tool_function()
+
+    assert 'const port = process.env.OPENCLAW_GATEWAY_PORT || "";' in function
+    assert '{ host: "127.0.0.1", port: Number(port), path: "/readyz", timeout: 5000 }' in function
+    assert not any(f"port: {digit}" in function for digit in "0123456789")
+    assert not any(number in function for number in ("443", "8080", "18789"))
+    assert "wss://" not in function and "ws://" not in function
+    # The SDK takes the password from the container's configuration; the validator never handles it.
+    assert "OPENCLAW_GATEWAY_PASSWORD=" not in function
+    assert "password" not in function.replace("OPENCLAW_GATEWAY_PASSWORD", "")
 
 
 def test_evidence_directory_replacement_aborts_without_writing_replacement(
@@ -2704,9 +2765,9 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
         assert json.loads(
             (tmp_path / "state" / "native_tool_execution").read_text()
         ) == {
-            "namespace": "oce-system",
-            "pod": "oce-api-0",
-            "container": "api",
+            "namespace": "tenant-a-k8s",
+            "pod": "tenant-a-pod",
+            "container": "gateway",
         }
     if scenario in (
         "wrong_cross_code",
@@ -2865,7 +2926,10 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "verify_agentgateway_key_contract" in source
     assert 'operation.destroy(new Error("response too large"))' in source
     assert 'response.on("data", chunk => { responseBody += chunk; });' not in source
-    assert "const { GatewayClient } = await import(" in source
+    assert (
+        'gateway = createRequire("/app/")("openclaw/plugin-sdk/gateway-runtime");' in source
+    )
+    assert "gateway.callGatewayFromCli(method," in source
     assert "evaluateNativeToolHistory" in source
     assert "OCE_NATIVE_HISTORY_EVALUATOR_B64" in source
     assert "const exactCommand = `printf ${toolMarker}`;" in source

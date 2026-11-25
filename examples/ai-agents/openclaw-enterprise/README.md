@@ -1515,20 +1515,67 @@ The command exits zero only after it verifies:
    partition, and all three boot identities differ.
 6. AgentGateway rejects missing and incorrect tenant keys and accepts the
    matching tenant key over verified TLS.
-7. Each native OpenClaw gateway rejects an unauthenticated request, returns the
-   exact nonce-bound answer to a freshly generated random arithmetic challenge
-   through AgentGateway and Amazon Bedrock, and records one unique `exec` tool
-   call, at least one correlated successful result, and exactly one requested
-   final reply.
+7. Each native OpenClaw gateway rejects an unauthenticated request and returns
+   the exact nonce-bound answer to a freshly generated random arithmetic
+   challenge through AgentGateway and Amazon Bedrock. A tool session that runs
+   in the exact tenant A runtime Pod, over that Pod's loopback gateway, records
+   one unique `exec` tool call, at least one correlated successful result, and
+   exactly one requested final reply.
 8. The temporary ordinary pod, which no gateway client selector matches,
    cannot use a forged `x-occ-identity` header on either tenant gateway: the
    connection is refused or times out, or the gateway answers `401` or `403`.
-   In the same run the OCE API's own tool session (item 7) and the loopback API
-   relay that item 9 uses still work.
+   In the same run the loopback tool session in tenant A's runtime Pod
+   (item 7) and the loopback API relay that item 9 uses still work.
 9. Each validator key reads its own OCE namespace and agent; both cross-tenant
    reads return HTTP `403` with code `FORBIDDEN`.
 10. Tenant A's `.openclaw` marker and model path survive controller-driven pod
    replacement, while a generic home marker does not.
+
+**How the native tool turn runs without gateway routing**
+
+This topology installs no private Agent routing. `install-oce.sh` sets the Helm
+value `gatewayRouting.enabled: false` and gives the Kubernetes Compute
+installation no `gatewayRouting` block. Private routing needs Envoy Gateway,
+cert-manager, the Gateway API CRDs, and an OCC service key that grants native
+administration on every routed gateway, and this blueprint installs none of
+them. At the pinned OCE revision, an explicit `false` makes Helm omit the
+shared Gateway, its routes, and the API's service-key mounts, and without
+`gatewayRouting` the Kubernetes Compute Driver returns no Agent endpoint
+([gateway routing](https://github.com/openclaw/openclaw-enterprise/blob/86c8c12310f691bb21651118ffffd6bfd460e9ff/docs/reference/gateway-routing.md#routing-configuration)).
+The tenant NetworkPolicies admit no gateway client either, because
+`network.gatewayClients` selects a label that no Pod carries. The OCE API Pod
+therefore has no route to an Agent gateway, so the validator does not run the
+tool turn there and never reads `gatewayRouting`.
+
+The validator runs the tool turn inside the exact tenant A runtime Pod, with
+the same identity checks as the model turn. Before the exec it rereads the Pod
+and requires the UID it recorded. Inside the container, `OPENCLAW_POD_UID` from
+the Downward API must equal that UID, or the command exits before it starts. A
+replacement Pod with the same name fails both checks. In that container the
+validator calls the native OpenClaw gateway on loopback through OpenClaw's
+gateway SDK, as OCE's own runtime wrapper does to query its running Gateway
+over `127.0.0.1`
+([`callNativeGateway`](https://github.com/openclaw/openclaw-enterprise/blob/86c8c12310f691bb21651118ffffd6bfd460e9ff/apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts)).
+OCE starts that gateway with `--port "$OPENCLAW_GATEWAY_PORT"`, which Compute
+sets to `network.gatewayPort`
+([Kubernetes Compute Driver](https://github.com/openclaw/openclaw-enterprise/blob/86c8c12310f691bb21651118ffffd6bfd460e9ff/apps/controller/src/drivers/compute/kubernetes/index.ts)).
+The client authenticates with the Driver-managed password in
+`OPENCLAW_GATEWAY_PASSWORD`, which OCE projects only because the Step 7
+configuration names it as an environment SecretRef
+([runtime credentials](https://github.com/openclaw/openclaw-enterprise/blob/86c8c12310f691bb21651118ffffd6bfd460e9ff/docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)).
+It sends one chat turn that asks for one `exec` call, waits for the run, and
+checks the session history with `scripts/lib/evaluate-native-tool-history.mjs`.
+
+This proof adds no route and does not weaken the disabled-routing boundary.
+The connection stays inside the Pod's own network namespace, so no Service,
+NetworkPolicy, HTTPRoute, Envoy listener, or OCE configuration changes. It uses
+neither the OCC service key nor the trusted-proxy identity header. OCE keeps
+loopback out of proxy trust (`trustedProxy.allowLoopback` must stay off) and
+documents the separate password for local verification
+([gateway authentication](https://github.com/openclaw/openclaw-enterprise/blob/86c8c12310f691bb21651118ffffd6bfd460e9ff/docs/reference/drivers/kubernetes-compute/gateway-authentication.md#listener-and-proxy-trust)).
+The validator already execs into the runtime Pods for the model turn, so it
+needs no new permission, and item 8 still proves that a Pod outside the gateway
+client selector cannot use a forged identity header.
 
 Do not publish successful output until a fresh run has completed against the
 exact OCE revision and image digests.
