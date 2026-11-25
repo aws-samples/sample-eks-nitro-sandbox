@@ -104,6 +104,11 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
                 uid = state.get("uids", {}).get(resource, f"uid-{name}")
                 print(f"{name}|{owner}|{uid}")
         elif command[:2] == ["label", f"namespace/{state['tenant']}"]:
+            # A delete and same-name recreate, with the same content, after the preflight read.
+            replaced = state.pop("replace_on_label", None)
+            if replaced is not None:
+                state.setdefault("uids", {})[replaced] = "uid-replacement"
+                state_path.write_text(json.dumps(state))
             # An object that appears after the preflight read and before the first-run create.
             resource = state.pop("appear_on_label", None)
             if resource is not None:
@@ -575,6 +580,48 @@ def test_configure_rerun_writes_nothing_to_a_replacement_made_after_the_prefligh
         f"{TENANT} is not the object {_receipt(tmp_path)} records, or could not be written; "
         "refusing to change it."
     ) in result.stderr
+    assert _receipt(tmp_path).read_text(encoding="utf-8") == receipt_before
+
+
+def test_configure_rerun_refuses_a_ca_config_map_replaced_after_the_preflight(
+    tmp_path: pathlib.Path,
+) -> None:
+    first, _ = _run_configure(tmp_path)
+    assert first.returncode == 0, first.stderr
+    receipt_before = _receipt(tmp_path).read_text(encoding="utf-8")
+    state_path = tmp_path / "kube-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    # The recorded CA ConfigMap is deleted and recreated with the same name and content during the namespace
+    # label call: after the receipt UID preflight, which read the old UID.
+    state["replace_on_label"] = TENANT_RESOURCES[0]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result, _ = _run_configure(tmp_path, rerun=True)
+
+    # The final read by UID refuses the replacement; the run never reports success and keeps the receipt.
+    assert result.returncode != 0
+    assert (
+        f"configure-tenant-model-gateway: configmap/agentgateway-ca in {TENANT} is not the object this run "
+        "created or recorded, or its content differs from what this run wrote; refusing to continue."
+    ) in result.stderr
+    assert "Configured the Nitro Pod Security profile" not in result.stdout
+    assert _receipt(tmp_path).read_text(encoding="utf-8") == receipt_before
+
+
+def test_configure_unchanged_rerun_succeeds_and_keeps_the_receipt(
+    tmp_path: pathlib.Path,
+) -> None:
+    first, _ = _run_configure(tmp_path)
+    assert first.returncode == 0, first.stderr
+    receipt_before = _receipt(tmp_path).read_text(encoding="utf-8")
+
+    result, _ = _run_configure(tmp_path, rerun=True)
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "Configured the Nitro Pod Security profile, private AgentGateway trust, and exact private "
+        f"Service routes for {TENANT}."
+    ) in result.stdout
     assert _receipt(tmp_path).read_text(encoding="utf-8") == receipt_before
 
 

@@ -317,6 +317,19 @@ verify_live_object() {
     die "${resource} in ${TENANT_NAMESPACE} is not the object this run created or recorded, or its content differs from what this run wrote; refusing to continue."
 }
 
+# The CA ConfigMap this run created or the receipt records: its UID, the owner label, immutable, exactly the
+# CA bytes and no binaryData.
+readonly ca_config_map_filter='
+  .kind == "ConfigMap"
+  and .metadata.name == "agentgateway-ca"
+  and .metadata.namespace == $namespace
+  and .metadata.uid == $uid
+  and .metadata.labels["app.kubernetes.io/managed-by"] == $owner
+  and .immutable == true
+  and .data == {"ca.crt": $ca}
+  and (has("binaryData") | not)
+'
+
 if [[ "${ca_config_map_exists}" == false ]]; then
   ca_created="$(
     "${KUBECTL[@]}" create configmap agentgateway-ca \
@@ -333,16 +346,8 @@ if [[ "${ca_config_map_exists}" == false ]]; then
   )" || die "could not create configmap/agentgateway-ca in ${TENANT_NAMESPACE} as a new object. If the first run was interrupted, follow README Step 7."
   recorded_ca_uid="$(created_uid ConfigMap agentgateway-ca "${ca_created}")" ||
     die "the create response for configmap/agentgateway-ca in ${TENANT_NAMESPACE} has no valid identity."
-  verify_live_object configmap/agentgateway-ca "${recorded_ca_uid}" '
-    .kind == "ConfigMap"
-    and .metadata.name == "agentgateway-ca"
-    and .metadata.namespace == $namespace
-    and .metadata.uid == $uid
-    and .metadata.labels["app.kubernetes.io/managed-by"] == $owner
-    and .immutable == true
-    and .data == {"ca.crt": $ca}
-    and (has("binaryData") | not)
-  ' --rawfile ca "${ca_file}"
+  verify_live_object configmap/agentgateway-ca "${recorded_ca_uid}" "${ca_config_map_filter}" \
+    --rawfile ca "${ca_file}"
 fi
 
 readonly policy_file="${work_dir}/networkpolicy.json"
@@ -422,6 +427,11 @@ verify_live_object networkpolicy.networking.k8s.io/oce-private-service-egress "$
   and .metadata.labels["app.kubernetes.io/managed-by"] == $owner
   and .spec == $policy[0].spec
 ' --slurpfile policy "${policy_file}"
+# The rerun preflight read the CA ConfigMap's UID before the waits and the namespace label, and nothing since
+# has read it by UID. Read it back once more on every run, after the policy write: a same-name replacement made
+# meanwhile stops the run before a receipt is published or success is reported.
+verify_live_object configmap/agentgateway-ca "${recorded_ca_uid}" "${ca_config_map_filter}" \
+  --rawfile ca "${ca_file}"
 
 if [[ ! -e "${RECEIPT_PATH}" ]]; then
   # Link a fully written private file into place; link(2) fails if anything appeared at the path meanwhile.
