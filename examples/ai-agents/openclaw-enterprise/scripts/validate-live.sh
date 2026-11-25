@@ -2192,10 +2192,15 @@ call_native_openclaw_model() {
   local container="$3"
   local expected_uid="$4"
   local output_file="$5"
+  # OCE starts the gateway with --port from OPENCLAW_GATEWAY_PORT (network.gatewayPort), so the model turn
+  # reads that variable inside the Pod and calls the gateway on 127.0.0.1 there. The password stays in the
+  # container environment.
   # shellcheck disable=SC2016 # This JavaScript reads the guest environment.
   exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" node -e '
     const crypto = require("node:crypto");
     const http = require("node:http");
+    const port = process.env.OPENCLAW_GATEWAY_PORT || "";
+    if (!/^[1-9][0-9]{0,4}$/.test(port) || Number(port) > 65535) process.exit(48);
     const password = process.env.OPENCLAW_GATEWAY_PASSWORD || "";
     if (!password) process.exit(49);
 
@@ -2210,7 +2215,7 @@ call_native_openclaw_model() {
       return new Promise((resolve, reject) => {
         const operation = http.request({
           hostname: "127.0.0.1",
-          port: 18789,
+          port: Number(port),
           path: "/v1/chat/completions",
           method: "POST",
           headers

@@ -2459,6 +2459,98 @@ def test_native_tool_turn_has_no_hard_coded_port() -> None:
     assert "password" not in function.replace("OPENCLAW_GATEWAY_PASSWORD", "")
 
 
+def test_model_turn_uses_the_configured_pod_port_and_keeps_the_password_in_the_pod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import http.server
+    import threading
+
+    source = SCRIPT.read_text(encoding="utf-8")
+    function = source.split("call_native_openclaw_model() {", 1)[1].split("\n}\n", 1)[0]
+    script = function.split("node -e '", 1)[1].split("' >\"$output_file\"", 1)[0]
+    sentinel = "gateway-password-sentinel-" + "7" * 24
+    requests: list[dict[str, object]] = []
+
+    class Gateway(http.server.BaseHTTPRequestHandler):
+        """The Pod's own gateway on the configured loopback port."""
+
+        def do_POST(self) -> None:
+            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            authorization = self.headers.get("authorization")
+            requests.append({"path": self.path, "authorization": authorization})
+            if authorization != f"Bearer {sentinel}":
+                self._reply(401, {"error": "unauthorized"})
+                return
+            prompt = body["messages"][0]["content"]
+            nonce = prompt.split("The verification nonce is ", 1)[1].split(".", 1)[0]
+            left, right = prompt.split("Calculate ", 1)[1].split(".", 1)[0].split(" + ")
+            self._reply(
+                200,
+                {
+                    "id": "chatcmpl_" + "a" * 16,
+                    "model": "openclaw/default",
+                    "choices": [
+                        {"message": {"content": f"{nonce}:{int(left) + int(right)}"}}
+                    ],
+                },
+            )
+
+        def _reply(self, status: int, payload: dict[str, object]) -> None:
+            data = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def log_message(self, *args: object) -> None:
+            del args
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        result = subprocess.run(
+            ["node", "-e", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env={
+                "PATH": os.environ["PATH"],
+                "OPENCLAW_GATEWAY_PORT": str(server.server_address[1]),
+                "OPENCLAW_GATEWAY_PASSWORD": sentinel,
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # The model turn reached the gateway on the port the Pod environment names.
+    assert result.returncode == 0, result.stderr
+    assert [request["path"] for request in requests] == ["/v1/chat/completions"] * 2
+    assert [request["authorization"] for request in requests] == [None, f"Bearer {sentinel}"]
+    output = json.loads(result.stdout)
+    assert output["status"] == 200
+    assert output["challengeMatch"] is True
+    assert "18789" not in function
+    # The password stays in the container environment: never in argv, never in output.
+    assert sentinel not in result.stdout + result.stderr
+    assert "OPENCLAW_GATEWAY_PASSWORD=" not in function
+    monkeypatch.setenv("OPENCLAW_GATEWAY_PASSWORD", sentinel)
+    run = _run(tmp_path)
+    assert run.returncode == 0, run.stderr
+    evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
+    command_log = (tmp_path / "state" / "commands.jsonl").read_text()
+    assert sentinel not in command_log + run.stdout + run.stderr + evidence
+    # The disabled-routing boundary is unchanged: loopback only, no route and no gatewayRouting.
+    assert 'hostname: "127.0.0.1",' in function
+    assert "wss://" not in function
+    assert "gatewayRouting" not in source
+    installer = (ROOT / "scripts" / "install-oce.sh").read_text(encoding="utf-8")
+    assert "gatewayRouting:\n  enabled: false" in installer
+
+
 def test_evidence_directory_replacement_aborts_without_writing_replacement(
     tmp_path: Path,
 ) -> None:
