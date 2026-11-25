@@ -338,6 +338,16 @@ webhooks:
           - pods/ephemeralcontainers
         scope: Namespaced
   - name: protect-revision-configmaps.openclaw-enterprise.sandbox.eks.amazonaws.com
+    # The dedicated namespace controller only deletes content during teardown.
+    # Keep CREATE/UPDATE and every other caller subject to revision validation.
+    # Avoid object/name predicates: namespace cleanup also uses DELETE collection.
+    matchConditions:
+      - name: exclude-authenticated-namespace-controller-deletes
+        expression: >-
+          !(request.operation == 'DELETE' &&
+          request.userInfo.username == 'system:serviceaccount:kube-system:namespace-controller' &&
+          'system:authenticated' in request.userInfo.groups &&
+          'system:serviceaccounts:kube-system' in request.userInfo.groups)
     admissionReviewVersions:
       - v1
     sideEffects: None
