@@ -248,7 +248,7 @@ else
   for live in "configmap/agentgateway-ca|${live_ca_uid}" \
     "networkpolicy/oce-private-service-egress|${live_policy_uid}"; do
     [[ -z "${live#*|}" ]] ||
-      die "${live%%|*} in ${TENANT_NAMESPACE} exists, but ${RECEIPT_PATH} does not record it; refusing to adopt it."
+      die "${live%%|*} in ${TENANT_NAMESPACE} exists, but ${RECEIPT_PATH} does not record it; refusing to adopt it. If the first run was interrupted, follow README Step 7."
   done
   ca_config_map_exists=false
 fi

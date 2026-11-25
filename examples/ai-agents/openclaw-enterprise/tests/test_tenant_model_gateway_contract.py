@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import textwrap
@@ -467,3 +468,41 @@ def test_configure_refuses_to_adopt_an_unrecorded_object(
     assert "does not record it; refusing to adopt it." in result.stderr
     assert _mutating_calls(calls) == []
     assert not _receipt(tmp_path).exists()
+
+
+def test_readme_step_7_recovers_an_interrupted_first_run() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    step = readme.split("**Step 7:", 1)[1].split("**Step 8:", 1)[0]
+    recovery = step.split("If the first run was interrupted before it wrote the receipt", 1)[1]
+    recovery = recovery.split("\nOCE creates the tenant namespace", 1)[0]
+    text = " ".join(recovery.split())
+
+    steps = [
+        "first confirm that no tenant Agent has started",
+        (
+            "--selector 'app.kubernetes.io/managed-by=openclaw-enterprise,"
+            "openclaw.dev/workload-role=gateway'"
+        ),
+        "Then inspect only the two objects the script creates",
+        "get configmap/agentgateway-ca networkpolicy/oce-private-service-egress",
+        (
+            "Delete, deliberately and by name, only the object or objects that the refusal "
+            "names as not recorded by the receipt."
+        ),
+        "delete configmap/agentgateway-ca",
+        "Then rerun `configure-tenant-model-gateway.sh` with the same receipt path.",
+        "when the refusal says an object is missing or was replaced since the receipt recorded it.",
+    ]
+    positions = [text.index(" ".join(part.split())) for part in steps]
+    assert positions == sorted(positions)
+    # Only the two sample-owned objects are inspected or deleted, and nothing is deleted in bulk.
+    commands = re.findall(r"```bash\n(.*?)```", recovery, re.DOTALL)
+    assert len(commands) == 3
+    assert all("--context \"$KUBE_CONTEXT\" --namespace \"$TENANT_NAMESPACE\"" in c for c in commands)
+    deletes = [line for c in commands for line in c.splitlines() if " delete" in f" {line}"]
+    assert [line.strip() for line in deletes] == ["delete configmap/agentgateway-ca"]
+    assert "--all" not in recovery and "--selector" not in commands[2]
+    # The refusal points the operator here.
+    assert "If the first run was interrupted, follow README Step 7." in SCRIPT.read_text(
+        encoding="utf-8"
+    )
