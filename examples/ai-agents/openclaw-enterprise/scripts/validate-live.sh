@@ -1859,6 +1859,10 @@ jq -n \
         name: "ordinary-control",
         image: $image,
         command: ["sh", "-c", "sleep 3600"],
+        env: [{
+          name: "OPENCLAW_POD_UID",
+          valueFrom: {fieldRef: {apiVersion: "v1", fieldPath: "metadata.uid"}}
+        }],
         securityContext: {
           allowPrivilegeEscalation: false,
           privileged: false,
@@ -1913,6 +1917,10 @@ jq -e \
   and .spec.containers[0].name == "ordinary-control"
   and .spec.containers[0].image == $image
   and .spec.containers[0].command == ["sh", "-c", "sleep 3600"]
+  and .spec.containers[0].env == [{
+    name: "OPENCLAW_POD_UID",
+    valueFrom: {fieldRef: {apiVersion: "v1", fieldPath: "metadata.uid"}}
+  }]
   and .status.phase == "Running"
   and ((.status.containerStatuses // []) | any(
     .name == "ordinary-control"
@@ -2568,9 +2576,11 @@ probe_forged_gateway_identity() {
       | select(type == "string" and test("^[0-9]{1,3}([.][0-9]{1,3}){3}$"))
     ' "$pod_json"
   )" || die "$tenant_alias gateway pod has no IPv4 pod address"
-  # Port 8080 is the gateway port install-oce.sh renders for OCE (gatewayPort).
+  # Port 8080 is the gateway port install-oce.sh renders for OCE (gatewayPort). The exact-pod exec
+  # refuses a same-name replacement of the ordinary control pod, before the exec and inside it.
   # shellcheck disable=SC2016 # This JavaScript runs in the ordinary control pod.
-  exec_runtime_command "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" "" \
+  exec_runtime_command "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" \
+    "$ORDINARY_CONTROL_POD_UID" \
     node -e '
       const http = require("node:http");
       const [host, port] = process.argv.slice(1);

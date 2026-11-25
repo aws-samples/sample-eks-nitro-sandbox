@@ -394,6 +394,13 @@ FAKE_COMMAND = textwrap.dedent(
                     "name": "ordinary-control",
                     "image": image,
                     "command": ["sh", "-c", "sleep 3600"],
+                    "env": [{{
+                        "name": "OPENCLAW_POD_UID",
+                        "valueFrom": {{"fieldRef": {{
+                            "apiVersion": "v1",
+                            "fieldPath": "metadata.uid",
+                        }}}},
+                    }}],
                     "securityContext": {{
                         "allowPrivilegeEscalation": False,
                         "privileged": False,
@@ -652,7 +659,18 @@ FAKE_COMMAND = textwrap.dedent(
             (state_dir / "ordinary_control_pod").exists()
             and name == (state_dir / "ordinary_control_pod").read_text()
         ):
-            emit(ordinary_control(name))
+            ordinary_get_file = state_dir / "ordinary_get_count"
+            ordinary_gets = (
+                int(ordinary_get_file.read_text())
+                if ordinary_get_file.exists()
+                else 0
+            ) + 1
+            ordinary_get_file.write_text(str(ordinary_gets))
+            control = ordinary_control(name)
+            # After the shape check, a same-name replacement carries another UID.
+            if scenario == "ordinary_replaced_before_probe" and ordinary_gets > 1:
+                control["metadata"]["uid"] = "uid-ordinary-replacement"
+            emit(control)
         else:
             sys.exit(94)
         sys.exit(0)
@@ -904,6 +922,13 @@ FAKE_COMMAND = textwrap.dedent(
             }}
             if scenario == "pod_uid_changed_inside_exec" and pod_name == "tenant-a-pod":
                 actual_uids[pod_name] = "uid-a-substituted"
+            ordinary_file = state_dir / "ordinary_control_pod"
+            if ordinary_file.exists():
+                actual_uids[ordinary_file.read_text()] = (
+                    "uid-ordinary-replacement"
+                    if scenario == "ordinary_replaced_inside_probe"
+                    else "uid-ordinary-control"
+                )
             if expected_uid != actual_uids.get(pod_name):
                 print("pod UID changed inside container", file=sys.stderr)
                 sys.exit(91)
@@ -1122,8 +1147,17 @@ FAKE_COMMAND = textwrap.dedent(
             sys.exit(0 if clean else 1)
         if "LIVE_PEER_FORGED_IDENTITY" in joined:
             ordinary_file = state_dir / "ordinary_control_pod"
+            probe_uid = next(
+                (
+                    value.partition("=")[2]
+                    for value in args
+                    if value.startswith("OCE_EXPECTED_POD_UID=")
+                ),
+                "",
+            )
             if (
-                namespace != "openclaw-enterprise-agw"
+                "__OCE_EXACT_POD_COMMAND__" not in args
+                or namespace != "openclaw-enterprise-agw"
                 or not ordinary_file.exists()
                 or pod_name != ordinary_file.read_text()
                 or remote[:2] != ["node", "-e"]
@@ -1132,7 +1166,11 @@ FAKE_COMMAND = textwrap.dedent(
                 print("invalid forged identity probe", file=sys.stderr)
                 sys.exit(108)
             with (state_dir / "forged_identity_calls.jsonl").open("a") as calls:
-                calls.write(json.dumps({{"target": remote[-2], "port": remote[-1]}}) + "\\n")
+                calls.write(json.dumps({{
+                    "target": remote[-2],
+                    "port": remote[-1],
+                    "expected_uid": probe_uid,
+                }}) + "\\n")
             if scenario == "forged_identity_accepted":
                 emit({{"marker": "LIVE_PEER_FORGED_IDENTITY", "result": "status", "status": 200}})
             elif scenario == "forged_identity_denied_401":
@@ -2125,8 +2163,8 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         .splitlines()
     ]
     assert forged_identity_calls == [
-        {"target": "10.0.1.11", "port": "8080"},
-        {"target": "10.0.1.21", "port": "8080"},
+        {"target": "10.0.1.11", "port": "8080", "expected_uid": "uid-ordinary-control"},
+        {"target": "10.0.1.21", "port": "8080", "expected_uid": "uid-ordinary-control"},
     ]
     imds_calls = [
         json.loads(line)
@@ -2192,6 +2230,17 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
                     "name": "ordinary-control",
                     "image": RUNTIME_IMAGE,
                     "command": ["sh", "-c", "sleep 3600"],
+                    "env": [
+                        {
+                            "name": "OPENCLAW_POD_UID",
+                            "valueFrom": {
+                                "fieldRef": {
+                                    "apiVersion": "v1",
+                                    "fieldPath": "metadata.uid",
+                                }
+                            },
+                        }
+                    ],
                     "securityContext": {
                         "allowPrivilegeEscalation": False,
                         "privileged": False,
@@ -2316,6 +2365,16 @@ def test_deployed_ecr_image_revision_mismatch_fails_closed(tmp_path: Path) -> No
             "guest-vm-evidence",
             "pod UID changed inside container",
         ),
+        (
+            "ordinary_replaced_before_probe",
+            "tenant-gateway-peer-forged-identity",
+            "pod identity changed before exec",
+        ),
+        (
+            "ordinary_replaced_inside_probe",
+            "tenant-gateway-peer-forged-identity",
+            "pod UID changed inside container",
+        ),
     ],
 )
 def test_exact_pod_exec_fails_closed_on_uid_contract_changes(
@@ -2331,6 +2390,12 @@ def test_exact_pod_exec_fails_closed_on_uid_contract_changes(
     evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
     assert f"FAIL\t{failed_check}\t" in evidence
     assert "RESULT\tPASS" not in evidence
+    if scenario.startswith("ordinary_replaced_"):
+        # A same-name replacement of the ordinary pod never runs the forged request.
+        assert not (tmp_path / "state" / "forged_identity_calls.jsonl").exists()
+        assert (
+            tmp_path / "state" / "ordinary_deleted_uid"
+        ).read_text() == "uid-ordinary-control"
 
 
 def test_evidence_directory_replacement_aborts_without_writing_replacement(
@@ -2687,9 +2752,10 @@ def test_forged_identity_probe_runs_from_the_ordinary_peer_pod() -> None:
 
     assert '"x-occ-identity": "occ-workspace-files"' in probe
     assert (
-        'exec_runtime_command "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" ""'
-        in probe
-    )
+        'exec_runtime_command "$AGW_NAMESPACE" "$ORDINARY_CONTROL_POD" "ordinary-control" \\\n'
+        '    "$ORDINARY_CONTROL_POD_UID" \\\n'
+        "    node -e '"
+    ) in probe
     assert "127.0.0.1" not in probe
     assert '.status == 401 or .status == 403' in probe
     assert source.index('record_pass "native-openclaw-tool-execution"') < source.index(
