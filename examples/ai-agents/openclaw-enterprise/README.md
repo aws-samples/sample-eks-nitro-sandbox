@@ -1548,8 +1548,9 @@ state. You may omit the `--tenant-namespace-uid` flags on a retry; cleanup uses
 the protected deletion record created by the first attempt. That record
 prevents a same-name replacement from being accepted.
 
-The script removes the Pod Identity association before its Kubernetes identity,
-then uninstalls OCE and deletes only receipt-matched system, adapter,
+The script stops the AgentGateway Deployment and waits until it is gone, then
+removes the Pod Identity association before its Kubernetes identity, then
+uninstalls OCE and deletes only receipt-matched system, adapter,
 AgentGateway, and cluster-scoped resources. AgentGateway resources must match
 their recorded UID and setup identity. Cleanup combines both AgentGateway
 receipts: it can delete a shared namespace or ServiceAccount that Pod Identity

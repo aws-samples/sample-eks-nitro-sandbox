@@ -1377,6 +1377,61 @@ def test_iam_delete_denial_occurs_after_kubernetes_cleanup(
     assert current["aws"]["role"] is not None
 
 
+def _fake_log(tmp_path: Path) -> list[dict[str, Any]]:
+    log = tmp_path / "fake-log.jsonl"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def test_agentgateway_stops_before_its_pod_identity_association_is_deleted(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    entries = _fake_log(tmp_path)
+    deployment_delete = next(
+        index
+        for index, entry in enumerate(entries)
+        if entry["tool"] == "kubectl"
+        and "/apis/apps/v1/namespaces/openclaw-enterprise-agw/deployments/agentgateway"
+        in entry["args"]
+    )
+    association_delete = next(
+        index
+        for index, entry in enumerate(entries)
+        if entry["tool"] == "aws" and "delete-pod-identity-association" in entry["args"]
+    )
+    assert deployment_delete < association_delete
+    assert "/apis/apps/v1/namespaces/openclaw-enterprise-agw/deployments/agentgateway" in " ".join(
+        " ".join(entry["args"]) for entry in entries if entry["mutation"]
+    )
+    assert "The script stops the AgentGateway Deployment and waits until it is gone" in " ".join(
+        (SAMPLE / "README.md").read_text().split()
+    )
+
+
+def test_association_denial_after_stop_keeps_service_account_and_namespace(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["denyDeleteAssociation"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert "AccessDenied: eks:DeletePodIdentityAssociation" in result.stderr
+    current = _state(env)
+    assert f"{AGW_NAMESPACE}|deployment.apps/agentgateway" not in current["resources"]
+    assert f"{AGW_NAMESPACE}|serviceaccount/{AGW_SERVICE_ACCOUNT}" in current["resources"]
+    assert f"namespace/{AGW_NAMESPACE}" in current["resources"]
+    assert current["aws"]["association"] is not None
+    assert current["helm"] is True
+
+
 def test_role_deletion_waits_for_exact_absence(tmp_path: Path) -> None:
     _, command, env = _prepare(tmp_path, created=_all_created())
     state = _state(env)

@@ -553,6 +553,25 @@ class Cleanup:
             self.validate_gateway_resource(target, record, live, late=True)
             self.raw_delete(live)
 
+    def stop_gateway_deployment(self, planned):
+        # The Deployment is the workload that holds the AWS identity; stop it and prove it gone before that
+        # identity's binding is removed.
+        for target, record, planned_item in planned:
+            resource, namespace, name, kind = target
+            if kind != "Deployment" or not record["created"]:
+                continue
+            live = self.get(f"{resource}/{name}", namespace)
+            if not live:
+                return
+            if not planned_item:
+                fail(f"{kind}/{name} changed after AgentGateway cleanup preflight.")
+            self.validate_gateway_resource(target, record, live, late=True)
+            self.raw_delete(live)
+            self.wait_absent(
+                f"{resource}/{name}", live["metadata"]["uid"], namespace=namespace
+            )
+            return
+
     def freeze_exists(self):
         try:
             self.freeze_path.lstat()
@@ -1556,10 +1575,10 @@ class Cleanup:
             fail(f"namespace/{name} does not match its lifecycle receipt UID.")
         return item
 
-    def wait_absent(self, resource, uid, seconds=600):
+    def wait_absent(self, resource, uid, seconds=600, namespace=None):
         deadline = time.monotonic() + seconds
         while True:
-            item = self.get(resource)
+            item = self.get(resource, namespace)
             if not item:
                 return
             if item["metadata"].get("uid") != uid:
@@ -1985,7 +2004,9 @@ class Cleanup:
                 tenant_deletion,
             )
 
-        # Remove the AWS identity binding before deleting its Kubernetes
+        # Stop the AgentGateway Deployment and prove it gone first, so no
+        # running gateway holds the role while its binding is removed. Then
+        # remove the AWS identity binding before deleting its Kubernetes
         # ServiceAccount or namespace. A failed AWS deletion therefore leaves
         # the named Kubernetes identity intact and cannot silently transfer the
         # role to a later same-name ServiceAccount.
@@ -1995,6 +2016,7 @@ class Cleanup:
                 "at least one lifecycle dependency was reused."
             )
         else:
+            self.stop_gateway_deployment(gateway_resources)
             self.delete_pod_identity_association()
             self.delete_gateway_resources(gateway_resources)
         if helm:
