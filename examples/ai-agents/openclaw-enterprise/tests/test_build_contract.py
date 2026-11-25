@@ -1045,20 +1045,22 @@ def test_controller_build_mirror_preserves_validated_tag_and_digest(
     mapping = script.split(
         "readonly OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE\n", 1
     )[1].split("\nREGISTRY=", 1)[0]
-    digest = "f1e034976f948cf212ef1f659c12e5dd58ac7eab947831813e81a62401ca38be"
+    digest = "f1e034976f948cf212ef1f659c12e5dd58ac7eab947831813e81a62401ca38be"  # pragma: allowlist secret -- public Node manifest digest
     canonical = f"docker.io/library/node:{version}-trixie@sha256:{digest}"
     runtime = f"docker.io/library/node:{version}-trixie-slim@sha256:{'b' * 64}"
     result = subprocess.run(
         [
             "bash",
             "-c",
-            'set -euo pipefail\n'
+            (
+                'set -euo pipefail\n'
             'die() { echo "$*" >&2; exit 1; }\n'
             f"require_matching_oce_node_bases() {{{validation}\n}}\n"
             'OCE_NODE_BUILD_BASE_IMAGE="$1"\n'
             'OCE_NODE_RUNTIME_BASE_IMAGE="$2"\n'
             f"{mapping}\n"
-            'printf "%s\\n" "$CONTROLLER_NODE_BUILD_BASE_IMAGE"\n',
+            'printf "%s\\n" "$CONTROLLER_NODE_BUILD_BASE_IMAGE"\n'
+            ),
             "controller-mirror-contract",
             canonical,
             runtime,
@@ -1116,18 +1118,21 @@ def test_controller_build_mirror_requires_canonical_validation(
         [
             "bash",
             "-c",
-            'set -euo pipefail\n'
+            (
+                'set -euo pipefail\n'
             'die() { echo "$*" >&2; exit 1; }\n'
             f"require_matching_oce_node_bases() {{{validation}\n}}\n"
             'OCE_NODE_BUILD_BASE_IMAGE="$1"\n'
             f'OCE_NODE_RUNTIME_BASE_IMAGE="docker.io/library/node:24.22.1-trixie-slim@sha256:{"b" * 64}"\n'
             f"{mapping}\n"
-            'printf "%s\\n" "$CONTROLLER_NODE_BUILD_BASE_IMAGE"\n',
+            'printf "%s\\n" "$CONTROLLER_NODE_BUILD_BASE_IMAGE"\n'
+            ),
             "controller-mirror-contract",
             build_image,
         ],
         text=True,
         capture_output=True,
+        check=False,
     )
     assert result.returncode != 0
     assert result.stdout == ""
