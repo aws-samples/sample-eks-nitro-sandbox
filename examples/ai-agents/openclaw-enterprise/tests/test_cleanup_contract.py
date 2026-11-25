@@ -317,6 +317,8 @@ def key_from_raw(path):
 
 def kubectl():
     command = strip_kube()
+    if state.get("terminatingNamespaces"):
+        run_finalizer_controllers()
     if command[:4] == ["config", "view", "--minify", "--flatten"]:
         print(json.dumps({
             "current-context": state["context"],
@@ -508,7 +510,6 @@ def kubectl():
             print("Conflict", file=sys.stderr)
             raise SystemExit(1)
         if item:
-            del state["resources"][key]
             if key.startswith("namespace/"):
                 namespace = key.split("/", 1)[1]
                 if any(
@@ -517,26 +518,192 @@ def kubectl():
                     for pv in state.get("pvs", [])
                 ):
                     state["unsafeVolumeAtNamespaceDelete"] = True
-                for child in list(state["resources"]):
-                    if child.startswith(f"{namespace}|"):
-                        del state["resources"][child]
-                state.get("tenantWorkloads", {}).pop(namespace, None)
-                state["pvcs"] = [
-                    pvc for pvc in state.get("pvcs", [])
-                    if pvc.get("metadata", {}).get("namespace") != namespace
-                ]
-                if namespace not in state.get("retainTenantPvs", []):
-                    state["pvs"] = [
-                        pv for pv in state.get("pvs", [])
-                        if pv.get("spec", {}).get("claimRef", {}).get("namespace")
-                        != namespace
-                    ]
+                if state.get("finalizerProtection"):
+                    begin_namespace_termination(namespace)
+                else:
+                    finish_namespace_delete(namespace)
+            else:
+                del state["resources"][key]
             state["mutations"] += 1
             save()
         log(bool(item))
         print(json.dumps({"status": "Success"}))
         return
     raise SystemExit(f"unsupported kubectl command: {command}")
+
+def finish_namespace_delete(namespace):
+    state["resources"].pop(f"namespace/{namespace}", None)
+    for child in list(state["resources"]):
+        if child.startswith(f"{namespace}|"):
+            del state["resources"][child]
+    state.get("tenantWorkloads", {}).pop(namespace, None)
+    state["pvcs"] = [
+        pvc for pvc in state.get("pvcs", [])
+        if pvc.get("metadata", {}).get("namespace") != namespace
+    ]
+    state["jobPods"] = [
+        pod for pod in state.get("jobPods", [])
+        if pod.get("metadata", {}).get("namespace") != namespace
+    ]
+    if namespace not in state.get("retainTenantPvs", []):
+        state["pvs"] = [
+            pv for pv in state.get("pvs", [])
+            if pv.get("spec", {}).get("claimRef", {}).get("namespace")
+            != namespace
+        ]
+
+def begin_namespace_termination(namespace):
+    # The namespace and its finalizer-bearing objects stay, terminating, until their finalizers are removed.
+    state["resources"][f"namespace/{namespace}"]["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+    for items in (state.get("pvcs", []), state.get("jobPods", [])):
+        for item in items:
+            metadata = item.setdefault("metadata", {})
+            if metadata.get("namespace") == namespace:
+                metadata["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+                if item["kind"] == "PersistentVolumeClaim":
+                    metadata.setdefault("finalizers", ["kubernetes.io/pvc-protection"])
+    state.setdefault("terminatingNamespaces", []).append(namespace)
+
+def freeze_policies_for(namespace):
+    policies = []
+    for key, binding in state["resources"].items():
+        if not key.startswith(
+            "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
+            "openclaw-enterprise-cleanup-freeze-"
+        ):
+            continue
+        policy = state["resources"].get(
+            "validatingadmissionpolicies.admissionregistration.k8s.io/"
+            + binding.get("spec", {}).get("policyName", "")
+        )
+        if not policy:
+            continue
+        selector = (
+            (binding["spec"].get("matchResources") or {}).get("namespaceSelector", {}).get("matchLabels")
+        )
+        if selector:
+            labels = (
+                state["resources"].get(f"namespace/{namespace}", {}).get("metadata", {}).get("labels", {})
+            )
+            matches = all(labels.get(name) == value for name, value in selector.items())
+        else:
+            matches = json.dumps(namespace) in policy["spec"]["matchConditions"][0]["expression"]
+        if matches:
+            policies.append(policy)
+    return policies
+
+MISSING = object()
+
+def field(document, path):
+    value = document
+    for key in path.split("."):
+        if not isinstance(value, dict) or key not in value:
+            return MISSING
+        value = value[key]
+    return value
+
+FINALIZER_UNCHANGED = (
+    "apiVersion", "kind", "metadata.name", "metadata.namespace", "metadata.uid",
+    "metadata.generateName", "metadata.creationTimestamp", "metadata.deletionTimestamp",
+    "metadata.deletionGracePeriodSeconds", "metadata.generation", "metadata.labels",
+    "metadata.annotations", "metadata.ownerReferences", "spec", "status",
+)
+
+def finalizer_removal_allowed(policy, resource, subresource, old, new):
+    # A model of the freezes' finalizerRemoval rule for these tests; its CEL is not evaluated here.
+    variables = {item["name"]: item["expression"] for item in policy["spec"].get("variables", [])}
+    expression = variables.get("finalizerRemoval", "")
+    marker = "request.resource.resource in "
+    if marker not in expression or subresource:
+        return False
+    if resource not in json.loads(expression.split(marker, 1)[1].split(" && ", 1)[0]):
+        return False
+    if field(old, "metadata.deletionTimestamp") is MISSING:
+        return False
+    if any(field(old, path) != field(new, path) for path in FINALIZER_UNCHANGED):
+        return False
+    before = old["metadata"].get("finalizers") or []
+    after = new["metadata"].get("finalizers") or []
+    return bool(before) and all(name in before for name in after) and len(after) < len(before)
+
+def finalizer_request(item, variant):
+    # The update a controller sends for item: a pure finalizer removal, or that removal with one more change.
+    old = json.loads(json.dumps(item))
+    new = json.loads(json.dumps(item))
+    removed = old["metadata"]["finalizers"][0]
+    new["metadata"]["finalizers"] = [name for name in old["metadata"]["finalizers"] if name != removed]
+    subresource = ""
+    if variant == "spec":
+        new.setdefault("spec", {})["volumeName" if item["kind"] == "PersistentVolumeClaim" else "nodeName"] = "other"
+    elif variant == "label":
+        new["metadata"].setdefault("labels", {})["example.com/changed"] = "yes"
+    elif variant == "annotation":
+        new["metadata"].setdefault("annotations", {})["example.com/changed"] = "yes"
+    elif variant == "ownerReference":
+        new["metadata"]["ownerReferences"] = [
+            {"apiVersion": "v1", "kind": "ConfigMap", "name": "adopter", "uid": "uid-adopter"}
+        ]
+    elif variant == "deletionTimestamp":
+        new["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:01Z"
+    elif variant == "add":
+        new["metadata"]["finalizers"] = old["metadata"]["finalizers"] + ["example.com/extra"]
+    elif variant == "notDeleting":
+        del old["metadata"]["deletionTimestamp"]
+        del new["metadata"]["deletionTimestamp"]
+    elif variant == "subresource":
+        subresource = "status"
+    return old, new, subresource
+
+def run_finalizer_controllers():
+    # The PVC protection and Job controllers: each removes its finalizer from a terminating object. A requested
+    # variant is tried once first, in the same window, then the pure removal.
+    for namespace in list(state.get("terminatingNamespaces", [])):
+        stuck = False
+        for resource, items_key in (("persistentvolumeclaims", "pvcs"), ("pods", "jobPods")):
+            for item in list(state.get(items_key, [])):
+                metadata = item.get("metadata", {})
+                if metadata.get("namespace") != namespace or not metadata.get("finalizers"):
+                    continue
+                variants = [] if metadata.get("variantTried") else state.get("finalizerVariants", [])
+                metadata["variantTried"] = True
+                for variant in [*variants, "pure"]:
+                    old, new, subresource = finalizer_request(item, variant)
+                    old["metadata"].pop("variantTried", None)
+                    new["metadata"].pop("variantTried", None)
+                    policies = freeze_policies_for(namespace)
+                    allowed = all(
+                        finalizer_removal_allowed(policy, resource, subresource, old, new)
+                        for policy in policies
+                    )
+                    state.setdefault("finalizerAdmission", []).append({
+                        "namespace": namespace,
+                        "resource": resource,
+                        "variant": variant,
+                        "frozen": bool(policies),
+                        "allowed": allowed,
+                    })
+                    if variant == "pure":
+                        if allowed:
+                            state[items_key] = [
+                                other for other in state[items_key]
+                                if other["metadata"].get("uid") != metadata.get("uid")
+                            ]
+                        else:
+                            stuck = True
+        if not any(
+            item.get("metadata", {}).get("namespace") == namespace
+            for key in ("pvcs", "jobPods")
+            for item in state.get(key, [])
+        ):
+            finish_namespace_delete(namespace)
+            state["terminatingNamespaces"].remove(namespace)
+        elif stuck:
+            # A namespace that can never finish: end the run instead of waiting out cleanup's deadline.
+            state["stuckNamespace"] = namespace
+            save()
+            os.kill(os.getppid(), signal.SIGKILL)
+            raise SystemExit(0)
+    save()
 
 def helm():
     if args == ["version", "--short"]:
@@ -2525,9 +2692,10 @@ def test_tenant_freeze_policy_guards_every_pv_field_and_probes_an_unclaimed_volu
     }
     variables = {item["name"]: item["expression"] for item in spec["variables"]}
     assert json.loads(variables["targets"]) == [tenant]
+    # The PV rule's own expressions; the finalizer-removal rule compares whole objects and has its own test.
     text = " ".join(
-        [item["expression"] for item in spec["variables"]]
-        + [item["expression"] for item in spec["validations"]]
+        [variables[name] for name in ("pv", "newFields", "oldFields", "claimsTarget")]
+        + [spec["validations"][1]["expression"]]
     )
     # Every PV field the rule reads is guarded with has(), on the new and the old object.
     for root in ("object", "oldObject"):
@@ -2623,6 +2791,139 @@ def test_recovery_removes_a_freeze_read_back_with_api_defaults(tmp_path: Path, f
     assert recovered.returncode == 0, recovered.stderr
     assert not freeze_state.exists()
     assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+
+
+def _finalizer_run(
+    tmp_path: Path, freeze: str, variants: tuple[str, ...] = (), job_pod: bool = False
+) -> tuple[list[str], dict[str, str], str]:
+    """A cleanup whose namespace deletion waits for finalizers, under the tenant or the per-namespace freeze."""
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    if freeze == "tenant":
+        namespace = "openclaw-tenant-a"
+        _add_tenant(env, namespace)
+        _add_tenant_storage(env, namespace)
+        command = [*command, *_tenant_identity_args(namespace), "--delete-tenant-data"]
+    else:
+        namespace = SYSTEM_NAMESPACE
+        _add_validation_database_storage(env)
+    state = _state(env)
+    state["finalizerProtection"] = True
+    state["finalizerVariants"] = list(variants)
+    if job_pod:
+        state["jobPods"] = [{
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "oce-initialization-abcde",
+                "namespace": SYSTEM_NAMESPACE,
+                "uid": "uid-job-pod",
+                "finalizers": ["batch.kubernetes.io/job-tracking"],
+            },
+            "spec": {"nodeName": "node-a"},
+            "status": {"phase": "Succeeded"},
+        }]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    return command, env, namespace
+
+
+def _finalizer_admission(env: dict[str, str], namespace: str, resource: str) -> list[tuple[str, bool, bool]]:
+    return [
+        (entry["variant"], entry["frozen"], entry["allowed"])
+        for entry in _state(env).get("finalizerAdmission", [])
+        if entry["namespace"] == namespace and entry["resource"] == resource
+    ]
+
+
+@pytest.mark.parametrize("freeze", ["tenant", "namespace"])
+def test_pvc_protection_finalizer_removal_lets_the_namespace_go(tmp_path: Path, freeze: str) -> None:
+    command, env, namespace = _finalizer_run(tmp_path, freeze)
+
+    result = _run(command, env)
+
+    # Under the active freeze, the PVC protection controller removes its finalizer and the namespace goes.
+    assert _finalizer_admission(env, namespace, "persistentvolumeclaims") == [("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+    assert _state(env)["pvcs"] == []
+
+
+def test_job_tracking_finalizer_removal_lets_a_system_namespace_go(tmp_path: Path) -> None:
+    command, env, namespace = _finalizer_run(tmp_path, "namespace", job_pod=True)
+
+    result = _run(command, env)
+
+    assert _finalizer_admission(env, namespace, "pods") == [("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+
+
+@pytest.mark.parametrize("freeze", ["tenant", "namespace"])
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "spec",
+        "label",
+        "annotation",
+        "ownerReference",
+        "deletionTimestamp",
+        "add",
+        "notDeleting",
+        "subresource",
+    ],
+)
+def test_finalizer_exemption_denies_every_other_change(
+    tmp_path: Path, freeze: str, variant: str
+) -> None:
+    command, env, namespace = _finalizer_run(tmp_path, freeze, variants=(variant,))
+
+    result = _run(command, env)
+
+    # In the same window the variant is denied and the pure removal is allowed, so the namespace still goes.
+    assert _finalizer_admission(env, namespace, "persistentvolumeclaims") == [
+        (variant, True, False),
+        ("pure", True, True),
+    ]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+
+
+def test_both_freezes_carry_the_finalizer_removal_rule_before_any_field_read(tmp_path: Path) -> None:
+    command, env, _ = _finalizer_run(tmp_path, "tenant")
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    created = [
+        json.loads(entry["stdin"])
+        for entry in _fake_log(tmp_path)
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    policies = {
+        "tenant" if "cleanup-freeze-tenants-" in document["metadata"]["name"] else "namespace": document["spec"]
+        for document in created
+        if document["kind"] == "ValidatingAdmissionPolicy"
+    }
+    for freeze, resources, validation in (
+        ("namespace", '["persistentvolumeclaims", "pods"]', "variables.finalizerRemoval"),
+        ("tenant", '["persistentvolumeclaims"]', "variables.pv || variables.finalizerRemoval"),
+    ):
+        spec = policies[freeze]
+        expression = {item["name"]: item["expression"] for item in spec["variables"]}["finalizerRemoval"]
+        # The operation, the empty subresource and the resource come first, before any field is read.
+        assert expression.startswith(
+            "request.operation == 'UPDATE' && request.subResource == ''"
+            f" && request.resource.group == '' && request.resource.resource in {resources}"
+            " && has(oldObject.metadata.deletionTimestamp)"
+        ), freeze
+        assert spec["validations"][0]["expression"] == validation
+        for path in ("metadata.labels", "metadata.annotations", "metadata.ownerReferences", "spec", "status"):
+            assert (
+                f"(has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
+                f" : !has(oldObject.{path}))"
+            ) in expression
+        for path in ("resourceVersion", "managedFields", "selfLink"):
+            assert path not in expression
+        assert "size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)" in expression
 
 
 @pytest.mark.parametrize(

@@ -33,6 +33,51 @@ FREEZE_KEY = "cleanup.openclaw.aws/"
 TENANT_PV_FREEZE_MESSAGE = (
     "OpenClaw Enterprise cleanup admission freeze protects the persistent volumes of tenant namespaces."
 )
+# Fields a finalizer removal must leave unchanged. Not compared: resourceVersion (the server's write counter),
+# managedFields (rewritten by the server before validating admission) and selfLink (always empty).
+FINALIZER_REMOVAL_UNCHANGED = (
+    "metadata.name",
+    "metadata.namespace",
+    "metadata.uid",
+    "metadata.generateName",
+    "metadata.creationTimestamp",
+    "metadata.deletionTimestamp",
+    "metadata.deletionGracePeriodSeconds",
+    "metadata.generation",
+    "metadata.labels",
+    "metadata.annotations",
+    "metadata.ownerReferences",
+    "spec",
+    "status",
+)
+
+
+def finalizer_removal_expression(resources):
+    """CEL that is true only for removing finalizers from an object already being deleted.
+
+    It checks the operation, the empty subresource and the resource before it reads any field, so every other
+    request stays denied. The new finalizers must be a strict subset of the old ones, and every other field must
+    be unchanged; each optional field is compared through has().
+    """
+
+    def unchanged(path):
+        return (
+            f"(has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
+            f" : !has(oldObject.{path}))"
+        )
+
+    return (
+        "request.operation == 'UPDATE' && request.subResource == ''"
+        " && request.resource.group == ''"
+        f" && request.resource.resource in {json.dumps(list(resources))}"
+        " && has(oldObject.metadata.deletionTimestamp)"
+        " && object.apiVersion == oldObject.apiVersion && object.kind == oldObject.kind"
+        + "".join(f" && {unchanged(path)}" for path in FINALIZER_REMOVAL_UNCHANGED)
+        + " && has(oldObject.metadata.finalizers) && size(oldObject.metadata.finalizers) > 0"
+        " && (!has(object.metadata.finalizers) || (object.metadata.finalizers.all("
+        "finalizer, finalizer in oldObject.metadata.finalizers)"
+        " && size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)))"
+    )
 SETUP_KEY = "openclaw-enterprise.aws.dev/setup-token"
 POD_SETUP_KEY = "openclaw.enterprise/setup-invocation"
 INVOCATION_TAG = "OpenClawSetupInvocation"
@@ -680,7 +725,13 @@ class Cleanup:
                 "name": "target-namespace",
                 "expression": f"request.namespace == {json.dumps(state['namespace'])}",
             }],
-            "validations": [{"expression": "false", "message": state["denialMessage"]}],
+            # Only finalizer removal from a PVC or Pod already being deleted passes, so PVC protection and Job
+            # tracking can let the namespace go; every other namespaced request is denied.
+            "variables": [{
+                "name": "finalizerRemoval",
+                "expression": finalizer_removal_expression(["persistentvolumeclaims", "pods"]),
+            }],
+            "validations": [{"expression": "variables.finalizerRemoval", "message": state["denialMessage"]}],
         }
 
     def validate_freeze(self, item, state, kind):
@@ -1066,9 +1117,18 @@ class Cleanup:
                         " && variables.oldFields[4] in variables.targets))"
                     ),
                 },
+                # Only finalizer removal from a PVC already being deleted passes, so PVC protection can let a
+                # tenant namespace go; tenant quiescence already refuses any Pod in a tenant namespace.
+                {
+                    "name": "finalizerRemoval",
+                    "expression": finalizer_removal_expression(["persistentvolumeclaims"]),
+                },
             ],
             "validations": [
-                {"expression": "variables.pv", "message": state["denialMessage"]},
+                {
+                    "expression": "variables.pv || variables.finalizerRemoval",
+                    "message": state["denialMessage"],
+                },
                 {
                     "expression": (
                         "!variables.claimsTarget || (request.operation == 'UPDATE'"

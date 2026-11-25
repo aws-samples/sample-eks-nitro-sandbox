@@ -1740,6 +1740,83 @@ binding also guard the PVs that claim a target namespace:
   recovery path and the normal freeze removal delete that policy and its
   binding, so they also remove the PV rule.
 
+**How the freezes let finalizers finish**
+
+Both freezes deny namespaced `CREATE` and `UPDATE` in the namespaces they
+protect, but a namespace deletion needs some objects' finalizers removed
+before it can finish. Each freeze therefore allows exactly one kind of update:
+removing finalizers from an object that is already being deleted.
+
+- **The kinds.** The exemption covers the main resource only, never a
+  subresource:
+  - `persistentvolumeclaims` in both freezes. Every PVC carries
+    `kubernetes.io/pvc-protection`, which the PVC protection controller in
+    the Kubernetes controller manager removes once no Pod uses the claim.
+    Tenant namespaces hold the runtime PVCs. `openclaw-system` holds the
+    bootstrap output PVC and, with the validation database, its PVC.
+  - `pods` in the per-namespace freeze only. In `openclaw-system`, the OCE
+    chart's initialization hook Job and the sample's bootstrap volume
+    preparation Job run Pods. A Job Pod carries
+    `batch.kubernetes.io/job-tracking` until the Job controller has counted
+    it. The Job controller removes that finalizer, and normally it has done
+    so when the Job finished. Tenant namespaces run no Jobs.
+
+  No other object in these namespaces carries a finalizer when cleanup
+  deletes the namespace. Deployments, ReplicaSets, Services (all
+  `ClusterIP`), cert-manager Issuers and Certificates, Secrets, ConfigMaps,
+  ServiceAccounts, Roles and NetworkPolicies have none. The namespace
+  controller deletes contents with background propagation, so no
+  `foregroundDeletion` finalizer is added. The Namespace's own `kubernetes`
+  finalizer is removed through the cluster-scoped `namespaces/finalize`
+  subresource, which neither freeze matches.
+
+  This does not mean that namespace deletion always finishes under a freeze.
+  A Pod that is still running or terminating when a freeze goes on also needs
+  the kubelet's `pods/status` updates to finish. Neither freeze allows those,
+  so that Pod and its namespace stay until cleanup's wait times out.
+- **The comparison.** An `UPDATE` is allowed only when all of these hold:
+  - the old object already has `metadata.deletionTimestamp`;
+  - the new finalizer list is a strict subset of the old one: every new
+    entry is in the old list and the new list is shorter;
+  - every other field is unchanged: `apiVersion`, `kind`,
+    `metadata.name`, `namespace`, `uid`, `generateName`, `creationTimestamp`,
+    `deletionTimestamp`, `deletionGracePeriodSeconds`, `generation`,
+    `labels`, `annotations` and `ownerReferences`, and the whole `spec` and
+    `status`.
+
+  Each optional field is compared through `has()`, so a field that is absent
+  on both sides is equal and a field present on only one side is a change.
+  The API server applies the kind's update strategy before validating
+  admission runs, and on a main-resource update that strategy keeps the stored
+  `status`
+  ([`store.go`](https://github.com/kubernetes/kubernetes/blob/v1.36.0/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go)),
+  so a controller's stale copy of `status` cannot cause a refusal. Every other
+  update stays denied.
+- **Fields that are not compared.** Three `metadata` fields are written by the
+  server on the controller's own update, or are unused:
+  - `resourceVersion` is the server's opaque write counter for optimistic
+    concurrency. It holds no object content.
+  - `managedFields` is server-side-apply field ownership. The API server
+    rewrites it, with a new timestamp, on every update before validating
+    admission runs. It records who set fields; it changes no field.
+  - `selfLink` is empty since Kubernetes 1.20.
+
+  None of them changes what the object is, who owns it, or how it behaves, so
+  none can carry a safety-relevant change.
+- **Both freezes.** The per-namespace freeze and the tenant freeze both get
+  the exemption, with the same comparison, for the kinds listed above, and
+  keep the API server's defaults in their specs. The tenant freeze's
+  PersistentVolume rule is unchanged.
+- **Tests and limits.** The offline tests model the exemption in the cleanup
+  fake, as they model the PV rule. No CEL engine is available offline, so the
+  CEL itself is checked only by its exact text and, in a cluster, by a live
+  run. The tests show that a terminating PVC's protection finalizer can be
+  removed and the namespace deletion finishes. In the same window each of
+  these is still denied: a spec change, a label, annotation or
+  `ownerReferences` change, a `deletionTimestamp` change, an added finalizer,
+  a removal on an object that is not being deleted, and a removal through a
+  subresource.
+
 The script stops the AgentGateway Deployment and waits until it is gone, then
 removes the Pod Identity association before its Kubernetes identity, then
 uninstalls OCE and deletes only receipt-matched system, adapter,
