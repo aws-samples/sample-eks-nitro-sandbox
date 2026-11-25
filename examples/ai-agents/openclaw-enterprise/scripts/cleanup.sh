@@ -1031,6 +1031,17 @@ class Cleanup:
 
     def verify_tenant_freeze(self, state, live_targets):
         for target in live_targets:
+            namespace = self.get(f"namespace/{target['name']}")
+            if not namespace or namespace.get("metadata", {}).get("uid") != target["uid"]:
+                fail(f"namespace/{target['name']} changed while verifying the admission freeze.")
+            if (
+                namespace.get("metadata", {}).get("deletionTimestamp")
+                or namespace.get("status", {}).get("phase") == "Terminating"
+            ):
+                # NamespaceLifecycle rejects CREATE before admission policies
+                # run, so its verified deletion state replaces this probe.
+                self.require_namespace_deletion_started(target["name"], target["uid"])
+                continue
             probe = {
                 "apiVersion": "v1",
                 "kind": "ConfigMap",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -2424,6 +2425,124 @@ def test_namespace_lifecycle_denies_create_without_cleanup_binding(
     assert result.returncode == 1
     assert "because it is being terminated" in result.stderr
     assert _state(env) == state
+
+
+@pytest.mark.parametrize(
+    ("uid", "phase", "timestamp", "probe_code", "probe_error", "diagnostic"),
+    [
+        ("target-uid", "Terminating", "2026-11-26T00:00:00Z", 1, "native denial", None),
+        ("replacement-uid", "Terminating", "2026-11-26T00:00:00Z", 1, "", "changed while verifying"),
+        ("target-uid", "Terminating", None, 1, "", "has not entered deletion"),
+        ("target-uid", "Active", "2026-11-26T00:00:00Z", 1, "", "has not entered deletion"),
+        ("target-uid", "Terminating", "", 1, "", "has not entered deletion"),
+        ("target-uid", "Active", None, 1, "UID-bound freeze denial", None),
+        ("target-uid", "Active", None, 1, "because it is being terminated", "could not be verified"),
+        ("target-uid", "Active", None, 0, "UID-bound freeze denial", "could not be verified"),
+    ],
+    ids=[
+        "terminating-native-barrier", "replaced-namespace", "phase-only",
+        "timestamp-only", "empty-timestamp", "active-freeze-denial",
+        "active-native-denial", "active-create-allowed",
+    ],
+)
+def test_tenant_freeze_verification_requires_exact_namespace_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+    uid: str,
+    phase: str,
+    timestamp: str | None,
+    probe_code: int,
+    probe_error: str,
+    diagnostic: str | None,
+) -> None:
+    # Execute the production methods, including their shared termination guard.
+    source = CLEANUP.read_text().split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    tree = ast.parse(source)
+    cleanup_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Cleanup"
+    )
+    cleanup_class.body = [
+        node for node in cleanup_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"verify_tenant_freeze", "require_namespace_deletion_started"}
+    ]
+    definitions = [
+        node for node in tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+        and node.name in {"CleanupError", "fail"}
+    ]
+    namespace: dict[str, Any] = {"json": json, "subprocess": subprocess}
+    exec(compile(ast.Module(
+        body=[*definitions, cleanup_class], type_ignores=[],
+    ), str(CLEANUP), "exec"), namespace)
+    cleanup = namespace["Cleanup"]()
+    cleanup.k = ["fake-kubectl"]
+    target = {"name": "openclaw-tenant-a", "uid": "target-uid"}
+    live = {
+        "metadata": {"uid": uid, "deletionTimestamp": timestamp},
+        "status": {"phase": phase},
+    }
+    reads: list[str] = []
+    probes: list[dict[str, Any]] = []
+
+    def get(key: str) -> dict[str, Any]:
+        reads.append(key)
+        assert key == f"namespace/{target['name']}"
+        return live
+
+    def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert args == ["fake-kubectl", "create", "--dry-run=server", "-f", "-"]
+        probes.append(json.loads(kwargs["input"]))
+        return subprocess.CompletedProcess(args, probe_code, "", probe_error)
+
+    cleanup.get = get
+    monkeypatch.setattr(subprocess, "run", run)
+    state = {"denialMessage": "UID-bound freeze denial"}
+    if diagnostic:
+        with pytest.raises(namespace["CleanupError"], match=diagnostic):
+            cleanup.verify_tenant_freeze(state, [target])
+    else:
+        cleanup.verify_tenant_freeze(state, [target])
+    expected_probes = int(phase == "Active" and timestamp is None)
+    assert len(probes) == expected_probes
+    if probes:
+        assert probes[0]["kind"] == "ConfigMap"
+        assert probes[0]["metadata"]["namespace"] == target["name"]
+    assert len(reads) == (
+        2 if uid == target["uid"] and (phase == "Terminating" or timestamp) else 1
+    )
+
+
+def test_terminating_tenant_retry_recovers_owned_freeze_and_finishes(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after="binding")
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    live = state["resources"][f"namespace/{tenant}"]
+    live["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+    live["status"] = {"phase": "Terminating"}
+    state["delayedNamespaceDeletion"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["resources"] == {}
+    assert current["pvcs"] == []
+    assert current["pvs"] == []
+    events = current["namespaceLifecycleEvents"]
+    binding_removed = next(
+        index for index, event in enumerate(events)
+        if event[0] == "binding-deleted"
+    )
+    assert events.index(["finalized", tenant]) > binding_removed
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
 
 
 def test_private_freeze_state_mode_is_fail_closed_with_exact_diagnostic(

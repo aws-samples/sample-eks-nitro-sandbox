@@ -1538,9 +1538,12 @@ cleanup set. With `--delete-tenant-data`, cleanup records each namespace UID
 and tenant-bound persistent volume, temporarily blocks namespaced `CREATE` and
 `UPDATE` requests, removes the OCE control plane, and deletes only those exact
 namespaces. It waits until the tenant namespaces, PVCs, and recorded PVs are
-absent before removing the temporary freeze or the original Nitro admission
-controls. If cleanup stops partway through, rerun the same command and private
-state. You may omit the `--tenant-namespace-uid` flags on a retry; cleanup uses
+absent before removing the original Nitro admission controls. Once every
+recorded namespace has entered deletion, cleanup removes the temporary freeze:
+Kubernetes prevents new content in terminating namespaces while its controllers
+finish deleting existing resources. If cleanup stops partway through, rerun the
+same command and private state. You may omit the `--tenant-namespace-uid` flags
+on a retry; cleanup uses
 the protected deletion record created by the first attempt. That record
 prevents a same-name replacement from being accepted.
 
@@ -1555,8 +1558,9 @@ reused workload or dependency.
 
 Before deleting each blueprint-owned system namespace, cleanup also
 temporarily denies namespaced `CREATE` and `UPDATE` requests and verifies the
-guard with a server-side dry-run ConfigMap. `DELETE` requests remain available
-throughout cleanup.
+guard with a server-side dry-run ConfigMap. For a namespace already terminating,
+it verifies the recorded UID and deletion state instead. `DELETE` requests
+remain available throughout cleanup.
 
 It preserves any external database. It deletes the blueprint StorageClass only
 when no PVC still references it. Cleanup reports intentionally preserved
