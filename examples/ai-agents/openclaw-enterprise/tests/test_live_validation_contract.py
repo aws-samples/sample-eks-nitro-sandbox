@@ -1140,6 +1140,22 @@ FAKE_COMMAND = textwrap.dedent(
             else:
                 emit({{"marker": "LIVE_PEER_FORGED_IDENTITY", "result": "timeout"}})
             sys.exit(0)
+        if "LIVE_IMDS_PROBE" in joined:
+            if (
+                "__OCE_EXACT_POD_COMMAND__" not in args
+                or namespace not in ("tenant-a-k8s", "tenant-b-k8s")
+                or pod_name not in ("tenant-a-pod", "tenant-b-pod")
+                or remote[:2] != ["node", "-e"]
+            ):
+                print("invalid instance metadata probe", file=sys.stderr)
+                sys.exit(109)
+            with (state_dir / "imds_calls.jsonl").open("a") as calls:
+                calls.write(json.dumps({{"namespace": namespace, "pod": pod_name}}) + "\\n")
+            emit({{
+                "marker": "LIVE_IMDS_PROBE",
+                "result": "open" if scenario == "imds_reachable" else "timeout",
+            }})
+            sys.exit(0)
         print("unsupported fake exec", remote, file=sys.stderr)
         sys.exit(95)
 
@@ -2080,6 +2096,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         "runtime-isolation",
         "security-context",
         "aws-credential-absence",
+        "tenant-imds-unreachable",
         "tenant-storage-boundary",
         "pvc-name-resolution-is-namespaced",
         "guest-vm-boundary",
@@ -2110,6 +2127,14 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert forged_identity_calls == [
         {"target": "10.0.1.11", "port": "8080"},
         {"target": "10.0.1.21", "port": "8080"},
+    ]
+    imds_calls = [
+        json.loads(line)
+        for line in (tmp_path / "state" / "imds_calls.jsonl").read_text().splitlines()
+    ]
+    assert imds_calls == [
+        {"namespace": "tenant-a-k8s", "pod": "tenant-a-pod"},
+        {"namespace": "tenant-b-k8s", "pod": "tenant-b-pod"},
     ]
 
     sensitive_values = (
@@ -2575,6 +2600,7 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
         ("native_tool_wrong_final_reply", "native-openclaw-tool-execution"),
         ("native_tool_invalid_run_hash", "native-openclaw-tool-execution"),
         ("forged_identity_accepted", "tenant-gateway-peer-forged-identity"),
+        ("imds_reachable", "tenant-imds-unreachable"),
     ],
 )
 def test_live_run_fails_closed_on_security_contract_mismatch(
@@ -2636,6 +2662,23 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
     for secret in ("tenant-a-secret", "tenant-b-secret"):
         assert secret not in command_log
         assert secret not in combined_output
+
+
+def test_imds_probe_runs_in_each_exact_tenant_runtime() -> None:
+    source = SCRIPT.read_text()
+    probe = source.split("probe_tenant_imds() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert 'host: "169.254.169.254", port: 80' in probe
+    assert 'exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" node -e' in probe
+    assert '(.result == "timeout" or .result == "error")' in probe
+    assert source.count('probe_tenant_imds "tenant-') == 2
+    # After the guest evidence, whose exact-pod execs the UID-change contract tests target first.
+    assert source.index('record_pass "guest-vm-boundary"') < source.index(
+        'CURRENT_CHECK="tenant-imds-unreachable"'
+    )
+    readme = " ".join((ROOT / "README.md").read_text().split())
+    assert "`169.254.169.254:80`" in readme
+    assert "the IPv6 address is not probed" in readme
 
 
 def test_forged_identity_probe_runs_from_the_ordinary_peer_pod() -> None:

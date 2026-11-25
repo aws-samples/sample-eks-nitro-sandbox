@@ -1713,6 +1713,44 @@ verify_service_account "tenant-b" "$TENANT_B_NAMESPACE" "$WORK_DIR/tenant-b-pod.
   "$WORK_DIR/tenant-b-sa.json" "$WORK_DIR/tenant-b-associations.json"
 record_pass "aws-credential-absence" "pod, service-account, token, and Pod Identity checks passed"
 
+# Without an AWS credential in the pod, the node's instance metadata service is the remaining way for a
+# runtime to obtain the node role. Each runtime must fail to open a TCP connection to the IPv4 IMDS address.
+probe_tenant_imds() {
+  local tenant_alias="$1"
+  local namespace="$2"
+  local pod="$3"
+  local container="$4"
+  local expected_uid="$5"
+  local output_file="$6"
+  exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" node -e '
+    const net = require("node:net");
+    const marker = "LIVE_IMDS_PROBE";
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      process.stdout.write(JSON.stringify({ marker, ...result }) + "\n");
+      process.exit(0);
+    };
+    const socket = net.connect({ host: "169.254.169.254", port: 80, timeout: 5000 });
+    socket.on("connect", () => {
+      socket.destroy();
+      finish({ result: "open" });
+    });
+    socket.on("timeout", () => {
+      socket.destroy();
+      finish({ result: "timeout" });
+    });
+    socket.on("error", error => finish({ result: "error", code: String(error.code || "unknown") }));
+    setTimeout(() => finish({ result: "timeout" }), 8000).unref();
+  ' >"$output_file" || die "instance metadata probe for $tenant_alias did not run"
+  jq -e '
+    .marker == "LIVE_IMDS_PROBE"
+    and (.result == "timeout" or .result == "error")
+  ' "$output_file" >/dev/null ||
+    die "$tenant_alias runtime opened a TCP connection to the instance metadata service"
+}
+
 guest_evidence() {
   local namespace="$1"
   local pod="$2"
@@ -1921,6 +1959,14 @@ GUEST_BOOT_IDS=(
 } >>"$EVIDENCE_FILE"
 record_pass "guest-vm-boundary" \
   "sandbox guests exposed virtio disks, the ordinary pod exposed NVMe, and all three boot IDs differed"
+
+CURRENT_CHECK="tenant-imds-unreachable"
+probe_tenant_imds "tenant-a" "$TENANT_A_NAMESPACE" "$TENANT_A_POD" "$TENANT_A_CONTAINER" \
+  "$TENANT_A_POD_UID" "$WORK_DIR/imds-tenant-a.json"
+probe_tenant_imds "tenant-b" "$TENANT_B_NAMESPACE" "$TENANT_B_POD" "$TENANT_B_CONTAINER" \
+  "$TENANT_B_POD_UID" "$WORK_DIR/imds-tenant-b.json"
+record_pass "tenant-imds-unreachable" \
+  "neither tenant runtime could open a TCP connection to 169.254.169.254:80"
 
 CURRENT_CHECK="agentgateway-health"
 kube -n "$AGW_NAMESPACE" get deployment "$AGW_DEPLOYMENT" -o json \

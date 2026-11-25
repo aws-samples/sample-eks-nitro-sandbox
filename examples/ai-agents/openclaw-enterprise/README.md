@@ -1401,7 +1401,9 @@ The command exits zero only after it verifies:
    validator rechecks it before managed-runtime commands to reject pod-name
    reuse.
 2. Each sandbox has a distinct kernel, boot identity, PVC, and PV.
-3. Neither runtime receives an AWS credential path.
+3. Neither runtime receives an AWS credential path, and neither can open a TCP
+   connection to the instance metadata address `169.254.169.254:80` (the IPv6
+   address is not probed).
 4. The runtimes bind to distinct namespace-local PVCs and PVs. Forged pod,
    forged revision ConfigMap, and ephemeral-container update requests are
    denied.
