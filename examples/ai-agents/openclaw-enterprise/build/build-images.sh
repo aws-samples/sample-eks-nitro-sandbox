@@ -76,7 +76,7 @@ require_matching_oce_node_bases() {
 readonly OCE_REPOSITORY_URL="https://github.com/openclaw/openclaw-enterprise.git"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY="gcr.io/distroless/nodejs24-debian13"
 readonly CONTROLLER_RUNTIME_BASE_IMAGE_TAG="nonroot"
-readonly CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST="sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a"
+readonly CONTROLLER_RUNTIME_BASE_IMAGE_ALLOWLIST_DIGEST="sha256:39b0407357c9fadf1a9708d22088f02de21f0e1e8a688474eea2d8701e7d5693"
 readonly INSPECTOR_SCAN_POLL_SECONDS=5
 readonly INSPECTOR_SCAN_STABLE_OBSERVATIONS=13
 
@@ -235,6 +235,20 @@ ownership_helper_tagged="${REGISTRY}/${OWNERSHIP_HELPER_REPOSITORY}:${sample_tag
 runtime_tagged="${REGISTRY}/${RUNTIME_REPOSITORY}:${oce_tag}"
 OWNERSHIP_HELPER_BUILDER_IMAGE="public.ecr.aws/docker/library/golang:1.26.9-alpine3.23@sha256:6750308561953d451210ed1a8086d36c8c8bdcbf672d38d9d0d424b8a7a0216c"
 
+read_digest() {
+  python3 -c '
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    digest = json.load(handle).get("containerimage.digest", "")
+if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+    raise SystemExit(f"invalid image digest in {sys.argv[1]}: {digest!r}")
+print(digest)
+' "$1"
+}
+
 docker buildx build \
   --pull \
   --push \
@@ -256,25 +270,6 @@ docker buildx build \
   --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
   --tag "$ownership_helper_tagged" \
   "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/ownership-helper"
-reclaim_build_disk
-
-readonly CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY}:${CONTROLLER_RUNTIME_BASE_IMAGE_TAG}@${CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST}"
-
-docker buildx build \
-  --pull \
-  --push \
-  --provenance=false \
-  --platform "${TARGET_PLATFORM:-linux/amd64}" \
-  --target runtime \
-  --metadata-file "$metadata_dir/controller.json" \
-  --build-arg "NODE_BUILD_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE" \
-  --build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE" \
-  --build-arg "OCC_BUILD_REVISION=$OCE_SOURCE_REVISION" \
-  --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
-  --label "org.openclaw.enterprise.source-revision=$OCE_SOURCE_REVISION" \
-  --file "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile" \
-  --tag "$controller_tagged" \
-  "$OCE_SOURCE_DIR"
 reclaim_build_disk
 
 mapfile -t openclaw_source_args < <(
@@ -306,19 +301,28 @@ docker buildx build \
   --tag "$runtime_tagged" \
   "$OCE_SOURCE_DIR"
 
-read_digest() {
-  python3 -c '
-import json
-import re
-import sys
+reclaim_build_disk
+runtime_digest="$(read_digest "$metadata_dir/runtime.json")"
+readonly REPAIRED_RUNTIME_IMAGE="${REGISTRY}/${RUNTIME_REPOSITORY}@${runtime_digest}"
 
-with open(sys.argv[1], encoding="utf-8") as handle:
-    digest = json.load(handle).get("containerimage.digest", "")
-if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-    raise SystemExit(f"invalid image digest in {sys.argv[1]}: {digest!r}")
-print(digest)
-' "$1"
-}
+readonly CONTROLLER_RUNTIME_BASE_IMAGE="${CONTROLLER_RUNTIME_BASE_IMAGE_REPOSITORY}:${CONTROLLER_RUNTIME_BASE_IMAGE_TAG}@${CONTROLLER_RUNTIME_BASE_IMAGE_DIGEST}"
+
+docker buildx build \
+  --pull \
+  --push \
+  --provenance=false \
+  --platform "${TARGET_PLATFORM:-linux/amd64}" \
+  --target runtime \
+  --metadata-file "$metadata_dir/controller.json" \
+  --build-arg "NODE_BUILD_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE" \
+  --build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE" \
+  --build-arg "REPAIRED_RUNTIME_IMAGE=$REPAIRED_RUNTIME_IMAGE" \
+  --build-arg "OCC_BUILD_REVISION=$OCE_SOURCE_REVISION" \
+  --label "org.opencontainers.image.revision=$SAMPLE_SOURCE_REVISION" \
+  --label "org.openclaw.enterprise.source-revision=$OCE_SOURCE_REVISION" \
+  --file "$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/controller-runtime.Dockerfile" \
+  --tag "$controller_tagged" \
+  "$OCE_SOURCE_DIR"
 
 adapter_digest="$(read_digest "$metadata_dir/adapter.json")"
 controller_digest="$(read_digest "$metadata_dir/controller.json")"
@@ -481,6 +485,7 @@ export ADAPTER_IMAGE CONTROLLER_IMAGE OWNERSHIP_INIT_IMAGE RUNTIME_IMAGE
 export OWNERSHIP_HELPER_BUILDER_IMAGE
 export SAMPLE_SOURCE_REVISION OCE_SOURCE_REVISION
 export OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
+export CONTROLLER_RUNTIME_BASE_IMAGE REPAIRED_RUNTIME_IMAGE
 export OPENSSL_BACKPORT_CVE OPENSSL_BACKPORT_PATCH_SHA256
 export OPENSSL_BACKPORT_UPSTREAM_COMMIT
 export OPENSSL_88823_BACKPORT_CVE OPENSSL_88823_BACKPORT_PATCH_SHA256
@@ -517,6 +522,8 @@ result = {
         "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
     },
     "controller": {
+        "baseImage": os.environ["CONTROLLER_RUNTIME_BASE_IMAGE"],
+        "repairedRuntimeImage": os.environ["REPAIRED_RUNTIME_IMAGE"],
         "image": os.environ["CONTROLLER_IMAGE"],
         "oceSourceRevision": os.environ["OCE_SOURCE_REVISION"],
         "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],

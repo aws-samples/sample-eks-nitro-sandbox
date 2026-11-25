@@ -143,6 +143,28 @@ REVIEWED_BACKPORTS = {
 }
 
 
+# Preserve historical signatures and add only the observed generic-only inventory.
+for cve in ("CVE-2026-88823", "CVE-2026-95692"):
+    policy = REVIEWED_BACKPORTS[cve]
+    policy["package_sets"] = [
+        policy["packages"],
+        [
+            {
+                "name": "openssl/openssl",
+                "version": "3.5.9",
+                "epoch": 0,
+                "packageManager": "GENERIC",
+                "fixedInVersion": "3.5.10",
+                "filePath": path,
+                "remediation": (
+                    "Update affected packages to fixed version (or newer)."
+                ),
+            }
+            for path in sorted(NODE_OPENSSL_PATHS)
+        ],
+    ]
+
+
 def fail(message: str, status: int = 1) -> None:
     print(f"Inspector image scan: {message}", file=sys.stderr)
     raise SystemExit(status)
@@ -302,8 +324,14 @@ def validate_resource(finding: dict[str, Any]) -> None:
         fail("finding does not match the requested image")
 
 
-def package_signature(package: dict[str, Any]) -> tuple[Any, ...]:
-    return tuple(package.get(field) for field in PACKAGE_FIELDS)
+def package_signature(package: dict[str, Any]) -> str:
+    # Preserve JSON types and distinguish omitted fields from explicit nulls.
+    return json.dumps(
+        {field: package[field] for field in PACKAGE_FIELDS if field in package},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def is_reviewed_backport(finding: dict[str, Any]) -> bool:
@@ -329,7 +357,13 @@ def is_reviewed_backport(finding: dict[str, Any]) -> bool:
 
     if not all(isinstance(package, dict) for package in packages):
         return False
-    actual_packages = sorted(package_signature(package) for package in packages)
+    # JSON booleans must not compare equal to the reviewed integer epoch 0.
+    if any(isinstance(package.get("epoch"), bool) for package in packages):
+        return False
+    try:
+        actual_packages = sorted(package_signature(package) for package in packages)
+    except (TypeError, ValueError):
+        return False
     expected_package_sets = policy.get("package_sets")
     if expected_package_sets is None:
         expected_package_sets = [policy["packages"]]
