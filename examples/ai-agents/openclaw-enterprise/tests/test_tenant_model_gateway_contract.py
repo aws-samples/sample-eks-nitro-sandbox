@@ -486,11 +486,15 @@ def test_readme_step_7_recovers_an_interrupted_first_run() -> None:
         "Then inspect only the two objects the script creates",
         "get configmap/agentgateway-ca networkpolicy/oce-private-service-egress",
         (
-            "Delete, deliberately and by name, only the object or objects that the refusal "
-            "names as not recorded by the receipt."
+            "Delete, deliberately and by name, only the object that the refusal names as "
+            "not recorded by the receipt."
         ),
         "delete configmap/agentgateway-ca",
         "Then rerun `configure-tenant-model-gateway.sh` with the same receipt path.",
+        (
+            "The script reports one unrecorded object per run, so when both objects exist you "
+            "need two delete-and-rerun rounds. Repeat until the rerun reports no unrecorded object."
+        ),
         "when the refusal says an object is missing or was replaced since the receipt recorded it.",
     ]
     positions = [text.index(" ".join(part.split())) for part in steps]
@@ -502,7 +506,9 @@ def test_readme_step_7_recovers_an_interrupted_first_run() -> None:
     deletes = [line for c in commands for line in c.splitlines() if " delete" in f" {line}"]
     assert [line.strip() for line in deletes] == ["delete configmap/agentgateway-ca"]
     assert "--all" not in recovery and "--selector" not in commands[2]
-    # The refusal points the operator here.
-    assert "If the first run was interrupted, follow README Step 7." in SCRIPT.read_text(
-        encoding="utf-8"
-    )
+    # The refusal points the operator here, and it stops at the first unrecorded object, which is why
+    # the page asks for one delete-and-rerun round per object.
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "If the first run was interrupted, follow README Step 7." in script
+    refusal_loop = script.split('for live in "configmap/agentgateway-ca|', 1)[1].split("\n  done\n", 1)[0]
+    assert "die " in refusal_loop and "refusing to adopt it." in refusal_loop

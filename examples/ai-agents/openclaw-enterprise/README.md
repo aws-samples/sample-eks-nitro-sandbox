@@ -1054,9 +1054,9 @@ refuses a same-name object that the receipt does not record. Keep the receipt
 with the rest of the private state.
 
 If the first run was interrupted before it wrote the receipt, a rerun refuses
-each of those two objects that already exists, because the receipt does not
-record it. To recover, first confirm that no tenant Agent has started: this
-command must list no gateway Pod in the tenant namespace.
+an object that already exists, because the receipt does not record it. To
+recover, first confirm that no tenant Agent has started: this command must
+list no gateway Pod in the tenant namespace.
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" get pods \
@@ -1072,17 +1072,20 @@ kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
   --output=custom-columns='KIND:.kind,NAME:.metadata.name,UID:.metadata.uid'
 ```
 
-Delete, deliberately and by name, only the object or objects that the refusal
-names as not recorded by the receipt. For the ConfigMap, for example:
+Delete, deliberately and by name, only the object that the refusal names as
+not recorded by the receipt. For the ConfigMap, for example:
 
 ```bash
 kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
   delete configmap/agentgateway-ca
 ```
 
-Then rerun `configure-tenant-model-gateway.sh` with the same receipt path. Do
-not use these steps when a gateway Pod is listed, or when the refusal says an
-object is missing or was replaced since the receipt recorded it.
+Then rerun `configure-tenant-model-gateway.sh` with the same receipt path. The
+script reports one unrecorded object per run, so when both objects exist you
+need two delete-and-rerun rounds. Repeat until the rerun reports no unrecorded
+object. Do not use these steps when a gateway Pod is listed, or when the
+refusal says an object is missing or was replaced since the receipt recorded
+it.
 
 OCE creates the tenant namespace with `restricted` Pod Security for
 `enforce`, `audit`, and `warn`. `configure-tenant-model-gateway.sh` lowers
