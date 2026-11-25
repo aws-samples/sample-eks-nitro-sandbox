@@ -25,7 +25,8 @@ Usage:
 
 Create assigns a random run identity to a new CloudFormation stack and records
 the exact stack ARN in a private receipt. Delete verifies the caller, Region,
-stack ARN, and ownership tags before removing that stack.
+stack ARN, and ownership tags before removing that stack. Both run only as the
+principal in OPENCLAW_EXPECTED_CALLER_ARN.
 EOF
 }
 
@@ -33,6 +34,28 @@ die() {
   cleanup
   printf 'image-build-stack: %s\n' "$*" >&2
   exit 1
+}
+
+# OPENCLAW_EXPECTED_CALLER_ARN names the one AWS principal that may change this sample's AWS resources: an
+# IAM user ARN, or an assumed-role ARN without its session name. Compare the caller with it before any change.
+require_expected_caller() {
+  local expected="${OPENCLAW_EXPECTED_CALLER_ARN:-}" identity
+  [[ "$expected" =~ ^arn:aws[a-z-]*:(iam::[0-9]{12}:user/[A-Za-z0-9+=,.@_/-]+|sts::[0-9]{12}:assumed-role/[A-Za-z0-9+=,.@_-]+)$ ]] ||
+    die "OPENCLAW_EXPECTED_CALLER_ARN must be an IAM user ARN or an assumed-role ARN without its session name."
+  identity=$(aws sts get-caller-identity --output json) ||
+    die "could not read the AWS caller identity."
+  jq -e --arg expected "$expected" '
+    (.Arn | type == "string")
+    and (
+      .Arn == $expected
+      or (
+        ($expected | contains(":assumed-role/"))
+        and (.Arn | startswith($expected + "/"))
+        and (.Arn | ltrimstr($expected + "/") | test("^[A-Za-z0-9+=,.@_-]{2,64}$"))
+      )
+    )
+  ' <<<"$identity" >/dev/null ||
+    die "the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN $expected."
 }
 
 require_value() {
@@ -280,6 +303,7 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+require_expected_caller
 
 if [[ "$action" == create ]]; then
   [[ ! -e "$receipt" && ! -L "$receipt" ]] ||

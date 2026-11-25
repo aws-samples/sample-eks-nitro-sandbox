@@ -38,6 +38,7 @@ EXISTING_INVOCATION_ID = "0123456789abcdef0123456789abcdef"
 NAMESPACE_UID = "uid-agentgateway-namespace"
 SERVICE_ACCOUNT_UID = "uid-agentgateway-service-account"
 CONFIG_MAP_UID = "uid-agentgateway-region-config-map"
+EXPECTED_CALLER_ARN = f"arn:aws:sts::{ACCOUNT}:assumed-role/validation"
 ARGS = (
     "--aws-region",
     REGION,
@@ -345,7 +346,14 @@ def _install_fake_cli(bin_dir: pathlib.Path) -> None:
             raise SystemExit("simulated failure")
 
         if operation == "sts:get-caller-identity":
-            aws_response(operation, {"Account": state["account"]})
+            aws_response(operation, {
+                "Account": state["account"],
+                "Arn": state.get(
+                    "caller_arn",
+                    "arn:aws:sts::" + state["account"]
+                    + ":assumed-role/validation/session-1",
+                ),
+            })
         elif operation == "eks:describe-cluster":
             aws_response(operation, {"cluster": state["cluster"]})
         elif operation == "iam:get-role":
@@ -538,6 +546,7 @@ def _run_setup(
             "FAKE_AWS_LOG": str(aws_log),
             "FAKE_KUBE_LOG": str(kube_log),
             "KUBECONFIG": str(kubeconfig),
+            "OPENCLAW_EXPECTED_CALLER_ARN": EXPECTED_CALLER_ARN,
             **(extra_env or {}),
         },
     )
@@ -1006,3 +1015,36 @@ def test_existing_receipt_rejects_replaced_region_config_map(
     )
     assert second.returncode != 0
     assert not _mutating_aws_calls(aws_calls)
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/other-role/session-1",
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/validation-admin/session-1",
+        f"arn:aws:iam::{ACCOUNT}:user/validation",
+    ],
+)
+def test_same_account_wrong_caller_changes_nothing(
+    tmp_path: pathlib.Path, caller: str
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    state = _base_state()
+    state["caller_arn"] = caller
+
+    result, aws_calls, kube_calls, _ = _run_setup(
+        tmp_path, state=state, args=_receipt_args(receipt)
+    )
+
+    assert result.returncode != 0
+    assert (
+        f"the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN {EXPECTED_CALLER_ARN}."
+        in result.stderr
+    )
+    assert not _mutating_aws_calls(aws_calls)
+    assert not [
+        call
+        for call in kube_calls
+        if {"apply", "create", "patch", "label", "annotate", "delete"}.intersection(call)
+    ]
+    assert not receipt.exists()

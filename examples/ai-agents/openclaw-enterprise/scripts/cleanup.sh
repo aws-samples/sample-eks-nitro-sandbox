@@ -34,6 +34,12 @@ SETUP_KEY = "openclaw-enterprise.aws.dev/setup-token"
 POD_SETUP_KEY = "openclaw.enterprise/setup-invocation"
 INVOCATION_TAG = "OpenClawSetupInvocation"
 AWS_ABSENT = ("NoSuchEntity", "ResourceNotFoundException")
+# OPENCLAW_EXPECTED_CALLER_ARN: an IAM user ARN, or an assumed-role ARN without its session name.
+EXPECTED_CALLER = re.compile(
+    r"arn:aws[a-z-]*:(iam::\d{12}:user/[A-Za-z0-9+=,.@_/-]+"
+    r"|sts::\d{12}:assumed-role/[A-Za-z0-9+=,.@_-]+)"
+)
+ROLE_SESSION = re.compile(r"[A-Za-z0-9+=,.@_-]{2,64}")
 TENANT_WORKLOADS = (
     "pods,deployments.apps,statefulsets.apps,daemonsets.apps,"
     "jobs.batch,cronjobs.batch,replicasets.apps"
@@ -1847,6 +1853,27 @@ class Cleanup:
                 fail("Pod Identity association still exists after deletion.")
             time.sleep(2)
 
+    def validate_expected_caller(self):
+        # AWS cleanup runs only as the one principal the operator named, checked before any change.
+        if not self.pod:
+            return
+        expected = os.environ.get("OPENCLAW_EXPECTED_CALLER_ARN", "")
+        if not EXPECTED_CALLER.fullmatch(expected):
+            fail(
+                "OPENCLAW_EXPECTED_CALLER_ARN must be an IAM user ARN or an "
+                "assumed-role ARN without its session name."
+            )
+        arn = self.aws_json("sts", "get-caller-identity").get("Arn")
+        session = (
+            arn[len(expected) + 1:]
+            if isinstance(arn, str) and arn.startswith(expected + "/")
+            else ""
+        )
+        if arn != expected and not (
+            ":assumed-role/" in expected and ROLE_SESSION.fullmatch(session)
+        ):
+            fail(f"the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN {expected}.")
+
     def validate_aws(self):
         if not self.pod:
             return
@@ -1947,6 +1974,7 @@ class Cleanup:
         self.validate_install_receipt()
         self.validate_lifecycle_receipts()
         self.validate_local_credentials()
+        self.validate_expected_caller()
         self.recover_freeze()
         helm = self.helm_present()
         self.verify_cluster_resources()

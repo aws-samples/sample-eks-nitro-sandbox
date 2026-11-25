@@ -70,6 +70,12 @@ def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
             set -euo pipefail
             printf '%s\\n' "$*" >>"$FAKE_AWS_LOG"
             if [[ "$1 $2" == "sts get-caller-identity" ]]; then
+              if [[ " $* " == *" --output json "* ]]; then
+                printf '{"Account":"%s","Arn":"%s"}\\n' \\
+                  "${FAKE_ACCOUNT_ID:-123456789012}" \\
+                  "${FAKE_CALLER_ARN:-arn:aws:sts::123456789012:assumed-role/validation/session-1}"
+                exit 0
+              fi
               printf '%s\\n' "${FAKE_ACCOUNT_ID:-123456789012}"
               exit 0
             fi
@@ -223,6 +229,7 @@ def _environment(
             "PATH": f"{bin_dir}:{environment['PATH']}",
             "FAKE_AWS_LOG": str(aws_log),
             "FAKE_AWS_STATE": str(tmp_path / "aws-state"),
+            "OPENCLAW_EXPECTED_CALLER_ARN": "arn:aws:sts::123456789012:assumed-role/validation",
         }
     )
     return environment
@@ -946,3 +953,47 @@ def test_readme_cleanup_names_kms_keys_left_pending_deletion() -> None:
         any(tag.get("Key") == "OpenClawValidationRun" for tag in key["Properties"]["Tags"])
         for key in keys
     )
+
+
+@pytest.mark.parametrize("action", ["create", "delete"])
+@pytest.mark.parametrize(
+    "caller",
+    [
+        "arn:aws:sts::123456789012:assumed-role/other-role/session-1",
+        "arn:aws:sts::123456789012:assumed-role/validation-admin/session-1",
+        "arn:aws:iam::123456789012:user/validation",
+    ],
+)
+def test_same_account_wrong_caller_changes_nothing(
+    tmp_path: pathlib.Path, action: str, caller: str
+) -> None:
+    private_dir = tmp_path / "private"
+    private_dir.mkdir(mode=0o700)
+    receipt = private_dir / "image-build-stack.json"
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    environment["FAKE_CALLER_ARN"] = caller
+    if action == "delete":
+        _write_receipt(receipt, "created", STACK_ARN)
+        environment["FAKE_STACK_EXISTS"] = "1"
+    before = receipt.read_text(encoding="utf-8") if receipt.exists() else None
+
+    result = subprocess.run(
+        _create_command(receipt)
+        if action == "create"
+        else ["bash", str(SCRIPT), "delete", "--receipt", str(receipt)],
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN "
+        "arn:aws:sts::123456789012:assumed-role/validation." in result.stderr
+    )
+    calls = aws_log.read_text(encoding="utf-8") if aws_log.exists() else ""
+    assert "cloudformation deploy" not in calls
+    assert "cloudformation delete-stack" not in calls
+    assert (receipt.read_text(encoding="utf-8") if receipt.exists() else None) == before

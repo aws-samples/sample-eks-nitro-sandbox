@@ -236,6 +236,7 @@ export AWS_PROFILE='<aws-cli-profile>'
 export KUBECONFIG='<absolute-kubeconfig-path>'
 export KUBE_CONTEXT='<eks-kube-context>'
 export AWS_ACCOUNT_ID='<12-digit-account-id>'
+export OPENCLAW_EXPECTED_CALLER_ARN='arn:aws:sts::<12-digit-account-id>:assumed-role/<role-name>'
 export AWS_REGION='us-west-2'
 export EKS_CLUSTER_NAME='<eks-cluster-name>'
 export PRIVATE_STATE_DIR='<private-directory-outside-the-repository>'
@@ -279,6 +280,15 @@ node_major="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
 test "$node_major" -ge 22
 docker version >/dev/null
 ```
+
+Set `OPENCLAW_EXPECTED_CALLER_ARN` to the AWS principal you run these steps
+as: an assumed-role ARN without its session name, as above, or an IAM user ARN.
+Type it yourself rather than copying it from `aws sts get-caller-identity`.
+`manage-builder-repository.sh`, `manage-image-build-stack.sh`,
+`setup-agentgateway-pod-identity.sh`, and `cleanup.sh` (when it removes the
+AgentGateway AWS resources) compare the caller with it before they change
+anything, and stop if the caller is another role or user, even in the same
+account.
 
 Install the pinned cert-manager release when the cluster does not already have
 a shared cert-manager installation:

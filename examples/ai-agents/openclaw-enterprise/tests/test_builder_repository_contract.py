@@ -10,6 +10,8 @@ import subprocess
 import textwrap
 import time
 
+import pytest
+
 SAMPLE = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = SAMPLE / "scripts" / "manage-builder-repository.sh"
 README = SAMPLE / "README.md"
@@ -18,6 +20,7 @@ REPOSITORY_NAME = f"openclaw-enterprise/codebuild-builder-{RUN_ID}"
 REPOSITORY_ARN = (
     "arn:aws:ecr:us-west-2:123456789012:repository/" + REPOSITORY_NAME
 )
+EXPECTED_CALLER_ARN = "arn:aws:sts::123456789012:assumed-role/validation"
 
 
 def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
@@ -32,6 +35,12 @@ def _fake_tools(tmp_path: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
             set -euo pipefail
             printf '%s\\n' "$*" >>"$FAKE_AWS_LOG"
             if [[ "$1 $2" == "sts get-caller-identity" ]]; then
+              if [[ " $* " == *" --output json "* ]]; then
+                printf '{"Account":"%s","Arn":"%s"}\\n' \\
+                  "${FAKE_ACCOUNT_ID:-123456789012}" \\
+                  "${FAKE_CALLER_ARN:-arn:aws:sts::123456789012:assumed-role/validation/session-1}"
+                exit 0
+              fi
               printf '%s\\n' "${FAKE_ACCOUNT_ID:-123456789012}"
               exit 0
             fi
@@ -105,6 +114,7 @@ def _environment(
             "PATH": f"{bin_dir}:{environment['PATH']}",
             "FAKE_AWS_LOG": str(aws_log),
             "FAKE_AWS_STATE": str(tmp_path / "aws-state"),
+            "OPENCLAW_EXPECTED_CALLER_ARN": EXPECTED_CALLER_ARN,
         }
     )
     return environment
@@ -501,3 +511,53 @@ def test_delete_records_uncertain_result_and_can_resume(
     )
     assert resumed.returncode == 0, resumed.stderr
     assert json.loads(receipt.read_text(encoding="utf-8"))["status"] == "deleted"
+
+
+@pytest.mark.parametrize("action", ["create", "delete"])
+@pytest.mark.parametrize(
+    ("caller", "expected", "diagnostic"),
+    [
+        (
+            "arn:aws:sts::123456789012:assumed-role/other-role/session-1",
+            EXPECTED_CALLER_ARN,
+            f"the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN {EXPECTED_CALLER_ARN}.",
+        ),
+        (
+            "arn:aws:sts::123456789012:assumed-role/validation-admin/session-1",
+            EXPECTED_CALLER_ARN,
+            f"the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN {EXPECTED_CALLER_ARN}.",
+        ),
+        (
+            "arn:aws:sts::123456789012:assumed-role/validation/session-1",
+            "",
+            "OPENCLAW_EXPECTED_CALLER_ARN must be an IAM user ARN",
+        ),
+    ],
+)
+def test_same_account_wrong_caller_changes_nothing(
+    tmp_path: pathlib.Path, action: str, caller: str, expected: str, diagnostic: str
+) -> None:
+    receipt = _private_receipt(tmp_path)
+    bin_dir, aws_log = _fake_tools(tmp_path)
+    environment = _environment(tmp_path, bin_dir, aws_log)
+    environment["FAKE_CALLER_ARN"] = caller
+    environment["OPENCLAW_EXPECTED_CALLER_ARN"] = expected
+    if action == "delete":
+        _write_receipt(receipt, "created", REPOSITORY_ARN)
+        environment["FAKE_REPOSITORY_EXISTS"] = "1"
+    before = receipt.read_text(encoding="utf-8") if receipt.exists() else None
+
+    result = subprocess.run(
+        _create_command(receipt) if action == "create" else _delete_command(receipt),
+        check=False,
+        text=True,
+        capture_output=True,
+        env=environment,
+    )
+
+    assert result.returncode != 0
+    assert diagnostic in result.stderr
+    calls = aws_log.read_text(encoding="utf-8") if aws_log.exists() else ""
+    assert "ecr create-repository" not in calls
+    assert "ecr delete-repository" not in calls
+    assert (receipt.read_text(encoding="utf-8") if receipt.exists() else None) == before

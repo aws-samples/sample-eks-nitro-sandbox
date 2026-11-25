@@ -288,6 +288,23 @@ caller_account="$(jq -er '.Account | strings | select(test("^[0-9]{12}$"))' \
   <<<"${caller_json}")" || die "AWS returned an incomplete caller identity."
 [[ "${caller_account}" == "${AWS_ACCOUNT_ID}" ]] ||
   die "AWS CLI uses account ${caller_account}, not ${AWS_ACCOUNT_ID}."
+# OPENCLAW_EXPECTED_CALLER_ARN names the one AWS principal that may change this sample's AWS resources: an
+# IAM user ARN, or an assumed-role ARN without its session name. Compare the caller with it before any change.
+expected_caller="${OPENCLAW_EXPECTED_CALLER_ARN:-}"
+[[ "${expected_caller}" =~ ^arn:aws[a-z-]*:(iam::[0-9]{12}:user/[A-Za-z0-9+=,.@_/-]+|sts::[0-9]{12}:assumed-role/[A-Za-z0-9+=,.@_-]+)$ ]] ||
+  die "OPENCLAW_EXPECTED_CALLER_ARN must be an IAM user ARN or an assumed-role ARN without its session name."
+jq -e --arg expected "${expected_caller}" '
+  (.Arn | type == "string")
+  and (
+    .Arn == $expected
+    or (
+      ($expected | contains(":assumed-role/"))
+      and (.Arn | startswith($expected + "/"))
+      and (.Arn | ltrimstr($expected + "/") | test("^[A-Za-z0-9+=,.@_-]{2,64}$"))
+    )
+  )
+' <<<"${caller_json}" >/dev/null ||
+  die "the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN ${expected_caller}."
 cluster_json="$(aws_json "EKS cluster" eks describe-cluster \
   --name "${EKS_CLUSTER_NAME}")"
 cluster_record="$(jq -er \

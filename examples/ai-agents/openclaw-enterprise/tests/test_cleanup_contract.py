@@ -446,7 +446,13 @@ def aws():
     action = command[:2]
     data = state["aws"]
     if action == ["sts", "get-caller-identity"]:
-        print(json.dumps({"Account": data["account"]}))
+        print(json.dumps({
+            "Account": data["account"],
+            "Arn": data.get(
+                "callerArn",
+                f"arn:aws:sts::{data['account']}:assumed-role/validation/session-1",
+            ),
+        }))
         return
     if action == ["eks", "describe-cluster"]:
         print(json.dumps({"cluster": {"arn": data["clusterArn"]}}))
@@ -951,6 +957,7 @@ def _prepare(
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "FAKE_STATE": str(state_path),
         "FAKE_LOG": str(log_path),
+        "OPENCLAW_EXPECTED_CALLER_ARN": f"arn:aws:sts::{ACCOUNT}:assumed-role/validation",
     }
     return state, command, env
 
@@ -1158,6 +1165,33 @@ def test_retain_or_foreign_tenant_volume_fails_before_any_tenant_deletion(
     assert f"namespace/{tenant}" in after["resources"]
     assert not any("cleanup-freeze-tenants-" in key for key in after["resources"])
     assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/other-role/session-1",
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/validation-admin/session-1",
+        f"arn:aws:iam::{ACCOUNT}:user/validation",
+    ],
+)
+def test_same_account_wrong_caller_changes_nothing(tmp_path: Path, caller: str) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["callerArn"] = caller
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    log = tmp_path / "fake-log.jsonl"
+    entries = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    assert [entry for entry in entries if entry.get("mutation")] == []
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "cleanup: the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN "
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/validation.\n"
+    )
+    assert _state(env)["mutations"] == 0
 
 
 def _add_validation_database_storage(env: dict[str, str]) -> None:
