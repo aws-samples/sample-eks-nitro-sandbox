@@ -1137,13 +1137,8 @@ def test_controller_runtime_uses_a_separate_pinned_base_and_drops_build_tools() 
     runtime_run_lines = [
         line for line in runtime.splitlines() if line.startswith("RUN ")
     ]
-    assert runtime_run_lines == [
-        next(
-            line
-            for line in runtime.splitlines()
-            if line.startswith('RUN ["/nodejs/bin/node", "-e",')
-        )
-    ]
+    assert len(runtime_run_lines) == 2
+    assert all(line.startswith('RUN ["/nodejs/bin/node", "-e",') for line in runtime_run_lines)
     assert "RUN apt-get" not in runtime
     assert "/usr/local/lib/node_modules/npm" not in runtime
     assert "/usr/local/lib/node_modules/corepack" not in runtime
@@ -1168,7 +1163,7 @@ def test_controller_runtime_base_has_an_allowlisted_repository_and_exact_digest(
     script = SCRIPT.read_text(encoding="utf-8")
     template = _template()
     parameter = template["Parameters"]["ControllerRuntimeBaseImageDigest"]
-    digest = "sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a"
+    digest = "sha256:39b0407357c9fadf1a9708d22088f02de21f0e1e8a688474eea2d8701e7d5693"
 
     assert parameter["Default"] == digest
     assert parameter["AllowedValues"] == [digest]
@@ -1196,7 +1191,7 @@ def test_controller_runtime_verifies_final_image_security_properties() -> None:
     dockerfile = CONTROLLER_DOCKERFILE.read_text(encoding="utf-8")
     runtime = dockerfile.split(" AS runtime\n", 1)[1]
 
-    assert runtime.count('RUN ["/nodejs/bin/node", "-e",') == 1
+    assert runtime.count('RUN ["/nodejs/bin/node", "-e",') == 2
     assert "process.versions.node" in runtime
     assert "process.getuid() !== 1000 || process.getgid() !== 1000" in runtime
     for path in (
@@ -1209,6 +1204,28 @@ def test_controller_runtime_verifies_final_image_security_properties() -> None:
         assert path in runtime
     assert 'ENTRYPOINT ["/nodejs/bin/node"]' in runtime
     assert 'CMD ["apps/controller/src/server.mjs"]' in runtime
+
+
+def test_controller_reuses_this_builds_repaired_runtime_by_digest() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    dockerfile = CONTROLLER_DOCKERFILE.read_text(encoding="utf-8")
+    runtime_build = script.index('--metadata-file "$metadata_dir/runtime.json"')
+    donor_digest = script.index('runtime_digest="$(read_digest "$metadata_dir/runtime.json")"')
+    controller_build = script.index('--metadata-file "$metadata_dir/controller.json"')
+    assert runtime_build < donor_digest < controller_build
+    assert (
+        'readonly REPAIRED_RUNTIME_IMAGE="${REGISTRY}/${RUNTIME_REPOSITORY}@${runtime_digest}"'
+        in script
+    )
+    assert '--build-arg "REPAIRED_RUNTIME_IMAGE=$REPAIRED_RUNTIME_IMAGE"' in script
+    assert 'FROM ${REPAIRED_RUNTIME_IMAGE} AS repaired-runtime' in dockerfile
+    assert "dpkg-query -s libssl3t64 > /fixed/var/lib/dpkg/status.d/libssl3t64" in dockerfile
+    assert 'test "$(dpkg-query -W -f=\'${Version}\' libssl3t64)" = "3.5.9-1~deb13u1+oce3"' in dockerfile
+    assert "amd64) library_dir=x86_64-linux-gnu" in dockerfile
+    assert "arm64) library_dir=aarch64-linux-gnu" in dockerfile
+    assert "Unsupported controller runtime architecture" in dockerfile
+    assert "COPY --from=repaired-runtime /fixed/ /" in dockerfile
+    assert '"repairedRuntimeImage": os.environ["REPAIRED_RUNTIME_IMAGE"]' in script
 
 
 def test_build_outputs_are_verified_digest_references() -> None:

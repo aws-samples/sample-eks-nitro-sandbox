@@ -164,7 +164,12 @@ CVE-2026-95691, CVE-2026-107493, CVE-2026-124709, CVE-2026-121482,
 CVE-2026-107494, and CVE-2026-84786. The Debian package revision `+oce3`
 includes the system-library CVE-2026-95692 fix. The build verifies patch
 checksums and source-file hashes, runs focused regression checks, and records
-upstream commits and patch checksums in `image-digests.json`.
+upstream commits and patch checksums in `image-digests.json`. The build produces
+the agent runtime before the controller, which keeps a shell-free distroless
+final image and copies the tested, repaired Node.js executable, OpenSSL
+libraries, and genuine installed `libssl3t64` package record from that runtime's
+immutable digest. The controller entry in `image-digests.json` records this
+source as `repairedRuntimeImage`.
 
 The runtime installs Git 2.56.1 and Expat 2.11.0 as Debian packages, preserving
 package records, licenses, and source provenance. Git retains Debian's epoch

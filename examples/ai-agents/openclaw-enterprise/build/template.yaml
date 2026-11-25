@@ -20,9 +20,9 @@ Parameters:
     Description: Exact OpenClaw Enterprise commit for controller and runtime images.
   ControllerRuntimeBaseImageDigest:
     Type: String
-    Default: sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a
+    Default: sha256:39b0407357c9fadf1a9708d22088f02de21f0e1e8a688474eea2d8701e7d5693
     AllowedValues:
-      - sha256:6abfcb367ebc291572c774c1592a986be2ab26a2486f73093401327495a5962a
+      - sha256:39b0407357c9fadf1a9708d22088f02de21f0e1e8a688474eea2d8701e7d5693
     AllowedPattern: ^sha256:[0-9a-f]{64}$
     ConstraintDescription: Use an exact lowercase sha256 image digest.
     Description: Digest for the allowlisted distroless Node 24 Debian 13 controller base.

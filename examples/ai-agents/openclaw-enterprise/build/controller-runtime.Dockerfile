@@ -3,6 +3,25 @@
 # sample build script.
 ARG NODE_BUILD_BASE_IMAGE
 ARG NODE_RUNTIME_BASE_IMAGE
+ARG REPAIRED_RUNTIME_IMAGE
+
+# Reuse the Node/OpenSSL fixes built and tested for this build's agent runtime.
+# Copy only the executable, libraries and genuine installed-package metadata;
+# the controller's final image remains distroless.
+FROM ${REPAIRED_RUNTIME_IMAGE} AS repaired-runtime
+USER 0
+RUN set -eu; \
+    test "$(dpkg-query -W -f='${Version}' libssl3t64)" = "3.5.9-1~deb13u1+oce3"; \
+    case "$(dpkg --print-architecture)" in \
+      amd64) library_dir=x86_64-linux-gnu ;; \
+      arm64) library_dir=aarch64-linux-gnu ;; \
+      *) echo "Unsupported controller runtime architecture" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p "/fixed/usr/lib/$library_dir" /fixed/nodejs/bin /fixed/var/lib/dpkg/status.d; \
+    cp /usr/local/bin/node /fixed/nodejs/bin/node; \
+    cp "/usr/lib/$library_dir/libssl.so.3" "/fixed/usr/lib/$library_dir/libssl.so.3"; \
+    cp "/usr/lib/$library_dir/libcrypto.so.3" "/fixed/usr/lib/$library_dir/libcrypto.so.3"; \
+    dpkg-query -s libssl3t64 > /fixed/var/lib/dpkg/status.d/libssl3t64
 
 FROM ${NODE_BUILD_BASE_IMAGE} AS dependencies
 RUN apt-get update --error-on=any \
@@ -116,6 +135,11 @@ FROM ${NODE_RUNTIME_BASE_IMAGE} AS runtime
 ENV NODE_ENV=production
 ENV PATH="/nodejs/bin:${PATH}"
 WORKDIR /app
+USER 0
+# Replace the vendor package record together with its actual repaired libraries.
+RUN ["/nodejs/bin/node", "-e", "const fs = require('node:fs'); const dir = '/var/lib/dpkg/status.d'; for (const name of fs.readdirSync(dir)) { const path = `${dir}/${name}`; if (/^Package: libssl3t64$/m.test(fs.readFileSync(path, 'utf8'))) fs.unlinkSync(path); }"]
+COPY --from=repaired-runtime /fixed/ /
+COPY --from=repaired-runtime /usr/share/doc/openssl/oce /usr/share/doc/openssl/oce
 COPY --from=runtime-prepared --chown=1000:1000 /app /app
 USER 1000:1000
 RUN ["/nodejs/bin/node", "-e", "const fs = require('node:fs'); const [major, minor, patch] = process.versions.node.split('.').map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Expected Node.js 24.22.1+ in the 24 series; found ${process.version}.`); if (process.getuid() !== 1000 || process.getgid() !== 1000) throw new Error(`Expected UID:GID 1000:1000; found ${process.getuid()}:${process.getgid()}.`); for (const path of ['/bin/sh', '/bin/bash', '/usr/bin/apt', '/usr/bin/apt-get', '/usr/bin/dpkg']) if (fs.existsSync(path)) throw new Error(`Unexpected runtime tool: ${path}`);"]
