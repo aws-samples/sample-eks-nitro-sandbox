@@ -1641,10 +1641,13 @@ Delete the build resources only after cluster cleanup exits zero:
 
 Cleanup verifies the installation and lifecycle receipts before it changes the
 cluster. The supplied tenant namespace list must exactly match the recorded
-cleanup set. With `--delete-tenant-data`, cleanup records each namespace UID
-and tenant-bound persistent volume, temporarily blocks namespaced `CREATE` and
-`UPDATE` requests, removes the OCE control plane, and deletes only those exact
-namespaces. It waits until the tenant namespaces, PVCs, and recorded PVs are
+cleanup set. With `--delete-tenant-data`, cleanup checks the tenant volumes,
+temporarily blocks namespaced `CREATE` and `UPDATE` requests, checks the
+volumes again on a fresh read, and records each namespace UID and exactly the
+tenant-bound persistent volumes of that second check. A retry checks its
+recorded volumes again under the block. Cleanup then removes the OCE control
+plane and deletes only those exact namespaces. It waits until the tenant
+namespaces, PVCs, and recorded PVs are
 absent before removing the temporary freeze or the original Nitro admission
 controls. If cleanup stops partway through, rerun the same command and private
 state. You may omit the `--tenant-namespace-uid` flags on a retry; cleanup uses

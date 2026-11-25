@@ -1290,38 +1290,15 @@ class Cleanup:
             live.append(item)
         return live
 
-    def tenant_persistent_volumes(self, namespace_names):
-        result = json.loads(
-            self.kubectl("get", "persistentvolumes", "--output=json")
-        )
-        items = result.get("items")
-        if not isinstance(items, list):
-            fail("persistent volume discovery returned an unexpected result.")
-        volumes = []
-        for item in items:
-            claim = item.get("spec", {}).get("claimRef", {})
-            if claim.get("namespace") not in namespace_names:
-                continue
-            metadata = item.get("metadata", {})
-            name, uid = metadata.get("name"), metadata.get("uid")
-            if (
-                item.get("kind") != "PersistentVolume"
-                or not isinstance(name, str)
-                or not name
-                or not isinstance(uid, str)
-                or not uid
-            ):
-                fail("persistent volume discovery returned an invalid volume.")
-            volumes.append({"name": name, "uid": uid})
-        return sorted(volumes, key=lambda item: item["name"])
-
     def require_tenant_volumes_deletable(self, namespace_names, recorded=None):
         # Deleting a tenant namespace deletes its data only when each claim is bound to its own EBS CSI volume
-        # with reclaim policy Delete. Prove that before the freeze, the Helm uninstall and any namespace delete,
-        # so a Retain or foreign volume stops cleanup while everything is still in place.
+        # with reclaim policy Delete. Prove that before the Helm uninstall and any namespace delete, so a Retain
+        # or foreign volume stops cleanup while everything is still in place.
         # recorded (name -> UID) marks a resumed deletion: there every recorded volume still present must keep
         # its UID and safe shape, but its claim may already be gone; a volume tied to a target namespace that the
         # record does not name is refused.
+        # Returns the name and UID of every volume whose claim names a target namespace, from the one PVC and
+        # PV snapshot that this call validated.
         pvcs = json.loads(
             self.kubectl(
                 "get",
@@ -1360,6 +1337,7 @@ class Cleanup:
                     f"persistentvolumeclaim/{namespace}/{name} is not bound to "
                     "its persistent volume; refusing tenant deletion."
                 )
+        identities = []
         for volume in pv_items:
             spec = volume.get("spec", {})
             reference = spec.get("claimRef", {})
@@ -1369,6 +1347,17 @@ class Cleanup:
                 recorded is None or name not in recorded
             ):
                 continue
+            uid = metadata.get("uid")
+            if (
+                volume.get("kind") != "PersistentVolume"
+                or not isinstance(metadata.get("name"), str)
+                or not name
+                or not isinstance(uid, str)
+                or not uid
+            ):
+                fail("persistent volume discovery returned an invalid volume.")
+            if reference.get("namespace") in namespace_names:
+                identities.append({"name": name, "uid": uid})
             if recorded is not None:
                 if name not in recorded:
                     fail(
@@ -1408,9 +1397,9 @@ class Cleanup:
                     f"persistentvolume/{name} is not bound to exactly one tenant "
                     "claim that names it; refusing tenant deletion."
                 )
+        return sorted(identities, key=lambda item: item["name"])
 
-    def prepare_tenant_deletion(self, protected_targets):
-        state = self.read_tenant_deletion()
+    def check_tenant_volumes(self, protected_targets, state):
         if state:
             if state["namespaces"] != protected_targets:
                 fail(
@@ -1419,23 +1408,36 @@ class Cleanup:
                 )
             # A resumed deletion: claims may already be gone while a recorded volume is Released or
             # terminating, which the wait expects; everything still present must keep its safe shape.
-            self.require_tenant_volumes_deletable(
+            return self.require_tenant_volumes_deletable(
                 {item["name"] for item in state["namespaces"]},
                 recorded={
                     item["name"]: item["uid"] for item in state["persistentVolumes"]
                 },
             )
+        # Only a new deletion needs every tenant claim Bound to its own Delete EBS volume.
+        return self.require_tenant_volumes_deletable(
+            {item["name"] for item in protected_targets}
+        )
+
+    def prepare_tenant_deletion(self, tenant_plans, protected_targets):
+        # The read-only check runs first, so an unsafe volume stops cleanup before any change. Volumes can
+        # still be created or bound until the tenant freeze is in place, so the check runs again on one fresh
+        # PVC and PV snapshot under the freeze: a new deletion records exactly the volumes of that validated
+        # snapshot, and a resumed deletion revalidates its record. If the check under the freeze fails,
+        # main() removes the freeze and nothing else has changed.
+        state = self.read_tenant_deletion()
+        self.check_tenant_volumes(protected_targets, state)
+        self.ensure_tenant_freeze(tenant_plans, protected_targets)
+        volumes = self.check_tenant_volumes(protected_targets, state)
+        if state:
             return state
-        names = {item["name"] for item in protected_targets}
-        # Only a new deletion record needs every tenant claim Bound to its own Delete EBS volume.
-        self.require_tenant_volumes_deletable(names)
         state = {
             "version": 1,
             "context": self.a.kube_context,
             "endpoint": self.endpoint,
             "attempt": self.attempt,
             "namespaces": protected_targets,
-            "persistentVolumes": self.tenant_persistent_volumes(names),
+            "persistentVolumes": volumes,
             "complete": False,
         }
         self.write_tenant_deletion(state)
@@ -2060,8 +2062,7 @@ class Cleanup:
             # Keep the tenant freeze active until the exact namespace UIDs and
             # their recorded storage have gone. The OCE release is removed
             # first so its controllers cannot recreate a deleted tenant.
-            tenant_deletion = self.prepare_tenant_deletion(tenant_targets)
-            self.ensure_tenant_freeze(tenant_plans, tenant_targets)
+            tenant_deletion = self.prepare_tenant_deletion(tenant_plans, tenant_targets)
             tenant_plans = self.require_tenant_namespaces_unchanged(
                 tenant_targets, allow_absent=self.tenant_deletion_exists()
             )

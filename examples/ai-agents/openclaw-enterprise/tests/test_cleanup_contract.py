@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -348,6 +349,11 @@ def kubectl():
         document["metadata"]["resourceVersion"] = "1"
         state["resources"][f"{prefix}/{name}"] = document
         state["mutations"] += 1
+        # Storage that a controller creates, binds or changes while the tenant freeze is being installed.
+        storage = state.get("storageAtTenantFreeze")
+        if storage and kind == "policy" and "cleanup-freeze-tenants-" in name:
+            state["pvcs"], state["pvs"] = storage["pvcs"], storage["pvs"]
+            state["storageAtTenantFreeze"] = None
         boundary = state.get("killAfterFreezeCreate")
         if boundary == kind:
             state["killAfterFreezeCreate"] = None
@@ -2039,6 +2045,186 @@ def test_partial_tenant_delete_rerun_refuses_an_unsafe_volume_state(
     assert json.loads(
         (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
     )["complete"] is False
+
+
+def _storage_at_tenant_freeze(
+    env: dict[str, str], change: Callable[[dict[str, Any]], None]
+) -> None:
+    """Apply change to a copy of the storage; the fake swaps it in while the tenant freeze is created."""
+    state = _state(env)
+    storage = json.loads(json.dumps({"pvcs": state["pvcs"], "pvs": state["pvs"]}))
+    change(storage)
+    state["storageAtTenantFreeze"] = storage
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+def _add_extra_tenant_volume(storage: dict[str, Any], namespace: str, reclaim: str) -> None:
+    storage["pvcs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": "openclaw-extra", "namespace": namespace, "uid": "uid-pvc-extra"},
+        "spec": {"storageClassName": STORAGE_CLASS, "volumeName": f"pv-{namespace}-extra"},
+        "status": {"phase": "Bound"},
+    })
+    storage["pvs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": f"pv-{namespace}-extra", "uid": "uid-pv-extra"},
+        "spec": {
+            "claimRef": {"name": "openclaw-extra", "namespace": namespace, "uid": "uid-pvc-extra"},
+            "persistentVolumeReclaimPolicy": reclaim,
+            "csi": {"driver": "ebs.csi.eks.amazonaws.com", "volumeHandle": "vol-test-extra"},
+        },
+    })
+
+
+def _assert_only_the_tenant_freeze_came_and_went(
+    tmp_path: Path, env: dict[str, str], mutations_before: int, helm: bool = True
+) -> None:
+    changes = [entry for entry in _fake_log(tmp_path) if entry.get("mutation")]
+    freeze_types = ("ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding")
+    created = [
+        json.loads(entry["stdin"])["kind"]
+        for entry in changes
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    deleted = [
+        entry["args"][entry["args"].index("--raw") + 1]
+        for entry in changes
+        if "delete" in entry["args"]
+    ]
+    assert sorted(created) == sorted(freeze_types)
+    assert len(deleted) == 2
+    assert all(
+        "/validatingadmissionpolicies/" in path or "/validatingadmissionpolicybindings/" in path
+        for path in deleted
+    )
+    assert len(changes) == 4
+    after = _state(env)
+    assert after["mutations"] == mutations_before + 4
+    assert after["helm"] is helm
+    assert not any("cleanup-freeze-tenants-" in key for key in after["resources"])
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("reclaim", "diagnostic"),
+    [
+        ("Delete", None),
+        (
+            "Retain",
+            (
+                "persistentvolume/pv-openclaw-tenant-a-extra must be an EBS CSI volume "
+                "with reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+    ],
+)
+def test_tenant_volume_bound_before_the_freeze_is_recorded_or_refused(
+    tmp_path: Path, reclaim: str, diagnostic: str | None
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    # The read-only preflight has passed; another tenant volume is bound before the freeze takes effect.
+    _storage_at_tenant_freeze(
+        env, lambda storage: _add_extra_tenant_volume(storage, tenant, reclaim)
+    )
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    deletion_record = tmp_path / "state" / "cleanup-tenant-deletion.json"
+    if diagnostic is None:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(deletion_record.read_text())["persistentVolumes"] == [
+            {"name": f"pv-{tenant}", "uid": f"uid-pv-{tenant}"},
+            {"name": f"pv-{tenant}-extra", "uid": "uid-pv-extra"},
+        ]
+        return
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {diagnostic}\n")
+    assert f"namespace/{tenant}" in _state(env)["resources"]
+    assert not deletion_record.exists()
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, 0)
+
+
+def test_resumed_tenant_deletion_revalidates_its_record_under_the_freeze(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    failed = _run(
+        [*command, *_tenant_identity_args(*tenants), "--delete-tenant-data"], env
+    )
+    assert failed.returncode == 1
+    log = tmp_path / "fake-log.jsonl"
+    log.unlink()
+    mutations = _state(env)["mutations"]
+    # The partial run already removed the OCE release.
+    assert _state(env)["helm"] is False
+
+    def retain_recorded_volume(storage: dict[str, Any]) -> None:
+        volume = next(
+            item for item in storage["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b"
+        )
+        volume["spec"]["persistentVolumeReclaimPolicy"] = "Retain"
+
+    # The rerun's read-only check passes; tenant B's recorded volume turns Retain before the freeze holds.
+    _storage_at_tenant_freeze(env, retain_recorded_volume)
+    retry = _run(
+        [
+            *command,
+            *[argument for tenant in tenants for argument in ("--tenant-namespace", tenant)],
+            "--delete-tenant-data",
+        ],
+        env,
+    )
+
+    assert retry.returncode == 1
+    assert retry.stderr.endswith(
+        "cleanup: persistentvolume/pv-openclaw-tenant-b must be an EBS CSI volume with "
+        "reclaim policy Delete; refusing tenant deletion.\n"
+    )
+    assert "namespace/openclaw-tenant-b" in _state(env)["resources"]
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["complete"] is False
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, mutations, helm=False)
+
+
+def test_failed_volume_check_under_the_freeze_removes_it_and_changes_nothing_else(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+
+    def unbind_claim(storage: dict[str, Any]) -> None:
+        claim = next(
+            item for item in storage["pvcs"] if item["metadata"]["namespace"] == tenant
+        )
+        claim["status"] = {"phase": "Pending"}
+
+    _storage_at_tenant_freeze(env, unbind_claim)
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "cleanup: persistentvolumeclaim/openclaw-tenant-a/openclaw-workspace is not bound "
+        "to its persistent volume; refusing tenant deletion.\n"
+    )
+    assert f"namespace/{tenant}" in _state(env)["resources"]
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, 0)
 
 
 @pytest.mark.parametrize(
