@@ -371,7 +371,9 @@ verify_occ_binary() {
 }
 
 kubectl_error_is_not_found() {
-  grep -Eq '(\(NotFound\)| not found|NotFound)' <<<"$1"
+  # Only kubectl's own NotFound line means absent: other errors can mention "not found" (for example a
+  # missing admission webhook service), and those must stop the install.
+  grep -Eq '^Error from server \(NotFound\): ' <<<"$1"
 }
 
 kubectl_error_is_already_exists() {

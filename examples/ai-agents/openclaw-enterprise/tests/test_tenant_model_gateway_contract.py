@@ -74,6 +74,9 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
             print(state.get("agentgateway_service_ip", "10.100.42.17"))
         elif command and command[0] == "get":
             resource = command[1]
+            if resource == state.get("fail_get"):
+                print("Unable to connect to the server", file=sys.stderr)
+                raise SystemExit(1)
             owner = state.get("resources", {}).get(resource)
             if owner is not None:
                 print(f"{resource.rsplit('/', 1)[1]}|{owner}")
@@ -336,4 +339,28 @@ def test_configure_rejects_invalid_agentgateway_service_ip_before_mutation(
 
     assert result.returncode != 0
     assert "AgentGateway Service address must be an IPv4 address" in result.stderr
+    assert _mutating_calls(calls) == []
+
+
+def test_configure_stops_when_a_tenant_resource_lookup_fails(
+    tmp_path: pathlib.Path,
+) -> None:
+    result, calls = _run_configure(
+        tmp_path,
+        state={
+            "context": CONTEXT,
+            "tenant": TENANT,
+            "resources": {},
+            "fail_get": "configmap/agentgateway-ca",
+        },
+    )
+
+    assert result.returncode != 0
+    assert (
+        "configure-tenant-model-gateway: could not determine ownership of "
+        "configmap/agentgateway-ca in tenant-a."
+    ) in result.stderr
+    assert any(
+        call["args"][2:4] == ["get", "configmap/agentgateway-ca"] for call in calls
+    )
     assert _mutating_calls(calls) == []

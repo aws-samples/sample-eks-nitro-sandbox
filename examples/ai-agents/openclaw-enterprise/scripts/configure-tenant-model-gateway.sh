@@ -104,7 +104,10 @@ owned_resource_exists() {
   local expected_owner="$3"
   local expected_name="${resource##*/}"
   local record
-  record="$(resource_record "${resource}" "${namespace}")"
+  # resource_record's die exits only its command substitution, and callers test this function in if/||,
+  # where errexit is off; stop here so a failed read never counts as absent.
+  record="$(resource_record "${resource}" "${namespace}")" ||
+    die "could not determine ownership of ${resource}${namespace:+ in ${namespace}}."
   if [[ -z "${record}" ]]; then
     return 1
   fi

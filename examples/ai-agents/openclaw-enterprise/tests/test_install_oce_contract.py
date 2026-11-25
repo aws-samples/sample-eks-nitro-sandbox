@@ -633,6 +633,10 @@ case "$*" in
       '{"metadata":{"name":"oce-sample-bootstrap-volume-prep","uid":"'"${TEST_JOB_UID:-uid-bootstrap-job}"'","resourceVersion":"'"${TEST_JOB_RESOURCE_VERSION:-101}"'","labels":{"app.kubernetes.io/managed-by":"'"${TEST_JOB_OWNER:-openclaw-enterprise-blueprint}"'"}}}'
     ;;
   *"get job oce-sample-bootstrap-volume-prep"*"-o name"*)
+    if [[ -n "${TEST_JOB_GET_ERROR:-}" ]]; then
+      printf '%s\\n' "$TEST_JOB_GET_ERROR" >&2
+      exit 1
+    fi
     [[ ! -f "$TEST_KUBE_STATE/job-deleted" ]] ||
       not_found job/oce-sample-bootstrap-volume-prep
     printf 'job.batch/oce-sample-bootstrap-volume-prep\\n' ;;
@@ -1009,6 +1013,25 @@ def test_external_database_uses_verified_tls_and_mounted_ca(tmp_path: Path) -> N
         assert b"sslmode=verify-full" in decoded
         assert f"sslrootcert={DATABASE_CA_PATH}".encode() in decoded
         assert not decoded.endswith(b"\n")
+
+
+def test_lookup_error_that_mentions_not_found_fails_closed(tmp_path: Path) -> None:
+    env, source, kubeconfig, occ = _fake_environment(tmp_path)
+    env["TEST_JOB_GET_ERROR"] = (
+        "Error from server (InternalError): Internal error occurred: "
+        'failed calling webhook "x": service "x" not found'
+    )
+
+    result = run_script(*_base_args(tmp_path, source, kubeconfig, occ), env=env)
+
+    assert result.returncode != 0
+    assert "install-oce: could not inspect job/oce-sample-bootstrap-volume-prep:" in result.stderr
+    calls = (tmp_path / "calls.log").read_text().splitlines()
+    assert any("get job oce-sample-bootstrap-volume-prep -o name" in call for call in calls)
+    assert not any(
+        " apply " in call and "bootstrap-resources.yaml" in call for call in calls
+    )
+    assert not any("occ installation install" in call for call in calls)
 
 
 def test_private_input_file_rejects_hard_links(tmp_path: Path) -> None:
