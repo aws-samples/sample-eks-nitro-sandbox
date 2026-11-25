@@ -894,6 +894,21 @@ Receipt: <private-state-directory>/oce-install/receipt
 Topology: terminal-managed; embedded Harnesses only; direct Pod API clients and browser routing disabled.
 ```
 
+OCE also creates an initial namespace during bootstrap. Record its identity
+before onboarding tenants so cleanup can include it:
+
+```bash
+BOOTSTRAP_NAMESPACE_IDENTITY="$(
+  kubectl --context "$KUBE_CONTEXT" get namespaces \
+    --selector app.kubernetes.io/managed-by=openclaw-enterprise --output json |
+    jq -ce 'if (.items | length) == 1 then
+      .items[0].metadata | {name, uid}
+      else error("expected only the initial OCE namespace") end'
+)"
+BOOTSTRAP_TENANT_NAMESPACE="$(jq -er '.name' <<<"$BOOTSTRAP_NAMESPACE_IDENTITY")"
+BOOTSTRAP_TENANT_NAMESPACE_UID="$(jq -er '.uid' <<<"$BOOTSTRAP_NAMESPACE_IDENTITY")"
+```
+
 **Step 7: Onboard two tenants from the terminal**
 
 Complete this sequence once for tenant A and once for tenant B. Finish one
@@ -1488,6 +1503,8 @@ TENANT_B_NAMESPACE_UID="$(
   --receipt "$OCE_RECEIPT_DIR" \
   --namespace "$OCE_NAMESPACE" \
   --release oce \
+  --tenant-namespace "$BOOTSTRAP_TENANT_NAMESPACE" \
+  --tenant-namespace-uid "$BOOTSTRAP_TENANT_NAMESPACE=$BOOTSTRAP_TENANT_NAMESPACE_UID" \
   --tenant-namespace "$TENANT_A_NAMESPACE" \
   --tenant-namespace-uid "$TENANT_A_NAMESPACE=$TENANT_A_NAMESPACE_UID" \
   --tenant-validator-key-file "$TENANT_A_VALIDATOR_KEY_FILE" \

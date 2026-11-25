@@ -324,6 +324,17 @@ def kubectl():
         document = json.loads(stdin)
         name = document["metadata"]["name"]
         if document["kind"] == "ValidatingAdmissionPolicy":
+            for index, rule in enumerate(
+                document["spec"].get("matchConstraints", {}).get("resourceRules", [])
+            ):
+                resources = rule.get("resources", [])
+                if "*/*" in resources and len(resources) != 1:
+                    print(
+                        f"spec.matchConstraints.resourceRules[{index}].resources: "
+                        "Invalid value: '*/*' cannot be combined with other resources",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1)
             prefix = "validatingadmissionpolicies.admissionregistration.k8s.io"
             kind = "policy"
         else:
@@ -1118,6 +1129,69 @@ def test_all_created_resources_are_deleted_and_second_run_is_idempotent(
     second = _run(command, env)
     assert second.returncode == 0, second.stderr
     assert _state(env)["mutations"] == mutation_count
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_cleanup_freeze_policies_use_api_valid_resource_wildcard(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    after = _state(env)
+    assert after["resources"] == {}
+    assert after["helm"] is False
+    policies = [
+        json.loads(entry["stdin"])
+        for line in Path(env["FAKE_LOG"]).read_text().splitlines()
+        if (entry := json.loads(line))["tool"] == "kubectl"
+        and "create" in entry["args"]
+        and "-f" in entry["args"]
+        and json.loads(entry["stdin"])["kind"] == "ValidatingAdmissionPolicy"
+    ]
+    assert len(policies) == (2 if delete_tenant else 1)
+    assert any(
+        "cleanup-freeze-tenants-" in policy["metadata"]["name"]
+        for policy in policies
+    ) == delete_tenant
+    for policy in policies:
+        rules = policy["spec"]["matchConstraints"]["resourceRules"]
+        assert len(rules) == 1
+        assert rules[0]["resources"] == ["*/*"]
+        assert rules[0]["operations"] == ["CREATE", "UPDATE"]
+        assert rules[0]["scope"] == "Namespaced"
+        assert policy["spec"]["failurePolicy"] == "Fail"
+
+        # Replay the real builder's document with the formerly invalid overlap.
+        # The fake API must reject it before assigning a UID or storing anything.
+        rules[0]["resources"] = ["*", "*/*"]
+        rejected = subprocess.run(
+            [
+                str(tmp_path / "bin" / "kubectl"),
+                "--kubeconfig", str(tmp_path / "kubeconfig"),
+                "--context", CONTEXT,
+                "--request-timeout=20s",
+                "create", "-f", "-",
+            ],
+            input=json.dumps(policy),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert rejected.returncode == 1
+        assert rejected.stderr == (
+            "spec.matchConstraints.resourceRules[0].resources: "
+            "Invalid value: '*/*' cannot be combined with other resources\n"
+        )
+        assert _state(env) == after
 
 
 def test_cleanup_removes_local_admin_and_tenant_credentials(tmp_path: Path) -> None:

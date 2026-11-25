@@ -638,7 +638,7 @@ class Cleanup:
             "matchConstraints": {"resourceRules": [{
                 "apiGroups": ["*"], "apiVersions": ["*"],
                 "operations": ["CREATE", "UPDATE"],
-                "resources": ["*", "*/*"], "scope": "Namespaced",
+                "resources": ["*/*"], "scope": "Namespaced",
             }]},
             "matchConditions": [{
                 "name": "target-namespace",
@@ -957,7 +957,7 @@ class Cleanup:
                         "apiGroups": ["*"],
                         "apiVersions": ["*"],
                         "operations": ["CREATE", "UPDATE"],
-                        "resources": ["*", "*/*"],
+                        "resources": ["*/*"],
                         "scope": "Namespaced",
                     }
                 ]
