@@ -1315,10 +1315,13 @@ class Cleanup:
             volumes.append({"name": name, "uid": uid})
         return sorted(volumes, key=lambda item: item["name"])
 
-    def require_tenant_volumes_deletable(self, namespace_names):
+    def require_tenant_volumes_deletable(self, namespace_names, recorded=None):
         # Deleting a tenant namespace deletes its data only when each claim is bound to its own EBS CSI volume
         # with reclaim policy Delete. Prove that before the freeze, the Helm uninstall and any namespace delete,
         # so a Retain or foreign volume stops cleanup while everything is still in place.
+        # recorded (name -> UID) marks a resumed deletion: there every recorded volume still present must keep
+        # its UID and safe shape, but its claim may already be gone; a volume tied to a target namespace that the
+        # record does not name is refused.
         pvcs = json.loads(
             self.kubectl(
                 "get",
@@ -1360,9 +1363,23 @@ class Cleanup:
         for volume in pv_items:
             spec = volume.get("spec", {})
             reference = spec.get("claimRef", {})
-            if reference.get("namespace") not in namespace_names:
+            metadata = volume.get("metadata", {})
+            name = metadata.get("name", "<unknown>")
+            if reference.get("namespace") not in namespace_names and (
+                recorded is None or name not in recorded
+            ):
                 continue
-            name = volume.get("metadata", {}).get("name", "<unknown>")
+            if recorded is not None:
+                if name not in recorded:
+                    fail(
+                        f"persistentvolume/{name} names a tenant namespace but is not "
+                        "in the tenant deletion record; refusing to continue."
+                    )
+                if metadata.get("uid") != recorded[name]:
+                    fail(
+                        f"persistentvolume/{name} was replaced since the tenant "
+                        "deletion record was written; refusing to continue."
+                    )
             if (
                 spec.get("persistentVolumeReclaimPolicy") != "Delete"
                 or spec.get("csi", {}).get("driver") != "ebs.csi.eks.amazonaws.com"
@@ -1371,6 +1388,9 @@ class Cleanup:
                     f"persistentvolume/{name} must be an EBS CSI volume with "
                     "reclaim policy Delete; refusing tenant deletion."
                 )
+            if recorded is not None:
+                # The claim loop above already holds every live tenant claim to this volume.
+                continue
             # The volume must belong to exactly one Bound tenant claim that names it, or
             # deleting the namespace would leave it waiting for a claim that is gone.
             owners = [
@@ -1389,26 +1409,6 @@ class Cleanup:
                     "claim that names it; refusing tenant deletion."
                 )
 
-    def require_recorded_volumes_unchanged(self, state):
-        # A resumed deletion may find its claims already gone while a recorded volume is still Released or
-        # terminating; that is the wait's normal input. A surviving recorded volume must still be the one the
-        # record names.
-        result = json.loads(
-            self.kubectl("get", "persistentvolumes", "--output=json")
-        )
-        items = result.get("items")
-        if not isinstance(items, list):
-            fail("persistent volume discovery returned an unexpected result.")
-        recorded = {item["name"]: item["uid"] for item in state["persistentVolumes"]}
-        for item in items:
-            metadata = item.get("metadata", {})
-            name = metadata.get("name")
-            if name in recorded and metadata.get("uid") != recorded[name]:
-                fail(
-                    f"persistentvolume/{name} was replaced since the tenant "
-                    "deletion record was written; refusing to continue."
-                )
-
     def prepare_tenant_deletion(self, protected_targets):
         state = self.read_tenant_deletion()
         if state:
@@ -1417,7 +1417,14 @@ class Cleanup:
                     "tenant deletion state does not match the recorded "
                     "namespace identities."
                 )
-            self.require_recorded_volumes_unchanged(state)
+            # A resumed deletion: claims may already be gone while a recorded volume is Released or
+            # terminating, which the wait expects; everything still present must keep its safe shape.
+            self.require_tenant_volumes_deletable(
+                {item["name"] for item in state["namespaces"]},
+                recorded={
+                    item["name"]: item["uid"] for item in state["persistentVolumes"]
+                },
+            )
             return state
         names = {item["name"] for item in protected_targets}
         # Only a new deletion record needs every tenant claim Bound to its own Delete EBS volume.

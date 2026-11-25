@@ -1947,6 +1947,101 @@ def test_partial_tenant_delete_rerun_refuses_a_replaced_recorded_volume(
 
 
 @pytest.mark.parametrize(
+    ("unsafe", "diagnostic"),
+    [
+        (
+            "recorded-volume-retain",
+            (
+                "persistentvolume/pv-openclaw-tenant-b must be an EBS CSI volume with "
+                "reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+        (
+            "recorded-volume-other-driver",
+            (
+                "persistentvolume/pv-openclaw-tenant-b must be an EBS CSI volume with "
+                "reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+        (
+            "unrecorded-tenant-volume",
+            (
+                "persistentvolume/pv-openclaw-tenant-b-extra names a tenant namespace but "
+                "is not in the tenant deletion record; refusing to continue."
+            ),
+        ),
+        (
+            "live-claim-not-bound",
+            (
+                "persistentvolumeclaim/openclaw-tenant-b/openclaw-workspace is not bound "
+                "to its persistent volume; refusing tenant deletion."
+            ),
+        ),
+    ],
+)
+def test_partial_tenant_delete_rerun_refuses_an_unsafe_volume_state(
+    tmp_path: Path, unsafe: str, diagnostic: str
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    failed = _run(
+        [*command, *_tenant_identity_args(*tenants), "--delete-tenant-data"], env
+    )
+    assert failed.returncode == 1
+    partial = _state(env)
+    volume = next(
+        item for item in partial["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b"
+    )
+    claim = next(
+        item
+        for item in partial["pvcs"]
+        if item["metadata"]["namespace"] == "openclaw-tenant-b"
+    )
+    # Between the runs the remaining tenant's storage changes shape.
+    if unsafe == "recorded-volume-retain":
+        volume["spec"]["persistentVolumeReclaimPolicy"] = "Retain"
+    elif unsafe == "recorded-volume-other-driver":
+        volume["spec"]["csi"]["driver"] = "efs.csi.aws.com"
+    elif unsafe == "unrecorded-tenant-volume":
+        extra = json.loads(json.dumps(volume))
+        extra["metadata"] = {"name": "pv-openclaw-tenant-b-extra", "uid": "uid-pv-extra"}
+        extra["spec"]["claimRef"] = {
+            "name": "openclaw-extra",
+            "namespace": "openclaw-tenant-b",
+            "uid": "uid-pvc-extra",
+        }
+        partial["pvs"].append(extra)
+    else:
+        claim["status"] = {"phase": "Pending"}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    mutations = partial["mutations"]
+
+    retry = _run(
+        [
+            *command,
+            *[argument for tenant in tenants for argument in ("--tenant-namespace", tenant)],
+            "--delete-tenant-data",
+        ],
+        env,
+    )
+
+    assert retry.returncode == 1
+    assert retry.stderr.endswith(f"cleanup: {diagnostic}\n")
+    after = _state(env)
+    assert after["mutations"] == mutations
+    assert "namespace/openclaw-tenant-b" in after["resources"]
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["complete"] is False
+
+
+@pytest.mark.parametrize(
     ("tamper", "diagnostic"),
     [
         (
