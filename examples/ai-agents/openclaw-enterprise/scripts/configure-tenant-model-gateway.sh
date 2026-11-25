@@ -300,7 +300,8 @@ created_uid() {
 }
 
 # verify_live_object RESOURCE UID FILTER [JQ_ARGS...]: read RESOURCE back and require FILTER, which sees $uid,
-# $owner and $namespace, to hold for the live object.
+# $owner and $namespace, to hold for the live object. A refusal ends with refusal_note when it is set.
+refusal_note=""
 verify_live_object() {
   local resource="$1"
   local uid="$2"
@@ -308,13 +309,13 @@ verify_live_object() {
   shift 3
   local live
   live="$("${KUBECTL[@]}" get "${resource}" --namespace "${TENANT_NAMESPACE}" --output=json)" ||
-    die "could not read ${resource} in ${TENANT_NAMESPACE} back."
+    die "could not read ${resource} in ${TENANT_NAMESPACE} back.${refusal_note:+ ${refusal_note}}"
   jq -e \
     --arg uid "${uid}" \
     --arg owner "${OWNER_LABEL_VALUE}" \
     --arg namespace "${TENANT_NAMESPACE}" \
     "$@" "${filter}" <<<"${live}" >/dev/null ||
-    die "${resource} in ${TENANT_NAMESPACE} is not the object this run created or recorded, or its content differs from what this run wrote; refusing to continue."
+    die "${resource} in ${TENANT_NAMESPACE} is not the object this run created or recorded, or its content differs from what this run wrote; refusing to continue.${refusal_note:+ ${refusal_note}}"
 }
 
 # The CA ConfigMap this run created or the receipt records: its UID, the owner label, immutable, exactly the
@@ -475,6 +476,12 @@ finally:
 ' "${receipt_temp}" "${RECEIPT_PATH}" "${receipt_parent}" ||
     die "could not publish the receipt ${RECEIPT_PATH}; the created objects are not recorded."
   receipt_temp=""
+  # The receipt is published. A same-name replacement since the read above would leave it naming the removed
+  # object, so a first run reads the CA ConfigMap once more as its last step before success. A refusal here
+  # leaves the receipt in place, and the next rerun refuses it at its UID preflight.
+  refusal_note="The receipt ${RECEIPT_PATH} is already published, and a rerun refuses it while this object differs from the one it records; see README Step 7."
+  verify_live_object configmap/agentgateway-ca "${recorded_ca_uid}" "${ca_config_map_filter}" \
+    --rawfile ca "${ca_file}"
 fi
 
 echo "Configured the Nitro Pod Security profile, private AgentGateway trust, and exact private Service routes for ${TENANT_NAMESPACE}."

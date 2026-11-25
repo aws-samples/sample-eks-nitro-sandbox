@@ -93,6 +93,14 @@ def _install_fake_kubectl(bin_dir: pathlib.Path) -> None:
             name = resource.rsplit("/", 1)[1]
             document["metadata"]["uid"] = state.get("uids", {}).get(resource, f"uid-{name}")
             print(json.dumps(document))
+            # A delete and same-name recreate, with the same content, right after a given read returns.
+            reads = state.setdefault("json_reads", {})
+            reads[resource] = reads.get(resource, 0) + 1
+            trigger = state.get("replace_after_read")
+            if trigger and trigger["after"] == resource and trigger["count"] == reads[resource]:
+                state.setdefault("uids", {})[trigger["replace"]] = "uid-replacement"
+                state["replace_after_read"] = None
+            state_path.write_text(json.dumps(state))
         elif command and command[0] == "get":
             resource = command[1]
             if resource == state.get("fail_get"):
@@ -623,6 +631,89 @@ def test_configure_unchanged_rerun_succeeds_and_keeps_the_receipt(
         f"Service routes for {TENANT}."
     ) in result.stdout
     assert _receipt(tmp_path).read_text(encoding="utf-8") == receipt_before
+
+
+SUCCESS_LINE = (
+    "Configured the Nitro Pod Security profile, private AgentGateway trust, and exact private Service routes "
+    f"for {TENANT}."
+)
+CA_REFUSAL = (
+    f"configure-tenant-model-gateway: configmap/agentgateway-ca in {TENANT} is not the object this run created "
+    "or recorded, or its content differs from what this run wrote; refusing to continue."
+)
+
+
+def test_configure_rerun_refuses_a_ca_config_map_replaced_at_the_policy_read_back(
+    tmp_path: pathlib.Path,
+) -> None:
+    first, _ = _run_configure(tmp_path)
+    assert first.returncode == 0, first.stderr
+    receipt_before = _receipt(tmp_path).read_text(encoding="utf-8")
+    state_path = tmp_path / "kube-state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    # The recorded CA ConfigMap is replaced, with the same name and content, right after the NetworkPolicy
+    # read-back returns: only a CA read after the policy write and read-back can see it.
+    state["json_reads"] = {}
+    state["replace_after_read"] = {"after": TENANT_RESOURCES[1], "count": 1, "replace": TENANT_RESOURCES[0]}
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result, _ = _run_configure(tmp_path, rerun=True)
+
+    assert result.returncode != 0
+    assert CA_REFUSAL in result.stderr
+    assert SUCCESS_LINE not in result.stdout
+    assert _receipt(tmp_path).read_text(encoding="utf-8") == receipt_before
+
+
+def test_configure_first_run_refuses_a_ca_config_map_replaced_during_receipt_publication(
+    tmp_path: pathlib.Path,
+) -> None:
+    # The CA ConfigMap is replaced right after the second exact read of the first run (the one before the
+    # receipt is published), so only a read after the publication can see it.
+    result, _ = _run_configure(
+        tmp_path,
+        state={
+            "context": CONTEXT,
+            "tenant": TENANT,
+            "resources": {},
+            "replace_after_read": {"after": TENANT_RESOURCES[0], "count": 2, "replace": TENANT_RESOURCES[0]},
+        },
+    )
+
+    # The run fails closed with the receipt already published, naming the object that was replaced.
+    assert result.returncode != 0
+    assert (
+        f"{CA_REFUSAL} The receipt {_receipt(tmp_path)} is already published, and a rerun refuses it while this "
+        "object differs from the one it records; see README Step 7.\n"
+    ) in result.stderr
+    assert SUCCESS_LINE not in result.stdout
+    receipt = json.loads(_receipt(tmp_path).read_text(encoding="utf-8"))
+    assert receipt["resources"][0]["uid"] == "uid-agentgateway-ca"
+
+    rerun, calls = _run_configure(tmp_path, rerun=True)
+
+    # The next rerun refuses that receipt at its UID preflight, before any change.
+    assert rerun.returncode != 0
+    assert (
+        f"configure-tenant-model-gateway: configmap/agentgateway-ca in {TENANT} is missing or was replaced since "
+        f"{_receipt(tmp_path)} recorded it; refusing to change it."
+    ) in rerun.stderr
+    assert _mutating_calls(calls) == []
+    assert SUCCESS_LINE not in rerun.stdout
+
+
+def test_configure_unchanged_first_run_succeeds_and_publishes_the_receipt(
+    tmp_path: pathlib.Path,
+) -> None:
+    result, _ = _run_configure(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert SUCCESS_LINE in result.stdout
+    receipt = json.loads(_receipt(tmp_path).read_text(encoding="utf-8"))
+    assert [item["uid"] for item in receipt["resources"]] == [
+        "uid-agentgateway-ca",
+        "uid-oce-private-service-egress",
+    ]
 
 
 @pytest.mark.parametrize("resource", TENANT_RESOURCES)
