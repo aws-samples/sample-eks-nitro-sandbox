@@ -1290,7 +1290,66 @@ class Cleanup:
             volumes.append({"name": name, "uid": uid})
         return sorted(volumes, key=lambda item: item["name"])
 
+    def require_tenant_volumes_deletable(self, namespace_names):
+        # Deleting a tenant namespace deletes its data only when each claim is bound to its own EBS CSI volume
+        # with reclaim policy Delete. Prove that before the freeze, the Helm uninstall and any namespace delete,
+        # so a Retain or foreign volume stops cleanup while everything is still in place.
+        pvcs = json.loads(
+            self.kubectl(
+                "get",
+                "persistentvolumeclaims",
+                "--all-namespaces",
+                "--output=json",
+            )
+        )
+        pvc_items = pvcs.get("items")
+        pvs = json.loads(
+            self.kubectl("get", "persistentvolumes", "--output=json")
+        )
+        pv_items = pvs.get("items")
+        if not isinstance(pvc_items, list) or not isinstance(pv_items, list):
+            fail("tenant volume discovery returned an unexpected result.")
+        volumes = {
+            item.get("metadata", {}).get("name"): item for item in pv_items
+        }
+        for claim in pvc_items:
+            metadata = claim.get("metadata", {})
+            namespace, name = metadata.get("namespace"), metadata.get("name")
+            if namespace not in namespace_names:
+                continue
+            volume_name = claim.get("spec", {}).get("volumeName")
+            volume = volumes.get(volume_name) if volume_name else None
+            reference = (volume or {}).get("spec", {}).get("claimRef", {})
+            if (
+                claim.get("status", {}).get("phase") != "Bound"
+                or volume is None
+                or reference.get("namespace") != namespace
+                or reference.get("name") != name
+                or not metadata.get("uid")
+                or reference.get("uid") != metadata.get("uid")
+            ):
+                fail(
+                    f"persistentvolumeclaim/{namespace}/{name} is not bound to "
+                    "its persistent volume; refusing tenant deletion."
+                )
+        for volume in pv_items:
+            spec = volume.get("spec", {})
+            if spec.get("claimRef", {}).get("namespace") not in namespace_names:
+                continue
+            if (
+                spec.get("persistentVolumeReclaimPolicy") != "Delete"
+                or spec.get("csi", {}).get("driver") != "ebs.csi.eks.amazonaws.com"
+            ):
+                name = volume.get("metadata", {}).get("name", "<unknown>")
+                fail(
+                    f"persistentvolume/{name} must be an EBS CSI volume with "
+                    "reclaim policy Delete; refusing tenant deletion."
+                )
+
     def prepare_tenant_deletion(self, protected_targets):
+        self.require_tenant_volumes_deletable(
+            {item["name"] for item in protected_targets}
+        )
         state = self.read_tenant_deletion()
         if state:
             if state["namespaces"] != protected_targets:

@@ -1030,6 +1030,7 @@ def _add_tenant_storage(env: dict[str, str], namespace: str) -> None:
             "storageClassName": STORAGE_CLASS,
             "volumeName": f"pv-{namespace}",
         },
+        "status": {"phase": "Bound"},
     })
     state["pvs"].append({
         "apiVersion": "v1",
@@ -1044,9 +1045,99 @@ def _add_tenant_storage(env: dict[str, str], namespace: str) -> None:
                 "namespace": namespace,
                 "uid": f"uid-pvc-{namespace}",
             },
+            "persistentVolumeReclaimPolicy": "Delete",
+            "csi": {
+                "driver": "ebs.csi.eks.amazonaws.com",
+                "volumeHandle": f"vol-test-{namespace}",
+            },
         },
     })
     Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+@pytest.mark.parametrize(
+    "defect, diagnostic",
+    [
+        (
+            "retain",
+            (
+                "persistentvolume/pv-openclaw-tenant-a must be an EBS CSI volume "
+                "with reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+        (
+            "other-driver",
+            (
+                "persistentvolume/pv-openclaw-tenant-a must be an EBS CSI volume "
+                "with reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+        (
+            "unbound-claim",
+            (
+                "persistentvolumeclaim/openclaw-tenant-a/openclaw-workspace is not "
+                "bound to its persistent volume; refusing tenant deletion."
+            ),
+        ),
+        (
+            "claim-uid-mismatch",
+            (
+                "persistentvolumeclaim/openclaw-tenant-a/openclaw-workspace is not "
+                "bound to its persistent volume; refusing tenant deletion."
+            ),
+        ),
+    ],
+)
+def test_retain_or_foreign_tenant_volume_fails_before_any_tenant_deletion(
+    tmp_path: Path, defect: str, diagnostic: str
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    state = _state(env)
+    pvc = next(item for item in state["pvcs"] if item["metadata"]["namespace"] == tenant)
+    pv = next(item for item in state["pvs"] if item["metadata"]["name"] == f"pv-{tenant}")
+    if defect == "retain":
+        pv["spec"]["persistentVolumeReclaimPolicy"] = "Retain"
+        state["retainTenantPvs"] = [tenant]
+    elif defect == "other-driver":
+        pv["spec"]["csi"]["driver"] = "efs.csi.aws.com"
+    elif defect == "unbound-claim":
+        pvc["status"] = {"phase": "Pending"}
+        del pvc["spec"]["volumeName"]
+        state["pvs"].remove(pv)
+    else:
+        pv["spec"]["claimRef"]["uid"] = "uid-another-claim"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    # On a tree without the check, the retained case waits 600 s for the volume; the bound keeps this test short.
+    try:
+        result = subprocess.run(
+            [*command, *_tenant_identity_args(tenant), "--delete-tenant-data"],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        returncode, stderr = result.returncode, result.stderr
+    except subprocess.TimeoutExpired:
+        returncode, stderr = None, ""
+
+    log = tmp_path / "fake-log.jsonl"
+    mutations = [
+        json.loads(line) for line in log.read_text().splitlines()
+    ] if log.exists() else []
+    assert [entry for entry in mutations if entry.get("mutation")] == []
+    assert returncode == 1
+    assert stderr.endswith(f"cleanup: {diagnostic}\n")
+    after = _state(env)
+    assert after["mutations"] == 0
+    assert after["helm"] is True
+    assert f"namespace/{tenant}" in after["resources"]
+    assert not any("cleanup-freeze-tenants-" in key for key in after["resources"])
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
 
 
 def _add_validation_database_storage(env: dict[str, str]) -> None:
