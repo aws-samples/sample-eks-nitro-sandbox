@@ -1520,8 +1520,8 @@ class Cleanup:
         # with reclaim policy Delete. Prove that before the Helm uninstall and any namespace delete, so a Retain
         # or foreign volume stops cleanup while everything is still in place.
         # recorded (name -> UID) marks a resumed deletion: there every recorded volume still present must keep
-        # its UID and safe shape, but its claim may already be gone; a volume tied to a target namespace that the
-        # record does not name is refused.
+        # its UID, safe shape and a claim reference to a target namespace, but its claim may already be gone; a
+        # volume tied to a target namespace that the record does not name is refused.
         # Returns the name and UID of every volume whose claim names a target namespace, from the one PVC and
         # PV snapshot that this call validated.
         pvcs = json.loads(
@@ -1593,6 +1593,13 @@ class Cleanup:
                     fail(
                         f"persistentvolume/{name} was replaced since the tenant "
                         "deletion record was written; refusing to continue."
+                    )
+                # The tenant freeze guards a volume only while its claim reference names a target namespace, so
+                # a recorded volume whose claim reference was cleared could turn Retain and be deleted unseen.
+                if reference.get("namespace") not in namespace_names:
+                    fail(
+                        f"persistentvolume/{name} is in the tenant deletion record but its claim "
+                        "reference no longer names a tenant namespace; refusing to continue."
                     )
             if (
                 spec.get("persistentVolumeReclaimPolicy") != "Delete"

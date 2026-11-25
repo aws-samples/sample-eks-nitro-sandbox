@@ -2736,6 +2736,124 @@ def test_failed_volume_check_under_the_freeze_removes_it_and_changes_nothing_els
     _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, 0)
 
 
+UNCLAIMED_RECORDED_VOLUME = (
+    "persistentvolume/pv-openclaw-tenant-b is in the tenant deletion record but its claim reference no "
+    "longer names a tenant namespace; refusing to continue."
+)
+
+
+def _partial_tenant_deletion(tmp_path: Path) -> tuple[list[str], dict[str, str]]:
+    """Two tenants; the first deletion stops after tenant A, leaving tenant B's namespace, claim and volume."""
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    failed = _run([*command, *_tenant_identity_args(*tenants), "--delete-tenant-data"], env)
+    assert failed.returncode == 1
+    retry = [
+        *command,
+        *[argument for tenant in tenants for argument in ("--tenant-namespace", tenant)],
+        "--delete-tenant-data",
+    ]
+    return retry, env
+
+
+def _unclaim_recorded_volume(storage: dict[str, Any]) -> None:
+    # Tenant B's claim is gone and its recorded volume's claim reference is cleared; the volume is Released.
+    storage["pvcs"] = [
+        claim for claim in storage["pvcs"] if claim["metadata"]["namespace"] != "openclaw-tenant-b"
+    ]
+    volume = next(item for item in storage["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b")
+    volume["spec"].pop("claimRef")
+    volume["status"] = {"phase": "Released"}
+
+
+def _assert_resume_stopped_before_namespace_deletion(tmp_path: Path, env: dict[str, str]) -> None:
+    after = _state(env)
+    assert "namespace/openclaw-tenant-b" in after["resources"]
+    assert any(item["metadata"]["name"] == "pv-openclaw-tenant-b" for item in after["pvs"])
+    assert json.loads((tmp_path / "state" / "cleanup-tenant-deletion.json").read_text())["complete"] is False
+
+
+def test_resumed_deletion_refuses_a_recorded_volume_that_no_longer_claims_a_tenant(tmp_path: Path) -> None:
+    retry, env = _partial_tenant_deletion(tmp_path)
+    partial = _state(env)
+    _unclaim_recorded_volume(partial)
+    # The CSI driver would remove the Released volume object after a few listings, so a run that let it pass
+    # would complete.
+    partial["releasedPvListingsLeft"] = {"pv-openclaw-tenant-b": 3}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    mutations = partial["mutations"]
+
+    result = _run(retry, env)
+
+    # The read-only check refuses before any change, the temporary freeze included.
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {UNCLAIMED_RECORDED_VOLUME}\n")
+    assert _state(env)["mutations"] == mutations
+    _assert_resume_stopped_before_namespace_deletion(tmp_path, env)
+
+
+def test_claim_reference_cleared_before_the_freeze_is_caught_under_it(tmp_path: Path) -> None:
+    retry, env = _partial_tenant_deletion(tmp_path)
+    (tmp_path / "fake-log.jsonl").unlink()
+    mutations = _state(env)["mutations"]
+    # The retry's read-only check passes; then the claim goes and the recorded volume's claim reference is
+    # cleared, before the tenant freeze holds.
+    _storage_at_tenant_freeze(env, _unclaim_recorded_volume)
+    state = _state(env)
+    state["releasedPvListingsLeft"] = {"pv-openclaw-tenant-b": 3}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(retry, env)
+
+    # The check under the freeze refuses; only the temporary freeze came and went.
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {UNCLAIMED_RECORDED_VOLUME}\n")
+    _assert_resume_stopped_before_namespace_deletion(tmp_path, env)
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, mutations, helm=False)
+
+
+def test_resumed_deletion_refuses_before_an_unclaimed_recorded_volume_can_turn_retain(tmp_path: Path) -> None:
+    retry, env = _partial_tenant_deletion(tmp_path)
+    partial = _state(env)
+    _unclaim_recorded_volume(partial)
+    # The volume turns Retain right after the snapshot under the freeze, which does not guard an unclaimed
+    # volume, and the CSI driver then removes the volume object while the backing volume is kept.
+    partial["pvRequestsAfterList"] = {
+        "count": partial.get("pvListCount", 0) + 2,
+        "requests": [{
+            "operation": "UPDATE",
+            "name": "pv-openclaw-tenant-b",
+            "path": ["spec", "persistentVolumeReclaimPolicy"],
+            "value": "Retain",
+        }],
+    }
+    partial["releasedPvListingsLeft"] = {"pv-openclaw-tenant-b": 3}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    mutations = partial["mutations"]
+
+    result = _run(retry, env)
+
+    # Cleanup refuses before the freeze and the namespace deletion, so the Retain update never comes.
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {UNCLAIMED_RECORDED_VOLUME}\n")
+    after = _state(env)
+    assert after["mutations"] == mutations
+    assert not [
+        entry
+        for entry in after.get("pvAdmission", [])
+        if entry["operation"] == "UPDATE" and entry["name"] == "pv-openclaw-tenant-b"
+    ]
+    volume = next(item for item in after["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b")
+    assert volume["spec"]["persistentVolumeReclaimPolicy"] == "Delete"
+    _assert_resume_stopped_before_namespace_deletion(tmp_path, env)
+
+
 def _pv_requests_after_under_freeze_list(env: dict[str, str], requests: list[dict[str, Any]]) -> None:
     """The second PV listing is the snapshot under the freeze; the requests arrive after its bytes return."""
     state = _state(env)
