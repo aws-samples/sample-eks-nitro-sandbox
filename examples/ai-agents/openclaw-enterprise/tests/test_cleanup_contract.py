@@ -1232,6 +1232,129 @@ def test_cleanup_rejects_conflicting_helm_attempt_layouts_before_mutation(
     assert _state(env)["mutations"] == 0
 
 
+def test_cleanup_accepts_minimal_helm_clusterrolebinding_labels(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    key = (
+        "clusterrolebinding.rbac.authorization.k8s.io/"
+        "oce-openclaw-worker-namespaces"
+    )
+    state = _state(env)
+    metadata = state["resources"][key]["metadata"]
+    # The upstream chart emits this exact shape; its receipt records the UID.
+    metadata["labels"] = {"app.kubernetes.io/managed-by": "Helm"}
+    metadata["annotations"] = {
+        "meta.helm.sh/release-name": "oce",
+        "meta.helm.sh/release-namespace": SYSTEM_NAMESPACE,
+    }
+    receipt = json.loads(
+        (tmp_path / "state" / "receipt" / "resources.json").read_text()
+    )
+    assert receipt["resources"][key] == metadata["uid"]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["helm"] is False
+    assert key not in current["resources"]
+    assert current["mutations"] > 0
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "diagnostic"),
+    [
+        (
+            "annotations", "meta.helm.sh/release-name", "foreign-release",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-name", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-namespace", "foreign-namespace",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-namespace", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "metadata", "uid", "replacement-uid",
+            "does not match the UID recorded in the installation receipt.",
+        ),
+        (
+            "metadata", "uid", None,
+            "does not match the UID recorded in the installation receipt.",
+        ),
+        (
+            "receipt", "uid", None,
+            "is live but has no UID in the installation receipt.",
+        ),
+        (
+            "labels", "app.kubernetes.io/instance", "foreign-release",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/instance", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/managed-by", "another-installer",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/managed-by", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+    ],
+    ids=[
+        "foreign-release", "missing-release", "foreign-namespace",
+        "missing-namespace", "replacement-uid", "missing-uid",
+        "missing-receipt-uid", "wrong-instance", "null-instance",
+        "foreign-owner", "missing-owner",
+    ],
+)
+def test_minimal_helm_clusterrolebinding_identity_mismatch_stops_mutations(
+    tmp_path: Path,
+    section: str,
+    field: str,
+    value: str | None,
+    diagnostic: str,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    key = (
+        "clusterrolebinding.rbac.authorization.k8s.io/"
+        "oce-openclaw-worker-namespaces"
+    )
+    state = _state(env)
+    metadata = state["resources"][key]["metadata"]
+    metadata["labels"] = {"app.kubernetes.io/managed-by": "Helm"}
+    if section == "receipt":
+        receipt_path = tmp_path / "state" / "receipt" / "resources.json"
+        receipt = json.loads(receipt_path.read_text())
+        del receipt["resources"][key]
+        _write_json(receipt_path, receipt)
+    else:
+        target = metadata if section == "metadata" else metadata[section]
+        if value is None and field != "app.kubernetes.io/instance":
+            target.pop(field)
+        else:
+            # A present JSON null is distinct from an absent instance label.
+            target[field] = value
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == f"cleanup: {key} {diagnostic}\n"
+    assert _state(env) == state
+    assert state["mutations"] == 0
+
+
 def test_helm_rbac_ownership_mismatch_fails_before_any_mutation(
     tmp_path: Path,
 ) -> None:

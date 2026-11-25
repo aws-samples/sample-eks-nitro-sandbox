@@ -1606,7 +1606,7 @@ class Cleanup:
         owner = labels.get(OWNER_KEY)
         helm_identity = (
             owner == "Helm"
-            and labels.get("app.kubernetes.io/instance") == self.a.release
+            and labels.get("app.kubernetes.io/instance", self.a.release) == self.a.release
             and annotations.get("meta.helm.sh/release-name") == self.a.release
             and annotations.get("meta.helm.sh/release-namespace") == self.a.namespace
         )
