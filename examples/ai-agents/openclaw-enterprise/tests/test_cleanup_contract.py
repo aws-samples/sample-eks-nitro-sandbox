@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -2447,6 +2448,7 @@ def test_namespace_lifecycle_denies_create_without_cleanup_binding(
 )
 def test_tenant_freeze_verification_requires_exact_namespace_barrier(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     uid: str,
     phase: str,
     timestamp: str | None,
@@ -2471,10 +2473,16 @@ def test_tenant_freeze_verification_requires_exact_namespace_barrier(
         if isinstance(node, (ast.ClassDef, ast.FunctionDef))
         and node.name in {"CleanupError", "fail"}
     ]
-    namespace: dict[str, Any] = {"json": json, "subprocess": subprocess}
-    exec(compile(ast.Module(
-        body=[*definitions, cleanup_class], type_ignores=[],
-    ), str(CLEANUP), "exec"), namespace)
+    module_path = tmp_path / "cleanup_namespace_barrier.py"
+    module_path.write_text(
+        "import json\nimport subprocess\n"
+        + ast.unparse(ast.Module(body=[*definitions, cleanup_class], type_ignores=[]))
+    )
+    spec = importlib.util.spec_from_file_location("cleanup_namespace_barrier", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    namespace = vars(module)
     cleanup = namespace["Cleanup"]()
     cleanup.k = ["fake-kubectl"]
     target = {"name": "openclaw-tenant-a", "uid": "target-uid"}
