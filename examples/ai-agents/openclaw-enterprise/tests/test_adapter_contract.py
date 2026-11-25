@@ -366,3 +366,23 @@ def test_render_script_rejects_manifest_without_target_deployment() -> None:
 
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+def test_readme_prerequisites_exclude_sample_namespaces_from_auto_monitor() -> None:
+    readme = (SAMPLE / "README.md").read_text(encoding="utf-8")
+    prerequisites = " ".join(
+        readme.split("## Prerequisites", 1)[1].split("## Overview", 1)[0].split()
+    )
+    assert "CloudWatch Application Signals auto-monitor" in prerequisites
+    for namespace in (
+        "openclaw-system",
+        "openclaw-enterprise-adapter",
+        "openclaw-enterprise-agw",
+    ):
+        assert f"`{namespace}`" in prerequisites
+    assert "each OCE tenant namespace" in prerequisites
+    assert "--selector openclaw.dev/namespace=<namespace-id>" in prerequisites
+    # The page's reason is the adapter's exact container contract.
+    adapter = (SAMPLE / "adapter" / "adapter.py").read_text(encoding="utf-8")
+    assert "the embedded gateway contract permits only its two OCE init containers" in adapter
+    assert "the embedded gateway contract permits no sidecars" in adapter

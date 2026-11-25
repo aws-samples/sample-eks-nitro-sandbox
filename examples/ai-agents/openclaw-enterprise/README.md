@@ -55,6 +55,16 @@ Editable diagrams:
   when it is not `true`. It never changes the setting, which applies to the
   whole cluster. To turn it on, follow the
   [network policy](../../isolation/network-policy/README.md) blueprint.
+- If the cluster runs CloudWatch Application Signals auto-monitor, exclude this
+  blueprint's namespaces from it before setup: `openclaw-system` (or your
+  `OCE_NAMESPACE`), `openclaw-enterprise-adapter`, `openclaw-enterprise-agw`,
+  and each OCE tenant namespace. Auto-monitor injects an instrumentation init
+  container into the Pods it monitors, and the admission adapter refuses every
+  tenant gateway Pod that does not have exactly OCE's two init containers and
+  one container. A tenant namespace's name is known only after
+  `occ namespace create`; find it with
+  `kubectl get namespaces --selector openclaw.dev/namespace=<namespace-id>`,
+  and exclude it before the first Agent starts.
 - Access to Amazon Bedrock model `amazon.nova-lite-v1:0` in `us-west-2`.
 - Private OCE authentication and Agent DNS names that resolve from the cluster.
 - [cert-manager](https://cert-manager.io/docs/installation/) `v1.21.3`
