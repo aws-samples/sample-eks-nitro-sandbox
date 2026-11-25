@@ -2132,18 +2132,50 @@ verify_agentgateway_key_contract \
 record_pass "agentgateway-key-authorization" \
   "missing and incorrect keys were denied; each tenant key completed one Responses API turn"
 
+gateway_http_port() {
+  local namespace="$1" pod="$2" container="$3" expected_uid="$4" pod_file
+  if [[ "$namespace" == "$TENANT_A_NAMESPACE" && "$pod" == "$TENANT_A_POD" ]]; then
+    pod_file="$WORK_DIR/tenant-a-pod.json"
+  elif [[ "$namespace" == "$TENANT_B_NAMESPACE" && "$pod" == "$TENANT_B_POD" ]]; then
+    pod_file="$WORK_DIR/tenant-b-pod.json"
+  elif [[ "$namespace" == "$TENANT_A_NAMESPACE" \
+    && -n "${REPLACEMENT_POD:-}" && "$pod" == "$REPLACEMENT_POD" ]]; then
+    pod_file="$WORK_DIR/replacement-pod.json"
+  else
+    die "gateway port lookup is outside the verified tenant runtimes"
+  fi
+  jq -er --arg namespace "$namespace" --arg pod "$pod" \
+    --arg container "$container" --arg uid "$expected_uid" '
+    if .metadata.namespace == $namespace and .metadata.name == $pod
+      and .metadata.uid == $uid then
+      [.spec.containers[] | select(.name == $container)
+        | .ports[]? | select(.name == "http") | .containerPort]
+      | if length == 1 and (.[0] | type == "number") then
+          .[0] | if . >= 1 and . <= 65535 and floor == . then .
+            else error("invalid gateway port") end
+        else error("expected one gateway HTTP port") end
+    else error("gateway pod identity differs") end
+  ' "$pod_file" || die "could not resolve the verified runtime HTTP port"
+}
+
 call_native_openclaw_model() {
   local namespace="$1"
   local pod="$2"
   local container="$3"
   local expected_uid="$4"
   local output_file="$5"
+  local gateway_port
+  gateway_port="$(gateway_http_port "$namespace" "$pod" "$container" "$expected_uid")"
   # shellcheck disable=SC2016 # This JavaScript reads the guest environment.
-  exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" node -e '
+  exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" \
+    env "OCE_TEST_GATEWAY_PORT=$gateway_port" node -e '
     const crypto = require("node:crypto");
     const http = require("node:http");
     const password = process.env.OPENCLAW_GATEWAY_PASSWORD || "";
     if (!password) process.exit(49);
+    const rawPort = process.env.OCE_TEST_GATEWAY_PORT || "";
+    const port = Number(rawPort);
+    if (!/^[1-9][0-9]{0,4}$/.test(rawPort) || port > 65535) process.exit(48);
 
     function request(payload, authenticated, traceparent = "") {
       const body = JSON.stringify(payload);
@@ -2156,7 +2188,7 @@ call_native_openclaw_model() {
       return new Promise((resolve, reject) => {
         const operation = http.request({
           hostname: "127.0.0.1",
-          port: 18789,
+          port,
           path: "/v1/chat/completions",
           method: "POST",
           headers
@@ -2236,35 +2268,17 @@ call_native_openclaw_model() {
 
 verify_native_tool_execution() {
   local output_file="$1"
-  local api_pod api_container="api"
-  api_pod="$(
-    jq -er '
-      [
-        .items[]
-        | select(
-            .metadata.labels["app.kubernetes.io/component"] == "api"
-            and .status.phase == "Running"
-            and ((.status.containerStatuses // []) | any(
-              .name == "api" and .ready == true and .state.running != null
-            ))
-          )
-        | .metadata.name
-      ]
-      | if length == 1 then .[0] else error("expected exactly one ready API pod") end
-    ' "$WORK_DIR/oce-system-pods.json"
-  )" || die "could not select exactly one ready OCE API pod for native tool validation"
-  [[ "$api_pod" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
-    die "OCE API pod name is invalid"
-
-  # shellcheck disable=SC2016 # This JavaScript runs inside the OCE API container.
-  kube -n "$OCE_SYSTEM_NAMESPACE" exec "$api_pod" -c "$api_container" -- \
+  local gateway_port
+  gateway_port="$(gateway_http_port "$TENANT_A_NAMESPACE" "$TENANT_A_POD" \
+    "$TENANT_A_CONTAINER" "$TENANT_A_POD_UID")"
+  # shellcheck disable=SC2016 # Native CLI reads authentication inside the guest.
+  exec_in_exact_pod "$TENANT_A_NAMESPACE" "$TENANT_A_POD" \
+    "$TENANT_A_CONTAINER" "$TENANT_A_POD_UID" \
     env \
-      "OCE_TEST_NAMESPACE_ID=$TENANT_A_OCE_NAMESPACE" \
-      "OCE_TEST_AGENT_ID=$TENANT_A_AGENT_ID" \
+      "OCE_TEST_GATEWAY_PORT=$gateway_port" \
       "OCE_NATIVE_HISTORY_EVALUATOR_B64=$NATIVE_HISTORY_EVALUATOR_B64" \
     node --input-type=module -e '
-      import { readFileSync } from "node:fs";
-      import { createRequire } from "node:module";
+      import { spawnSync } from "node:child_process";
       import { randomBytes, randomUUID, createHash } from "node:crypto";
 
       const { evaluateNativeToolHistory } = await import(
@@ -2272,21 +2286,20 @@ verify_native_tool_execution() {
           process.env.OCE_NATIVE_HISTORY_EVALUATOR_B64 || ""
         }`
       );
-      const require = createRequire("/app/apps/controller/package.json");
-      const { GatewayClient } = await import(
-        require.resolve("@openclaw/gateway-client")
-      );
-      const { loadYaml } = require("@kubernetes/client-node");
-      const config = loadYaml(
-        readFileSync(process.env.OCC_CONFIG_PATH, "utf8")
-      );
-      const route = config.drivers.compute.configuration.gatewayRouting;
-      const port = route.endpointPort ?? 443;
-      const host = route.hostname + (port === 443 ? "" : `:${port}`);
-      const namespace = process.env.OCE_TEST_NAMESPACE_ID;
-      const agent = process.env.OCE_TEST_AGENT_ID;
-      if (!/^ns_[A-Za-z0-9-]+$/.test(namespace || "")) process.exit(80);
-      if (!/^agt_[A-Za-z0-9-]+$/.test(agent || "")) process.exit(81);
+      const rawPort = process.env.OCE_TEST_GATEWAY_PORT || "";
+      const port = Number(rawPort);
+      if (!/^[1-9][0-9]{0,4}$/.test(rawPort) || port > 65535) process.exit(80);
+      const call = async (method, params) => {
+        const result = spawnSync("openclaw", [
+          "gateway", "call", method, "--json",
+          "--expect-url", `ws://127.0.0.1:${port}`,
+          "--timeout", "30000", "--params", JSON.stringify(params)
+        ], { encoding: "utf8", timeout: 45000, maxBuffer: 1048576 });
+        if (result.error || result.status !== 0) {
+          throw new Error("native gateway CLI request failed");
+        }
+        return JSON.parse(result.stdout);
+      };
 
       const nonce = randomBytes(12).toString("hex");
       const toolMarker = `TOOL_${nonce}`;
@@ -2298,37 +2311,7 @@ verify_native_tool_execution() {
         `After it succeeds, reply with exactly ${finalMarker} and no other text.`
       ].join(" ");
       const sessionKey = `agent:main:api-tool-check-${randomUUID()}`;
-      const connected = Promise.withResolvers();
-      const client = new GatewayClient({
-        url: `wss://${host}/namespaces/${namespace}/agents/${agent}`,
-        edgeAuthHeaders: {
-          "x-api-key": readFileSync(
-            process.env.OCC_GATEWAY_API_KEY_PATH,
-            "utf8"
-          ).trim()
-        },
-        clientName: "gateway-client",
-        mode: "backend",
-        role: "operator",
-        scopes: [],
-        deviceIdentity: null,
-        minProtocol: 4,
-        maxProtocol: 4,
-        onHelloOk: connected.resolve,
-        onConnectError: connected.reject
-      });
-      const helloTimer = setTimeout(
-        () => connected.reject(new Error("hello timeout")),
-        20000
-      );
-
-      try {
-        client.start();
-        await connected.promise;
-        clearTimeout(helloTimer);
-        const signal = AbortSignal.timeout(600000);
-        const call = (method, params) =>
-          client.request(method, params, { signal, timeoutMs: 30000 });
+      {
         const sent = await call("chat.send", {
           sessionKey,
           idempotencyKey: randomUUID(),
@@ -2386,9 +2369,6 @@ verify_native_tool_execution() {
             .update(String(sent.runId))
             .digest("hex")
         }));
-      } finally {
-        clearTimeout(helloTimer);
-        await client.stopAndWait({ timeoutMs: 1000 });
       }
     ' >"$output_file"
   jq -e '

@@ -91,6 +91,7 @@ FAKE_COMMAND = textwrap.dedent(
                 "containers": [{{
                     "name": "gateway",
                     "image": image,
+                    "ports": [{{"name": "http", "containerPort": 8080}}],
                     "securityContext": {{
                         "allowPrivilegeEscalation": False,
                         "privileged": False,
@@ -226,6 +227,7 @@ FAKE_COMMAND = textwrap.dedent(
         "agt_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "rs-a",
         "rev_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "pvc-a",
     )
+    pod_a_new["spec"]["containers"][0]["ports"][0]["containerPort"] = 9090
     if scenario == "replacement_wrong_revision":
         pod_a_new["metadata"]["labels"]["openclaw.dev/revision"] = (
             "rev_cccccccc-cccc-4ccc-8ccc-cccccccccccc"
@@ -945,17 +947,17 @@ FAKE_COMMAND = textwrap.dedent(
             sys.exit(0)
         if "LIVE_NATIVE_TOOL_EXECUTION" in joined:
             if (
-                namespace != "oce-system"
-                or pod_name != "oce-api-0"
+                namespace != "tenant-a-k8s"
+                or pod_name != "tenant-a-pod"
+                or args[args.index("-c") + 1] != "gateway"
+                or "__OCE_EXACT_POD_COMMAND__" not in args
+                or "OCE_EXPECTED_POD_UID=uid-a-old" not in args
                 or remote[:1] != ["env"]
-                or (
-                    "OCE_TEST_NAMESPACE_ID="
-                    "ns_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                ) not in remote
-                or (
-                    "OCE_TEST_AGENT_ID="
-                    "agt_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                ) not in remote
+                or "OCE_TEST_GATEWAY_PORT=8080" not in remote
+                or any(
+                    value.startswith(("OCE_TEST_NAMESPACE_ID=", "OCE_TEST_AGENT_ID="))
+                    for value in remote
+                )
             ):
                 print("invalid native tool execution target", file=sys.stderr)
                 sys.exit(103)
@@ -1073,6 +1075,10 @@ FAKE_COMMAND = textwrap.dedent(
             ]))
             sys.exit(0)
         if "/v1/chat/completions" in joined:
+            expected_port = 9090 if pod_name == "tenant-a-replacement" else 8080
+            if f"OCE_TEST_GATEWAY_PORT={{expected_port}}" not in remote:
+                print("native model probe did not use the pod HTTP port", file=sys.stderr)
+                sys.exit(107)
             model_call_count_file = state_dir / "model_call_count"
             model_call_count = int(
                 model_call_count_file.read_text()
@@ -1731,6 +1737,107 @@ def test_native_history_evaluator_accepts_harmless_retries_and_extra_messages() 
     }
 
 
+def test_native_history_evaluator_accepts_thinking_before_exact_final_reply() -> None:
+    messages = _valid_native_history()
+    messages[-1]["content"] = [
+        {
+            "type": "thinking",
+            "thinking": "The exec result matches the requested marker.",
+        },
+        {"type": "text", "text": "DONE_nonce-123"},
+    ]
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 0, result.stderr
+    assert output == {
+        "ok": True,
+        "evidence": {"toolCallCount": 1, "execResultCount": 1, "finalReplyCount": 1},
+    }
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "thinking"},
+        {"type": "thinking", "thinking": None},
+        {"type": "thinking", "thinking": 123},
+        {"type": "thinking", "thinking": {"text": "DONE_nonce-123"}},
+        {"type": "reasoning", "text": "synthetic reasoning"},
+        {"type": "image", "text": "DONE_nonce-123"},
+        {"type": "text", "text": None},
+        None,
+        [],
+    ],
+)
+def test_native_history_evaluator_rejects_malformed_or_unknown_final_blocks(
+    block: object,
+) -> None:
+    messages = _valid_native_history()
+    messages[-1]["content"] = [block, {"type": "text", "text": "DONE_nonce-123"}]
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 2
+    assert output["ok"] is False
+    assert output["error"] in {
+        "unsupported transcript content shape",
+        "malformed assistant content block",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_final",
+        "thinking_only",
+        "wrong_command",
+        "uncorrelated_result",
+        "failed_exec",
+    ],
+)
+def test_thinking_final_cannot_bypass_native_execution_guards(mutation: str) -> None:
+    messages = _valid_native_history()
+    messages[-1]["content"] = [
+        {"type": "thinking", "thinking": "DONE_nonce-123"},
+        {"type": "text", "text": "DONE_nonce-123"},
+    ]
+    if mutation == "wrong_final":
+        messages[-1]["content"][1]["text"] = "WRONG"
+    elif mutation == "thinking_only":
+        messages[-1]["content"].pop()
+    elif mutation == "wrong_command":
+        messages[1]["content"][0]["arguments"]["command"] = "printf WRONG"
+    elif mutation == "uncorrelated_result":
+        messages[2]["toolCallId"] = "call-other"
+    elif mutation == "failed_exec":
+        messages[2]["isError"] = True
+
+    result, output = _evaluate_native_history(messages)
+
+    if mutation in {"wrong_final", "thinking_only"}:
+        assert result.returncode == 0, result.stderr
+        assert output == {"ok": True, "evidence": None}
+    else:
+        assert result.returncode == 2
+        assert output["ok"] is False
+
+
+@pytest.mark.parametrize("index", [0, 2])
+def test_thinking_blocks_remain_invalid_in_user_and_exec_result(index: int) -> None:
+    messages = _valid_native_history()
+    text = messages[index]["content"]
+    messages[index]["content"] = [
+        {"type": "thinking", "thinking": "synthetic"},
+        {"type": "text", "text": text},
+    ]
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 2
+    assert output == {"ok": False, "error": "unsupported transcript content shape"}
+
+
 @pytest.mark.parametrize(
     "mutate, expected_error",
     [
@@ -2026,7 +2133,9 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "EVIDENCE\tguest-a-block-devices\tvda" in evidence
     assert "EVIDENCE\tguest-b-block-devices\tvda" in evidence
     assert "EVIDENCE\tordinary-control-root\toverlay overlay" in evidence
-    assert "EVIDENCE\tordinary-control-block-devices\tnvme0n1" in evidence  # pragma: allowlist secret -- block-device fixture
+    assert (
+        "EVIDENCE\tordinary-control-block-devices\tnvme0n1" in evidence
+    )  # pragma: allowlist secret -- block-device fixture
     assert (
         "EVIDENCE\tshared-postgresql-boundary\t"
         "app-role-restricted=true application-table-count=12 "
@@ -2146,9 +2255,9 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         {"namespace": "tenant-b-k8s", "pod": "tenant-b-pod"},
     ]
     assert json.loads((state_dir / "native_tool_execution").read_text()) == {
-        "namespace": "oce-system",
-        "pod": "oce-api-0",
-        "container": "api",
+        "namespace": "tenant-a-k8s",
+        "pod": "tenant-a-pod",
+        "container": "gateway",
     }
     command_log = (state_dir / "commands.jsonl").read_text()
     assert "tenant-a-secret" not in command_log
@@ -2565,9 +2674,9 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
         assert json.loads(
             (tmp_path / "state" / "native_tool_execution").read_text()
         ) == {
-            "namespace": "oce-system",
-            "pod": "oce-api-0",
-            "container": "api",
+            "namespace": "tenant-a-k8s",
+            "pod": "tenant-a-pod",
+            "container": "gateway",
         }
     if scenario in (
         "wrong_cross_code",
@@ -2646,8 +2755,7 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "database-isolation-not-proven" in source
     assert "shared-database-application-boundary" in source
     assert (
-        "NOT has_database_privilege('occ_app', current_database(), 'CREATE')"
-        in source
+        "NOT has_database_privilege('occ_app', current_database(), 'CREATE')" in source
     )
     assert "NOT has_schema_privilege('occ_app', 'public', 'CREATE')" in source
     assert 'ORDINARY_CONTROL_POD="oce-live-ordinary-$$"' in source
@@ -2690,7 +2798,11 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "verify_agentgateway_key_contract" in source
     assert 'operation.destroy(new Error("response too large"))' in source
     assert 'response.on("data", chunk => { responseBody += chunk; });' not in source
-    assert "const { GatewayClient } = await import(" in source
+    assert "spawnSync" in source
+    assert "gatewayRouting" not in source
+    assert "GatewayClient" not in source
+    assert "OCC_GATEWAY_API_KEY_PATH" not in source
+    assert "18789" not in source
     assert "evaluateNativeToolHistory" in source
     assert "OCE_NATIVE_HISTORY_EVALUATOR_B64" in source
     assert "const exactCommand = `printf ${toolMarker}`;" in source
@@ -2715,16 +2827,15 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "stop_oce_api_port_forward >/dev/null 2>&1" in source
     assert 'if wait "$pid" 2>/dev/null; then' in source
     assert "stop_oce_api_port_forward || die" in source
-    assert 'OCE_API_TUNNEL_SCRIPT="$(dirname "$SCRIPT_PATH")/oce-api-tunnel.sh"' in source
+    assert (
+        'OCE_API_TUNNEL_SCRIPT="$(dirname "$SCRIPT_PATH")/oce-api-tunnel.sh"' in source
+    )
     assert "OCE_API_TUNNEL_CLEANUP_GRACE_SECONDS=15" in source
     assert "OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS * 2 +" in source
     assert "--ready-file" in source
     assert "--state-file" in source
     assert "oce_api_tunnel_resources_absent" in source
-    assert (
-        '"Forwarding from 127.0.0.1:${OCE_API_LOCAL_PORT} -> 18080"'
-        in source
-    )
+    assert '"Forwarding from 127.0.0.1:${OCE_API_LOCAL_PORT} -> 18080"' in source
     assert "service/openclaw-enterprise-api" not in source
     assert 'delete namespace "$TENANT_A_NAMESPACE"' not in source
     assert 'delete namespace "$TENANT_B_NAMESPACE"' not in source

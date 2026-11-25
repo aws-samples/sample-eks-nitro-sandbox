@@ -1400,9 +1400,10 @@ The command exits zero only after it verifies:
    matching tenant key over verified TLS.
 7. Each native OpenClaw gateway rejects an unauthenticated request, returns the
    exact nonce-bound answer to a freshly generated random arithmetic challenge
-   through AgentGateway and Amazon Bedrock, and records one unique `exec` tool
-   call, at least one correlated successful result, and exactly one requested
-   final reply.
+   through AgentGateway and Amazon Bedrock on its declared HTTP port. Tenant A's
+   native CLI also proves one unique `exec` tool call, a correlated successful
+   result, and exactly one requested final reply. The CLI reads configured
+   authentication inside the guest.
 8. Each validator key reads its own OCE namespace and agent; both cross-tenant
    reads return HTTP `403` with code `FORBIDDEN`.
 9. Tenant A's `.openclaw` marker and model path survive controller-driven pod
