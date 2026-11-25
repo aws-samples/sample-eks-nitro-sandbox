@@ -641,6 +641,11 @@ FINALIZER_UNCHANGED = (
     "metadata.annotations", "metadata.ownerReferences", "spec", "status",
 )
 
+FINALIZER_COUNT_CLAUSE = (
+    "object.metadata.finalizers.all(finalizer, size(object.metadata.finalizers.filter("
+    "entry, entry == finalizer)) <= size(oldObject.metadata.finalizers.filter(entry, entry == finalizer)))"
+)
+
 def finalizer_removal_allowed(policy, resource, subresource, old, new):
     # A model of the freezes' finalizerRemoval rule for these tests; its CEL is not evaluated here.
     variables = {item["name"]: item["expression"] for item in policy["spec"].get("variables", [])}
@@ -656,6 +661,9 @@ def finalizer_removal_allowed(policy, resource, subresource, old, new):
         return False
     before = old["metadata"].get("finalizers") or []
     after = new["metadata"].get("finalizers") or []
+    # The count rule applies only when the live policy carries its exact clause.
+    if FINALIZER_COUNT_CLAUSE in expression and any(after.count(name) > before.count(name) for name in after):
+        return False
     return bool(before) and all(name in before for name in after) and len(after) < len(before)
 
 def finalizer_request(item, variant):
@@ -684,6 +692,8 @@ def finalizer_request(item, variant):
         del new["metadata"]["deletionTimestamp"]
     elif variant == "subresource":
         subresource = "status"
+    elif variant in state.get("finalizerTargets", {}):
+        new["metadata"]["finalizers"] = list(state["finalizerTargets"][variant])
     return old, new, subresource
 
 def pod_status_request(pod, variant):
@@ -3132,6 +3142,124 @@ def test_both_freezes_carry_the_finalizer_removal_rule_before_any_field_read(tmp
         for path in ("resourceVersion", "managedFields", "selfLink"):
             assert path not in expression
         assert "size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)" in expression
+
+
+PVC_PROTECTION = "kubernetes.io/pvc-protection"
+BACKUP = "example.com/backup"
+AUDIT = "example.com/audit"
+
+
+def _finalizer_count_run(
+    tmp_path: Path, freeze: str, variant: str, before: list[str], after: list[str]
+) -> tuple[list[str], dict[str, str], str]:
+    """A finalizer run whose claim starts with `before`; the variant asks for `after` before the pure removal."""
+    command, env, namespace = _finalizer_run(tmp_path, freeze, variants=(variant,))
+    state = _state(env)
+    for claim in state["pvcs"]:
+        if claim["metadata"]["namespace"] == namespace:
+            claim["metadata"]["finalizers"] = list(before)
+    state["finalizerTargets"] = {variant: list(after)}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    return command, env, namespace
+
+
+@pytest.mark.parametrize("freeze", ["tenant", "namespace"])
+@pytest.mark.parametrize(
+    ("variant", "before", "after"),
+    [
+        pytest.param(
+            "duplicateWhileShrinking",
+            [PVC_PROTECTION, BACKUP, AUDIT],
+            [PVC_PROTECTION, PVC_PROTECTION],
+            id="duplicateWhileShrinking",
+        ),
+        pytest.param(
+            "countIncreased",
+            [PVC_PROTECTION, PVC_PROTECTION, BACKUP, AUDIT],
+            [PVC_PROTECTION] * 3,
+            id="countIncreased",
+        ),
+    ],
+)
+def test_finalizer_removal_denies_a_name_whose_count_grows(
+    tmp_path: Path, freeze: str, variant: str, before: list[str], after: list[str]
+) -> None:
+    command, env, namespace = _finalizer_count_run(tmp_path, freeze, variant, before, after)
+
+    result = _run(command, env)
+
+    # The list gets shorter and every entry was already there, but one name now occurs more often: denied. The
+    # controller's pure removal in the same window is admitted, so the namespace still goes.
+    assert _finalizer_admission(env, namespace, "persistentvolumeclaims") == [
+        (variant, True, False),
+        ("pure", True, True),
+    ]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+
+
+@pytest.mark.parametrize("freeze", ["tenant", "namespace"])
+@pytest.mark.parametrize(
+    ("variant", "before", "after"),
+    [
+        pytest.param(
+            "oneDuplicateRemoved",
+            [PVC_PROTECTION, PVC_PROTECTION, BACKUP],
+            [PVC_PROTECTION, BACKUP],
+            id="oneDuplicateRemoved",
+        ),
+        pytest.param(
+            "lastDuplicateRemoved",
+            [PVC_PROTECTION, PVC_PROTECTION],
+            [PVC_PROTECTION],
+            id="lastDuplicateRemoved",
+        ),
+    ],
+)
+def test_finalizer_removal_allows_removing_one_duplicate(
+    tmp_path: Path, freeze: str, variant: str, before: list[str], after: list[str]
+) -> None:
+    command, env, namespace = _finalizer_count_run(tmp_path, freeze, variant, before, after)
+
+    result = _run(command, env)
+
+    assert _finalizer_admission(env, namespace, "persistentvolumeclaims") == [
+        (variant, True, True),
+        ("pure", True, True),
+    ]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+
+
+def test_both_freezes_carry_the_finalizer_count_clause(tmp_path: Path) -> None:
+    command, env, _ = _finalizer_run(tmp_path, "tenant")
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    created = [
+        json.loads(entry["stdin"])
+        for entry in _fake_log(tmp_path)
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    expressions = {
+        "tenant" if "cleanup-freeze-tenants-" in document["metadata"]["name"] else "namespace": {
+            item["name"]: item["expression"] for item in document["spec"]["variables"]
+        }["finalizerRemoval"]
+        for document in created
+        if document["kind"] == "ValidatingAdmissionPolicy"
+    }
+    # Membership, then no name more often than before, then a shorter list.
+    tail = (
+        " && (!has(object.metadata.finalizers) || (object.metadata.finalizers.all("
+        "finalizer, finalizer in oldObject.metadata.finalizers)"
+        " && object.metadata.finalizers.all(finalizer, size(object.metadata.finalizers.filter("
+        "entry, entry == finalizer)) <= size(oldObject.metadata.finalizers.filter(entry, entry == finalizer)))"
+        " && size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)))"
+    )
+    assert sorted(expressions) == ["namespace", "tenant"]
+    for freeze, expression in expressions.items():
+        assert expression.endswith(tail), freeze
 
 
 # Test-only: a python3 first on PATH for the deadline tests. It runs cleanup.sh's `python3 -I -` program under the

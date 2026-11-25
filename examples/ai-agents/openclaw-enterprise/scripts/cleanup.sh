@@ -70,8 +70,9 @@ def finalizer_removal_expression(resources):
     """CEL that is true only for removing finalizers from an object already being deleted.
 
     It checks the operation, the empty subresource and the resource before it reads any field, so every other
-    request stays denied. The new finalizers must be a strict subset of the old ones, and every other field must
-    be unchanged; each optional field is compared through has().
+    request stays denied. The new finalizers must be a removal from the old ones: the list is shorter and no name
+    occurs more often than before. Every other field must be unchanged; each optional field is compared through
+    has().
     """
     return (
         "request.operation == 'UPDATE' && request.subResource == ''"
@@ -83,6 +84,8 @@ def finalizer_removal_expression(resources):
         + " && has(oldObject.metadata.finalizers) && size(oldObject.metadata.finalizers) > 0"
         " && (!has(object.metadata.finalizers) || (object.metadata.finalizers.all("
         "finalizer, finalizer in oldObject.metadata.finalizers)"
+        " && object.metadata.finalizers.all(finalizer, size(object.metadata.finalizers.filter("
+        "entry, entry == finalizer)) <= size(oldObject.metadata.finalizers.filter(entry, entry == finalizer)))"
         " && size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)))"
     )
 
