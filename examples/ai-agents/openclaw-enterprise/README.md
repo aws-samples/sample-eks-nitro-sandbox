@@ -196,10 +196,17 @@ includes the system-library CVE-2026-95692 fix. The build verifies patch
 checksums and source-file hashes, runs focused regression checks, and records
 upstream commits and patch checksums in `image-digests.json`. The build produces
 the agent runtime before the controller, which keeps a shell-free distroless
-final image and copies the tested, repaired Node.js executable, OpenSSL
-libraries, and genuine installed `libssl3t64` package record from that runtime's
-immutable digest. The controller entry in `image-digests.json` records this
-source as `repairedRuntimeImage`.
+final image and copies the tested, repaired Node.js executable, the installed
+`libssl3t64` payload, and its genuine package record from that runtime's
+immutable digest. The payload is every file that the runtime's dpkg database
+lists for the package, including both libraries and the three `engines-3`
+modules, and the build fails if a staged file differs from the runtime's copy.
+A Debian slim runtime does not install the package's documentation other than
+its copyright file, or its lintian override, so only those listed files may be
+missing. The copied package record still describes the whole package, as the
+runtime's own dpkg database does. Only an image build shows that the runtime's
+listing and files match this. The controller entry in `image-digests.json`
+records this source as `repairedRuntimeImage`.
 The controller build pulls its validated Node.js build base from AWS's Docker Official Images mirror (`public.ecr.aws/docker/library/node`) with the same tag and immutable digest, recorded as `buildBaseImage` in its `image-digests.json` entry.
 
 The runtime installs Git 2.56.1 and Expat 2.11.0 as Debian packages, preserving
@@ -662,7 +669,10 @@ build failed on a Docker Hub HTTP 429. Controller-only recovery rebuilt the
 controller, reused the other three images, and exported all four digests.
 The gate verified nine runtime OpenSSL backports: raw High remains nine;
 actionable Critical/High is zero. This is recovery evidence, not a successful
-full build or a successful Step Functions execution.
+full build or a successful Step Functions execution. The controller digest below
+was built before the controller copied the complete `libssl3t64` payload
+described above; only a new controller build and scan give the digest and
+findings for the current Dockerfile.
 
 ```json
 {

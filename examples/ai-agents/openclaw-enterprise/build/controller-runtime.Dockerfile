@@ -6,8 +6,16 @@ ARG NODE_RUNTIME_BASE_IMAGE
 ARG REPAIRED_RUNTIME_IMAGE
 
 # Reuse the Node/OpenSSL fixes built and tested for this build's agent runtime.
-# Copy only the executable, libraries and genuine installed-package metadata;
-# the controller's final image remains distroless.
+# Copy only the executable, the installed libssl3t64 payload and its genuine
+# package record; the controller's final image remains distroless.
+#
+# The payload is every non-directory path that the runtime's own dpkg database
+# lists for libssl3t64, copied with its path, mode and link target and compared
+# byte for byte. The runtime is a Debian slim image, whose dpkg configuration
+# installs no package documentation except copyright files and no lintian
+# overrides. Only those listed paths may be absent, and only when the runtime
+# lacks them as well; the libraries, the engine modules and the copyright file
+# are always required.
 FROM ${REPAIRED_RUNTIME_IMAGE} AS repaired-runtime
 USER 0
 RUN set -eu; \
@@ -17,11 +25,46 @@ RUN set -eu; \
       arm64) library_dir=aarch64-linux-gnu ;; \
       *) echo "Unsupported controller runtime architecture" >&2; exit 1 ;; \
     esac; \
-    mkdir -p "/fixed/usr/lib/$library_dir" /fixed/nodejs/bin /fixed/var/lib/dpkg/status.d; \
+    mkdir -p /fixed/nodejs/bin /fixed/var/lib/dpkg/status.d; \
     cp /usr/local/bin/node /fixed/nodejs/bin/node; \
-    cp "/usr/lib/$library_dir/libssl.so.3" "/fixed/usr/lib/$library_dir/libssl.so.3"; \
-    cp "/usr/lib/$library_dir/libcrypto.so.3" "/fixed/usr/lib/$library_dir/libcrypto.so.3"; \
-    dpkg-query -s libssl3t64 > /fixed/var/lib/dpkg/status.d/libssl3t64
+    listing="$(mktemp)"; staged="$(mktemp)"; found="$(mktemp)"; \
+    dpkg-query -L libssl3t64 >"$listing" || { echo "dpkg-query could not list the libssl3t64 files" >&2; exit 1; }; \
+    test -s "$listing" || { echo "dpkg-query listed no libssl3t64 files" >&2; exit 1; }; \
+    cd /; \
+    while IFS= read -r path; do \
+      case "$path" in \
+        /*) ;; \
+        *) echo "Unexpected libssl3t64 file list entry: $path" >&2; exit 1 ;; \
+      esac; \
+      rel="${path#/}"; \
+      if [ -d "$rel" ] && [ ! -L "$rel" ]; then continue; fi; \
+      if [ ! -e "$rel" ] && [ ! -L "$rel" ]; then \
+        case "$path" in \
+          /usr/share/doc/libssl3t64/copyright) ;; \
+          /usr/share/doc/libssl3t64/*|/usr/share/lintian/overrides/libssl3t64) continue ;; \
+        esac; \
+        echo "libssl3t64 lists $path, but the repaired runtime does not contain it" >&2; exit 1; \
+      fi; \
+      [ -f "$rel" ] || [ -L "$rel" ] || { echo "libssl3t64 path is not a regular file or symbolic link: $path" >&2; exit 1; }; \
+      cp -a --parents "$rel" /fixed/; \
+      if [ -L "$rel" ]; then \
+        [ "$(readlink "$rel")" = "$(readlink "/fixed/$rel")" ] || { echo "staged link differs: $path" >&2; exit 1; }; \
+      else \
+        cmp -s "$rel" "/fixed/$rel" || { echo "staged file differs: $path" >&2; exit 1; }; \
+      fi; \
+      [ "$(stat -c %a "$rel")" = "$(stat -c %a "/fixed/$rel")" ] || { echo "staged mode differs: $path" >&2; exit 1; }; \
+      printf '%s\n' "$path" >>"$staged"; \
+    done <"$listing"; \
+    for path in "/usr/lib/$library_dir/libssl.so.3" "/usr/lib/$library_dir/libcrypto.so.3" \
+      "/usr/lib/$library_dir/engines-3/afalg.so" "/usr/lib/$library_dir/engines-3/loader_attic.so" \
+      "/usr/lib/$library_dir/engines-3/padlock.so" /usr/share/doc/libssl3t64/copyright; do \
+      grep -Fqx -- "$path" "$staged" || { echo "libssl3t64 payload is missing $path" >&2; exit 1; }; \
+    done; \
+    dpkg-query -s libssl3t64 > /fixed/var/lib/dpkg/status.d/libssl3t64; \
+    (cd /fixed && find . ! -type d ! -path ./nodejs/bin/node ! -path ./var/lib/dpkg/status.d/libssl3t64 -print) \
+      | sed 's|^\.||' | LC_ALL=C sort >"$found"; \
+    LC_ALL=C sort "$staged" | cmp -s - "$found" || { echo "the staged libssl3t64 payload differs from its dpkg file list" >&2; exit 1; }; \
+    rm -f "$listing" "$staged" "$found"
 
 FROM ${NODE_BUILD_BASE_IMAGE} AS dependencies
 RUN apt-get update --error-on=any \
@@ -136,7 +179,7 @@ ENV NODE_ENV=production
 ENV PATH="/nodejs/bin:${PATH}"
 WORKDIR /app
 USER 0
-# Replace the vendor package record together with its actual repaired libraries.
+# Replace the vendor package record together with its actual repaired payload.
 RUN ["/nodejs/bin/node", "-e", "const fs = require('node:fs'); const dir = '/var/lib/dpkg/status.d'; for (const name of fs.readdirSync(dir)) { const path = `${dir}/${name}`; if (/^Package: libssl3t64$/m.test(fs.readFileSync(path, 'utf8'))) fs.unlinkSync(path); }"]
 COPY --from=repaired-runtime /fixed/ /
 COPY --from=repaired-runtime /usr/share/doc/openssl/oce /usr/share/doc/openssl/oce

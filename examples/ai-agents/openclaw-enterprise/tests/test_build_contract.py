@@ -1397,6 +1397,181 @@ def test_controller_reuses_this_builds_repaired_runtime_by_digest() -> None:
     assert '"repairedRuntimeImage": os.environ["REPAIRED_RUNTIME_IMAGE"]' in script
 
 
+# Debian's trixie amd64 file list for libssl3t64.
+LIBSSL3T64_FILES = (
+    "/usr/lib/x86_64-linux-gnu/engines-3/afalg.so",
+    "/usr/lib/x86_64-linux-gnu/engines-3/loader_attic.so",
+    "/usr/lib/x86_64-linux-gnu/engines-3/padlock.so",
+    "/usr/lib/x86_64-linux-gnu/libcrypto.so.3",
+    "/usr/lib/x86_64-linux-gnu/libssl.so.3",
+    "/usr/share/doc/libssl3t64/NEWS.Debian.gz",
+    "/usr/share/doc/libssl3t64/changelog.Debian.gz",
+    "/usr/share/doc/libssl3t64/changelog.gz",
+    "/usr/share/doc/libssl3t64/copyright",
+    "/usr/share/lintian/overrides/libssl3t64",
+)
+# A Debian slim image installs no package documentation except copyright files, and no lintian overrides.
+LIBSSL3T64_SLIM_ABSENT = (
+    "/usr/share/doc/libssl3t64/NEWS.Debian.gz",
+    "/usr/share/doc/libssl3t64/changelog.Debian.gz",
+    "/usr/share/doc/libssl3t64/changelog.gz",
+    "/usr/share/lintian/overrides/libssl3t64",
+)
+LIBSSL3T64_REQUIRED = tuple(path for path in LIBSSL3T64_FILES if path not in LIBSSL3T64_SLIM_ABSENT)
+
+
+def _stage_libssl3t64(
+    tmp_path: pathlib.Path,
+    listed: tuple[str, ...] = LIBSSL3T64_FILES,
+    present: tuple[str, ...] = LIBSSL3T64_FILES,
+    listing_status: int = 0,
+) -> tuple[subprocess.CompletedProcess[str], pathlib.Path, pathlib.Path]:
+    """Run the donor stage's libssl3t64 staging against a fake donor root and dpkg database."""
+    dockerfile = CONTROLLER_DOCKERFILE.read_text(encoding="utf-8")
+    stage = re.search(
+        r'    listing="\$\(mktemp\)";.*?rm -f "\$listing" "\$staged" "\$found"', dockerfile, re.DOTALL
+    )
+    assert stage is not None
+    donor = tmp_path / "donor"
+    fixed = tmp_path / "fixed"
+    (fixed / "var/lib/dpkg/status.d").mkdir(parents=True)
+    directories = sorted(
+        {str(parent) for path in listed for parent in pathlib.PurePosixPath(path).parents if str(parent) != "/"}
+    )
+    for directory in directories:
+        (donor / directory.lstrip("/")).mkdir(parents=True, exist_ok=True)
+    for index, path in enumerate(present):
+        file = donor / path.lstrip("/")
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(f"donor bytes of {path}\n".encode())
+        # Two modes, so that a copy which drops the mode is caught.
+        file.chmod(0o644 if index % 2 else 0o600)
+    # dpkg-query -L prints the package root, its directories, then its files; an empty listing prints nothing.
+    lines = ("/.", *directories, *listed) if listed else ()
+    listing = tmp_path / "listing"
+    listing.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    query = tools / "dpkg-query"
+    query.write_text(
+        "#!/bin/sh\n"
+        'case "$1 $2" in\n'
+        f'  "-L libssl3t64") cat "{listing}"; exit {listing_status} ;;\n'
+        "  \"-s libssl3t64\") printf 'Package: libssl3t64\\nVersion: 3.5.9-1~deb13u1+oce3\\n' ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    query.chmod(0o755)
+    # Join continuation lines as the Dockerfile parser does, then root the absolute donor paths in tmp_path.
+    script = (
+        stage.group()
+        .replace("\\\n", "")
+        .replace("cd /;", f"cd {donor};")
+        .replace("/fixed", str(fixed))
+    )
+    result = subprocess.run(
+        ["sh", "-euc", f"library_dir=x86_64-linux-gnu\n{script}"],
+        env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "TMPDIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, donor, fixed
+
+
+def _staged_files(fixed: pathlib.Path) -> list[str]:
+    return sorted(
+        f"/{path.relative_to(fixed)}"
+        for path in fixed.rglob("*")
+        if not path.is_dir() and path.relative_to(fixed).as_posix() != "var/lib/dpkg/status.d/libssl3t64"
+    )
+
+
+def test_controller_stages_every_listed_libssl3t64_file(tmp_path: pathlib.Path) -> None:
+    result, donor, fixed = _stage_libssl3t64(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert _staged_files(fixed) == sorted(LIBSSL3T64_FILES)
+    for path in LIBSSL3T64_FILES:
+        source = donor / path.lstrip("/")
+        staged = fixed / path.lstrip("/")
+        assert staged.read_bytes() == source.read_bytes()
+        assert staged.stat().st_mode == source.stat().st_mode
+    assert (fixed / "var/lib/dpkg/status.d/libssl3t64").read_text(encoding="utf-8").startswith(
+        "Package: libssl3t64\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "absent",
+    [*((path,) for path in LIBSSL3T64_SLIM_ABSENT), LIBSSL3T64_SLIM_ABSENT],
+)
+def test_controller_allows_only_slim_excluded_libssl3t64_files_to_be_absent(
+    tmp_path: pathlib.Path, absent: tuple[str, ...]
+) -> None:
+    present = tuple(path for path in LIBSSL3T64_FILES if path not in absent)
+    result, _, fixed = _stage_libssl3t64(tmp_path, present=present)
+
+    assert result.returncode == 0, result.stderr
+    assert _staged_files(fixed) == sorted(present)
+
+
+@pytest.mark.parametrize("required", LIBSSL3T64_REQUIRED)
+def test_controller_refuses_a_listed_required_libssl3t64_file_the_donor_lacks(
+    tmp_path: pathlib.Path, required: str
+) -> None:
+    present = tuple(path for path in LIBSSL3T64_FILES if path != required)
+    result, _, _ = _stage_libssl3t64(tmp_path, present=present)
+
+    assert result.returncode != 0
+    assert f"libssl3t64 lists {required}, but the repaired runtime does not contain it" in result.stderr
+
+
+@pytest.mark.parametrize("required", LIBSSL3T64_REQUIRED)
+def test_controller_refuses_a_libssl3t64_listing_without_a_required_file(
+    tmp_path: pathlib.Path, required: str
+) -> None:
+    listed = tuple(path for path in LIBSSL3T64_FILES if path != required)
+    result, _, _ = _stage_libssl3t64(tmp_path, listed=listed, present=listed)
+
+    assert result.returncode != 0
+    assert f"libssl3t64 payload is missing {required}" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "/usr/lib/x86_64-linux-gnu/ossl-modules/legacy.so",
+        "/usr/share/doc/libssl3/changelog.gz",
+        "/usr/share/lintian/overrides/openssl",
+    ],
+)
+def test_controller_refuses_a_missing_listed_libssl3t64_path_outside_the_slim_exclusions(
+    tmp_path: pathlib.Path, missing: str
+) -> None:
+    result, _, _ = _stage_libssl3t64(tmp_path, listed=(*LIBSSL3T64_FILES, missing))
+
+    assert result.returncode != 0
+    assert f"libssl3t64 lists {missing}, but the repaired runtime does not contain it" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("listed", "listing_status", "message"),
+    [
+        (LIBSSL3T64_FILES, 1, "dpkg-query could not list the libssl3t64 files"),
+        ((), 0, "dpkg-query listed no libssl3t64 files"),
+    ],
+)
+def test_controller_refuses_a_failed_or_empty_libssl3t64_listing(
+    tmp_path: pathlib.Path, listed: tuple[str, ...], listing_status: int, message: str
+) -> None:
+    result, _, _ = _stage_libssl3t64(tmp_path, listed=listed, present=listed, listing_status=listing_status)
+
+    assert result.returncode != 0
+    assert message in result.stderr
+
+
 def test_build_outputs_are_verified_digest_references() -> None:
     script = SCRIPT.read_text(encoding="utf-8")
     verify_scan = script.split("verify_scan() {", 1)[1].split(
