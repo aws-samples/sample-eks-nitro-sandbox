@@ -615,7 +615,11 @@ def kubectl():
                     for pv in state.get("pvs", [])
                 ):
                     state["unsafeVolumeAtNamespaceDelete"] = True
-                if state.get("finalizerProtection"):
+                if namespace in state.get("neverFinishingNamespaces", []):
+                    # A deletion that never finishes, for example behind a finalizer that no controller removes.
+                    item["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+                    item["status"] = {"phase": "Terminating"}
+                elif state.get("finalizerProtection"):
                     begin_namespace_termination(namespace)
                 elif state.get("delayedNamespaceDeletion"):
                     item["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
@@ -2654,7 +2658,8 @@ def test_partial_tenant_delete_rerun_uses_recorded_uids_and_keeps_controls(
         "validatingwebhookconfigurations.admissionregistration.k8s.io/"
         "openclaw-enterprise-nitro-policy"
     ) in partial["resources"]
-    assert not any(
+    # Tenant A's deletion had started, so the tenant freeze stays for the rerun.
+    assert any(
         "cleanup-freeze-tenants-" in resource
         for resource in partial["resources"]
     )
@@ -2834,6 +2839,17 @@ def test_partial_tenant_delete_rerun_refuses_an_unsafe_volume_state(
     )["complete"] is False
 
 
+def _remove_kept_tenant_freeze(tmp_path: Path, env: dict[str, str]) -> None:
+    """A partial deletion keeps its tenant freeze; model a rerun after it was removed, so the rerun installs a new one."""
+    state = _state(env)
+    state["resources"] = {
+        key: item for key, item in state["resources"].items()
+        if "cleanup-freeze-tenants-" not in key
+    }
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    (tmp_path / "state" / "cleanup-tenant-freeze.json").unlink()
+
+
 def _storage_at_tenant_freeze(
     env: dict[str, str], change: Callable[[dict[str, Any]], None]
 ) -> None:
@@ -2953,6 +2969,7 @@ def test_resumed_tenant_deletion_revalidates_its_record_under_the_freeze(
     assert failed.returncode == 1
     log = tmp_path / "fake-log.jsonl"
     log.unlink()
+    _remove_kept_tenant_freeze(tmp_path, env)
     mutations = _state(env)["mutations"]
     # The partial run already removed the OCE release.
     assert _state(env)["helm"] is False
@@ -3079,6 +3096,7 @@ def test_resumed_deletion_refuses_a_recorded_volume_that_no_longer_claims_a_tena
 def test_claim_reference_cleared_before_the_freeze_is_caught_under_it(tmp_path: Path) -> None:
     retry, env = _partial_tenant_deletion(tmp_path)
     (tmp_path / "fake-log.jsonl").unlink()
+    _remove_kept_tenant_freeze(tmp_path, env)
     mutations = _state(env)["mutations"]
     # The retry's read-only check passes; then the claim goes and the recorded volume's claim reference is
     # cleared, before the tenant freeze holds.
@@ -4557,6 +4575,289 @@ def test_namespace_replaced_during_deletion_stops_under_the_freeze(
     current = _state(env)
     assert f"namespace/{name}" in current["resources"]
     assert ["finalized", name] not in current["namespaceLifecycleEvents"]
+
+
+def test_system_freeze_survives_failure_after_deletion_starts(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path)
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    state["namespaceDeleteTamper"] = {
+        "name": SYSTEM_NAMESPACE,
+        "uid": "replacement-uid",
+    }
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert (tmp_path / "state" / "cleanup-freeze.json").exists()
+    current = _state(env)
+    assert any("cleanup-freeze-" in key for key in current["resources"])
+
+
+def test_tenant_freeze_survives_failure_after_deletion_starts(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path)
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    state["namespaceDeleteTamper"] = {"name": tenant, "uid": "replacement-uid"}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+    assert (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+    current = _state(env)
+    assert any("cleanup-freeze-tenants-" in key for key in current["resources"])
+
+
+FREEZE_JOURNAL = {False: "cleanup-freeze.json", True: "cleanup-tenant-freeze.json"}
+
+
+def _fast_clock(tmp_path: Path, env: dict[str, str]) -> None:
+    """Run cleanup with a clock that each of its sleeps moves 300 seconds on, so its 600-second waits time out."""
+    # Imported here so the module's earlier lines, which .ash/.ash.yaml pins by number, keep their positions.
+    import sys
+
+    clock = tmp_path / "clock"
+    clock.mkdir()
+    python = clock / "python3"
+    python.write_text(
+        f"#!{sys.executable} -I\n"
+        "import os, sys, time\n"
+        # The fake CLIs also start through python3: only cleanup's own script gets the clock.
+        "if sys.argv[1:3] != ['-I', '-']:\n"
+        f"    os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
+        "now = [time.monotonic()]\n"
+        "time.monotonic = lambda: now[0]\n"
+        "time.sleep = lambda seconds: now.__setitem__(0, now[0] + 300)\n"
+        "sys.argv = ['-', *sys.argv[3:]]\n"
+        "exec(compile(sys.stdin.read(), '<stdin>', 'exec'), {'__name__': '__main__'})\n"
+    )
+    python.chmod(0o755)
+    env["PATH"] = f"{clock}{os.pathsep}{env['PATH']}"
+
+
+def _deletion_target(tmp_path: Path, delete_tenant: bool) -> tuple[str, list[str], dict[str, str]]:
+    _, command, env = _prepare(tmp_path)
+    name = "openclaw-tenant-a" if delete_tenant else SYSTEM_NAMESPACE
+    if delete_tenant:
+        _add_tenant(env, name)
+        _add_tenant_storage(env, name)
+        command += [*_tenant_identity_args(name), "--delete-tenant-data"]
+    return name, command, env
+
+
+def _freeze_objects(env: dict[str, str], tenant: bool) -> dict[str, dict[str, Any]]:
+    return {
+        key: item for key, item in _state(env)["resources"].items()
+        if "cleanup-freeze-" in key and ("cleanup-freeze-tenants-" in key) == tenant
+    }
+
+
+def _assert_freeze_kept(
+    tmp_path: Path,
+    env: dict[str, str],
+    result: subprocess.CompletedProcess[str],
+    tenant: bool,
+) -> None:
+    assert result.returncode == 1
+    journal = json.loads((tmp_path / "state" / FREEZE_JOURNAL[tenant]).read_text())
+    assert journal["deletionAttempted"] is True
+    objects = _freeze_objects(env, tenant)
+    assert sorted(item["kind"] for item in objects.values()) == [
+        "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding",
+    ]
+    assert {item["metadata"]["uid"] for item in objects.values()} == {
+        journal["policyUid"], journal["bindingUid"],
+    }
+    if tenant:
+        deletion = json.loads((tmp_path / "state" / "cleanup-tenant-deletion.json").read_text())
+        assert deletion["complete"] is False
+    label = "tenant" if tenant else "per-namespace"
+    assert result.stderr.splitlines()[-2:] == [
+        (
+            f"cleanup: kept the {label} admission freeze and its private state because a "
+            "namespace deletion had been requested."
+        ),
+        (
+            "cleanup: rerun the same cleanup command with the same receipts and state "
+            "directory to resume under the kept freeze."
+        ),
+    ]
+    assert journal["token"] not in result.stderr
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_failed_namespace_delete_request_keeps_the_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    name, command, env = _deletion_target(tmp_path, delete_tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = name
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert "simulated namespace deletion failure" in result.stderr
+    _assert_freeze_kept(tmp_path, env, result, delete_tenant)
+    assert f"namespace/{name}" in _state(env)["resources"]
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_namespace_deletion_timeout_keeps_the_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    name, command, env = _deletion_target(tmp_path, delete_tenant)
+    state = _state(env)
+    state["neverFinishingNamespaces"] = [name]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    _fast_clock(tmp_path, env)
+
+    result = _run(command, env)
+
+    assert result.stderr.splitlines()[0] == (
+        f"cleanup: namespace/{name} still exists after deletion."
+    )
+    _assert_freeze_kept(tmp_path, env, result, delete_tenant)
+
+
+def test_recorded_volume_left_after_tenant_namespace_deletion_keeps_the_freeze(
+    tmp_path: Path,
+) -> None:
+    name, command, env = _deletion_target(tmp_path, True)
+    state = _state(env)
+    state["retainTenantPvs"] = [name]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    _fast_clock(tmp_path, env)
+
+    result = _run(command, env)
+
+    assert result.stderr.splitlines()[0] == (
+        "cleanup: tenant data still exists after namespace deletion: "
+        f"persistentvolume/pv-{name}."
+    )
+    _assert_freeze_kept(tmp_path, env, result, True)
+    assert f"namespace/{name}" not in _state(env)["resources"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["tenant-volume-check", "tenant-freeze-verification", "system-freeze-verification"],
+)
+def test_failure_before_any_namespace_deletion_removes_the_freeze(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    delete_tenant = failure.startswith("tenant-")
+    name, command, env = _deletion_target(tmp_path, delete_tenant)
+    if failure == "tenant-volume-check":
+
+        def unbind_claim(storage: dict[str, Any]) -> None:
+            claim = next(item for item in storage["pvcs"] if item["metadata"]["namespace"] == name)
+            claim["status"] = {"phase": "Pending"}
+
+        _storage_at_tenant_freeze(env, unbind_claim)
+        diagnostic = (
+            f"persistentvolumeclaim/{name}/openclaw-workspace is not bound to its "
+            "persistent volume; refusing tenant deletion."
+        )
+    else:
+        state = _state(env)
+        if failure == "tenant-freeze-verification":
+            state["denyUnclaimedPvProbe"] = True
+            diagnostic = (
+                "tenant admission freeze denied a persistent volume that claims no "
+                "tenant namespace; refusing to continue."
+            )
+        else:
+            # Another client has started deleting the namespace, so the probe meets the namespace lifecycle
+            # denial instead of the freeze's.
+            namespace = state["resources"][f"namespace/{name}"]
+            namespace["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+            namespace["status"] = {"phase": "Terminating"}
+            diagnostic = "namespace admission freeze could not be verified."
+        Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {diagnostic}\n")
+    assert "kept the" not in result.stderr
+    assert f"namespace/{name}" in _state(env)["resources"]
+    assert not _freeze_objects(env, delete_tenant)
+    assert not (tmp_path / "state" / FREEZE_JOURNAL[delete_tenant]).exists()
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("delete_tenant", "first_failure"),
+    [(False, "delete-request"), (True, "delete-request"), (False, "timeout")],
+    ids=["system-delete-request", "tenant-delete-request", "system-timeout"],
+)
+def test_rerun_resumes_deletion_under_the_kept_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+    first_failure: str,
+) -> None:
+    name, command, env = _deletion_target(tmp_path, delete_tenant)
+    state = _state(env)
+    if first_failure == "timeout":
+        state["neverFinishingNamespaces"] = [name]
+        _fast_clock(tmp_path, env)
+    else:
+        state["failNamespaceDeleteOnce"] = name
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    assert _run(command, env).returncode == 1
+    kept = _freeze_objects(env, delete_tenant)
+    assert kept
+    if first_failure == "timeout":
+        # The namespace finishes on the rerun's fourth read.
+        partial = _state(env)
+        partial.update({
+            "neverFinishingNamespaces": [],
+            "delayedNamespaceDeletion": True,
+            "pendingNamespaceDeletes": {name: 0},
+            "terminatingNamespaceReads": {name: -2},
+            "namespaceLifecycleEvents": [],
+        })
+        Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    (tmp_path / "fake-log.jsonl").unlink()
+
+    resumed = _run(command, env)
+
+    assert resumed.returncode == 0, resumed.stderr
+    log = _fake_log(tmp_path)
+    freeze_name = next(iter(kept.values()))["metadata"]["name"]
+    # No second freeze for this namespace: a new one would carry the same identity-derived name.
+    created = [
+        json.loads(entry["stdin"])["metadata"]["name"]
+        for entry in log
+        if "create" in entry["args"] and "--dry-run=server" not in entry["args"]
+    ]
+    assert freeze_name not in created
+    deleted = [
+        entry["args"][entry["args"].index("--raw") + 1]
+        for entry in log
+        if "delete" in entry["args"] and entry["mutation"]
+    ]
+    kept_deletes = [index for index, path in enumerate(deleted) if path.endswith(f"/{freeze_name}")]
+    assert len(kept_deletes) == 2
+    namespace_path = f"/api/v1/namespaces/{name}"
+    if first_failure == "timeout":
+        # The namespace was already terminating under the kept freeze, so the rerun sends no second DELETE.
+        assert namespace_path not in deleted
+        assert ["finalized", name] in _state(env)["namespaceLifecycleEvents"]
+    else:
+        assert deleted.index(namespace_path) < kept_deletes[0]
+    assert f"namespace/{name}" not in _state(env)["resources"]
+    assert not _freeze_objects(env, delete_tenant)
+    assert not (tmp_path / "state" / FREEZE_JOURNAL[delete_tenant]).exists()
 
 
 def test_namespace_lifecycle_denies_create_without_cleanup_binding(

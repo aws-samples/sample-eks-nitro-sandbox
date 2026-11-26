@@ -2562,8 +2562,9 @@ It preserves any external database. It deletes the blueprint StorageClass only
 when no PVC still references it. Cleanup reports intentionally preserved
 resources and exits non-zero when required lifecycle evidence is missing or an
 identity or ownership check fails. It removes a tenant freeze only while the
-original admission controls remain or after every recorded tenant namespace
-and volume is gone. If the process is forcibly terminated while a freeze is
+original admission controls remain and no namespace deletion has been
+requested, or after every recorded tenant namespace and volume is gone. If
+the process is forcibly terminated while a freeze is
 active, rerun the same cleanup command with the same private state. The stack
 manager deletes the image build workflow and its four ECR repositories,
 including the sample images, then marks its private receipt as deleted. The

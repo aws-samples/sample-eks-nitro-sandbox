@@ -291,6 +291,7 @@ class Cleanup:
         self.freeze_started = False
         self.tenant_freeze_started = False
         self.admission_controls_dismantled = False
+        self.deletion_attempted = False
         self.endpoint = self.attempt = self.cluster_arn = ""
         self.install_uids = {}
         self.storage = self.pod = self.gateway = None
@@ -696,7 +697,7 @@ class Cleanup:
         expected_keys = {
             "version", "context", "endpoint", "attempt", "namespace",
             "namespaceUid", "name", "token", "denialMessage",
-            "policyUid", "bindingUid",
+            "policyUid", "bindingUid", "deletionAttempted",
         }
         if not isinstance(state, dict):
             fail("admission-freeze state does not match this cleanup target.")
@@ -712,6 +713,7 @@ class Cleanup:
             and state.get("name") == expected_name
             and state.get("denialMessage") == expected_message
             and bool(state.get("namespace")) and bool(state.get("namespaceUid"))
+            and isinstance(state.get("deletionAttempted"), bool)
             and all(
                 state.get(key) is None
                 or isinstance(state.get(key), str) and bool(state.get(key))
@@ -1004,6 +1006,7 @@ class Cleanup:
             "denialMessage",
             "policyUid",
             "bindingUid",
+            "deletionAttempted",
         }
         namespaces = state.get("namespaces") if isinstance(state, dict) else None
         valid_namespaces = (
@@ -1040,6 +1043,7 @@ class Cleanup:
                 or isinstance(state.get(key), str) and bool(state.get(key))
                 for key in ("policyUid", "bindingUid")
             )
+            and isinstance(state.get("deletionAttempted"), bool)
         )
         if not valid:
             fail("tenant admission-freeze state does not match this cleanup target.")
@@ -1315,6 +1319,10 @@ class Cleanup:
                     "tenant admission-freeze state does not match the recorded "
                     "tenant deletion targets."
                 )
+            # A freeze that an earlier run kept after it had requested a namespace deletion: this run resumes
+            # that deletion, so main() keeps the freezes on any error from here on.
+            if state["deletionAttempted"]:
+                self.deletion_attempted = True
         elif not live_targets:
             return
         else:
@@ -1330,6 +1338,7 @@ class Cleanup:
                 "denialMessage": denial_message,
                 "policyUid": None,
                 "bindingUid": None,
+                "deletionAttempted": False,
             }
             self.write_tenant_freeze(state)
         self.tenant_freeze_started = True
@@ -1747,6 +1756,16 @@ class Cleanup:
                 )
             time.sleep(2)
 
+    def mark_deletion_attempted(self, read, write):
+        # Called immediately before each UID-bound namespace DELETE request, so it is set even when that
+        # request fails. From then on main() keeps both freezes and their private state on any error, and the
+        # mark in the freeze state makes the rerun with the same receipts adopt the freeze and resume.
+        self.deletion_attempted = True
+        state = read()
+        if state and not state["deletionAttempted"]:
+            state["deletionAttempted"] = True
+            write(state)
+
     def delete_tenant_data(self, tenant_plans, protected_targets, state):
         if state["complete"]:
             self.wait_for_tenant_data_deletion(state)
@@ -1764,6 +1783,7 @@ class Cleanup:
             item = by_name.get(target["name"])
             if not item:
                 continue
+            self.mark_deletion_attempted(self.read_tenant_freeze, self.write_tenant_freeze)
             self.raw_delete(item)
             self.wait_absent(f"namespace/{target['name']}", target["uid"])
         self.wait_for_tenant_data_deletion(state)
@@ -1815,7 +1835,7 @@ class Cleanup:
             "attempt": self.attempt, "namespace": metadata["name"],
             "namespaceUid": metadata["uid"], "name": name,
             "token": secrets.token_hex(16), "denialMessage": denial_message,
-            "policyUid": None, "bindingUid": None,
+            "policyUid": None, "bindingUid": None, "deletionAttempted": False,
         }
         self.write_freeze(state)
         self.freeze_started = True
@@ -1955,13 +1975,32 @@ class Cleanup:
         if not live:
             return
         validate_live(live, "before deletion")
-        self.wait_for_finished_pods(name)
-        self.start_freeze(live)
-        live = self.get(f"namespace/{name}")
-        if not live:
-            fail(f"namespace/{name} identity changed while admission was frozen.")
-        validate_live(live, "while admission was frozen")
-        self.raw_delete(live)
+        kept = self.read_freeze()
+        if kept:
+            # Only a freeze kept by an earlier run that had requested this deletion survives the start of run().
+            # Adopt it by its recorded UIDs instead of creating a second one.
+            if (kept["namespace"], kept["namespaceUid"]) != (name, uid):
+                fail(
+                    f"an admission freeze for namespace/{kept['namespace']} is still recorded; "
+                    f"refusing to freeze namespace/{name}."
+                )
+            for kind, resource_type in (
+                ("policy", "validatingadmissionpolicies.admissionregistration.k8s.io"),
+                ("binding", "validatingadmissionpolicybindings.admissionregistration.k8s.io"),
+            ):
+                self.validate_freeze(self.get(f"{resource_type}/{kept['name']}"), kept, kind)
+            self.freeze_started = True
+        else:
+            self.wait_for_finished_pods(name)
+            self.start_freeze(live)
+            live = self.get(f"namespace/{name}")
+            if not live:
+                fail(f"namespace/{name} identity changed while admission was frozen.")
+            validate_live(live, "while admission was frozen")
+        self.mark_deletion_attempted(self.read_freeze, self.write_freeze)
+        # A namespace that is already terminating under the adopted freeze only needs to finish.
+        if not (kept and live["metadata"].get("deletionTimestamp")):
+            self.raw_delete(live)
         self.wait_absent(f"namespace/{name}", uid)
         self.recover_freeze()
 
@@ -2292,7 +2331,18 @@ class Cleanup:
         self.validate_lifecycle_receipts()
         self.validate_local_credentials()
         self.validate_expected_caller()
-        self.recover_freeze()
+        kept = self.read_freeze()
+        live = (
+            self.get(f"namespace/{kept['namespace']}")
+            if kept and kept["deletionAttempted"]
+            else None
+        )
+        if live and live["metadata"].get("uid") == kept["namespaceUid"]:
+            # An earlier run had requested this namespace's deletion: delete_namespace adopts its freeze, and
+            # main() keeps the freezes on any error.
+            self.deletion_attempted = True
+        else:
+            self.recover_freeze()
         helm = self.helm_present()
         self.verify_cluster_resources()
         self.validate_aws()
@@ -2416,6 +2466,11 @@ class Cleanup:
                 )
                 self.raw_delete(live_region_config_map)
         self.delete_namespace(agw_plan)
+        kept = self.read_freeze()
+        if kept:
+            # A kept freeze whose namespace finished before this run reached its deletion.
+            self.wait_absent(f"namespace/{kept['namespace']}", kept["namespaceUid"])
+            self.recover_freeze()
         if storage:
             if not self.storage:
                 print(f"Preserved storageclass/{STORAGE_CLASS}: no lifecycle receipt.", file=sys.stderr)
@@ -2454,7 +2509,10 @@ def main():
         cleanup.run()
     except CleanupError as error:
         recovery_error = None
-        if cleanup and cleanup.freeze_started:
+        # Once a namespace deletion has been requested, both freezes stay until the protected namespaces and
+        # volumes are gone; the rerun with the same receipts adopts them. Earlier errors remove them.
+        keep = bool(cleanup and cleanup.deletion_attempted)
+        if cleanup and cleanup.freeze_started and not keep:
             try:
                 cleanup.recover_freeze()
             except CleanupError as nested:
@@ -2463,6 +2521,7 @@ def main():
             cleanup
             and cleanup.tenant_freeze_started
             and not cleanup.admission_controls_dismantled
+            and not keep
         ):
             try:
                 cleanup.recover_tenant_freeze()
@@ -2473,6 +2532,26 @@ def main():
         print(f"cleanup: {error}", file=sys.stderr)
         if recovery_error:
             print(f"cleanup: failed to remove admission freeze: {recovery_error}", file=sys.stderr)
+        kept = [
+            label
+            for label, exists in (
+                ("per-namespace", cleanup.freeze_exists()),
+                ("tenant", cleanup.tenant_freeze_exists()),
+            )
+            if exists
+        ] if keep else []
+        for label in kept:
+            print(
+                f"cleanup: kept the {label} admission freeze and its private state "
+                "because a namespace deletion had been requested.",
+                file=sys.stderr,
+            )
+        if kept:
+            print(
+                "cleanup: rerun the same cleanup command with the same receipts and "
+                "state directory to resume under the kept freeze.",
+                file=sys.stderr,
+            )
         raise SystemExit(1)
 
 
