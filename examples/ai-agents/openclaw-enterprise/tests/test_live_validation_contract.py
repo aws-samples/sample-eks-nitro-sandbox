@@ -1237,11 +1237,61 @@ FAKE_COMMAND = textwrap.dedent(
     if args[:2] == ["create", "--dry-run=server"]:
         print("denied: admission caller is not an allowed controller identity for this resource", file=sys.stderr)
         sys.exit(1)
-    if args[:1] == ["debug"]:
+    if args[:2] == ["replace", "--raw"]:
+        assert len(args) == 5 and args[3] == "-f", args
+        assert args[2] == (
+            "/api/v1/namespaces/tenant-a-k8s/pods/tenant-a-pod/"
+            "ephemeralcontainers?dryRun=All"
+        ), args
+        payload_path = Path(args[4])
+        stat = payload_path.lstat()
+        assert payload_path.is_file() and not payload_path.is_symlink()
+        assert stat.st_uid == os.getuid() and stat.st_nlink == 1
+        assert stat.st_mode & 0o777 == 0o600
+        assert payload_path.parent.stat().st_mode & 0o777 == 0o700
+        assert payload_path.parent.name.startswith("oce-live-validation.")
+        payload = json.loads(payload_path.read_text())
+        expected = json.loads(json.dumps(pod_a))
+        expected.pop("status", None)
+        expected["metadata"].pop("managedFields", None)
+        expected["spec"]["ephemeralContainers"] = [{{
+            "name": "live-validation-debug",
+            "image": image,
+            "imagePullPolicy": "IfNotPresent",
+            "targetContainerName": "gateway",
+            "command": ["sh", "-c", "true"],
+            "securityContext": {{
+                "runAsNonRoot": True,
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "capabilities": {{"drop": ["ALL"]}},
+                "seccompProfile": {{"type": "RuntimeDefault"}},
+            }},
+        }}]
+        assert payload["apiVersion"] == "v1" and payload["kind"] == "Pod"
+        assert payload["metadata"]["uid"] == "uid-a-old"
+        assert payload["metadata"]["name"] == "tenant-a-pod"
+        assert payload["metadata"]["namespace"] == "tenant-a-k8s"
+        assert payload == expected
+        (state_dir / "ephemeral_debug_manifest.json").write_text(json.dumps(payload))
+        if scenario == "ephemeral_cli_error":
+            print("error: unsupported synthetic CLI operation", file=sys.stderr)
+            sys.exit(2)
+        if scenario == "ephemeral_wrong_denial":
+            print("denied: synthetic unrelated admission rule", file=sys.stderr)
+            sys.exit(1)
+        if scenario == "ephemeral_unexpected_success":
+            emit(payload)
+            sys.exit(0)
         print(
             "denied: ephemeral containers are not permitted in OpenClaw Enterprise managed namespaces",
             file=sys.stderr,
         )
+        sys.exit(1)
+    if args[:1] == ["debug"]:
+        print("error: unknown flag: --dry-run", file=sys.stderr)
         sys.exit(1)
     if args[:2] == ["get", "replicaset"]:
         emit({{
@@ -2158,8 +2208,9 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "EVIDENCE\tguest-b-block-devices\tvda" in evidence
     assert "EVIDENCE\tordinary-control-root\toverlay overlay" in evidence
     assert (
-        "EVIDENCE\tordinary-control-block-devices\tnvme0n1" in evidence
-    )  # pragma: allowlist secret -- block-device fixture
+        "EVIDENCE\tordinary-control-block-devices\tnvme0n1"  # pragma: allowlist secret -- synthetic NVMe block-device name
+        in evidence
+    )
     assert (
         "EVIDENCE\tshared-postgresql-boundary\t"
         "app-role-restricted=true application-table-count=12 "
@@ -2290,6 +2341,21 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "tenant-b-secret" not in result.stdout + result.stderr
     assert '"kms"' not in command_log
     commands = [json.loads(line) for line in command_log.splitlines()]
+    ephemeral_calls = [
+        command
+        for command in commands
+        if command["tool"] == "kubectl" and "replace" in command["args"]
+    ]
+    assert len(ephemeral_calls) == 1
+    assert (
+        "/api/v1/namespaces/tenant-a-k8s/pods/tenant-a-pod/"
+        "ephemeralcontainers?dryRun=All"
+    ) in ephemeral_calls[0]["args"]
+    ephemeral_payload = json.loads(
+        (state_dir / "ephemeral_debug_manifest.json").read_text()
+    )
+    assert ephemeral_payload["metadata"]["uid"] == "uid-a-old"
+    assert len(ephemeral_payload["spec"]["ephemeralContainers"]) == 1
     native_tool_commands = [
         command
         for command in commands
@@ -2723,6 +2789,41 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
         assert secret not in combined_output
 
 
+@pytest.mark.parametrize(
+    "scenario",
+    ["ephemeral_cli_error", "ephemeral_wrong_denial", "ephemeral_unexpected_success"],
+)
+def test_ephemeral_raw_dry_run_requires_the_actual_admission_denial(
+    tmp_path: Path, scenario: str
+) -> None:
+    result = _run(tmp_path, scenario)
+
+    assert result.returncode != 0
+    evidence = (tmp_path / "evidence/live-validation-evidence.txt").read_text()
+    assert "FAIL\tephemeral-debug-admission\t" in evidence
+    assert "PASS\tephemeral-debug\t" not in evidence
+    assert "RESULT\tPASS" not in evidence
+    assert (tmp_path / "state/ephemeral_debug_manifest.json").exists()
+    commands = [
+        json.loads(line)
+        for line in (tmp_path / "state/commands.jsonl").read_text().splitlines()
+    ]
+    assert (
+        len(
+            [
+                command
+                for command in commands
+                if command["tool"] == "kubectl" and "replace" in command["args"]
+            ]
+        )
+        == 1
+    )
+    if scenario == "ephemeral_unexpected_success":
+        assert "ephemeral-debug unexpectedly succeeded" in result.stderr
+    else:
+        assert "ephemeral-debug failed without the expected denial" in result.stderr
+
+
 def test_script_contains_destructive_and_api_contract_guards() -> None:
     source = SCRIPT.read_text()
     evaluator_source = NATIVE_HISTORY_EVALUATOR.read_text(encoding="utf-8")
@@ -2749,7 +2850,7 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "expected: `${nonce}:${left + right}`" in source
     assert source.count("${nonce}:<answer>") == 2
     assert 'value.normalize("NFKC").trim()' in source
-    assert "normalize(text) !== expected" in source
+    assert 'text.normalize("NFKC").trim() === expected' in source
     assert "model: parsed.model" in source
     assert "requestId: parsed.id" in source
     assert "challengeMatch: true" in source
@@ -2766,7 +2867,17 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert '"gen_ai.request.model": bedrockModel' in telemetry_source
     assert "unauthenticatedStatus" in source
     assert "rejectUnauthorized: false" not in source
-    assert source.count("--dry-run=server") >= 3
+    assert source.count("--dry-run=server") == 2
+    assert 'kube -n "$TENANT_A_NAMESPACE" debug' not in source
+    assert 'kube -n "$TENANT_A_NAMESPACE" get pod "$TENANT_A_POD" -o json' in source
+    assert ".metadata.uid == $uid" in source
+    assert 'name: "live-validation-debug"' in source
+    assert "kube replace --raw" in source
+    assert (
+        "/api/v1/namespaces/$TENANT_A_NAMESPACE/pods/$TENANT_A_POD/"
+        "ephemeralcontainers?dryRun=All"
+    ) in source
+    assert '-f "$WORK_DIR/ephemeral-debug-update.json"' in source
     assert "admission caller is not an allowed controller identity" in source
     assert "ephemeral containers are not permitted" in source
     assert 'EXPECTED_OCE_SOURCE_REVISION="' + OCE_SOURCE_REVISION + '"' in source

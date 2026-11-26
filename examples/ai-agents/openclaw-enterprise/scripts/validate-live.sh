@@ -2812,14 +2812,39 @@ expect_server_denial "managed-pod-spoof" "$CONTROLLER_DENIAL" \
   kube -n "$TENANT_A_NAMESPACE" create --dry-run=server -f "$WORK_DIR/spoof-pod.json"
 
 CURRENT_CHECK="ephemeral-debug-admission"
+kube -n "$TENANT_A_NAMESPACE" get pod "$TENANT_A_POD" -o json \
+  >"$WORK_DIR/ephemeral-debug-current-pod.json"
+jq -e --arg uid "$TENANT_A_POD_UID" '
+  .metadata.uid == $uid
+  and .metadata.deletionTimestamp == null
+  and all(.spec.ephemeralContainers[]?; .name != "live-validation-debug")
+' "$WORK_DIR/ephemeral-debug-current-pod.json" >/dev/null ||
+  die "ephemeral debug target identity changed or test container already exists"
+jq --arg image "$RUNTIME_IMAGE" --arg target "$TENANT_A_CONTAINER" '
+  del(.status, .metadata.managedFields)
+  | .spec.ephemeralContainers = ((.spec.ephemeralContainers // []) + [{
+      name: "live-validation-debug",
+      image: $image,
+      imagePullPolicy: "IfNotPresent",
+      targetContainerName: $target,
+      command: ["sh", "-c", "true"],
+      securityContext: {
+        runAsNonRoot: true,
+        runAsUser: 1000,
+        runAsGroup: 1000,
+        allowPrivilegeEscalation: false,
+        readOnlyRootFilesystem: true,
+        capabilities: {drop: ["ALL"]},
+        seccompProfile: {type: "RuntimeDefault"}
+      }
+    }])
+' "$WORK_DIR/ephemeral-debug-current-pod.json" >"$WORK_DIR/ephemeral-debug-update.json"
+# kubectl debug has no server dry-run flag. Exercise the real subresource
+# admission path without persisting an ephemeral container.
 expect_server_denial "ephemeral-debug" "$EPHEMERAL_DENIAL" \
-  kube -n "$TENANT_A_NAMESPACE" debug "$TENANT_A_POD" \
-  --container=live-validation-debug \
-  --image="$RUNTIME_IMAGE" \
-  --target="$TENANT_A_CONTAINER" \
-  --attach=false \
-  --dry-run=server \
-  -- sh -c true
+  kube replace --raw \
+  "/api/v1/namespaces/$TENANT_A_NAMESPACE/pods/$TENANT_A_POD/ephemeralcontainers?dryRun=All" \
+  -f "$WORK_DIR/ephemeral-debug-update.json"
 
 controller_for_pod() {
   local namespace="$1"
