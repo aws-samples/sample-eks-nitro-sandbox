@@ -18,8 +18,7 @@ tenant agent runtimes in separate
 Both tenants call Amazon Nova Lite through one private, shared AgentGateway.
 Only AgentGateway receives an AWS identity.
 
-Live validation is still pending. Commands below use explicit output
-placeholders instead of claiming a successful run.
+
 
 *Figure 1: OCE manages two tenant agent runtimes. Each runtime has its own
 kernel and persistent volume, and only the shared AgentGateway receives AWS
@@ -147,7 +146,7 @@ when your threat model requires those stronger boundaries.
 | Helm | `v3.22.1`; the installer rejects Helm 4 for the pinned OCE revision |
 | AgentGateway | `v1.7.0`, digest-pinned in `deploy/agentgateway.yaml` |
 | Amazon Bedrock model | `amazon.nova-lite-v1:0` in `us-west-2` |
-| Adapter, controller, ownership helper, runtime | Digest-qualified outputs from one successful CodeBuild run |
+| Adapter, controller, ownership helper, runtime | Digest-qualified outputs bound to the reviewed source; the captured controller-only recovery is disclosed in Step 2 |
 | OCE Node.js build and runtime bases | Node.js `24.22.1` on Debian 13 (Trixie), each pinned by multi-platform image digest; the build records both references in `image-digests.json` |
 | Debian OpenSSL packages | `3.5.9-1~deb13u1+oce3`, with the nine upstream security backports described below |
 | Runtime Git and Expat packages | Git `1:2.56.1-1+oce1` and Expat `2.11.0-1+oce1`, built from checksum-pinned upstream releases |
@@ -308,13 +307,33 @@ done
 cert-manager is a shared cluster prerequisite. The cleanup script does not
 delete or upgrade it.
 
-```text
-Using existing cert-manager v1.18.4 without modifying it.
-deployment "cert-manager" successfully rolled out
-deployment "cert-manager-webhook" successfully rolled out
-deployment "cert-manager-cainjector" successfully rolled out
-customresourcedefinition.apiextensions.k8s.io/issuers.cert-manager.io condition met
-customresourcedefinition.apiextensions.k8s.io/certificates.cert-manager.io condition met
+Read-only supplemental JSON for shared cert-manager, reused without
+modification (abridged).
+
+```json
+{
+  "disposition": "Existing shared prerequisite observed without modification",
+  "deployments": [
+    {
+      "deployment": "cert-manager",
+      "version": "v1.18.4",
+      "readyReplicas": 1,
+      "desiredReplicas": 1
+    },
+    {
+      "deployment": "cert-manager-webhook",
+      "version": "v1.18.4",
+      "readyReplicas": 1,
+      "desiredReplicas": 1
+    },
+    {
+      "deployment": "cert-manager-cainjector",
+      "version": "v1.18.4",
+      "readyReplicas": 1,
+      "desiredReplicas": 1
+    }
+  ]
+}
 ```
 
 Before building images, verify that Amazon Inspector enhanced scanning is
@@ -591,13 +610,50 @@ build override. Human and CI principals must not have
 enforce that deny, and exempt only `ImageBuildWorkflowRole`. Release operators
 should receive only permission to assume the generated invocation role.
 
-```text
-Step Functions execution: SUCCEEDED
-CodeBuild build: SUCCEEDED
-ADAPTER_IMAGE=<private-ecr-repository>@sha256:<digest>
-CONTROLLER_IMAGE=<private-ecr-repository>@sha256:<digest>
-OWNERSHIP_INIT_IMAGE=<private-ecr-repository>@sha256:<digest>
-RUNTIME_IMAGE=<private-ecr-repository>@sha256:<digest>
+Abridged JSON from the recorded build and scan evidence. The original full
+build failed on a Docker Hub HTTP 429. Controller-only recovery rebuilt the
+controller, reused the other three images, and exported all four digests.
+The gate verified nine runtime OpenSSL backports: raw High remains nine;
+actionable Critical/High is zero. This is recovery evidence, not a successful
+full build or a successful Step Functions execution.
+
+```json
+{
+  "sampleRevision": "baadca1b7fabfdc2f870684505446eec82042bc4",
+  "originalBuildStatus": "FAILED: DockerHub429; no success claimed",
+  "buildStatus": "SUCCEEDED (controller-only recovery and all-image scan/export)",
+  "retainedImageRoles": [
+    "adapter",
+    "ownershipHelper",
+    "runtime"
+  ],
+  "scans": [
+    {
+      "role": "adapter",
+      "digest": "sha256:5ebd73ecf653dbfac05c722fdf5f40d1187a1eeb308fae18a5ee3c4128b1c0ea",
+      "activeHighCriticalRecords": 0,
+      "result": "Inspector image scan: ACTIVE with CRITICAL=0, HIGH=0"
+    },
+    {
+      "role": "controller",
+      "digest": "sha256:9bb61a7f8f3b70a53e44e356b924d7018005812db05e7b0f2c75b8862a4843c1",
+      "activeHighCriticalRecords": 0,
+      "result": "Inspector image scan: ACTIVE with CRITICAL=0, HIGH=0"
+    },
+    {
+      "role": "ownershipHelper",
+      "digest": "sha256:a65c61cd831c47a4e7b6c5a6c64d844abe188eda227ff740943dfc2e75166de5",
+      "activeHighCriticalRecords": 0,
+      "result": "Inspector image scan: ACTIVE with CRITICAL=0, HIGH=0"
+    },
+    {
+      "role": "runtime",
+      "digest": "sha256:c51513d4426643a4896e06d08006989d1a7e7a659c467053b00a0a3ceb751fac",
+      "activeHighCriticalRecords": 9,
+      "result": "Inspector image scan: ACTIVE with CRITICAL=0; accepted 9 reviewed HIGH source backport finding(s)"
+    }
+  ]
+}
 ```
 
 **Step 3: Configure storage**
@@ -617,9 +673,10 @@ The script creates the StorageClass only when it is absent. It refuses to patch
 or adopt an existing resource with the same name unless the complete storage
 and ownership contract already matches.
 
+Literal StorageClass output; the receipt records `created: false`.
+
 ```text
-Creating StorageClass openclaw-enterprise-gp3 in context <cluster-context>.
-StorageClass openclaw-enterprise-gp3 created.
+StorageClass openclaw-enterprise-gp3 already exists; validating it without modification.
 openclaw-enterprise-gp3
 ```
 
@@ -701,11 +758,39 @@ then remove only `.setup-agentgateway.lock.active`. Rerun the same command with
 the same kubeconfig, context, state directory, and receipt. Do not edit or
 delete the journal.
 
-```text
-AgentGateway Pod Identity is ready for openclaw-enterprise-agw/agentgateway.
-Lifecycle receipt: <private-state-directory>/agentgateway-pod-identity-receipt.json
-AgentGateway resources: created or verified
-Deployment/agentgateway: available
+Read-only supplemental JSON for shared AgentGateway and Pod Identity,
+reused without modification (abridged). The captured policy document is
+verbatim; its foundation-model ARN has an empty account field.
+
+```json
+{
+  "disposition": "Existing shared AgentGateway and Pod Identity observed without modification",
+  "deployment": "agentgateway",
+  "availableReplicas": 2,
+  "desiredReplicas": 2,
+  "associationNamespace": "openclaw-enterprise-agw",
+  "associationServiceAccount": "agentgateway",
+  "associationRoleMatchesReceipt": true,
+  "policyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "InvokeCentralBedrockModel",
+        "Effect": "Allow",
+        "Action": [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ],
+        "Resource": "arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0",
+        "Condition": {
+          "StringEquals": {
+            "aws:RequestedRegion": "us-west-2"
+          }
+        }
+      }
+    ]
+  }
+}
 ```
 
 **Step 5: Install the admission adapter**
@@ -734,6 +819,9 @@ fail closed.
 shape before applying the Nitro compatibility patch.*
 
 ![The admission flow verifies OCE controllers, revisions, images, and pod shape before setting the Nitro RuntimeClass and compatible storage and trust settings.](images/openclaw-enterprise-pod-admission.png)
+
+Abridged literal installer output. Intervening resource and rollout-progress
+lines are omitted.
 
 ```text
 namespace/openclaw-enterprise-adapter created
@@ -888,10 +976,45 @@ Pod API clients with an unmatched label selector. It also disables browser
 gateway routing and agent native administration. Use the temporary API tunnel
 in the next step for terminal administration.
 
+Abridged literal install output; private receipt paths are omitted. Installation
+used sample `0eb01adbb612004152569cd0c843b5a03d5d725e`, with images from
+`baadca1b7fabfdc2f870684505446eec82042bc4`. The canonical validator is
+`e3dd700131359d9b74cd2dfbd928bbdcd45eaf05`; these revisions are distinct.
+
 ```text
+Helm outcome: succeeded.
 Installed OpenClaw Enterprise release oce in namespace openclaw-system.
-Receipt: <private-state-directory>/oce-install/receipt
 Topology: terminal-managed; embedded Harnesses only; direct Pod API clients and browser routing disabled.
+Exact OCE stack installed for sample 0eb01adbb612004152569cd0c843b5a03d5d725e and OCE 86c8c12310f691bb21651118ffffd6bfd460e9ff.
+```
+
+Abridged installation postflight JSON. This snapshot was captured at validator
+revision `eea2a5a0236180a03af0943fdd5ab6249a63f1ba`, before the current canonical run.
+
+```json
+{
+  "controlPlane": [
+    {
+      "deployment": "openclaw-enterprise-api",
+      "readyReplicas": 1,
+      "desiredReplicas": 1,
+      "runtimeClass": null
+    },
+    {
+      "deployment": "openclaw-enterprise-worker",
+      "readyReplicas": 1,
+      "desiredReplicas": 1,
+      "runtimeClass": null
+    },
+    {
+      "deployment": "oce-validation-only-postgres",
+      "readyReplicas": 1,
+      "desiredReplicas": 1,
+      "runtimeClass": null
+    }
+  ],
+  "helmStatus": "deployed"
+}
 ```
 
 OCE also creates an initial namespace during bootstrap. Record its identity
@@ -1338,10 +1461,41 @@ The `--out` path must not exist. `occ` creates it with mode `0600`. Record each
 namespace ID, agent ID, backing namespace, runtime pod and container, and
 validator key path for the next step.
 
+Literal onboarding completion line followed by abridged readiness snapshots
+after the native-timeline rollout. Tenant labels `a` and `b` are aliases;
+`<runtime-repository>` replaces the private registry and repository. Pod UIDs
+are omitted. These snapshots bind to the guests captured in Step 8.
+
 ```text
-Tenant A: namespace=<ns-id-a> agent=<agent-id-a> runtime=<tenant-a-namespace>/<tenant-a-pod>
-Tenant B: namespace=<ns-id-b> agent=<agent-id-b> runtime=<tenant-b-namespace>/<tenant-b-pod>
-Both runtime Pods report Ready=True with runtimeClassName=isolated-sandbox.
+Both tenants are ready for exact-revision validation.
+```
+
+```json
+{
+  "tenant": "a",
+  "runtimeClass": "isolated-sandbox",
+  "containers": [
+    {
+      "name": "gateway",
+      "imageID": "<runtime-repository>@sha256:c51513d4426643a4896e06d08006989d1a7e7a659c467053b00a0a3ceb751fac",
+      "ready": true
+    }
+  ]
+}
+```
+
+```json
+{
+  "tenant": "b",
+  "runtimeClass": "isolated-sandbox",
+  "containers": [
+    {
+      "name": "gateway",
+      "imageID": "<runtime-repository>@sha256:c51513d4426643a4896e06d08006989d1a7e7a659c467053b00a0a3ceb751fac",
+      "ready": true
+    }
+  ]
+}
 ```
 
 **Step 8: Validate the two-tenant boundary**
@@ -1443,8 +1597,7 @@ The command exits zero only after it verifies:
 9. Tenant A's `.openclaw` marker and model path survive controller-driven pod
    replacement, while a generic home marker does not.
 
-Do not publish successful output until a fresh run has completed against the
-exact OCE revision and image digests.
+
 
 Keep the evidence private. It contains deployment identifiers and topology
 details, but not service keys. A passing run validates only the exact
@@ -1452,8 +1605,91 @@ Kubernetes, OCE API, AgentGateway, Bedrock, source revision, and image digests
 supplied to the command. It also records SHA-256 digests for the validator and
 its native tool-history evaluator.
 
+Abridged literal output from the completed canonical v5 validator. Tenant
+labels are aliases; deployment identifiers and image repository paths are
+omitted. `CLEANUP` covers validator temporary artifacts only. Installation
+and build-resource cleanup are handled separately below.
+
 ```text
-Validation passed. Sanitized evidence: <private-evidence-directory>/live-validation-evidence.txt
+EVIDENCE	git-revision	e3dd700131359d9b74cd2dfbd928bbdcd45eaf05
+EVIDENCE	image-build-revision	baadca1b7fabfdc2f870684505446eec82042bc4
+PASS	runtime-isolation	both pods use isolated-sandbox and the pinned digest
+PASS	security-context	both runtime containers meet the restricted security contract
+PASS	tenant-storage-boundary	runtime mounts bind to distinct namespace-local PVC/PV UIDs and CSI volume handles
+PASS	aws-credential-absence	pod, service-account, token, and Pod Identity checks passed
+PASS	guest-vm-boundary	sandbox guests exposed virtio disks, the ordinary pod exposed NVMe, and all three boot IDs differed
+PASS	agentgateway-key-authorization	missing and incorrect keys were denied; each tenant key completed one Responses API turn
+PASS	native-openclaw-model-turn	both native OpenClaw gateways rejected anonymous access and answered their random arithmetic challenge
+PASS	agentgateway-model-telemetry	both native run IDs joined through their diagnostic timeline to successful AgentGateway Bedrock spans
+PASS	native-openclaw-tool-execution	one native OCE session recorded one successful exec tool call and its exact result
+PASS	oce-same-tenant-api	both tenants received HTTP 200 for their own agent
+PASS	oce-cross-tenant-api	both reciprocal requests returned HTTP 403 FORBIDDEN
+EVIDENCE	shared-postgresql-boundary	app-role-restricted=true application-table-count=56 rls-enabled-table-count=0
+LIMITATION	database-isolation-not-proven	OCE application schemas occ and drizzle have no row-level security; reciprocal HTTP 403 responses prove application-layer authorization, not a database-enforced tenant boundary
+PASS	reserved-configmap-spoof	server-side admission denied the request
+PASS	managed-pod-spoof	server-side admission denied the request
+PASS	ephemeral-debug	server-side admission denied the request
+PASS	controller-driven-persistence	persistent state survived replacement; ephemeral state did not; native model turn still passed
+PASS	temporary-artifact-cleanup	API relay, local port-forward, markers, and the ordinary control pod were removed
+CLEANUP	PASS	API relay and local port-forward were removed; temporary cluster artifacts were deleted and awaited
+RESULT	PASS	all live validation checks passed
+```
+
+Captured guest/control comparison (abridged). Tenant and control names are
+aliases; boot IDs are replaced by SHA-256 of the UUID text without a newline.
+Kernel-build and device captures are joined by recorded pod UID. Both guests
+expose virtio disks; the ordinary control exposes NVMe. All three boot hashes
+differ.
+
+| Capture alias | Kernel release / architecture | Kernel build | Boot ID SHA-256 | Block devices (abridged) |
+|---|---|---|---|---|
+| `tenant-a` | `6.18.62 x86_64` | `#1 SMP PREEMPT_DYNAMIC Fri Nov 13 22:09:34 UTC 2026` | `9401256634a1421bb07e4d9e3e4c333ba6d1569f23fa9a17788dfdfd57d11ae5` | `vda,vdb,vdc,vdd,vde` |
+| `tenant-b` | `6.18.62 x86_64` | `#1 SMP PREEMPT_DYNAMIC Fri Nov 13 22:09:34 UTC 2026` | `abe5ef06920a9404e907f3d352832faab426953f27d2cff69b64e01090b2baa3` | `vda,vdb,vdc,vdd,vde` |
+| `ordinary-control` | `6.18.62 x86_64` | `#2 SMP PREEMPT_DYNAMIC Fri Nov 13 22:13:38 UTC 2026` | `ffb21b250b5af8d182c5f67fa1ab90b137bdeffe8077c7c65a3c4bb9f6c37da9` | `nvme0n1,nvme1n1,nvme2n1,nvme3n1` |
+
+Both tenants returned this literal allowlisted AgentGateway key-test JSON:
+
+```json
+{"marker":"LIVE_AGENTGATEWAY_KEY_CONTRACT","noKeyStatus":401,"wrongKeyStatus":401,"acceptedStatus":200,"challengeMatch":true}
+```
+
+Both native model-turn captures have these identical abridged fields. Private
+request and trace IDs are omitted; the source captures join each native turn
+to its AgentGateway Bedrock spans.
+
+```json
+{
+  "status": 200,
+  "unauthenticatedStatus": 401,
+  "model": "openclaw/default",
+  "challengeMatch": true
+}
+```
+
+Both correlated AgentGateway captures have these abridged fields:
+
+```json
+{
+  "provider": "aws.bedrock",
+  "gatewayModel": "nova-lite",
+  "bedrockModel": "amazon.nova-lite-v1:0",
+  "invocationCount": 2
+}
+```
+
+Captured fields from a separate synthetic native CLI session in tenant A.
+The prompt, command, result, and final reply are unchanged; labels are added
+for readability. The matched tool-call/result ID and private session IDs are
+omitted. The history evaluator verified one tool call, one successful result,
+and one final reply.
+
+```text
+Prompt: Use the exec tool exactly once. Run exactly this command: printf TOOL_574b2b9764482ae31ce6c6de After it succeeds, reply with exactly DONE_574b2b9764482ae31ce6c6de and no other text.
+Tool: exec
+Command: printf TOOL_574b2b9764482ae31ce6c6de
+Result: TOOL_574b2b9764482ae31ce6c6de
+Exit code: 0
+Final reply: DONE_574b2b9764482ae31ce6c6de
 ```
 
 ## Good to know
@@ -1603,8 +1839,46 @@ directory or its receipt. Securely archive them if you need an audit record;
 otherwise delete them after cleanup. Never reuse the generated keys for another
 deployment.
 
+Abridged literal cluster cleanup output. `<cluster-context>` replaces the
+private context; credential-file paths are omitted.
+
 ```text
-Cleanup completed.
-Deleted run-owned image build stack. Receipt: <private-state-directory>/image-build-stack.json
-Deleted run-owned builder repository. Receipt: <private-state-directory>/builder-repository.json
+Preserved storageclass/openclaw-enterprise-gp3: setup reused it.
+Cleanup completed for release oce in kube context <cluster-context>.
 ```
+
+Captured EBS cleanup JSON. Tenant labels are aliases; both volume hashes
+match the handles recorded by the canonical validator.
+
+```json
+{
+  "identityReceiptSha256": "c4786ff024c0cb7146234f2a57e46724a87f2c95f6ec8c5ec94a35d27d68ca04",
+  "region": "us-west-2",
+  "volumes": [
+    {
+      "tenant": "a",
+      "volumeIdSha256": "f1e1a9ee2bdf9974d372b924a991709b046bfed04ddab1feb2f387f8d6e71e42",
+      "absent": true,
+      "awsErrorCode": "InvalidVolume.NotFound"
+    },
+    {
+      "tenant": "b",
+      "volumeIdSha256": "8277f94b627df812cd6b71ee9e1d25005e9215cc0ce47a95ab4b37674c7f3572",
+      "absent": true,
+      "awsErrorCode": "InvalidVolume.NotFound"
+    }
+  ],
+  "verifiedAt": "2026-11-26T01:40:33.335688+00:00",
+  "status": "PASS"
+}
+```
+
+Literal output from the refreshed build-stack cleanup attempt:
+
+```text
+image-build-stack: stack deletion could not be confirmed; rerun delete with this receipt.
+```
+
+Build-stack cleanup requires `iam:DeleteRole`; the validation session
+explicitly denied it. Retry with the original build receipt from an authorized
+session that permits this action. The reused builder was preserved.
