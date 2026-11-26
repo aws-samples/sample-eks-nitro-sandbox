@@ -31,6 +31,7 @@ Node and cluster preparation the other blueprints treat as a prerequisite.
 ## AI agents
 
 - [Coding agents for developers](examples/ai-agents/coding-agents-for-developers/README.md): a web app where a developer picks a coding agent and gets a browser terminal, each session in its own sandbox claimed from a warm pool, with a per-session S3 Files workspace only that session's pod can mount.
+- [OpenClaw Enterprise on EKS](examples/ai-agents/openclaw-enterprise/README.md): two OpenClaw Enterprise tenant runtimes in separate Nitro sandboxes, using model-provider routing through a private, shared AgentGateway to Amazon Bedrock.
 
 ## Managed agents
 

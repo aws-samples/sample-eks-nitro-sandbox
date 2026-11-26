@@ -1,0 +1,2645 @@
+# Run OpenClaw Enterprise agents in AWS Nitro Sandboxes on Amazon EKS
+
+Before you start, review the
+[prerequisites and shared setup](../../README.md#prerequisites) on the home page
+and run the
+[hello sandbox](../../getting-started/hello-sandbox/README.md) blueprint. The
+commands below use files from this repository, so clone it and enter this
+blueprint's folder:
+
+```bash
+git clone https://github.com/aws-samples/sample-eks-nitro-sandbox.git
+cd sample-eks-nitro-sandbox/examples/ai-agents/openclaw-enterprise
+```
+
+This blueprint installs OpenClaw Enterprise (OCE) on Amazon EKS and runs two
+tenant agent runtimes in separate
+[AWS Nitro Sandboxes](https://aws.amazon.com/blogs/containers/aws-nitro-sandboxes-hardware-enforced-workload-isolation-on-amazon-eks/).
+Both tenants call Amazon Nova Lite through one private, shared AgentGateway.
+Only AgentGateway receives an AWS identity.
+
+
+
+*Figure 1: OCE manages two tenant agent runtimes. Each runtime has its own
+kernel and persistent volume, and only the shared AgentGateway receives AWS
+identity and calls Amazon Bedrock.*
+
+![An Amazon EKS cluster runs two OCE tenant agent runtimes in separate Nitro sandboxes, each with its own persistent volume, while a shared AgentGateway with EKS Pod Identity calls Amazon Bedrock.](images/openclaw-enterprise-architecture.png)
+
+Editable diagrams:
+[architecture](images/openclaw-enterprise-architecture.drawio),
+[model request](images/openclaw-enterprise-model-request.drawio), and
+[pod admission](images/openclaw-enterprise-pod-admission.drawio).
+
+## Prerequisites
+
+- An EKS Auto Mode cluster with the `isolated-sandbox` RuntimeClass, created by
+  the shared setup. Before using the disposable database path, the cluster must
+  already carry the tag `Environment=validation`; you need
+  `eks:ListTagsForResource` to verify it.
+- Network policy enforcement turned on for the cluster. OCE's tenant
+  NetworkPolicies are what keep other Pods away from each tenant gateway, and
+  OCE trusts every Pod address as a gateway proxy source, so without
+  enforcement any Pod that reaches a gateway can present OCE's trusted identity
+  header. EKS Auto Mode accepts NetworkPolicies without enforcing them until
+  this prints `true`:
+
+  ```bash
+  kubectl --context "$KUBE_CONTEXT" --namespace kube-system \
+    get configmap amazon-vpc-cni \
+    --output jsonpath='{.data.enable-network-policy-controller}{"\n"}'
+  ```
+
+  `install-oce.sh` reads this setting and stops before it changes the cluster
+  when it is not `true`. It never changes the setting, which applies to the
+  whole cluster. To turn it on, follow the
+  [network policy](../../isolation/network-policy/README.md) blueprint.
+- If the cluster runs CloudWatch Application Signals auto-monitor, exclude this
+  blueprint's namespaces from it before setup, in the CloudWatch Observability
+  add-on's
+  [advanced configuration](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Application-Signals-Enable-EKS.html#CloudWatch-Application-Signals-Enable-EKS-Addon):
+  `openclaw-system` (or your
+  `OCE_NAMESPACE`), `openclaw-enterprise-adapter`, `openclaw-enterprise-agw`,
+  and each OCE tenant namespace. Auto-monitor injects an instrumentation init
+  container into the Pods it monitors, and the admission adapter refuses every
+  tenant gateway Pod that does not have exactly OCE's two init containers and
+  one container. A tenant namespace's name is known only after
+  `occ namespace create`; find it with
+  `kubectl get namespaces --selector openclaw.dev/namespace=<namespace-id>`,
+  and exclude it before the first Agent starts.
+- Access to Amazon Bedrock model `amazon.nova-lite-v1:0` in `us-west-2`.
+- Private OCE authentication and Agent DNS names that resolve from the cluster.
+- [cert-manager](https://cert-manager.io/docs/installation/) `v1.21.3`
+  for a new installation, or an existing installation that serves the
+  `cert-manager.io/v1` `Issuer` and `Certificate` APIs. The adapter and
+  AgentGateway manifests create these resources.
+- A scanned, digest-pinned CodeBuild builder image in private Amazon ECR.
+- Amazon Inspector enhanced scanning for Amazon ECR already enabled in the
+  build account and Region, with a registry rule that covers
+  `openclaw-enterprise/*`.
+- AWS CLI v2 with a named profile whose source credentials remain valid or
+  refresh automatically throughout the image build, Bash 4 or later, Docker,
+  Git, Go, Helm 3, `jq`, `kubectl`, Node.js 22 or later, OpenSSL, Python 3,
+  GNU `envsubst` (from `gettext`), and
+  [Mike Farah `yq`](https://github.com/mikefarah/yq) `v4.54.3`.
+  This sample was tested with Helm `v3.22.1`. The pinned OCE revision predates
+  [upstream Helm 4 support](https://github.com/openclaw/openclaw-enterprise/pull/6691).
+- Kubernetes permissions for each phase:
+  - setup and install: read cluster discovery data and the `amazon-vpc-cni`
+    ConfigMap in `kube-system`; install the documented cluster-scoped
+    admission, storage, and RBAC resources; and manage the blueprint namespaces
+    and their workloads
+  - validation: manage the two retained validation tenants and create
+    `pods/portforward` requests
+  - cleanup: delete only receipt-matched blueprint resources, create
+    server-side dry-run ConfigMaps, and temporarily manage the documented
+    admission policies and bindings
+- AWS permissions for each phase:
+  - image build: inspect the regional Amazon Inspector and ECR scanning
+    configuration; manage the receipt-bound builder repository and
+    CloudFormation stack; read its outputs; assume the generated invocation
+    role; and read the resulting Step Functions and CodeBuild execution
+  - install and validation: call `sts:GetCallerIdentity`; read the EKS cluster,
+    tags, VPC, and network interfaces; and manage the receipt-bound IAM role,
+    inline Bedrock policy, and EKS Pod Identity association
+  - cleanup: delete only the receipt-matched stack, repositories, IAM role,
+    inline policy, and Pod Identity association
+
+The image-build stack creates its own CodeBuild, Step Functions, ECR, KMS,
+CloudWatch Logs, and IAM resources through CloudFormation. It relies on Amazon
+Inspector enhanced ECR scanning already being enabled for the account and
+Region. The generated invocation role, not the operator's base identity, starts
+and reads the build workflow.
+
+This terminal-managed topology disables OCE gateway routing and native browser
+routing. It does not require Gateway API, Envoy Gateway, or their CRDs, and the
+blueprint does not install them.
+
+Keep credentials, account details, generated state, receipts, and validation
+evidence outside the repository.
+
+This blueprint incurs charges for the EKS cluster and worker capacity,
+Amazon EBS volumes, CodeBuild, private ECR storage and scanning, CloudWatch
+Logs, KMS keys, and Amazon Bedrock model usage. Delete the resources when you
+finish.
+
+## Overview
+
+OCE creates and controls each tenant runtime. Its native shared
+`modelProvider` uses the `openai-responses` protocol and the private HTTPS URL
+`https://agentgateway.openclaw-enterprise-agw.svc.cluster.local/v1`.
+AgentGateway authenticates separate tenant keys and makes the Bedrock request
+with EKS Pod Identity.
+
+The admission adapter is a compatibility layer for the pinned OCE pod shape. It
+sets the RuntimeClass, replaces the incompatible state PVC mount, installs the
+private CA trust, and applies the related strict Nitro compatibility changes.
+It does not implement or redirect model routing.
+
+*Figure 2: Tenant runtimes use OCE's native model provider path. The shared,
+stateless AgentGateway holds no tenant runtime state.*
+
+![A model request travels from each OCE tenant runtime through a private HTTPS AgentGateway to Amazon Bedrock.](images/openclaw-enterprise-model-request.png)
+
+The blueprint layers these controls:
+
+| Boundary | How the blueprint enforces it | Remaining shared boundary |
+|---|---|---|
+| Compute | The fail-closed admission chain verifies the OCE controller lineage and expected pod shape, then sets `runtimeClassName: isolated-sandbox`. Each admitted runtime gets its own Nitro sandbox, kernel, and memory boundary. | The OCE control plane and EKS cluster remain shared. |
+| Storage | The adapter derives the expected PVC from the gateway identity and rejects another claim. Each runtime mounts its own persistent volume. | The OCE database is shared and is outside the runtime storage boundary. |
+| Network | The blueprint permits the EKS DNS address, Kubernetes API Service address on TCP 443, and private AgentGateway Service address. These are the control and model paths OCE needs. | The cluster network remains shared. Add tenant network isolation separately. Native OCE support for private model services would remove the operator-owned AgentGateway rule. |
+| AWS identity | Tenant runtimes receive no EKS Pod Identity association, IRSA annotation, common AWS credential variables, or unapproved credential-capable mounts. | AgentGateway alone has a shared IAM role for the configured Bedrock model. |
+| OCE authorization | Each validator identity receives `read` permission on only its own OCE namespace and agent. The live test requires same-tenant success and cross-tenant HTTP `403` responses. | A compromised OCE control plane or copied bearer key is outside this boundary. |
+
+The adapter does not modify upstream OCE, choose a model, or rewrite model
+routing. It applies a narrow pod-admission compatibility patch only after all
+expected ownership and pod-shape checks pass. A mismatch is refused rather
+than admitted unchanged.
+
+### Database and control-plane boundary
+
+AgentGateway is shared and stateless. It stores no tenant runtime state, but
+all tenants depend on its Deployment, private Service, bearer-key
+configuration, and Bedrock IAM role. Separate AgentGateway keys authorize
+tenant requests, so per-tenant Bedrock inference profiles are not required.
+
+The OCE control plane and database are also shared. This blueprint does not
+modify upstream OCE and does not enable PostgreSQL row-level security. It
+validates OCE API authorization and makes no claim about database row
+isolation. Use separate control planes, databases, clusters, or AWS accounts
+when your threat model requires those stronger boundaries.
+
+## Versions
+
+| Component | Version or constraint |
+|---|---|
+| OpenClaw Enterprise | Chart `0.1.0` at commit `86c8c12310f691bb21651118ffffd6bfd460e9ff` |
+| Helm | `v3.22.1`; the installer rejects Helm 4 for the pinned OCE revision |
+| AgentGateway | `v1.7.0`, digest-pinned in `deploy/agentgateway.yaml` |
+| Amazon Bedrock model | `amazon.nova-lite-v1:0` in `us-west-2` |
+| Adapter, controller, ownership helper, runtime | Digest-qualified outputs bound to the reviewed source; the captured controller-only recovery is disclosed in Step 2 |
+| OCE Node.js build and runtime bases | Node.js `24.22.1` on Debian 13 (Trixie), each pinned by multi-platform image digest; the build records both references in `image-digests.json` |
+| Debian OpenSSL packages | `3.5.9-1~deb13u1+oce3`, with the nine upstream security backports described below |
+| Runtime Git and Expat packages | Git `1:2.56.1-1+oce1` and Expat `2.11.0-1+oce1`, built from checksum-pinned upstream releases |
+| Controller runtime base | Allowlisted, digest-pinned distroless Node.js 24 on Debian 13 (`nonroot`); the build verifies Node.js 24.22.1+, UID and GID 1000, and the absence of shell and package-manager tools. |
+| cert-manager | `v1.21.3` |
+| Validation PostgreSQL | OCE-qualified `18.6`, digest-pinned in Step 6 |
+| Local Node.js tooling | `22` or later |
+| `yq` | Mike Farah `yq` `v4.54.3` |
+
+The OCE source pins Node.js 24.22.1, which bundles OpenSSL 3.5.9. The image
+build backports nine upstream fixes to both Node.js embedded OpenSSL and the
+Debian OpenSSL packages: CVE-2026-95692, CVE-2026-88823, CVE-2026-107496,
+CVE-2026-95691, CVE-2026-107493, CVE-2026-124709, CVE-2026-121482,
+CVE-2026-107494, and CVE-2026-84786. The Debian package revision `+oce3`
+includes the system-library CVE-2026-95692 fix. The build verifies patch
+checksums and source-file hashes, runs focused regression checks, and records
+upstream commits and patch checksums in `image-digests.json`. The build produces
+the agent runtime before the controller, which keeps a shell-free distroless
+final image and copies the tested, repaired Node.js executable, the installed
+`libssl3t64` payload, and its genuine package record from that runtime's
+immutable digest. The payload is every file that the runtime's dpkg database
+lists for the package, including both libraries and the three `engines-3`
+modules, and the build fails if a staged file differs from the runtime's copy.
+A Debian slim runtime does not install the package's documentation other than
+its copyright file, or its lintian override, so only those listed files may be
+missing. The copied package record still describes the whole package, as the
+runtime's own dpkg database does. Only an image build shows that the runtime's
+listing and files match this. The controller entry in `image-digests.json`
+records this source as `repairedRuntimeImage`.
+The controller build pulls its validated Node.js build base from AWS's Docker Official Images mirror (`public.ecr.aws/docker/library/node`) with the same tag and immutable digest, recorded as `buildBaseImage` in its `image-digests.json` entry.
+
+The runtime installs Git 2.56.1 and Expat 2.11.0 as Debian packages, preserving
+package records, licenses, and source provenance. Git retains Debian's epoch
+`1` so the replacement upgrades the distro package; it retains local, HTTPS,
+and SSH transports while omitting optional DAV, GUI, Perl, Python contrib,
+and gettext features. Expat retains the `libexpat.so.1` ABI used by Python.
+`image-digests.json` records their package versions and source archive hashes.
+See the [Git and Expat package build notes](build/git/README.md) for provenance
+and compatibility details. The build also retains the curl CVE-2026-86414
+backport and the pinned OpenClaw dependency fixes.
+
+## Files
+
+| Path | Purpose |
+|---|---|
+| [`build/codebuild-builder.Dockerfile`](build/codebuild-builder.Dockerfile) | Build a pinned, purpose-built Alpine image with the Docker engine and only the host tools required by the image build. |
+| [`build/template.yaml`](build/template.yaml) | Build and scan the four deployable images. |
+| [`deploy/adapter-webhook.yaml`](deploy/adapter-webhook.yaml) | Define the admission adapter; adjacent manifests define AgentGateway and storage settings. |
+| [`scripts/manage-builder-repository.sh`](scripts/manage-builder-repository.sh) | Create and delete one receipt-bound private builder repository. |
+| [`scripts/manage-image-build-stack.sh`](scripts/manage-image-build-stack.sh) | Create and delete one receipt-bound image build stack. |
+| [`scripts/setup-storage-class.sh`](scripts/setup-storage-class.sh) | Create or verify the blueprint-owned EKS Auto Mode StorageClass. |
+| [`scripts/setup-agentgateway-pod-identity.sh`](scripts/setup-agentgateway-pod-identity.sh) | Create or verify AgentGateway's IAM role, Bedrock policy, and Pod Identity association. |
+| [`scripts/setup-agentgateway.sh`](scripts/setup-agentgateway.sh) | Create or verify AgentGateway and its private key state. |
+| [`scripts/install-oce.sh`](scripts/install-oce.sh) | Install the exact OCE revision in a terminal-managed topology. |
+| [`scripts/configure-tenant-model-gateway.sh`](scripts/configure-tenant-model-gateway.sh) | Add private AgentGateway CA trust and exact private service egress to one OCE tenant namespace. |
+| [`scripts/oce-api-tunnel.sh`](scripts/oce-api-tunnel.sh) | Open temporary loopback-only access to the private OCE API through a network-restricted relay. |
+| [`scripts/validate-live.sh`](scripts/validate-live.sh) | Run the destructive two-tenant validation. |
+| [`scripts/lib/evaluate-native-tool-history.mjs`](scripts/lib/evaluate-native-tool-history.mjs) | Evaluate native OpenClaw tool-call history for live validation. |
+| [`scripts/cleanup.sh`](scripts/cleanup.sh) | Remove resources only after ownership checks pass. |
+
+**Step 1: Set local values and check access**
+
+Use one explicit kube context and kubeconfig throughout:
+
+```bash
+export SAMPLE_DIR="$PWD"
+export AWS_PROFILE='<aws-cli-profile>'
+export KUBECONFIG='<absolute-kubeconfig-path>'
+export KUBE_CONTEXT='<eks-kube-context>'
+export AWS_ACCOUNT_ID='<12-digit-account-id>'
+export OPENCLAW_EXPECTED_CALLER_ARN='arn:aws:sts::<12-digit-account-id>:assumed-role/<role-name>'
+export AWS_REGION='us-west-2'
+export EKS_CLUSTER_NAME='<eks-cluster-name>'
+export PRIVATE_STATE_DIR='<private-directory-outside-the-repository>'
+export BUILDER_REPOSITORY_RECEIPT="$PRIVATE_STATE_DIR/builder-repository.json"
+export IMAGE_BUILD_STACK_RECEIPT="$PRIVATE_STATE_DIR/image-build-stack.json"
+export STORAGE_CLASS_RECEIPT="$PRIVATE_STATE_DIR/storage-class-receipt.json"
+export AGENTGATEWAY_POD_IDENTITY_RECEIPT="$PRIVATE_STATE_DIR/agentgateway-pod-identity-receipt.json"
+export AGENTGATEWAY_IAM_ROLE_NAME='openclaw-enterprise-agentgateway'
+export AGENTGATEWAY_STATE_DIR="$PRIVATE_STATE_DIR/agentgateway"
+export AGENTGATEWAY_RECEIPT="$AGENTGATEWAY_STATE_DIR/lifecycle-receipt.json"
+export OCE_SOURCE_REVISION='86c8c12310f691bb21651118ffffd6bfd460e9ff' # pragma: allowlist secret -- public source revision
+export CERT_MANAGER_VERSION='v1.21.3'
+export YQ_VERSION='v4.54.3'
+
+chmod 600 "$KUBECONFIG"
+install -d -m 700 "$PRIVATE_STATE_DIR"
+caller_arn="$(aws sts get-caller-identity --query Arn --output text)"
+case "$caller_arn" in
+  arn:aws:iam::*:role/*|arn:aws:iam::*:user/*)
+    export TRUSTED_BUILD_INVOKER_ARN="$caller_arn"
+    ;;
+  arn:aws:sts::*:assumed-role/*/*)
+    caller_role_and_session="${caller_arn#*:assumed-role/}"
+    caller_role_name="${caller_role_and_session%%/*}"
+    export TRUSTED_BUILD_INVOKER_ARN="$(
+      aws iam get-role \
+        --role-name "$caller_role_name" \
+        --query 'Role.Arn' \
+        --output text
+    )"
+    ;;
+  *)
+    printf 'Set TRUSTED_BUILD_INVOKER_ARN to your IAM role or user ARN.\n' >&2
+    return 1 2>/dev/null || exit 1
+    ;;
+esac
+kubectl --context "$KUBE_CONTEXT" config get-contexts "$KUBE_CONTEXT"
+kubectl --context "$KUBE_CONTEXT" get --raw=/readyz
+test "$(yq --version | awk '{print $NF}')" = "$YQ_VERSION"
+node_major="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+test "$node_major" -ge 22
+docker version >/dev/null
+```
+
+Set `OPENCLAW_EXPECTED_CALLER_ARN` to the AWS principal you run these steps
+as: an assumed-role ARN without its session name, as above, or an IAM user ARN.
+Type it yourself rather than copying it from `aws sts get-caller-identity`.
+`manage-builder-repository.sh`, `manage-image-build-stack.sh`,
+`setup-agentgateway-pod-identity.sh`, and `cleanup.sh` (when it removes the
+AgentGateway AWS resources) compare the caller with it before they change
+anything, and stop if the caller is another role or user, even in the same
+account.
+
+Install the pinned cert-manager release when the cluster does not already have
+a shared cert-manager installation:
+
+```bash
+if kubectl --context "$KUBE_CONTEXT" \
+  --namespace cert-manager get deployment cert-manager >/dev/null 2>&1; then
+  existing_cert_manager_version="$(
+    kubectl --context "$KUBE_CONTEXT" \
+      --namespace cert-manager get deployment \
+      cert-manager cert-manager-webhook cert-manager-cainjector \
+      --output json |
+      jq -er '
+        [.items[].metadata.labels["app.kubernetes.io/version"]]
+        | unique
+        | if length == 1 then .[0]
+          else error("cert-manager components have inconsistent versions")
+          end
+      '
+  )"
+  printf 'Using existing cert-manager %s without modifying it.\n' \
+    "$existing_cert_manager_version"
+else
+  helm upgrade --install cert-manager \
+    oci://quay.io/jetstack/charts/cert-manager \
+    --kube-context "$KUBE_CONTEXT" \
+    --version "$CERT_MANAGER_VERSION" \
+    --namespace cert-manager \
+    --create-namespace \
+    --set crds.enabled=true
+fi
+kubectl --context "$KUBE_CONTEXT" --namespace cert-manager \
+  rollout status deployment/cert-manager
+kubectl --context "$KUBE_CONTEXT" --namespace cert-manager \
+  rollout status deployment/cert-manager-webhook
+kubectl --context "$KUBE_CONTEXT" --namespace cert-manager \
+  rollout status deployment/cert-manager-cainjector
+for crd in issuers.cert-manager.io certificates.cert-manager.io; do
+  kubectl --context "$KUBE_CONTEXT" wait \
+    --for=condition=Established "customresourcedefinition/$crd"
+  kubectl --context "$KUBE_CONTEXT" get \
+    "customresourcedefinition/$crd" --output json |
+    jq -e '
+      any(
+        .spec.versions[];
+        .name == "v1" and .served == true
+      )
+    ' >/dev/null
+done
+```
+
+cert-manager is a shared cluster prerequisite. The cleanup script does not
+delete or upgrade it.
+
+Read-only supplemental JSON for shared cert-manager, reused without
+modification (abridged).
+
+```json
+{
+  "disposition": "Existing shared prerequisite observed without modification",
+  "deployments": [
+    {
+      "deployment": "cert-manager",
+      "version": "v1.18.4",
+      "readyReplicas": 1,
+      "desiredReplicas": 1
+    },
+    {
+      "deployment": "cert-manager-webhook",
+      "version": "v1.18.4",
+      "readyReplicas": 1,
+      "desiredReplicas": 1
+    },
+    {
+      "deployment": "cert-manager-cainjector",
+      "version": "v1.18.4",
+      "readyReplicas": 1,
+      "desiredReplicas": 1
+    }
+  ]
+}
+```
+
+Before building images, verify that Amazon Inspector enhanced scanning is
+enabled for Amazon ECR and that a registry rule covers
+`openclaw-enterprise/*`. These are account-and-Region settings. Ask the
+registry owner to configure them by following the
+[Amazon ECR enhanced scanning documentation](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning-enhanced.html)
+if either check fails. The sample reads this configuration but does not change
+or later restore shared registry settings.
+
+```bash
+aws inspector2 batch-get-account-status \
+  --region "$AWS_REGION" \
+  --account-ids "$AWS_ACCOUNT_ID" \
+  --query 'accounts[0].{Inspector:state.status,ECR:resourceState.ecr.status}'
+aws ecr get-registry-scanning-configuration \
+  --region "$AWS_REGION" \
+  --query 'scanningConfiguration.{ScanType:scanType,Rules:rules}'
+```
+
+Both Inspector statuses must be `ENABLED`, the scan type must be `ENHANCED`,
+and an enabled `SCAN_ON_PUSH` or `CONTINUOUS_SCAN` rule must cover the sample
+repositories. The build repeats these checks and stops before cloning or
+building when the configuration is incomplete. Amazon Inspector charges apply
+to images covered by the rule.
+
+**Step 2: Build and scan the images**
+
+Build the purpose-built image from a pinned Alpine base and push it to private
+ECR. It contains the Docker engine and only the host tools required by the
+image build.
+The build project selects the private image by digest, and the stack manager
+waits for Amazon Inspector to report no active HIGH or CRITICAL package
+findings before creating the build resources.
+
+```bash
+export BUILDER_TAG='alpine-3.24-openclaw-builder'
+export ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+"$SAMPLE_DIR/scripts/manage-builder-repository.sh" create \
+  --receipt "$BUILDER_REPOSITORY_RECEIPT" \
+  --region "$AWS_REGION"
+export BUILDER_REPOSITORY="$(
+  jq -er '.repositoryName' "$BUILDER_REPOSITORY_RECEIPT"
+)"
+
+aws ecr get-login-password --region "$AWS_REGION" |
+  docker login --username AWS --password-stdin "$ECR_REGISTRY"
+docker build \
+  --platform linux/amd64 \
+  --pull \
+  --file "$SAMPLE_DIR/build/codebuild-builder.Dockerfile" \
+  --tag "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG" \
+  "$SAMPLE_DIR/build"
+docker push "$ECR_REGISTRY/$BUILDER_REPOSITORY:$BUILDER_TAG"
+export BUILDER_DIGEST="$(
+  aws ecr describe-images \
+    --region "$AWS_REGION" \
+    --repository-name "$BUILDER_REPOSITORY" \
+    --image-ids "imageTag=$BUILDER_TAG" \
+    --query 'imageDetails[0].imageDigest' \
+    --output text
+)"
+[[ "$BUILDER_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+export SAMPLE_GIT_REVISION="$(git -C ../../.. rev-parse HEAD)"
+"$SAMPLE_DIR/scripts/manage-image-build-stack.sh" create \
+  --receipt "$IMAGE_BUILD_STACK_RECEIPT" \
+  --region "$AWS_REGION" \
+  --sample-revision "$SAMPLE_GIT_REVISION" \
+  --builder-repository "$BUILDER_REPOSITORY" \
+  --builder-digest "$BUILDER_DIGEST" \
+  --trusted-build-invoker-arn "$TRUSTED_BUILD_INVOKER_ARN"
+export IMAGE_BUILD_STACK_ID="$(
+  jq -er '.stackId' "$IMAGE_BUILD_STACK_RECEIPT"
+)"
+```
+
+The stack builds `linux/amd64` images only. The reviewed Inspector exceptions
+match AMD64 package records and x86-64 Node.js header paths, so `create`
+refuses `--target-platform linux/arm64` before any AWS call. `delete` still
+accepts a receipt that records `linux/arm64`, so an existing stack can be
+removed.
+
+Use new builder-repository and image-build-stack receipt files for each build.
+Both `create` actions refuse to replace an existing receipt. If either manager
+cannot confirm creation or deletion, rerun its `delete` command in Cleanup with
+the same receipt. Each `delete` command safely reconciles `create-planned`,
+`create-unconfirmed`, `delete-planned`, and `delete-unconfirmed` receipts,
+verifies ownership before deleting a present resource, and records an absent or
+deleted resource as `deleted`.
+
+The lifecycle managers serialize operations on a receipt with a
+`<receipt>.lock` directory. They remove the lock after normal completion or a
+failure before a cloud mutation starts. They retain it after a signal or error
+interrupts a mutation or its verification. If a retained lock remains, verify
+that its recorded PID is inactive when the PID file exists, then inspect the
+exact resource named in the receipt. A process terminated while acquiring the
+lock can leave an empty lock directory before a receipt exists. In either case,
+reconcile the resource before removing only the lock directory, then rerun the
+corresponding `delete` command with the same receipt.
+
+The script creates a uniquely named, run-owned stack and records its exact ARN
+in a private receipt. The stack creates four encrypted, immutable ECR
+repositories and a fixed Step Functions workflow. CodeBuild checks out this
+repository and OCE at exact commits, builds the adapter, controller, ownership
+helper, and runtime images, waits for Amazon Inspector `PACKAGE` coverage, and
+requires the complete finding set to remain free of unapproved active `HIGH` or
+`CRITICAL` findings for one minute before it exports digest-qualified
+references. This stabilization window prevents a newly completed scan from
+passing while Amazon Inspector is still publishing its findings. Runtime
+exceptions apply only to reviewed `HIGH` OpenSSL findings whose complete
+package and path signatures, upstream references, and supplied patch checksums
+match the scan policy. The six additional OpenSSL backports qualify only for
+the specified Node.js header records; they do not exempt Debian package
+findings. Git and Expat have no scan exceptions. Every active `CRITICAL`
+finding and every unmatched active `HIGH` finding fails the build.
+ECR basic scanning alone does not meet this gate.
+
+The OpenSSL exceptions also require the runtime repair record that the build
+writes after it verifies the pushed runtime digest and before any scan. The
+record names that exact digest, both source revisions, all nine reviewed patch
+checksums, the pinned source anchors and the reviewed regression recipes, and
+holds hashes of `/usr/share/doc/openssl/oce/source.sha256` and
+`packages.sha256` read back from the image. The gate refuses every exception
+unless the record matches its checksum, the scanned digest and the complete
+patch set. The same build writes and checks this record, so it is
+self-attestation of that run's checks; it is not BuildKit or other signed
+provenance. `image-digests.json` keeps a copy as `repairProvenance` in the
+runtime entry.
+
+Assume the generated invocation role in a subshell and start the fixed
+workflow. The temporary credentials disappear when the subshell exits; only
+the four non-secret image references are returned to the operator shell. The
+command re-assumes the generated role from `AWS_PROFILE` every 45 minutes,
+replacing its one-hour session while the Step Functions workflow continues
+independently. This supports role-chained callers without long-lived
+credentials. The command stops waiting after 185 minutes, covering the
+workflow's 60-minute queue and 120-minute build limits with five minutes of
+overhead:
+
+```bash
+invocation_role_arn="$(
+  aws cloudformation describe-stacks \
+    --region "$AWS_REGION" \
+    --stack-name "$IMAGE_BUILD_STACK_ID" \
+    --query 'Stacks[0].Outputs[?OutputKey==`BuildInvocationRoleArn`].OutputValue' \
+    --output text
+)"
+state_machine_arn="$(
+  aws cloudformation describe-stacks \
+    --region "$AWS_REGION" \
+    --stack-name "$IMAGE_BUILD_STACK_ID" \
+    --query 'Stacks[0].Outputs[?OutputKey==`BuildStateMachineArn`].OutputValue' \
+    --output text
+)"
+(
+set -euo pipefail
+set +x
+source_aws_profile="$AWS_PROFILE"
+assume_build_invocation_role() {
+  credentials="$(
+    (
+      unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+      aws --profile "$source_aws_profile" sts assume-role \
+        --role-arn "$invocation_role_arn" \
+        --role-session-name openclaw-enterprise-image-build \
+        --duration-seconds 3600 \
+        --output json
+    )
+  )"
+  credential_values="$(
+    printf '%s' "$credentials" |
+      jq -er '
+        [
+          .Credentials.AccessKeyId,
+          .Credentials.SecretAccessKey,
+          .Credentials.SessionToken
+        ]
+        | if all(.[];
+            type == "string" and length > 0 and (contains("\t") | not)
+          )
+          then @tsv
+          else error("STS returned incomplete credentials")
+          end
+      '
+  )"
+  IFS=$'\t' read -r access_key secret_key session_token \
+    <<<"$credential_values"
+  [[ -n "$access_key" && -n "$secret_key" && -n "$session_token" ]]
+  export AWS_ACCESS_KEY_ID="$access_key"
+  export AWS_SECRET_ACCESS_KEY="$secret_key"
+  export AWS_SESSION_TOKEN="$session_token"
+  unset credentials credential_values access_key secret_key session_token
+  credentials_refreshed_at="$(date +%s)"
+}
+trap 'unset credentials AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN' EXIT
+assume_build_invocation_role
+execution_deadline=$(($(date +%s) + 11100))
+execution_arn="$(
+  aws stepfunctions start-execution \
+    --state-machine-arn "$state_machine_arn" \
+    --input '{}' \
+    --query executionArn \
+    --output text
+)"
+while :; do
+  current_epoch="$(date +%s)"
+  if ((current_epoch >= execution_deadline)); then
+    printf 'Timed out waiting for Step Functions execution: %s\n' \
+      "$execution_arn" >&2
+    exit 1
+  fi
+  if ((current_epoch - credentials_refreshed_at >= 2700)); then
+    assume_build_invocation_role
+  fi
+  execution_json="$(
+    aws stepfunctions describe-execution \
+      --execution-arn "$execution_arn" \
+      --output json
+  )"
+  status="$(printf '%s' "$execution_json" | jq -r '.status')"
+  case "$status" in
+    SUCCEEDED)
+      build_id="$(
+        printf '%s' "$execution_json" |
+          jq -er '.output | fromjson | .Build.Id'
+      )"
+      break
+      ;;
+    FAILED|ABORTED|TIMED_OUT)
+      printf '%s' "$execution_json" | jq '{status, error, cause}' >&2
+      exit 1
+      ;;
+    RUNNING) ;;
+    *)
+      printf 'Unexpected Step Functions status %s for %s\n' \
+        "$status" "$execution_arn" >&2
+      exit 1
+      ;;
+  esac
+  sleep 20
+done
+build_json="$(
+  aws codebuild batch-get-builds \
+    --ids "$build_id" \
+    --output json
+)"
+test "$(printf '%s' "$build_json" | jq -r '.builds[0].buildStatus')" = \
+  'SUCCEEDED'
+
+image_outputs="$PRIVATE_STATE_DIR/image-build-outputs.json"
+printf '%s' "$build_json" |
+  jq -e '
+    .builds[0].exportedEnvironmentVariables
+    | map({key: .name, value: .value})
+    | from_entries
+    | {
+        ADAPTER_IMAGE,
+        CONTROLLER_IMAGE,
+        OWNERSHIP_INIT_IMAGE,
+        RUNTIME_IMAGE
+      }
+    | if all(.[]; type == "string" and contains("@sha256:"))
+      then .
+      else error("missing digest-qualified image output")
+      end
+  ' >"$image_outputs"
+chmod 600 "$image_outputs"
+)
+
+export ADAPTER_IMAGE="$(
+  jq -er '.ADAPTER_IMAGE' "$PRIVATE_STATE_DIR/image-build-outputs.json"
+)"
+export CONTROLLER_IMAGE="$(
+  jq -er '.CONTROLLER_IMAGE' "$PRIVATE_STATE_DIR/image-build-outputs.json"
+)"
+export OWNERSHIP_INIT_IMAGE="$(
+  jq -er '.OWNERSHIP_INIT_IMAGE' "$PRIVATE_STATE_DIR/image-build-outputs.json"
+)"
+export RUNTIME_IMAGE="$(
+  jq -er '.RUNTIME_IMAGE' "$PRIVATE_STATE_DIR/image-build-outputs.json"
+)"
+```
+
+Use all four outputs from the same build. Do not substitute image tags.
+
+CodeBuild has no project setting or resource policy that blocks every direct
+build override. Human and CI principals must not have
+`codebuild:StartBuild`, `codebuild:StartBuildBatch`, or
+`codebuild:RetryBuild` on this project. Use a permissions boundary or SCP to
+enforce that deny, and exempt only `ImageBuildWorkflowRole`. Release operators
+should receive only permission to assume the generated invocation role.
+
+Abridged JSON from the recorded build and scan evidence. The original full
+build failed on a Docker Hub HTTP 429. Controller-only recovery rebuilt the
+controller, reused the other three images, and exported all four digests.
+The gate verified nine runtime OpenSSL backports: raw High remains nine;
+actionable Critical/High is zero. This is recovery evidence, not a successful
+full build or a successful Step Functions execution. The controller digest below
+was built before the controller copied the complete `libssl3t64` payload
+described above; only a new controller build and scan give the digest and
+findings for the current Dockerfile.
+
+```json
+{
+  "sampleRevision": "baadca1b7fabfdc2f870684505446eec82042bc4",
+  "originalBuildStatus": "FAILED: DockerHub429; no success claimed",
+  "buildStatus": "SUCCEEDED (controller-only recovery and all-image scan/export)",
+  "retainedImageRoles": [
+    "adapter",
+    "ownershipHelper",
+    "runtime"
+  ],
+  "scans": [
+    {
+      "role": "adapter",
+      "digest": "sha256:5ebd73ecf653dbfac05c722fdf5f40d1187a1eeb308fae18a5ee3c4128b1c0ea",
+      "activeHighCriticalRecords": 0,
+      "result": "Inspector image scan: ACTIVE with CRITICAL=0, HIGH=0"
+    },
+    {
+      "role": "controller",
+      "digest": "sha256:9bb61a7f8f3b70a53e44e356b924d7018005812db05e7b0f2c75b8862a4843c1",
+      "activeHighCriticalRecords": 0,
+      "result": "Inspector image scan: ACTIVE with CRITICAL=0, HIGH=0"
+    },
+    {
+      "role": "ownershipHelper",
+      "digest": "sha256:a65c61cd831c47a4e7b6c5a6c64d844abe188eda227ff740943dfc2e75166de5",
+      "activeHighCriticalRecords": 0,
+      "result": "Inspector image scan: ACTIVE with CRITICAL=0, HIGH=0"
+    },
+    {
+      "role": "runtime",
+      "digest": "sha256:c51513d4426643a4896e06d08006989d1a7e7a659c467053b00a0a3ceb751fac",
+      "activeHighCriticalRecords": 9,
+      "result": "Inspector image scan: ACTIVE with CRITICAL=0; accepted 9 reviewed HIGH source backport finding(s)"
+    }
+  ]
+}
+```
+
+**Step 3: Configure storage**
+
+Create or verify the non-default, encrypted `gp3` StorageClass:
+
+```bash
+export RUNTIME_STORAGE_CLASS="$(
+  "$SAMPLE_DIR/scripts/setup-storage-class.sh" \
+    --kube-context "$KUBE_CONTEXT" \
+    --receipt "$STORAGE_CLASS_RECEIPT"
+)"
+test "$RUNTIME_STORAGE_CLASS" = 'openclaw-enterprise-gp3'
+```
+
+The script creates the StorageClass only when it is absent. It refuses to patch
+or adopt an existing resource with the same name unless the complete storage
+and ownership contract already matches.
+
+Literal StorageClass output; the receipt records `created: false`.
+
+```text
+StorageClass openclaw-enterprise-gp3 already exists; validating it without modification.
+openclaw-enterprise-gp3
+```
+
+**Step 4: Install AgentGateway and Pod Identity**
+
+The setup script creates this IAM policy and attaches it to a role associated
+only with the `openclaw-enterprise-agw/agentgateway` ServiceAccount:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeCentralBedrockModel",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": "arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-west-2"
+        }
+      }
+    }
+  ]
+}
+```
+
+Create or verify the AgentGateway namespace, ServiceAccount, immutable Region
+ConfigMap, IAM role, policy, and Pod Identity association. The script records
+which resources it created and reuses an existing resource only when its
+complete contract already matches:
+
+```bash
+"$SAMPLE_DIR/scripts/setup-agentgateway-pod-identity.sh" \
+  --aws-region "$AWS_REGION" \
+  --aws-account-id "$AWS_ACCOUNT_ID" \
+  --eks-cluster-name "$EKS_CLUSTER_NAME" \
+  --kube-context "$KUBE_CONTEXT" \
+  --iam-role-name "$AGENTGATEWAY_IAM_ROLE_NAME" \
+  --receipt "$AGENTGATEWAY_POD_IDENTITY_RECEIPT"
+```
+
+Read the association ID from the lifecycle receipt for cleanup:
+
+```bash
+export POD_IDENTITY_ASSOCIATION_ID="$(
+  jq -er '.resources.podIdentityAssociation.associationId' \
+    "$AGENTGATEWAY_POD_IDENTITY_RECEIPT"
+)"
+```
+
+Keep the receipt and any adjacent `.journal` file. If setup is interrupted,
+rerun the same command with the same receipt. The script reconciles only
+resources with its recorded invocation identity. Do not edit the receipt or
+journal. If the script reports that a receipt predates the Region ConfigMap
+lifecycle contract, use that receipt's original sample revision to clean up
+before creating a new receipt.
+
+Create or verify AgentGateway and its private key state:
+
+```bash
+"$SAMPLE_DIR/scripts/setup-agentgateway.sh" \
+  --kubeconfig "$KUBECONFIG" \
+  --kube-context "$KUBE_CONTEXT" \
+  --state-dir "$AGENTGATEWAY_STATE_DIR" \
+  --receipt "$AGENTGATEWAY_RECEIPT"
+```
+
+Ordinary reruns are idempotent: the script preserves the key bytes and verifies
+that existing resources still match. To rotate all AgentGateway keys, rerun the
+same command with `--rotate-keys`. If setup or rotation is forcibly
+interrupted, the script preserves its private journal and setup lock rather than
+guessing whether another writer is active. Confirm that the PID recorded in
+`.setup-agentgateway.lock.active/pid` is no longer running, inspect the journal,
+then remove only `.setup-agentgateway.lock.active`. Rerun the same command with
+the same kubeconfig, context, state directory, and receipt. Do not edit or
+delete the journal.
+
+Read-only supplemental JSON for shared AgentGateway and Pod Identity,
+reused without modification (abridged). The captured policy document is
+verbatim; its foundation-model ARN has an empty account field.
+
+```json
+{
+  "disposition": "Existing shared AgentGateway and Pod Identity observed without modification",
+  "deployment": "agentgateway",
+  "availableReplicas": 2,
+  "desiredReplicas": 2,
+  "associationNamespace": "openclaw-enterprise-agw",
+  "associationServiceAccount": "agentgateway",
+  "associationRoleMatchesReceipt": true,
+  "policyDocument": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "InvokeCentralBedrockModel",
+        "Effect": "Allow",
+        "Action": [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream"
+        ],
+        "Resource": "arn:aws:bedrock:us-west-2::foundation-model/amazon.nova-lite-v1:0",
+        "Condition": {
+          "StringEquals": {
+            "aws:RequestedRegion": "us-west-2"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+**Step 5: Install the admission adapter**
+
+Render all three digest-qualified image references before applying the
+manifest:
+
+```bash
+"$SAMPLE_DIR/scripts/render-adapter-manifest.sh" \
+  "$SAMPLE_DIR/deploy/adapter-webhook.yaml" \
+  "$ADAPTER_IMAGE" \
+  "$OWNERSHIP_INIT_IMAGE" \
+  "$RUNTIME_IMAGE" |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
+
+kubectl --context "$KUBE_CONTEXT" \
+  --namespace openclaw-enterprise-adapter rollout status \
+  deployment/openclaw-enterprise-nitro-adapter
+```
+
+Do not apply the raw adapter manifest. It contains image placeholders. Wait for
+the adapter before creating the first OCE Agent because its admission webhooks
+fail closed.
+
+<details markdown="1">
+<summary>Full admission adapter manifest</summary>
+
+This is the complete [adapter manifest](deploy/adapter-webhook.yaml). The
+renderer replaces its image placeholders before the preceding command applies
+it. The mutating webhook verifies the controller chain and applies the
+compatibility changes; the validating webhook checks the resulting pod and
+refuses ephemeral containers. Both use `failurePolicy: Fail`.
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openclaw-enterprise-adapter
+  labels:
+    app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw-enterprise-nitro-adapter
+  namespace: openclaw-enterprise-adapter
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+automountServiceAccountToken: false
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: openclaw-enterprise-nitro-adapter-selfsigned
+  namespace: openclaw-enterprise-adapter
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openclaw-enterprise-nitro-adapter-serving
+  namespace: openclaw-enterprise-adapter
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+spec:
+  secretName: openclaw-enterprise-nitro-adapter-tls # pragma: allowlist secret -- Kubernetes Secret reference
+  dnsNames:
+    - openclaw-enterprise-nitro-adapter.openclaw-enterprise-adapter.svc
+    - openclaw-enterprise-nitro-adapter.openclaw-enterprise-adapter.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: openclaw-enterprise-nitro-adapter-selfsigned
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-enterprise-nitro-adapter
+  namespace: openclaw-enterprise-adapter
+  labels:
+    app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+        app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+    spec:
+      serviceAccountName: openclaw-enterprise-nitro-adapter
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeTaintsPolicy: Honor
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: webhook
+          # This intentionally invalid value makes the source manifest
+          # non-deployable. Use render-adapter-manifest.sh to inject an exact
+          # adapter digest and the ownership-helper digest.
+          image: ""
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "8443"
+            - name: TLS_CERT_FILE
+              value: /tls/tls.crt
+            - name: TLS_KEY_FILE
+              value: /tls/tls.key
+            - name: OCE_ALLOWED_ADMISSION_USERS
+              value: system:serviceaccount:kube-system:replicaset-controller,system:kube-controller-manager
+            - name: OCE_ALLOWED_DEPLOYMENT_USERS
+              value: system:serviceaccount:openclaw-system:openclaw-enterprise-worker
+            - name: OCE_ALLOWED_REPLICASET_USERS
+              value: system:serviceaccount:kube-system:deployment-controller,system:kube-controller-manager
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: openclaw-enterprise-nitro-adapter-tls # pragma: allowlist secret -- Kubernetes Secret reference
+            defaultMode: 288
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: openclaw-enterprise-nitro-adapter
+  namespace: openclaw-enterprise-adapter
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: openclaw-enterprise-nitro-adapter
+  namespace: openclaw-enterprise-adapter
+  labels:
+    app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: openclaw-enterprise-nitro-adapter
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: protect-openclaw-enterprise-namespace-label
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - UPDATE
+        resources:
+          - namespaces
+          - namespaces/status
+          - namespaces/finalize
+        scope: Cluster
+  validations:
+    - expression: >-
+        !has(oldObject.metadata.labels) ||
+        !('app.kubernetes.io/managed-by' in oldObject.metadata.labels) ||
+        oldObject.metadata.labels['app.kubernetes.io/managed-by'] != 'openclaw-enterprise' ||
+        (has(object.metadata.labels) &&
+        'app.kubernetes.io/managed-by' in object.metadata.labels &&
+        object.metadata.labels['app.kubernetes.io/managed-by'] == 'openclaw-enterprise')
+      message: The app.kubernetes.io/managed-by=openclaw-enterprise namespace label is immutable.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: protect-openclaw-enterprise-namespace-label
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+spec:
+  policyName: protect-openclaw-enterprise-namespace-label
+  validationActions:
+    - Deny
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: openclaw-enterprise-nitro-adapter
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+  annotations:
+    cert-manager.io/inject-ca-from: openclaw-enterprise-adapter/openclaw-enterprise-nitro-adapter-serving
+webhooks:
+  - name: nitro-adapter.openclaw-enterprise.sandbox.eks.amazonaws.com
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    # The adapter rewrites the complete OCE gateway Pod contract in one pass.
+    # The validating webhook checks the final object after all mutators run.
+    reinvocationPolicy: Never
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        namespace: openclaw-enterprise-adapter
+        name: openclaw-enterprise-nitro-adapter
+        path: /mutate
+        port: 443
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: openclaw-enterprise
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+        resources:
+          - pods
+        scope: Namespaced
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: openclaw-enterprise-nitro-policy
+  labels:
+    app.kubernetes.io/managed-by: openclaw-enterprise-blueprint
+  annotations:
+    cert-manager.io/inject-ca-from: openclaw-enterprise-adapter/openclaw-enterprise-nitro-adapter-serving
+webhooks:
+  - name: validate-controller-chain.openclaw-enterprise.sandbox.eks.amazonaws.com
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        namespace: openclaw-enterprise-adapter
+        name: openclaw-enterprise-nitro-adapter
+        path: /validate
+        port: 443
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: openclaw-enterprise
+    rules:
+      - apiGroups:
+          - apps
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - deployments
+          - replicasets
+        scope: Namespaced
+  - name: validate-pods.openclaw-enterprise.sandbox.eks.amazonaws.com
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        namespace: openclaw-enterprise-adapter
+        name: openclaw-enterprise-nitro-adapter
+        path: /validate
+        port: 443
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: openclaw-enterprise
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - pods
+        scope: Namespaced
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - UPDATE
+        resources:
+          - pods/ephemeralcontainers
+        scope: Namespaced
+  - name: protect-revision-configmaps.openclaw-enterprise.sandbox.eks.amazonaws.com
+    # The dedicated namespace controller only deletes content during teardown.
+    # Keep CREATE/UPDATE and every other caller subject to revision validation.
+    # Avoid object/name predicates: namespace cleanup also uses DELETE collection.
+    matchConditions:
+      - name: exclude-authenticated-namespace-controller-deletes
+        expression: >-
+          !(request.operation == 'DELETE' &&
+          request.userInfo.username == 'system:serviceaccount:kube-system:namespace-controller' &&
+          'system:authenticated' in request.userInfo.groups &&
+          'system:serviceaccounts:kube-system' in request.userInfo.groups)
+    admissionReviewVersions:
+      - v1
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    timeoutSeconds: 5
+    clientConfig:
+      service:
+        namespace: openclaw-enterprise-adapter
+        name: openclaw-enterprise-nitro-adapter
+        path: /validate
+        port: 443
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/managed-by: openclaw-enterprise
+    rules:
+      - apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+        resources:
+          - configmaps
+        scope: Namespaced
+```
+
+</details>
+
+*Figure 3: The adapter accepts only the pinned controller chain and expected pod
+shape before applying the Nitro compatibility patch.*
+
+![The admission flow verifies OCE controllers, revisions, images, and pod shape before setting the Nitro RuntimeClass and compatible storage and trust settings.](images/openclaw-enterprise-pod-admission.png)
+
+Abridged literal installer output. Intervening resource and rollout-progress
+lines are omitted.
+
+```text
+namespace/openclaw-enterprise-adapter created
+deployment.apps/openclaw-enterprise-nitro-adapter created
+mutatingwebhookconfiguration.admissionregistration.k8s.io/openclaw-enterprise-nitro-adapter created
+validatingwebhookconfiguration.admissionregistration.k8s.io/openclaw-enterprise-nitro-policy created
+deployment "openclaw-enterprise-nitro-adapter" successfully rolled out
+```
+
+**Step 6: Install the pinned OCE revision**
+
+Clone OCE into a clean directory and verify the exact revision:
+
+```bash
+export OCE_SOURCE_DIR='<clean-openclaw-enterprise-checkout>'
+git clone https://github.com/openclaw/openclaw-enterprise.git "$OCE_SOURCE_DIR"
+git -C "$OCE_SOURCE_DIR" switch --detach "$OCE_SOURCE_REVISION"
+test "$(git -C "$OCE_SOURCE_DIR" rev-parse HEAD)" = "$OCE_SOURCE_REVISION"
+test -z "$(git -C "$OCE_SOURCE_DIR" status --porcelain)"
+```
+
+Use the disposable PostgreSQL mode only on an EKS cluster that was already
+tagged `Environment=validation` through your cluster provisioning or
+administrator-approved process. Verify the existing tag without changing it:
+
+```bash
+export OCE_NAMESPACE='openclaw-system'
+export OCE_STATE_DIR="$PRIVATE_STATE_DIR/oce-install"
+export OCE_RECEIPT_DIR="$OCE_STATE_DIR/receipt"
+export OCE_VALIDATION_POSTGRES_IMAGE='public.ecr.aws/docker/library/postgres@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae'
+
+cluster_arn="$(
+  aws eks describe-cluster \
+    --region "$AWS_REGION" \
+    --name "$EKS_CLUSTER_NAME" \
+    --query 'cluster.arn' \
+    --output text
+)"
+cluster_environment="$(
+  aws eks list-tags-for-resource \
+    --region "$AWS_REGION" \
+    --resource-arn "$cluster_arn" \
+    --query 'tags.Environment' \
+    --output text
+)"
+if [[ "$cluster_environment" != validation ]]; then
+  printf 'This sample requires the existing EKS tag Environment=validation.\n' >&2
+  exit 1
+fi
+
+vpc_id="$(
+  aws eks describe-cluster \
+    --region "$AWS_REGION" \
+    --name "$EKS_CLUSTER_NAME" \
+    --query 'cluster.resourcesVpcConfig.vpcId' \
+    --output text
+)"
+sample_pod_ip="$(
+  kubectl --context "$KUBE_CONTEXT" get pods --all-namespaces \
+    --field-selector=status.phase=Running --output json |
+    jq -er '[.items[].status.podIP | select(test("^[0-9.]+$"))][0]'
+)"
+read -r -a vpc_cidrs <<<"$(
+  aws ec2 describe-vpcs \
+    --region "$AWS_REGION" \
+    --vpc-ids "$vpc_id" \
+    --query 'Vpcs[0].CidrBlockAssociationSet[?CidrBlockState.State==`associated`].CidrBlock' \
+    --output text
+)"
+export POD_CIDR="$(
+  python3 - "$sample_pod_ip" "${vpc_cidrs[@]}" <<'PY'
+import ipaddress
+import sys
+
+pod_ip = ipaddress.ip_address(sys.argv[1])
+matches = [cidr for cidr in sys.argv[2:] if pod_ip in ipaddress.ip_network(cidr)]
+if len(matches) != 1:
+    raise SystemExit(f"expected one VPC CIDR for pod IP, found {matches}")
+print(matches[0])
+PY
+)"
+
+cluster_security_group_id="$(
+  aws eks describe-cluster \
+    --region "$AWS_REGION" \
+    --name "$EKS_CLUSTER_NAME" \
+    --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' \
+    --output text
+)"
+cluster_api_cidr_args=()
+while IFS= read -r ip; do
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+    printf 'Invalid EKS control-plane address: %s\n' "$ip" >&2
+    exit 1
+  }
+  cluster_api_cidr_args+=(--cluster-api-cidr "$ip/32")
+done < <(
+  aws ec2 describe-network-interfaces \
+    --region "$AWS_REGION" \
+    --filters \
+      "Name=vpc-id,Values=$vpc_id" \
+      "Name=group-id,Values=$cluster_security_group_id" \
+      "Name=description,Values=Amazon EKS $EKS_CLUSTER_NAME" \
+      'Name=requester-managed,Values=true' \
+      'Name=status,Values=in-use' \
+    --query 'NetworkInterfaces[].PrivateIpAddress' \
+    --output text |
+    tr '\t' '\n' |
+    sort -u
+)
+((${#cluster_api_cidr_args[@]} > 0))
+
+"$SAMPLE_DIR/scripts/install-oce.sh" \
+  --aws-account-id "$AWS_ACCOUNT_ID" \
+  --aws-region "$AWS_REGION" \
+  --eks-cluster-name "$EKS_CLUSTER_NAME" \
+  --kubeconfig "$KUBECONFIG" \
+  --kube-context "$KUBE_CONTEXT" \
+  --oce-source "$OCE_SOURCE_DIR" \
+  --build-occ \
+  --controller-image "$CONTROLLER_IMAGE" \
+  --runtime-image "$RUNTIME_IMAGE" \
+  --auth-base-url 'https://<private-auth-host>' \
+  --agent-domain '<private-agent-domain>' \
+  --admin-email '<initial-admin-email>' \
+  --runtime-storage-class "$RUNTIME_STORAGE_CLASS" \
+  --pod-cidr "$POD_CIDR" \
+  "${cluster_api_cidr_args[@]}" \
+  --state-dir "$OCE_STATE_DIR" \
+  --receipt "$OCE_RECEIPT_DIR" \
+  --namespace "$OCE_NAMESPACE" \
+  --validation-postgres \
+  --validation-postgres-image "$OCE_VALIDATION_POSTGRES_IMAGE"
+```
+
+This optional database is a single validation-only PostgreSQL 18.6 pod backed
+by an encrypted `gp3` Amazon EBS volume. The data survives pod replacement.
+The sample cleanup deletes the claim and its `Delete`-policy volume with the
+system namespace. This is not a highly available or backed-up database. The
+installer creates separate least-privilege application and migration roles,
+then checks the PostgreSQL version and role contract before it dispatches the
+OCE installation.
+
+For an external database, omit the two validation flags and provide protected
+application URL, migration URL, and CA files plus at least one exact database
+`/32` CIDR. Both URLs must use a DNS hostname, `sslmode=verify-full`, and
+`sslrootcert=/etc/openclaw/database-ca/ca.pem`. The CA file must contain only
+trusted PEM CA certificates. See `install-oce.sh --help`.
+
+The installer uses `occ installation install`. It deliberately disables direct
+Pod API clients with an unmatched label selector. It also disables browser
+gateway routing and agent native administration. Use the temporary API tunnel
+in the next step for terminal administration.
+
+Abridged literal install output; private receipt paths are omitted. Installation
+used sample `0eb01adbb612004152569cd0c843b5a03d5d725e`, with images from
+`baadca1b7fabfdc2f870684505446eec82042bc4`. The canonical validator is
+`e3dd700131359d9b74cd2dfbd928bbdcd45eaf05`; these revisions are distinct.
+
+```text
+Helm outcome: succeeded.
+Installed OpenClaw Enterprise release oce in namespace openclaw-system.
+Topology: terminal-managed; embedded Harnesses only; direct Pod API clients and browser routing disabled.
+Exact OCE stack installed for sample 0eb01adbb612004152569cd0c843b5a03d5d725e and OCE 86c8c12310f691bb21651118ffffd6bfd460e9ff.
+```
+
+Abridged installation postflight JSON. This snapshot was captured at validator
+revision `eea2a5a0236180a03af0943fdd5ab6249a63f1ba`, before the current canonical run.
+
+```json
+{
+  "controlPlane": [
+    {
+      "deployment": "openclaw-enterprise-api",
+      "readyReplicas": 1,
+      "desiredReplicas": 1,
+      "runtimeClass": null
+    },
+    {
+      "deployment": "openclaw-enterprise-worker",
+      "readyReplicas": 1,
+      "desiredReplicas": 1,
+      "runtimeClass": null
+    },
+    {
+      "deployment": "oce-validation-only-postgres",
+      "readyReplicas": 1,
+      "desiredReplicas": 1,
+      "runtimeClass": null
+    }
+  ],
+  "helmStatus": "deployed"
+}
+```
+
+OCE also creates an initial namespace during bootstrap. Record its identity
+before onboarding tenants so cleanup can include it:
+
+```bash
+BOOTSTRAP_NAMESPACE_IDENTITY="$(
+  kubectl --context "$KUBE_CONTEXT" get namespaces \
+    --selector app.kubernetes.io/managed-by=openclaw-enterprise --output json |
+    jq -ce 'if (.items | length) == 1 then
+      .items[0].metadata | {name, uid}
+      else error("expected only the initial OCE namespace") end'
+)"
+BOOTSTRAP_TENANT_NAMESPACE="$(jq -er '.name' <<<"$BOOTSTRAP_NAMESPACE_IDENTITY")"
+BOOTSTRAP_TENANT_NAMESPACE_UID="$(jq -er '.uid' <<<"$BOOTSTRAP_NAMESPACE_IDENTITY")"
+```
+
+**Step 7: Onboard two tenants from the terminal**
+
+Complete this sequence once for tenant A and once for tenant B. Finish one
+tenant before starting the next, and use separate OCE namespaces, backing
+Kubernetes namespaces, AgentGateway keys, agents, and validator service keys.
+
+Open the private OCE API on loopback in a dedicated terminal:
+
+```bash
+"$SAMPLE_DIR/scripts/oce-api-tunnel.sh" \
+  --kube-context "$KUBE_CONTEXT" \
+  --namespace "$OCE_NAMESPACE" \
+  --local-port 18080
+```
+
+The helper creates a temporary relay that can connect only to the selected,
+Ready OCE API pod. A network policy permits that API pod to accept traffic only
+from this relay. The local listener binds only to `127.0.0.1`. Press `Ctrl-C`
+when onboarding is complete; the helper removes the relay and both policies,
+each only while it still has the UID recorded when the helper created it, and
+fails rather than delete a same-name replacement.
+
+In another terminal:
+
+```bash
+export OCC_URL='http://127.0.0.1:18080'
+export OCC_SERVICE_KEY_FILE="$OCE_STATE_DIR/initial-admin-service-key.json"
+export OCC_BIN="$OCE_STATE_DIR/occ-$OCE_SOURCE_REVISION"
+test -x "$OCC_BIN"
+jq -e '.data.key | type == "string" and length > 0' \
+  "$OCC_SERVICE_KEY_FILE" >/dev/null
+```
+
+The installer copies the initial administrator service key and password into
+`$OCE_STATE_DIR` at mode `0600`, verifies both files, erases the cluster copies,
+and deletes the temporary Job, PVC, and encrypted EBS volume before recording a
+successful install. If the command stops after OCC deploys, rerun the exact same
+command with the same state directory and receipt. The installer resumes only
+when its journal, OCC receipt, Helm release, and recorded bootstrap resource
+UIDs still match. If the Helm release is absent, preserve the state and receipt
+and follow the installer's diagnostic instead of retrying blindly. Protect the
+local state directory and rotate or revoke the administrator service key if it
+is exposed.
+
+The local Kubernetes identity needs permission to read the Service and its
+selected Pod and to create `pods/portforward`. Port-forwarding bypasses
+in-cluster NetworkPolicy for the operator path and gives local processes on the
+workstation access to the forwarded API. Bind only to `127.0.0.1`, protect the
+service key, and stop the process when administration is complete.
+
+For each tenant, create an OCE namespace and identify its one Kubernetes
+namespace:
+
+```bash
+export TENANT_NAME='<tenant-a-or-tenant-b>'
+export NAMESPACE_ID="$(
+  "$OCC_BIN" namespace create "$TENANT_NAME" --output json |
+    jq -er '.id'
+)"
+export TENANT_NAMESPACE="$(
+  kubectl --context "$KUBE_CONTEXT" get namespaces \
+    --selector "openclaw.dev/namespace=$NAMESPACE_ID" \
+    --output json |
+    jq -er '
+      if (.items | length) == 1
+      then .items[0].metadata.name
+      else error("expected exactly one OCE backing namespace")
+      end
+    '
+)"
+export TENANT_NAMESPACE_UID="$(
+  kubectl --context "$KUBE_CONTEXT" get namespace "$TENANT_NAMESPACE" \
+    --output=jsonpath='{.metadata.uid}'
+)"
+export TENANT_NAMESPACE_IDENTITY_FILE="$(
+  printf '%s/%s-namespace-identity.json' \
+    "$OCE_STATE_DIR" "$TENANT_NAMESPACE"
+)"
+(
+  umask 077
+  set -o noclobber
+  jq -n \
+    --arg name "$TENANT_NAMESPACE" \
+    --arg uid "$TENANT_NAMESPACE_UID" \
+    '{name:$name,uid:$uid}' >"$TENANT_NAMESPACE_IDENTITY_FILE"
+)
+```
+
+Give the OCE worker and API only the Kubernetes permissions required in that
+namespace:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
+  create rolebinding openclaw-enterprise-worker \
+  --clusterrole oce-openclaw-tenant-worker \
+  --serviceaccount openclaw-system:openclaw-enterprise-worker \
+  --dry-run=client --output=yaml |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
+kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
+  create rolebinding openclaw-enterprise-api-secrets \
+  --clusterrole oce-openclaw-tenant-api \
+  --serviceaccount openclaw-system:openclaw-enterprise-api \
+  --dry-run=client --output=yaml |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
+kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
+  create rolebinding openclaw-enterprise-api-configuration \
+  --clusterrole oce-openclaw-tenant-configuration \
+  --serviceaccount openclaw-system:openclaw-enterprise-api \
+  --dry-run=client --output=yaml |
+  kubectl --context "$KUBE_CONTEXT" apply --filename -
+
+"$SAMPLE_DIR/scripts/configure-tenant-model-gateway.sh" \
+  "$KUBE_CONTEXT" \
+  "$TENANT_NAMESPACE" \
+  "$(<"$OCE_STATE_DIR/cluster-dns-cidr")" \
+  "$OCE_STATE_DIR/$TENANT_NAMESPACE-model-gateway-receipt.json"
+```
+
+The receipt records the UIDs of the `agentgateway-ca` ConfigMap and the
+`oce-private-service-egress` NetworkPolicy that the first run creates. A rerun
+with the same receipt changes them only while their UIDs still match, and it
+refuses a same-name object that the receipt does not record. Keep the receipt
+with the rest of the private state.
+
+If the first run was interrupted before it wrote the receipt, a rerun refuses
+an object that already exists, because the receipt does not record it. To
+recover, first confirm that no tenant Agent has started: this command must
+list no gateway Pod in the tenant namespace.
+
+```bash
+kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" get pods \
+  --selector 'app.kubernetes.io/managed-by=openclaw-enterprise,openclaw.dev/workload-role=gateway'
+```
+
+Then inspect only the two objects the script creates:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
+  get configmap/agentgateway-ca networkpolicy/oce-private-service-egress \
+  --ignore-not-found \
+  --output=custom-columns='KIND:.kind,NAME:.metadata.name,UID:.metadata.uid'
+```
+
+Delete, deliberately and by name, only the object that the refusal names as
+not recorded by the receipt. For the ConfigMap, for example:
+
+```bash
+kubectl --context "$KUBE_CONTEXT" --namespace "$TENANT_NAMESPACE" \
+  delete configmap/agentgateway-ca
+```
+
+Then rerun `configure-tenant-model-gateway.sh` with the same receipt path. The
+script reports one unrecorded object per run, so when both objects exist you
+need two delete-and-rerun rounds. Repeat until the rerun reports no unrecorded
+object. Do not use these steps when a gateway Pod is listed, or when the
+refusal says an object is missing or was replaced since the receipt recorded
+it.
+
+OCE creates the tenant namespace with `restricted` Pod Security for
+`enforce`, `audit`, and `warn`. `configure-tenant-model-gateway.sh` lowers
+`enforce` to `baseline` and keeps `audit` and `warn` at `restricted`, so the
+API server still audits and warns on every Pod that `restricted` would refuse.
+The reason is one init container. Nitro presents the OCE runtime's
+`/home/node` mount root as mode `2777`, owned by root with GID 1000. OCE's
+`fsGroup: 1000` can give the volume group 1000, but it cannot make UID 1000
+the owner or set mode `0700`. The adapter therefore adds
+`nitro-prepare-runtime-ownership`. It runs as root with only the `CHOWN`,
+`DAC_OVERRIDE`, and `FOWNER` capabilities, a read-only root file system, and
+no privilege escalation. It sets owner and group 1000 on `/home/node` and an
+explicit list of OpenClaw state paths beneath it, with mode `0700` on
+directories and `0600` on files, and it exits before OpenClaw starts.
+`restricted` refuses a container that runs as root or adds these
+capabilities, and `baseline` admits it, so the namespace enforces `baseline`.
+
+The adapter and its validating webhook still hold every Pod in an
+OCE-managed namespace to more than `baseline`:
+
+- The validating webhook admits a Pod create only from an allowed OCE
+  controller identity and in the shape the adapter produced. It keeps an
+  admitted Pod's spec immutable and refuses every ephemeral container. It
+  uses `failurePolicy: Fail`, so an unavailable adapter blocks these requests.
+- Every runtime container runs as UID and GID 1000, non-root and not
+  privileged, with no privilege escalation, a read-only root file system, all
+  capabilities dropped, and the `RuntimeDefault` seccomp profile.
+- The ownership helper comes from its own digest-pinned image, which must
+  differ from every runtime image, and it mounts only the two state volumes.
+- The adapter refuses Pods that set `hostNetwork`, `hostPID`, `hostIPC`, or
+  `shareProcessNamespace`.
+
+Set the tenant-specific key path and create the namespace-owned model Secret:
+
+```bash
+export OCC_NAMESPACE="$NAMESPACE_ID"
+export TENANT_MODEL_KEY_FILE="$AGENTGATEWAY_STATE_DIR/$TENANT_NAME-agentgateway.key"
+export TENANT_WORK_DIR="$PRIVATE_STATE_DIR/$TENANT_NAME"
+install -d -m 700 "$TENANT_WORK_DIR"
+
+jq -Rs \
+  '{name:"agentgateway-key",value:gsub("\n";"")}' \
+  "$TENANT_MODEL_KEY_FILE" >"$TENANT_WORK_DIR/model-secret.json"
+export MODEL_SECRET_ID="$(
+  "$OCC_BIN" secret create \
+    --file "$TENANT_WORK_DIR/model-secret.json" \
+    --output json |
+    jq -er '.id'
+)"
+rm "$TENANT_WORK_DIR/model-secret.json"
+```
+
+Create an embedded OpenClaw configuration. The default OpenAI URL is required
+in the agent metadata; the installation-level model provider replaces it with
+the private AgentGateway URL when OCE prepares the revision.
+Enable the private diagnostic timeline so validation can correlate an agent
+turn with its AgentGateway model requests. The validator reads only bounded
+correlation metadata from this file.
+
+```bash
+cat >"$TENANT_WORK_DIR/configuration.json" <<'JSON'
+{
+  "kind": "agent",
+  "values": {
+    "env": {
+      "vars": {
+        "OPENCLAW_DIAGNOSTICS_TIMELINE_PATH": "/home/node/.openclaw/diagnostics/native-timeline.jsonl",
+        "OPENCLAW_DIAGNOSTICS": "timeline"
+      }
+    },
+    "diagnostics": {
+      "enabled": true,
+      "flags": ["timeline"]
+    },
+    "gateway": {
+      "mode": "local",
+      "bind": "lan",
+      "controlUi": {
+        "enabled": true,
+        "allowedOrigins": [
+          "http://127.0.0.1:18789",
+          "http://localhost:18789"
+        ]
+      },
+      "auth": {
+        "password": {
+          "source": "env",
+          "provider": "default",
+          "id": "OPENCLAW_GATEWAY_PASSWORD"
+        }
+      },
+      "http": {
+        "endpoints": {
+          "chatCompletions": {
+            "enabled": true
+          }
+        }
+      }
+    },
+    "agents": {
+      "defaults": {
+        "model": "openai/nova-lite",
+        "skipBootstrap": true,
+        "models": {
+          "openai/nova-lite": {
+            "agentRuntime": {
+              "id": "openclaw"
+            }
+          }
+        }
+      }
+    },
+    "models": {
+      "providers": {
+        "openai": {
+          "baseUrl": "https://api.openai.com/v1",
+          "api": "openai-responses",
+          "models": [
+            {
+              "id": "nova-lite",
+              "name": "nova-lite"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+JSON
+
+export CONFIGURATION_ID="$(
+  "$OCC_BIN" configuration create \
+    --file "$TENANT_WORK_DIR/configuration.json" \
+    --output json |
+    jq -er '.id'
+)"
+export CONFIGURATION_GENERATION="$(
+  "$OCC_BIN" configuration get "$CONFIGURATION_ID" --output json |
+    jq -er '.generation'
+)"
+```
+
+Create the agent with its own model credential:
+
+```bash
+jq -n \
+  --arg name "$TENANT_NAME-agent" \
+  --arg configuration "$CONFIGURATION_ID" \
+  --arg namespace "$NAMESPACE_ID" \
+  --arg secret "$MODEL_SECRET_ID" \
+  '{
+    name: $name,
+    configurationId: $configuration,
+    executionMode: "embedded",
+    harnessAuth: {
+      method: "api_key",
+      source: {
+        kind: "secret",
+        namespaceId: $namespace,
+        id: $secret
+      }
+    }
+  }' >"$TENANT_WORK_DIR/agent.json"
+export AGENT_RESPONSE="$(
+  "$OCC_BIN" agent create \
+    --file "$TENANT_WORK_DIR/agent.json" \
+    --output json
+)"
+export AGENT_ID="$(printf '%s' "$AGENT_RESPONSE" | jq -er '.id')"
+export AGENT_SERVICE_PRINCIPAL_ID="$(
+  printf '%s' "$AGENT_RESPONSE" |
+    jq -er '.servicePrincipalId'
+)"
+unset AGENT_RESPONSE
+```
+
+Give the agent service principal permission to operate only its own model
+Secret:
+
+```bash
+cat >"$TENANT_WORK_DIR/model-secret-role.json" <<'JSON'
+{
+  "name": "Use a model Secret",
+  "permissions": [
+    {
+      "action": "operate",
+      "resourceKind": "secret"
+    }
+  ]
+}
+JSON
+export MODEL_SECRET_ROLE_ID="$(
+  "$OCC_BIN" iam role create \
+    --file "$TENANT_WORK_DIR/model-secret-role.json" \
+    --output json |
+    jq -er '.id'
+)"
+jq -n \
+  --arg principal "$AGENT_SERVICE_PRINCIPAL_ID" \
+  --arg role "$MODEL_SECRET_ROLE_ID" \
+  --arg secret "$MODEL_SECRET_ID" \
+  '{
+    subjectKind: "identity",
+    subjectId: $principal,
+    roleId: $role,
+    resourceKind: "secret",
+    resourceId: $secret
+  }' >"$TENANT_WORK_DIR/model-secret-binding.json"
+"$OCC_BIN" iam access-binding create \
+  --file "$TENANT_WORK_DIR/model-secret-binding.json" \
+  --output json >/dev/null
+```
+
+Deploy exactly the configuration generation you reviewed:
+
+```bash
+export FIRST_DEPLOYMENT_KEY="$TENANT_NAME-first"
+export REVISION_ID="$(
+  "$OCC_BIN" agent deploy-first "$AGENT_ID" \
+    --configuration "$CONFIGURATION_ID" \
+    --generation "$CONFIGURATION_GENERATION" \
+    --key "$FIRST_DEPLOYMENT_KEY" \
+    --output json |
+    jq -er '.revisionId'
+)"
+"$OCC_BIN" agent deployment-status "$AGENT_ID" "$REVISION_ID"
+```
+
+Create a separate validator service principal for this tenant. Grant it
+`read` on only the exact namespace and agent, then issue its key into a new
+protected file:
+
+```bash
+export VALIDATOR_SERVICE_PRINCIPAL_ID="$(
+  "$OCC_BIN" iam service-principal create \
+    --namespace "$NAMESPACE_ID" \
+    --output json |
+    jq -er '.id'
+)"
+cat >"$TENANT_WORK_DIR/validator-role.json" <<'JSON'
+{
+  "name": "Read Namespace and Agent",
+  "permissions": [
+    {
+      "action": "read",
+      "resourceKind": "namespace"
+    },
+    {
+      "action": "read",
+      "resourceKind": "agent"
+    }
+  ]
+}
+JSON
+export VALIDATOR_ROLE_ID="$(
+  "$OCC_BIN" iam role create \
+    --file "$TENANT_WORK_DIR/validator-role.json" \
+    --output json |
+    jq -er '.id'
+)"
+for target in "namespace:$NAMESPACE_ID" "agent:$AGENT_ID"; do
+  jq -n \
+    --arg principal "$VALIDATOR_SERVICE_PRINCIPAL_ID" \
+    --arg role "$VALIDATOR_ROLE_ID" \
+    --arg kind "${target%%:*}" \
+    --arg id "${target#*:}" \
+    '{
+      subjectKind: "identity",
+      subjectId: $principal,
+      roleId: $role,
+      resourceKind: $kind,
+      resourceId: $id
+    }' >"$TENANT_WORK_DIR/validator-binding.json"
+  "$OCC_BIN" iam access-binding create \
+    --file "$TENANT_WORK_DIR/validator-binding.json" \
+    --output json >/dev/null
+done
+
+export VALIDATOR_KEY_FILE="$TENANT_WORK_DIR/validator-service-key.json"
+test ! -e "$VALIDATOR_KEY_FILE"
+"$OCC_BIN" service-key create \
+  --namespace "$NAMESPACE_ID" \
+  --service-principal "$VALIDATOR_SERVICE_PRINCIPAL_ID" \
+  --name "$TENANT_NAME-validator" \
+  --expires-in-days 30 \
+  --out "$VALIDATOR_KEY_FILE"
+jq -e '.data.key | type == "string" and length > 0' \
+  "$VALIDATOR_KEY_FILE" >/dev/null
+if VALIDATOR_KEY_MODE="$(stat -c '%a' "$VALIDATOR_KEY_FILE" 2>/dev/null)"; then
+  :
+else
+  VALIDATOR_KEY_MODE="$(stat -f '%Lp' "$VALIDATOR_KEY_FILE")"
+fi
+test "$VALIDATOR_KEY_MODE" = '600'
+```
+
+Discover the one ready gateway pod for the deployed revision:
+
+```bash
+export RUNTIME_POD="$(
+  kubectl --context "$KUBE_CONTEXT" \
+    --namespace "$TENANT_NAMESPACE" \
+    get pods \
+    --selector \
+      "app.kubernetes.io/managed-by=openclaw-enterprise,openclaw.dev/workload-role=gateway,openclaw.dev/namespace=$NAMESPACE_ID,openclaw.dev/agent=$AGENT_ID,openclaw.dev/revision=$REVISION_ID" \
+    --output json |
+    jq -er '
+      [
+        .items[]
+        | select(.metadata.deletionTimestamp == null)
+        | select(.status.phase == "Running")
+        | select(
+            (.status.conditions // [])
+            | any(.type == "Ready" and .status == "True")
+          )
+        | .metadata.name
+      ]
+      | if length == 1
+        then .[0]
+        else error("expected exactly one ready gateway pod")
+        end
+    '
+)"
+export RUNTIME_CONTAINER="$(
+  kubectl --context "$KUBE_CONTEXT" \
+    --namespace "$TENANT_NAMESPACE" \
+    get pod "$RUNTIME_POD" \
+    --output json |
+    jq -er '
+      [
+        .spec.containers[]
+        | select(any(.ports[]?; .name == "http"))
+        | .name
+      ]
+      | if length == 1
+        then .[0]
+        else error("expected exactly one gateway HTTP container")
+        end
+    '
+)"
+```
+
+The `--out` path must not exist. `occ` creates it with mode `0600`. Record each
+namespace ID, agent ID, backing namespace, runtime pod and container, and
+validator key path for the next step.
+
+Literal onboarding completion line followed by abridged readiness snapshots
+after the native-timeline rollout. Tenant labels `a` and `b` are aliases;
+`<runtime-repository>` replaces the private registry and repository. Pod UIDs
+are omitted. These snapshots bind to the guests captured in Step 8.
+
+```text
+Both tenants are ready for exact-revision validation.
+```
+
+```json
+{
+  "tenant": "a",
+  "runtimeClass": "isolated-sandbox",
+  "containers": [
+    {
+      "name": "gateway",
+      "imageID": "<runtime-repository>@sha256:c51513d4426643a4896e06d08006989d1a7e7a659c467053b00a0a3ceb751fac",
+      "ready": true
+    }
+  ]
+}
+```
+
+```json
+{
+  "tenant": "b",
+  "runtimeClass": "isolated-sandbox",
+  "containers": [
+    {
+      "name": "gateway",
+      "imageID": "<runtime-repository>@sha256:c51513d4426643a4896e06d08006989d1a7e7a659c467053b00a0a3ceb751fac",
+      "ready": true
+    }
+  ]
+}
+```
+
+**Step 8: Validate the two-tenant boundary**
+
+Run the static contracts from the repository root:
+
+```bash
+cd "$(git -C "$SAMPLE_DIR" rev-parse --show-toplevel)"
+export STATIC_VALIDATION_VENV="$PRIVATE_STATE_DIR/static-validation-venv"
+python3 -m venv "$STATIC_VALIDATION_VENV"
+. "$STATIC_VALIDATION_VENV/bin/activate"
+python -m pip install \
+  --requirement \
+  examples/ai-agents/openclaw-enterprise/tests/requirements.txt
+python -m pytest \
+  examples/ai-agents/openclaw-enterprise/adapter \
+  examples/ai-agents/openclaw-enterprise/tests
+```
+
+Then run the destructive two-tenant check:
+
+Commit the sample changes first. The validator refuses a dirty Git worktree so
+the evidence identifies the exact revision tested.
+It records the image-build revision separately. Images from an earlier commit
+are accepted only when that commit is an ancestor and all compiled image inputs
+match the current checkout.
+
+Set `EVIDENCE_DIR` to a path that does not exist. Every existing parent must
+be owned by root or the current user and must not be group- or other-writable,
+except for root-owned sticky directories such as `/tmp`. The validator creates
+the evidence directory with mode `0700` and its files with mode `0600`. It
+refuses a reused or replaced path.
+
+```bash
+export EVIDENCE_DIR='<new-private-evidence-directory>'
+
+"$SAMPLE_DIR/scripts/validate-live.sh" \
+  --account-id "$AWS_ACCOUNT_ID" \
+  --region "$AWS_REGION" \
+  --cluster "$EKS_CLUSTER_NAME" \
+  --kube-context "$KUBE_CONTEXT" \
+  --tenant-a-namespace '<tenant-a-kubernetes-namespace>' \
+  --tenant-a-pod '<tenant-a-runtime-pod>' \
+  --tenant-a-container '<tenant-a-runtime-container>' \
+  --tenant-b-namespace '<tenant-b-kubernetes-namespace>' \
+  --tenant-b-pod '<tenant-b-runtime-pod>' \
+  --tenant-b-container '<tenant-b-runtime-container>' \
+  --runtime-image "$RUNTIME_IMAGE" \
+  --image-source-revision "$(jq -er '.runtime.sourceRevision' "$IMAGE_DIGESTS_FILE")" \
+  --oce-api-local-port 18081 \
+  --oce-system-namespace "$OCE_NAMESPACE" \
+  --oce-source-revision \
+    86c8c12310f691bb21651118ffffd6bfd460e9ff \
+  --tenant-a-oce-namespace '<tenant-a-ns_ID>' \
+  --tenant-a-agent-id '<tenant-a-agt_ID>' \
+  --tenant-a-credential-file '<tenant-a-validator-key-file>' \
+  --tenant-b-oce-namespace '<tenant-b-ns_ID>' \
+  --tenant-b-agent-id '<tenant-b-agt_ID>' \
+  --tenant-b-credential-file '<tenant-b-validator-key-file>' \
+  --evidence-dir "$EVIDENCE_DIR" \
+  --confirm-pod-replacement
+```
+
+To sign the evidence with an asymmetric AWS KMS key, add
+`--kms-signing-key-id <key-id-or-arn>`. The validator signs and verifies the
+bundle before publishing it.
+
+The validator starts and stops its own temporary API relay and loopback
+port-forward. It writes test markers, replaces tenant A's runtime pod, and
+removes temporary test resources on exit. Run it only against retained
+validation tenants.
+
+The command exits zero only after it verifies:
+
+1. Both non-root runtimes use `isolated-sandbox` and the expected image. Each
+   runtime exposes `OPENCLAW_POD_UID` from Downward API `metadata.uid`, and the
+   validator rechecks it before managed-runtime commands to reject pod-name
+   reuse.
+2. Each sandbox has a distinct kernel, boot identity, PVC, and PV.
+3. Neither runtime receives an AWS credential path, and neither can open a TCP
+   connection to the instance metadata address `169.254.169.254:80` (the IPv6
+   address is not probed).
+4. The runtimes bind to distinct namespace-local PVCs and PVs. Forged pod,
+   forged revision ConfigMap, and ephemeral-container update requests are
+   denied.
+5. Each sandbox exposes a virtio block device and partition, the temporary
+   ordinary pod exposes no virtio device and has an NVMe block device and
+   partition, and all three boot identities differ.
+6. AgentGateway rejects missing and incorrect tenant keys and accepts the
+   matching tenant key over verified TLS.
+7. Each native OpenClaw gateway rejects an unauthenticated request, returns the
+   exact nonce-bound answer to a freshly generated random arithmetic challenge
+   through AgentGateway and Amazon Bedrock on its declared HTTP port. Each
+   response ID is correlated through the native diagnostic timeline to the
+   successful AgentGateway inference spans. Tenant A's
+   native CLI also proves one unique `exec` tool call, a correlated successful
+   result, and exactly one requested final reply. The CLI reads configured
+   authentication inside the guest.
+8. The temporary ordinary pod, which no gateway client selector matches,
+   cannot use a forged `x-occ-identity` header on either tenant gateway: the
+   connection is refused or times out, or the gateway answers `401` or `403`.
+   In the same run the native CLI tool turn in tenant A's runtime Pod
+   (item 7) and the loopback API relay that item 9 uses still work.
+9. Each validator key reads its own OCE namespace and agent; both cross-tenant
+   reads return HTTP `403` with code `FORBIDDEN`.
+10. Tenant A's `.openclaw` marker and model path survive controller-driven pod
+   replacement, while a generic home marker does not.
+
+**How the native tool turn runs without gateway routing**
+
+This topology installs no private Agent routing. `install-oce.sh` sets the Helm
+value `gatewayRouting.enabled: false` and gives the Kubernetes Compute
+installation no `gatewayRouting` block. Private routing needs Envoy Gateway,
+cert-manager, the Gateway API CRDs, and an OCC service key that grants native
+administration on every routed gateway, and this blueprint installs none of
+them. At the pinned OCE revision, an explicit `false` makes Helm omit the
+shared Gateway, its routes, and the API's service-key mounts, and without
+`gatewayRouting` the Kubernetes Compute Driver returns no Agent endpoint
+([gateway routing](https://github.com/openclaw/openclaw-enterprise/blob/86c8c12310f691bb21651118ffffd6bfd460e9ff/docs/reference/gateway-routing.md#routing-configuration)).
+The tenant NetworkPolicies admit no gateway client either, because
+`network.gatewayClients` selects a label that no Pod carries. The OCE API Pod
+therefore has no route to an Agent gateway, so the validator does not run the
+tool turn there and never reads `gatewayRouting`.
+
+The validator runs the tool turn inside the exact tenant A runtime Pod, with
+the same identity checks as the model turn. Before the exec it rereads the Pod
+and requires the UID it recorded. Inside the container, `OPENCLAW_POD_UID` from
+the Downward API must equal that UID, or the command exits before it starts. A
+replacement Pod with the same name fails both checks. The validator takes the
+gateway port from the one `http` container port that the exact Pod declares.
+OCE starts the gateway on that port with `--port "$OPENCLAW_GATEWAY_PORT"`,
+which Compute sets to `network.gatewayPort`
+([Kubernetes Compute Driver](https://github.com/openclaw/openclaw-enterprise/blob/86c8c12310f691bb21651118ffffd6bfd460e9ff/apps/controller/src/drivers/compute/kubernetes/index.ts)).
+In that container the validator runs the image's own native OpenClaw CLI,
+`openclaw gateway call` with `--expect-url ws://127.0.0.1:<port>`, so every
+call goes to that Pod's gateway on loopback. The CLI reads the configured
+gateway authentication inside the guest, so no credential reaches the
+validator's arguments or output. The validator sends one chat turn that asks
+for one `exec` call, waits for the run, and checks the session history with
+`scripts/lib/evaluate-native-tool-history.mjs`.
+
+This proof adds no route and does not weaken the disabled-routing boundary.
+The connection stays inside the Pod's own network namespace, so no Service,
+NetworkPolicy, HTTPRoute, Envoy listener, or OCE configuration changes. It uses
+neither the OCC service key nor the trusted-proxy identity header. OCE keeps
+loopback out of proxy trust (`trustedProxy.allowLoopback` must stay off) and
+documents the separate password for local verification
+([gateway authentication](https://github.com/openclaw/openclaw-enterprise/blob/86c8c12310f691bb21651118ffffd6bfd460e9ff/docs/reference/drivers/kubernetes-compute/gateway-authentication.md#listener-and-proxy-trust)).
+The validator already execs into the runtime Pods for the model turn, so it
+needs no new permission, and item 8 still proves that a Pod outside the gateway
+client selector cannot use a forged identity header.
+
+Keep the evidence private. It contains deployment identifiers and topology
+details, but not service keys. A passing run validates only the exact
+Kubernetes, OCE API, AgentGateway, Bedrock, source revision, and image digests
+supplied to the command. It also records SHA-256 digests for the validator and
+its native tool-history evaluator.
+
+Abridged literal output from the completed canonical v5 validator. Tenant
+labels are aliases; deployment identifiers and image repository paths are
+omitted. `CLEANUP` covers validator temporary artifacts only. Installation
+and build-resource cleanup are handled separately below.
+
+```text
+EVIDENCE	git-revision	e3dd700131359d9b74cd2dfbd928bbdcd45eaf05
+EVIDENCE	image-build-revision	baadca1b7fabfdc2f870684505446eec82042bc4
+PASS	runtime-isolation	both pods use isolated-sandbox and the pinned digest
+PASS	security-context	both runtime containers meet the restricted security contract
+PASS	tenant-storage-boundary	runtime mounts bind to distinct namespace-local PVC/PV UIDs and CSI volume handles
+PASS	aws-credential-absence	pod, service-account, token, and Pod Identity checks passed
+PASS	guest-vm-boundary	sandbox guests exposed virtio disks, the ordinary pod exposed NVMe, and all three boot IDs differed
+PASS	agentgateway-key-authorization	missing and incorrect keys were denied; each tenant key completed one Responses API turn
+PASS	native-openclaw-model-turn	both native OpenClaw gateways rejected anonymous access and answered their random arithmetic challenge
+PASS	agentgateway-model-telemetry	both native run IDs joined through their diagnostic timeline to successful AgentGateway Bedrock spans
+PASS	native-openclaw-tool-execution	one native OCE session recorded one successful exec tool call and its exact result
+PASS	oce-same-tenant-api	both tenants received HTTP 200 for their own agent
+PASS	oce-cross-tenant-api	both reciprocal requests returned HTTP 403 FORBIDDEN
+EVIDENCE	shared-postgresql-boundary	app-role-restricted=true application-table-count=56 rls-enabled-table-count=0
+LIMITATION	database-isolation-not-proven	OCE application schemas occ and drizzle have no row-level security; reciprocal HTTP 403 responses prove application-layer authorization, not a database-enforced tenant boundary
+PASS	reserved-configmap-spoof	server-side admission denied the request
+PASS	managed-pod-spoof	server-side admission denied the request
+PASS	ephemeral-debug	server-side admission denied the request
+PASS	controller-driven-persistence	persistent state survived replacement; ephemeral state did not; native model turn still passed
+PASS	temporary-artifact-cleanup	API relay, local port-forward, markers, and the ordinary control pod were removed
+CLEANUP	PASS	API relay and local port-forward were removed; temporary cluster artifacts were deleted and awaited
+RESULT	PASS	all live validation checks passed
+```
+
+Captured guest/control comparison (abridged). Tenant and control names are
+aliases; boot IDs are replaced by SHA-256 of the UUID text without a newline.
+Kernel-build and device captures are joined by recorded pod UID. Both guests
+expose virtio disks; the ordinary control exposes NVMe. All three boot hashes
+differ.
+
+| Capture alias | Kernel release / architecture | Kernel build | Boot ID SHA-256 | Block devices (abridged) |
+|---|---|---|---|---|
+| `tenant-a` | `6.18.62 x86_64` | `#1 SMP PREEMPT_DYNAMIC Fri Nov 13 22:09:34 UTC 2026` | `9401256634a1421bb07e4d9e3e4c333ba6d1569f23fa9a17788dfdfd57d11ae5` | `vda,vdb,vdc,vdd,vde` |
+| `tenant-b` | `6.18.62 x86_64` | `#1 SMP PREEMPT_DYNAMIC Fri Nov 13 22:09:34 UTC 2026` | `abe5ef06920a9404e907f3d352832faab426953f27d2cff69b64e01090b2baa3` | `vda,vdb,vdc,vdd,vde` |
+| `ordinary-control` | `6.18.62 x86_64` | `#2 SMP PREEMPT_DYNAMIC Fri Nov 13 22:13:38 UTC 2026` | `ffb21b250b5af8d182c5f67fa1ab90b137bdeffe8077c7c65a3c4bb9f6c37da9` | `nvme0n1,nvme1n1,nvme2n1,nvme3n1` |
+
+Both tenants returned this literal allowlisted AgentGateway key-test JSON:
+
+```json
+{"marker":"LIVE_AGENTGATEWAY_KEY_CONTRACT","noKeyStatus":401,"wrongKeyStatus":401,"acceptedStatus":200,"challengeMatch":true}
+```
+
+Both native model-turn captures have these identical abridged fields. Private
+request and trace IDs are omitted; the source captures join each native turn
+to its AgentGateway Bedrock spans.
+
+```json
+{
+  "status": 200,
+  "unauthenticatedStatus": 401,
+  "model": "openclaw/default",
+  "challengeMatch": true
+}
+```
+
+Both correlated AgentGateway captures have these abridged fields:
+
+```json
+{
+  "provider": "aws.bedrock",
+  "gatewayModel": "nova-lite",
+  "bedrockModel": "amazon.nova-lite-v1:0",
+  "invocationCount": 2
+}
+```
+
+Captured fields from a separate synthetic native CLI session in tenant A.
+The prompt, command, result, and final reply are unchanged; labels are added
+for readability. The matched tool-call/result ID and private session IDs are
+omitted. The history evaluator verified one tool call, one successful result,
+and one final reply.
+
+```text
+Prompt: Use the exec tool exactly once. Run exactly this command: printf TOOL_574b2b9764482ae31ce6c6de After it succeeds, reply with exactly DONE_574b2b9764482ae31ce6c6de and no other text.
+Tool: exec
+Command: printf TOOL_574b2b9764482ae31ce6c6de
+Result: TOOL_574b2b9764482ae31ce6c6de
+Exit code: 0
+Final reply: DONE_574b2b9764482ae31ce6c6de
+```
+
+## Good to know
+
+- The central AgentGateway is shared and stateless. It stores no tenant runtime
+  state, but its availability, bearer-key configuration, and Bedrock IAM role
+  remain shared trust and blast-radius boundaries.
+- The blueprint tests OCE authorization through the native API. It does not
+  claim database-level tenant isolation.
+- The adapter supports only the pinned OCE revision and expected pod shape. A
+  different revision needs a new compatibility review and live validation.
+  Harness credentials may select only `ANTHROPIC_API_KEY`,
+  `OCE_MODEL_API_KEY`, or `OPENAI_API_KEY`.
+- The blueprint permits only the EKS DNS route, the Kubernetes API Service
+  `/32` on TCP 443, and the private AgentGateway Service route required by OCE
+  gateway pods. It does not provide general tenant network isolation. Add that
+  boundary with the
+  [dedicated network-policy sample](../../isolation/network-policy/README.md).
+  DNS egress permits name resolution; it is not DNS content filtering. For
+  hostile workloads, add Route 53 Resolver DNS Firewall and query logging, or
+  use a dedicated VPC or cluster.
+  [OCE issue #4254](https://github.com/openclaw/openclaw-enterprise/issues/4254)
+  tracks native support for private model service egress.
+- Do not run setup, rotation, and cleanup concurrently. Receipts and ownership
+  checks refuse mismatched resources, but the separate AWS and Kubernetes API
+  calls are not one atomic transaction. `install-oce.sh` holds the lock
+  directory `.install-oce.lock` in its state directory, so a second install
+  with the same state directory stops before it changes anything. If an install
+  was killed, confirm that none is running, then remove only that directory.
+- The validation procedure is destructive to tenant A's runtime pod. Use
+  retained validation tenants.
+- The blueprint does not validate human SSO, sustained load, high
+  availability, node drain, nested OpenClaw execution isolation, or a different
+  OCE revision.
+
+## Clean up
+
+Stop every local OCE API tunnel with `Ctrl-C` and confirm that its temporary
+relay is gone. By default, cleanup refuses to change the deployment while an
+OCE-managed tenant namespace exists. To delete the disposable validation
+tenants and their data, run cleanup with the original state, receipts, context,
+exact tenant namespace list, Pod Identity values, and the explicit
+`--delete-tenant-data` opt-in. Use the namespace identity files captured when
+the tenants were created so a deleted and recreated same-name namespace cannot
+be mistaken for the original:
+
+```bash
+TENANT_A_NAMESPACE_IDENTITY_FILE='<tenant-a-namespace-identity-file>'
+TENANT_B_NAMESPACE_IDENTITY_FILE='<tenant-b-namespace-identity-file>'
+TENANT_A_VALIDATOR_KEY_FILE='<tenant-a-work-directory>/validator-service-key.json'
+TENANT_B_VALIDATOR_KEY_FILE='<tenant-b-work-directory>/validator-service-key.json'
+TENANT_A_NAMESPACE="$(
+  jq -er '.name' "$TENANT_A_NAMESPACE_IDENTITY_FILE"
+)"
+TENANT_A_NAMESPACE_UID="$(
+  jq -er '.uid' "$TENANT_A_NAMESPACE_IDENTITY_FILE"
+)"
+TENANT_B_NAMESPACE="$(
+  jq -er '.name' "$TENANT_B_NAMESPACE_IDENTITY_FILE"
+)"
+TENANT_B_NAMESPACE_UID="$(
+  jq -er '.uid' "$TENANT_B_NAMESPACE_IDENTITY_FILE"
+)"
+
+"$SAMPLE_DIR/scripts/cleanup.sh" \
+  --kubeconfig "$KUBECONFIG" \
+  --kube-context "$KUBE_CONTEXT" \
+  --state-dir "$OCE_STATE_DIR" \
+  --receipt "$OCE_RECEIPT_DIR" \
+  --namespace "$OCE_NAMESPACE" \
+  --release oce \
+  --tenant-namespace "$BOOTSTRAP_TENANT_NAMESPACE" \
+  --tenant-namespace-uid "$BOOTSTRAP_TENANT_NAMESPACE=$BOOTSTRAP_TENANT_NAMESPACE_UID" \
+  --tenant-namespace "$TENANT_A_NAMESPACE" \
+  --tenant-namespace-uid "$TENANT_A_NAMESPACE=$TENANT_A_NAMESPACE_UID" \
+  --tenant-validator-key-file "$TENANT_A_VALIDATOR_KEY_FILE" \
+  --tenant-namespace "$TENANT_B_NAMESPACE" \
+  --tenant-namespace-uid "$TENANT_B_NAMESPACE=$TENANT_B_NAMESPACE_UID" \
+  --tenant-validator-key-file "$TENANT_B_VALIDATOR_KEY_FILE" \
+  --delete-tenant-data \
+  --storage-class-receipt "$STORAGE_CLASS_RECEIPT" \
+  --agentgateway-receipt "$AGENTGATEWAY_RECEIPT" \
+  --agentgateway-pod-identity-receipt "$AGENTGATEWAY_POD_IDENTITY_RECEIPT" \
+  --aws-region "$AWS_REGION" \
+  --aws-account-id "$AWS_ACCOUNT_ID" \
+  --eks-cluster-name "$EKS_CLUSTER_NAME" \
+  --pod-identity-association-id "$POD_IDENTITY_ASSOCIATION_ID" \
+  --iam-role-name "$AGENTGATEWAY_IAM_ROLE_NAME" \
+  --iam-inline-policy-name openclaw-enterprise-bedrock-invoke
+```
+
+Delete the build resources only after cluster cleanup exits zero:
+
+```bash
+"$SAMPLE_DIR/scripts/manage-image-build-stack.sh" delete \
+  --receipt "$IMAGE_BUILD_STACK_RECEIPT" &&
+"$SAMPLE_DIR/scripts/manage-builder-repository.sh" delete \
+  --receipt "$BUILDER_REPOSITORY_RECEIPT"
+```
+
+Cleanup verifies the installation and lifecycle receipts before it changes the
+cluster. The supplied tenant namespace list must exactly match the recorded
+cleanup set. With `--delete-tenant-data`, cleanup checks the tenant volumes,
+temporarily blocks namespaced `CREATE` and `UPDATE` requests, checks the
+volumes again on a fresh read, and records each namespace UID and exactly the
+tenant-bound persistent volumes of that second check. A retry checks its
+recorded volumes again under the block. If a retry finds a tenant namespace
+already terminating, it checks that namespace's exact UID, deletion timestamp
+and `Terminating` phase in place of the namespaced create check, and still
+checks that the block denies the namespace's persistent volumes. Cleanup then
+removes the OCE control
+plane and deletes only those exact namespaces. It waits until the tenant
+namespaces, PVCs, and recorded PVs are
+absent before removing the temporary freeze or the original Nitro admission
+controls. If cleanup stops partway through, rerun the same command and private
+state. You may omit the `--tenant-namespace-uid` flags on a retry; cleanup uses
+the protected deletion record created by the first attempt. That record
+prevents a same-name replacement from being accepted.
+
+**How the tenant freeze protects persistent volumes**
+
+PersistentVolumes are cluster-scoped, so the namespaced block does not cover
+them. While the tenant freeze is in place, the same admission policy and
+binding also guard the PVs that claim a target namespace:
+
+- **The rule.** The policy also matches `CREATE` and `UPDATE` of
+  `persistentvolumes` in the core API group, version `v1`. It denies a `CREATE`
+  whose `spec.claimRef.namespace` is a target namespace. It denies an `UPDATE`
+  when the old or the new object's `spec.claimRef.namespace` is a target
+  namespace and any of these changes: `spec.persistentVolumeReclaimPolicy`,
+  `spec.csi.driver`, `spec.csi.volumeHandle`, or the claim reference.
+- **The claim reference.** It counts by `namespace`, `name`, and `uid`,
+  including adding or removing the claim reference. Its other fields
+  (`apiVersion`, `kind`, `resourceVersion`, `fieldPath`) do not identify the
+  claim and do not count.
+- **The target namespaces.** The policy carries the target namespace names as
+  a fixed list in its expression. They come from the same private freeze state
+  that names the freeze. The binding's namespace selector never skips a
+  cluster-scoped object
+  ([`MatchResources`](https://github.com/kubernetes/api/blob/master/admissionregistration/v1/types.go)),
+  so every PV request reaches the rule, and only that list decides.
+- **Allowed progress.** The PV rule does not block the PV controller, the
+  protection finalizers, or `DELETE`. It does not match the
+  `persistentvolumes/status` subresource, so the PV controller can still mark a
+  volume `Released`. Finalizer and annotation changes leave the guarded fields
+  alone, so the PV protection controller and the EBS CSI provisioner can still
+  remove their finalizers. `DELETE` is not matched, so the provisioner can
+  still delete the EBS volume and the PV object.
+- **The check.** When cleanup installs the freeze, it sends a server-side
+  dry-run `CREATE` of a probe PV that claims each live target namespace and
+  requires the PV denial, as it already does with a probe ConfigMap. It also
+  sends one dry-run `CREATE` of a probe PV with no claim reference, which must
+  be allowed. The rule sees every PV in the cluster and fails closed, so every
+  field it reads is guarded and a PV of another project is never denied.
+- **Removal.** The rule is part of the tenant freeze policy. The existing
+  recovery path and the normal freeze removal delete that policy and its
+  binding, so they also remove the PV rule.
+
+**How the freezes let finalizers finish**
+
+Both freezes deny namespaced `CREATE` and `UPDATE` in the namespaces they
+protect, but a namespace deletion needs some objects' finalizers removed
+before it can finish. Both freezes therefore allow removing finalizers from an
+object that is already being deleted. The tenant freeze also allows one more
+update, described below: the status update of a Pod already being deleted.
+
+- **The kinds.** The exemption covers the main resource only, never a
+  subresource:
+  - `persistentvolumeclaims`. Every PVC carries
+    `kubernetes.io/pvc-protection`, which the PVC protection controller in
+    the Kubernetes controller manager removes once no Pod uses the claim.
+    Tenant namespaces hold the runtime PVCs. `openclaw-system` holds the
+    bootstrap output PVC and, with the validation database, its PVC.
+  - `pods`. A Job Pod carries `batch.kubernetes.io/job-tracking` until the
+    Job controller has counted it, and the Job controller then removes that
+    finalizer. In `openclaw-system`, the OCE chart's initialization hook Job
+    and the sample's bootstrap volume preparation Job run Pods. A tenant
+    namespace can run Jobs too, and cleanup does not require tenant
+    workloads to be gone first.
+
+  These two are the sample's reviewed finalizer set:
+  `kubernetes.io/pvc-protection` on PVCs and
+  `batch.kubernetes.io/job-tracking` on Job Pods. In the reviewed inventory
+  of these namespaces, no other object carries a finalizer when cleanup
+  deletes the namespace: Deployments, ReplicaSets, Services (all
+  `ClusterIP`), cert-manager Issuers and Certificates, Secrets, ConfigMaps,
+  ServiceAccounts, Roles and NetworkPolicies have none. The namespace
+  controller deletes contents with background propagation, so no
+  `foregroundDeletion` finalizer is added. The Namespace's own `kubernetes`
+  finalizer is removed through the cluster-scoped `namespaces/finalize`
+  subresource, which neither freeze matches. A finalizer on any other kind,
+  or any other finalizer that is not removed by an update the freeze
+  admits, keeps the namespace terminating, and cleanup stops, fail closed,
+  when its 600-second wait for that namespace times out.
+
+  A Pod that is still running or terminating when a freeze goes on also needs
+  the kubelet's `pods/status` updates to finish. The tenant freeze admits
+  only the status updates of Pods already being deleted, so live tenant Pods
+  can finish when their namespace is deleted (see **Pod status in the tenant
+  freeze** below). The per-namespace freeze admits no `pods/status` update.
+  So before cleanup puts the per-namespace freeze on a namespace, it
+  waits, read-only, for that namespace's Pods. It lists them every 2 seconds
+  for up to 600 seconds, and goes on only when the namespace has no Pods, or
+  every Pod is `Succeeded` or `Failed` and none is being deleted. A
+  `Pending`, `Running` or terminating Pod keeps it waiting. At the deadline,
+  cleanup stops before the freeze and names the Pods that are left. A failed
+  or malformed list, a Pod with no phase, or any other phase, including
+  `Unknown`, stops cleanup at once, before the freeze. A Pod that starts
+  between the wait and the freeze can still stall the deletion until the
+  timeout.
+- **The comparison.** An `UPDATE` is allowed only when all of these hold:
+  - the old object already has `metadata.deletionTimestamp`;
+  - the new finalizer list is shorter than the old one, and no finalizer
+    name occurs more often in it than in the old list, so the update only
+    removes entries;
+  - every other field is unchanged: `apiVersion`, `kind`,
+    `metadata.name`, `namespace`, `uid`, `generateName`, `creationTimestamp`,
+    `deletionTimestamp`, `deletionGracePeriodSeconds`, `generation`,
+    `labels`, `annotations` and `ownerReferences`, and the whole `spec` and
+    `status`.
+
+  Each optional field is compared through `has()`, so a field that is absent
+  on both sides is equal and a field present on only one side is a change.
+  The API server applies the kind's update strategy before validating
+  admission runs, and on a main-resource update that strategy keeps the stored
+  `status`
+  ([`store.go`](https://github.com/kubernetes/kubernetes/blob/v1.36.0/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go)),
+  so a controller's stale copy of `status` cannot cause a refusal. Every other
+  update stays denied.
+- **Fields that are not compared.** Three `metadata` fields are written by the
+  server on the controller's own update, or are unused:
+  - `resourceVersion` is the server's opaque write counter for optimistic
+    concurrency. It holds no object content.
+  - `managedFields` is server-side-apply field ownership. The API server
+    rewrites it, with a new timestamp, on every update before validating
+    admission runs. It records who set fields; it changes no field.
+  - `selfLink` is empty since Kubernetes 1.20.
+
+  None of them changes what the object is, who owns it, or how it behaves, so
+  none can carry a safety-relevant change.
+- **Both freezes.** The per-namespace freeze and the tenant freeze both get
+  the exemption, with the same comparison, for the kinds listed above, and
+  keep the API server's defaults in their specs. The tenant freeze's
+  PersistentVolume rule is unchanged.
+- **Pod status in the tenant freeze.** The tenant freeze also admits an
+  `UPDATE` of the `pods/status` subresource (core group, `v1`) when the old
+  Pod already has `metadata.deletionTimestamp` and nothing but `status`
+  changes: `apiVersion`, `kind`, every `metadata` field except the three
+  above, including `finalizers`, and the whole `spec` must be unchanged. That
+  is the kubelet's final status for a Pod it is finishing; after it, the
+  kubelet deletes the Pod, or the Job controller removes the job-tracking
+  finalizer first. Pod `CREATE`, every other Pod update, a status update of
+  a Pod that is not being deleted, every other subresource (such as
+  `pods/ephemeralcontainers` or `pods/resize`) and every other resource's
+  status stay denied. The per-namespace freeze is unchanged.
+- **Tests and limits.** The offline tests model the exemption in the cleanup
+  fake, as they model the PV rule. No CEL engine is available offline, so the
+  CEL itself is checked only by its exact text and, in a cluster, by a live
+  run. The tests show that a terminating PVC's protection finalizer can be
+  removed and the namespace deletion finishes. In the same window each of
+  these is still denied: a spec change, a label, annotation or
+  `ownerReferences` change, a `deletionTimestamp` change, an added finalizer,
+  a removal on an object that is not being deleted, and a removal through a
+  subresource. For the tenant freeze's Pod status rule, the tests show that a
+  running tenant Pod's final status is admitted and the namespace goes, and
+  that a running tenant Job Pod gets its final status and then its
+  job-tracking removal. In the same window each other kind of request listed
+  above is still denied, as is a change to any compared field.
+
+The script stops the AgentGateway Deployment and waits until it is gone, then
+removes the Pod Identity association before its Kubernetes identity, then
+uninstalls OCE and deletes only receipt-matched system, adapter,
+AgentGateway, and cluster-scoped resources. AgentGateway resources must match
+their recorded UID and setup identity. Cleanup combines both AgentGateway
+receipts: it can delete a shared namespace or ServiceAccount that Pod Identity
+setup created even though AgentGateway setup later reused it. It preserves
+the complete AgentGateway dependency closure when either receipt identifies a
+reused workload or dependency.
+
+Before deleting each blueprint-owned system namespace, cleanup also
+temporarily denies namespaced `CREATE` and `UPDATE` requests and verifies the
+guard with a server-side dry-run ConfigMap. For a namespace already terminating,
+it verifies the recorded UID and deletion state instead. `DELETE` requests
+remain available throughout cleanup.
+
+It preserves any external database. It deletes the blueprint StorageClass only
+when no PVC still references it. Cleanup reports intentionally preserved
+resources and exits non-zero when required lifecycle evidence is missing or an
+identity or ownership check fails. It removes a tenant freeze only while the
+original admission controls remain and no namespace deletion has been
+requested, or after every recorded tenant namespace and volume is gone. If
+the process is forcibly terminated while a freeze is
+active, rerun the same cleanup command with the same private state. The stack
+manager deletes the image build workflow and its four ECR repositories,
+including the sample images, then marks its private receipt as deleted. The
+builder repository manager separately deletes only the exact private builder
+recorded in its receipt after it verifies the AWS account, Region, repository
+ARN, and random ownership tag.
+
+The stack delete does not remove the stack's two KMS keys at once: AWS KMS
+keeps each key in `PendingDeletion` for 30 days and then deletes it. Each key
+carries the tag `OpenClawValidationRun` with the receipt's `runId`. To list
+them, read the deleted stack's resources by its ID, then each key's state and
+deletion date:
+
+```bash
+aws cloudformation list-stack-resources --region "$AWS_REGION" \
+  --stack-name "$IMAGE_BUILD_STACK_ID" \
+  --query "StackResourceSummaries[?ResourceType=='AWS::KMS::Key'].PhysicalResourceId" \
+  --output text
+aws kms describe-key --region "$AWS_REGION" --key-id '<key-id>' \
+  --query 'KeyMetadata.[KeyState,DeletionDate]' --output text
+```
+
+After all cluster and AWS cleanup checks pass, the script removes the local OCE
+administrator key/password and each explicitly supplied validator key. If a
+file cannot be verified or removed, cleanup exits non-zero with its exact path
+and disposal guidance. Deleting a local file does not purge backup or snapshot
+copies. The cluster cleanup does not delete the local AgentGateway state
+directory or its receipt. Securely archive them if you need an audit record;
+otherwise delete them after cleanup. Never reuse the generated keys for another
+deployment.
+
+Abridged literal cluster cleanup output. `<cluster-context>` replaces the
+private context; credential-file paths are omitted.
+
+```text
+Preserved storageclass/openclaw-enterprise-gp3: setup reused it.
+Cleanup completed for release oce in kube context <cluster-context>.
+```
+
+This cleanup output was captured on the sample revision that the validator
+evidence above names, before cleanup kept the tenant freeze in place through
+namespace finalization.
+
+Captured EBS cleanup JSON. Tenant labels are aliases; both volume hashes
+match the handles recorded by the canonical validator.
+
+```json
+{
+  "identityReceiptSha256": "c4786ff024c0cb7146234f2a57e46724a87f2c95f6ec8c5ec94a35d27d68ca04",
+  "region": "us-west-2",
+  "volumes": [
+    {
+      "tenant": "a",
+      "volumeIdSha256": "f1e1a9ee2bdf9974d372b924a991709b046bfed04ddab1feb2f387f8d6e71e42",
+      "absent": true,
+      "awsErrorCode": "InvalidVolume.NotFound"
+    },
+    {
+      "tenant": "b",
+      "volumeIdSha256": "8277f94b627df812cd6b71ee9e1d25005e9215cc0ce47a95ab4b37674c7f3572",
+      "absent": true,
+      "awsErrorCode": "InvalidVolume.NotFound"
+    }
+  ],
+  "verifiedAt": "2026-11-26T01:40:33.335688+00:00",
+  "status": "PASS"
+}
+```
+
+Literal output from the refreshed build-stack cleanup attempt:
+
+```text
+image-build-stack: stack deletion could not be confirmed; rerun delete with this receipt.
+```
+
+Build-stack cleanup requires `iam:DeleteRole`; the validation session
+explicitly denied it. Retry with the original build receipt from an authorized
+session that permits this action. The reused builder was preserved.

@@ -1,0 +1,3 @@
+examples/ai-agents/openclaw-enterprise/build/patches/openclaw-security-overrides.patch whitespace=-blank-at-eol
+examples/ai-agents/openclaw-enterprise/build/patches/openssl-cve-2026-88823.patch -whitespace
+examples/ai-agents/openclaw-enterprise/build/patches/openssl-cve-2026-88823-test.patch -whitespace

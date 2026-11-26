@@ -1,0 +1,160 @@
+diff --git a/package.json b/package.json
+index a89323d..8548ea9 100644
+--- a/package.json
++++ b/package.json
+@@ -2459,7 +2459,7 @@
+     "linkedom": "0.18.14",
+     "minimatch": "10.2.6",
+     "node-edge-tts": "1.2.11",
+-    "npm": "12.2.0",
++    "npm": "12.2.2",
+     "openai": "7.43.0",
+     "p-limit": "7.3.3",
+     "p-map": "7.1.1",
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 30ec9d15b82..580cc26 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -189,6 +189,9 @@ overrides:
+   request-promise: npm:@cypress/request-promise@5.0.0
+   basic-ftp: 6.2.3
+   brace-expansion: 5.0.12
++  '@openclaw/crabline@0.1.31>re2js': 2.8.7
++  mailauth@7.3.1>joi: 18.3.2
++  mailauth@7.3.1>undici: 8.12.3
+   source-map-js: 1.2.2
+   file-type: 22.2.0
+   form-data: 4.0.6
+@@ -396,8 +399,8 @@ importers:
+         specifier: 1.2.11
+         version: 1.2.11(supports-color@10.2.2)
+       npm:
+-        specifier: 12.2.0
+-        version: 12.2.0
++        specifier: 12.2.2
++        version: 12.2.2
+       openai:
+         specifier: 7.43.0
+         version: 7.43.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/hash-node@4.5.2)(@smithy/signature-v4@5.7.4)(google-auth-library@10.9.1(supports-color@10.2.2))(undici@8.12.3)(ws@8.22.0)(zod@4.6.7)
+@@ -8568,8 +8570,8 @@ packages:
+     resolution: {integrity: sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==}
+     hasBin: true
+ 
+-  joi@18.2.9:
+-    resolution: {integrity: sha512-2mD929bUVKUhOLQQEVhlf6EZ0Mlo0DeRb5MO7cViR9AXLtBauuccEtB1py9Ocxpo/P7ucnh442iY/iOwrh3IQw==}
++  joi@18.3.2:
++    resolution: {integrity: sha512-iUivApKYw5GpZmq2Sy6El99j7noo8QSUFZlyQtr3HCkosC/b5wKF6/Y3teiHIlaM8WI38sAT3P+51rB0lhAhJA==}
+     engines: {node: '>= 20'}
+ 
+   jose@6.2.13:
+@@ -9362,8 +9364,8 @@ packages:
+     resolution: {integrity: sha512-9qny7Z9DsQU8Ou39ERsPU4OZQlSTP47ShQzuKZ6PRXpYLtIFgl/DEBYEXKlvcEa+9tHVcK8CF81Y2V72qaZhWA==}
+     engines: {node: '>=18'}
+ 
+-  npm@12.2.0:
+-    resolution: {integrity: sha512-ZsJjKpTnlmSXOLLXiU1xDCzC4Wlok4IwZmh/aw2KUuXytU7q6qMv/cUT7MoeSf95Slwuw/lRXYefGzGCspHPNQ==}
++  npm@12.2.2:
++    resolution: {integrity: sha512-KglgbZyacf7jH+FHuNRqVuCzQi8VhI2a7J87Ix43FsPTuZoGWmIXXGdZtBUOA79vwL+IJREqURVzupA7PsQTcA==}
+     engines: {node: ^22.22.2 || ^24.15.0 || >=26.0.0}
+     hasBin: true
+     bundledDependencies:
+@@ -9926,8 +9928,8 @@ packages:
+     resolution: {integrity: sha512-K5zQjDllxWkf7Z5xJdV0/B0WTNqx6vxG70zJE4N0kBs4LovmEYWJzQGxC9bS9RAKu3bgM40lrd5zoLJ12MQ5BA==}
+     engines: {node: '>= 0.10'}
+ 
+-  re2js@2.8.6:
+-    resolution: {integrity: sha512-xLgQil4kIUCrAzVk9fRSkxkFNwmygLFjVxXrLc65aE1F0+Zsb8rxumFBy4XKyvgMCTL6kilDq3EZ0piE2dP/Dg==}
++  re2js@2.8.7:
++    resolution: {integrity: sha512-bRSL/vn3KAmlGfGNoVpcsBXLaVvl6AbuvMMWbz0m3vBj60nj+p2/biozfBUOSBP+5XTduF6mr6IO/ZVjmqqkVQ==}
+     engines: {node: '>=18.0.0'}
+ 
+   react-is@17.0.2:
+@@ -10603,10 +10605,6 @@ packages:
+   undici-types@8.9.0:
+     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
+ 
+-  undici@8.11.2:
+-    resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
+-    engines: {node: '>=22.19.0'}
+-
+   undici@8.12.3:
+     resolution: {integrity: sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw==}
+     engines: {node: '>=22.19.0'}
+@@ -13163,7 +13161,7 @@ snapshots:
+       picocolors: 1.1.1
+       proper-lockfile: 4.1.2(patch_hash=ef83b3d51ecb27f8b06d2a3660d509c3da303d7e1d2074712b0ecc2f6256b7cf)
+       protobufjs: 8.8.1
+-      re2js: 2.8.6
++      re2js: 2.8.7
+       ws: 8.22.0
+       yaml: 2.9.1
+       zod: 4.6.7
+@@ -16613,7 +16611,7 @@ snapshots:
+ 
+   jiti@2.7.0: {}
+ 
+-  joi@18.2.9:
++  joi@18.3.2:
+     dependencies:
+       '@hapi/address': 5.1.1
+       '@hapi/formula': 3.0.2
+@@ -17008,12 +17006,12 @@ snapshots:
+       commander: 15.0.0
+       fast-xml-parser: 5.11.2
+       ipaddr.js: 2.5.0
+-      joi: 18.2.9
++      joi: 18.3.2
+       libmime: 5.4.7
+       nodemailer: 10.1.0
+       punycode.js: 2.3.1
+       tldts: 7.4.18
+-      undici: 8.11.2
++      undici: 8.12.3
+ 
+   mailparser@3.12.4:
+     dependencies:
+@@ -17648,7 +17646,7 @@ snapshots:
+       path-key: 4.0.0
+       unicorn-magic: 0.3.0
+ 
+-  npm@12.2.0: {}
++  npm@12.2.2: {}
+ 
+   nth-check@3.0.1:
+     dependencies:
+@@ -18123,7 +18121,7 @@ snapshots:
+       iconv-lite: 0.7.3
+       unpipe: 1.0.0
+ 
+-  re2js@2.8.6: {}
++  re2js@2.8.7: {}
+ 
+   react-is@17.0.2: {}
+ 
+@@ -18896,8 +18894,6 @@ snapshots:
+ 
+   undici-types@8.9.0: {}
+ 
+-  undici@8.11.2: {}
+-
+   undici@8.12.3: {}
+ 
+   unhomoglyph@1.0.6: {}
+diff --git a/pnpm-workspace.yaml b/pnpm-workspace.yaml
+index 2ebd5730420..83a8425f4fc 100644
+--- a/pnpm-workspace.yaml
++++ b/pnpm-workspace.yaml
+@@ -137,6 +137,13 @@ overrides:
+   request-promise: "npm:@cypress/request-promise@5.0.0"
+   basic-ftp: 6.2.3
+   brace-expansion: 5.0.12
++  # @openclaw/crabline 0.1.31 pins re2js 2.8.6, which is affected by
++  # CVE-2026-116795. Keep the override scoped to this dependency tree.
++  "@openclaw/crabline@0.1.31>re2js": 2.8.7
++  # mailauth 7.3.1 permits vulnerable releases of these transitive dependencies.
++  # Keep the override scoped to mailauth so unrelated dependency trees stay unchanged.
++  "mailauth@7.3.1>joi": 18.3.2
++  "mailauth@7.3.1>undici": 8.12.3
+   # GHSA-68fv-2mgg-jv7q: source-map-js <1.2.2 event-loop DoS (via css-tree).
+   source-map-js: 1.2.2
+   file-type: 22.2.0

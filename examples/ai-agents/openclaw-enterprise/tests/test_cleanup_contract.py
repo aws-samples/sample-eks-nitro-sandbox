@@ -1,0 +1,5136 @@
+"""Focused lifecycle contracts for cleanup.sh."""
+
+from __future__ import annotations
+
+import ast
+import hashlib
+import importlib.util
+import json
+import os
+import stat
+import subprocess
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+SAMPLE = Path(__file__).resolve().parent.parent
+CLEANUP = SAMPLE / "scripts" / "cleanup.sh"
+OWNER = "openclaw-enterprise-blueprint"
+OCE_OWNER = "openclaw-enterprise"
+SOURCE_PIN = "86c8c12310f691bb21651118ffffd6bfd460e9ff"  # pragma: allowlist secret -- public source revision
+CONTEXT = "shared-cluster"
+ACCOUNT = "111122223333"
+REGION = "us-west-2"
+CLUSTER_ARN = f"arn:aws:eks:{REGION}:{ACCOUNT}:cluster/{CONTEXT}"
+SYSTEM_NAMESPACE = "openclaw-system"
+AGW_NAMESPACE = "openclaw-enterprise-agw"
+AGW_SERVICE_ACCOUNT = "agentgateway"
+ATTEMPT = "attempt-123"
+STORAGE_CLASS = "openclaw-enterprise-gp3"
+ASSOCIATION_ID = "a-abcdefghijklmnopq"
+ROLE_NAME = "openclaw-enterprise-agentgateway"
+ROLE_ID = "AROABCDEFGHIJKLMNOPQ"
+POLICY_NAME = "openclaw-enterprise-bedrock-invoke"
+ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/{ROLE_NAME}"
+ASSOCIATION_ARN = (
+    f"arn:aws:eks:{REGION}:{ACCOUNT}:"
+    f"podidentityassociation/{CONTEXT}/{ASSOCIATION_ID}"
+)
+INVOCATION_ID = "0123456789abcdef0123456789abcdef"
+AGW_SETUP_ID = "abcdef0123456789abcdef0123456789"
+SETUP_KEY = "openclaw-enterprise.aws.dev/setup-token"
+POD_SETUP_KEY = "openclaw.enterprise/setup-invocation"
+TENANT_WORKLOADS = (
+    "pods,deployments.apps,statefulsets.apps,daemonsets.apps,"
+    "jobs.batch,cronjobs.batch,replicasets.apps"
+)
+AGW_RESOURCE_SPECS = (
+    ("namespace", "_", AGW_NAMESPACE, "Namespace"),
+    ("serviceaccount", AGW_NAMESPACE, "agentgateway", "ServiceAccount"),
+    ("issuer.cert-manager.io", AGW_NAMESPACE, "agentgateway-selfsigned", "Issuer"),
+    (
+        "certificate.cert-manager.io",
+        AGW_NAMESPACE,
+        "agentgateway-root",
+        "Certificate",
+    ),
+    ("issuer.cert-manager.io", AGW_NAMESPACE, "agentgateway-ca", "Issuer"),
+    (
+        "certificate.cert-manager.io",
+        AGW_NAMESPACE,
+        "agentgateway-serving",
+        "Certificate",
+    ),
+    ("secret", AGW_NAMESPACE, "agw-client-key", "Secret"),
+    ("secret", AGW_NAMESPACE, "agw-session-key", "Secret"),
+    ("configmap", AGW_NAMESPACE, "agentgateway-config", "ConfigMap"),
+    ("deployment.apps", AGW_NAMESPACE, "agentgateway", "Deployment"),
+    (
+        "poddisruptionbudget.policy",
+        AGW_NAMESPACE,
+        "agentgateway",
+        "PodDisruptionBudget",
+    ),
+    ("service", AGW_NAMESPACE, "agentgateway", "Service"),
+)
+RBAC_RESOURCE_SPECS = (
+    (
+        "clusterrole.rbac.authorization.k8s.io",
+        "oce-openclaw-namespace-observer",
+        "ClusterRole",
+    ),
+    (
+        "clusterrole.rbac.authorization.k8s.io",
+        "oce-openclaw-namespace-worker",
+        "ClusterRole",
+    ),
+    (
+        "clusterrole.rbac.authorization.k8s.io",
+        "oce-openclaw-tenant-worker",
+        "ClusterRole",
+    ),
+    (
+        "clusterrole.rbac.authorization.k8s.io",
+        "oce-openclaw-tenant-api",
+        "ClusterRole",
+    ),
+    (
+        "clusterrole.rbac.authorization.k8s.io",
+        "oce-openclaw-tenant-configuration",
+        "ClusterRole",
+    ),
+    (
+        "clusterrole.rbac.authorization.k8s.io",
+        "oce-openclaw-gateway-observer",
+        "ClusterRole",
+    ),
+    (
+        "clusterrolebinding.rbac.authorization.k8s.io",
+        "oce-openclaw-worker-namespaces",
+        "ClusterRoleBinding",
+    ),
+    (
+        "clusterrolebinding.rbac.authorization.k8s.io",
+        "oce-openclaw-api-namespaces",
+        "ClusterRoleBinding",
+    ),
+)
+CLUSTER = {
+    "certificate-authority-data": "dGVzdA==",
+    "server": "https://cluster.example.test",
+}
+
+FAKE_CLI = r"""#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import signal
+import sys
+
+tool = Path(sys.argv[0]).name
+args = sys.argv[1:]
+state_path = Path(os.environ["FAKE_STATE"])
+log_path = Path(os.environ["FAKE_LOG"])
+state = json.loads(state_path.read_text())
+stdin = sys.stdin.read()
+
+def save():
+    state_path.write_text(json.dumps(state))
+
+def log(mutation=False):
+    with log_path.open("a") as stream:
+        stream.write(json.dumps({
+            "tool": tool, "args": args, "stdin": stdin, "mutation": mutation
+        }) + "\n")
+
+def object_key(resource, namespace=None):
+    return f"{namespace}|{resource}" if namespace else resource
+
+def strip_kube():
+    if args[:2] != ["--kubeconfig", state["kubeconfig"]]:
+        raise SystemExit("missing explicit kubeconfig")
+    if args[2:4] != ["--context", state["context"]]:
+        raise SystemExit("wrong context")
+    if args[4] != "--request-timeout=20s":
+        raise SystemExit("missing request timeout")
+    return args[5:]
+
+def metadata(name, uid, namespace=None, owner=None):
+    result = {"name": name, "uid": uid, "resourceVersion": "1"}
+    if namespace:
+        result["namespace"] = namespace
+    if owner:
+        result["labels"] = {"app.kubernetes.io/managed-by": owner}
+    return result
+
+def apply_admission_defaults(document, record=True):
+    # What the API server stores and returns for a created policy or binding: the values that
+    # kubernetes pkg/apis/admissionregistration/v1 SetObjectDefaults_ValidatingAdmissionPolicy and
+    # SetObjectDefaults_ValidatingAdmissionPolicyBinding write when they are unset.
+    spec = document.setdefault("spec", {})
+
+    def match_defaults(match):
+        match.setdefault("matchPolicy", "Equivalent")
+        match.setdefault("namespaceSelector", {})
+        match.setdefault("objectSelector", {})
+        for key in ("resourceRules", "excludeResourceRules"):
+            for rule in match.get(key, []):
+                rule.setdefault("scope", "*")
+
+    if document["kind"] == "ValidatingAdmissionPolicy":
+        spec.setdefault("failurePolicy", "Fail")
+        if spec.get("matchConstraints") is not None:
+            match_defaults(spec["matchConstraints"])
+    elif spec.get("matchResources") is not None:
+        match_defaults(spec["matchResources"])
+    if record:
+        state.setdefault("defaultedFreezeObjects", []).append(document["metadata"]["name"])
+
+def tenant_freeze_policy():
+    for key, item in state["resources"].items():
+        if (
+            key.startswith("validatingadmissionpolicies.admissionregistration.k8s.io/")
+            and "cleanup-freeze-tenants-" in key
+            and key.replace("validatingadmissionpolicies.", "validatingadmissionpolicybindings.", 1)
+            in state["resources"]
+        ):
+            return item
+    return None
+
+def pv_fields(volume):
+    spec = (volume or {}).get("spec", {})
+    csi = spec.get("csi") or {}
+    claim = spec.get("claimRef")
+    reference = claim or {}
+    return [
+        spec.get("persistentVolumeReclaimPolicy", ""),
+        csi.get("driver", ""),
+        csi.get("volumeHandle", ""),
+        "claimRef" if claim is not None else "",
+        reference.get("namespace", ""),
+        reference.get("name", ""),
+        reference.get("uid", ""),
+    ]
+
+def pv_freeze_denial(operation, old, new, subresource=""):
+    # A model of the tenant freeze PV rule for these tests; its CEL is not evaluated here. It applies only when
+    # the live freeze policy carries the PersistentVolume resource rule.
+    policy = tenant_freeze_policy()
+    if not policy or subresource:
+        return None
+    spec = policy["spec"]
+    if not any(
+        rule.get("resources") == ["persistentvolumes"]
+        and rule.get("scope") == "Cluster"
+        and operation in rule.get("operations", [])
+        for rule in spec["matchConstraints"]["resourceRules"]
+    ):
+        return None
+    variables = {item["name"]: item["expression"] for item in spec.get("variables", [])}
+    targets = json.loads(variables["targets"])
+    new_fields = pv_fields(new)
+    old_fields = pv_fields(old) if operation == "UPDATE" else None
+    claims = new_fields[4] in targets or (old_fields is not None and old_fields[4] in targets)
+    if claims and not (operation == "UPDATE" and new_fields == old_fields):
+        return spec["validations"][1]["message"]
+    return None
+
+def admit_pv_requests(requests):
+    # Requests that controllers or other users send while cleanup runs, through the freeze model.
+    for request in requests:
+        operation, name = request["operation"], request.get("name")
+        if operation == "CREATE":
+            current, new = None, json.loads(json.dumps(request["object"]))
+            name = new["metadata"]["name"]
+        else:
+            current = next(pv for pv in state["pvs"] if pv["metadata"]["name"] == name)
+            new = json.loads(json.dumps(current))
+            target = new
+            for key in request["path"][:-1]:
+                target = target.setdefault(key, {})
+            if request.get("remove"):
+                target[request["path"][-1]] = [
+                    value for value in target.get(request["path"][-1], [])
+                    if value != request["remove"]
+                ]
+            else:
+                target[request["path"][-1]] = request["value"]
+        message = pv_freeze_denial(operation, current, new, request.get("subresource", ""))
+        if message is None:
+            state["pvs"] = [pv for pv in state["pvs"] if pv["metadata"]["name"] != name] + [new]
+        state.setdefault("pvAdmission", []).append({
+            "operation": operation,
+            "name": name,
+            "subresource": request.get("subresource", ""),
+            "denied": message is not None,
+            "message": message,
+        })
+
+def namespace_finalization_blocked(name):
+    # A terminating namespace finishes only after controllers remove finalizers from its PVCs and Pods with
+    # UPDATE requests. An installed freeze whose policy has no finalizer-removal exception denies them, so the
+    # namespace cannot finish while that freeze is in place; one with the exception lets it finish.
+    return any(
+        "finalizerRemoval" not in {item["name"] for item in policy["spec"].get("variables", [])}
+        for policy in freeze_policies_for(name)
+    )
+
+def key_from_raw(path):
+    name = path.rsplit("/", 1)[-1]
+    if "/serviceaccounts/" in path:
+        namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0]
+        return f"{namespace}|serviceaccount/{name}"
+    if "/configmaps/" in path:
+        namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0]
+        return f"{namespace}|configmap/{name}"
+    if "/secrets/" in path:
+        namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0]
+        return f"{namespace}|secret/{name}"
+    if "/services/" in path:
+        namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0]
+        return f"{namespace}|service/{name}"
+    if "/issuers/" in path:
+        namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0]
+        return f"{namespace}|issuer.cert-manager.io/{name}"
+    if "/certificates/" in path:
+        namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0]
+        return f"{namespace}|certificate.cert-manager.io/{name}"
+    if "/deployments/" in path:
+        namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0]
+        return f"{namespace}|deployment.apps/{name}"
+    if "/poddisruptionbudgets/" in path:
+        namespace = path.split("/namespaces/", 1)[1].split("/", 1)[0]
+        return f"{namespace}|poddisruptionbudget.policy/{name}"
+    if "/namespaces/" in path:
+        return f"namespace/{name}"
+    if "/storageclasses/" in path:
+        return f"storageclass.storage.k8s.io/{name}"
+    if "/clusterrolebindings/" in path:
+        return f"clusterrolebinding.rbac.authorization.k8s.io/{name}"
+    if "/clusterroles/" in path:
+        return f"clusterrole.rbac.authorization.k8s.io/{name}"
+    if "/mutatingwebhookconfigurations/" in path:
+        return (
+            "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
+            f"{name}"
+        )
+    if "/validatingwebhookconfigurations/" in path:
+        return (
+            "validatingwebhookconfigurations.admissionregistration.k8s.io/"
+            f"{name}"
+        )
+    if "/validatingadmissionpolicybindings/" in path:
+        return f"validatingadmissionpolicybindings.admissionregistration.k8s.io/{name}"
+    if "/validatingadmissionpolicies/" in path:
+        return f"validatingadmissionpolicies.admissionregistration.k8s.io/{name}"
+    raise SystemExit(f"unknown raw path: {path}")
+
+def kubectl():
+    command = strip_kube()
+    if state.get("terminatingNamespaces"):
+        run_finalizer_controllers()
+    if command[:4] == ["config", "view", "--minify", "--flatten"]:
+        print(json.dumps({
+            "current-context": state["context"],
+            "clusters": [{"name": state["context"], "cluster": state["cluster"]}],
+        }))
+        return
+    if command[:2] == ["get", "--raw=/readyz"]:
+        print("ok")
+        return
+    if command[:2] == ["get", "persistentvolumeclaims"]:
+        print(json.dumps({"items": state.get("pvcs", [])}))
+        return
+    if command[:2] == ["get", "persistentvolumes"]:
+        print(json.dumps({"items": state.get("pvs", [])}))
+        if state.get("delayedNamespaceDeletion"):
+            # Each storage listing, with the number of PV freeze probes sent before it.
+            state.setdefault("namespaceLifecycleEvents", []).append(
+                ["pv-listing", len(state.get("pvProbes", []))]
+            )
+            save()
+        # A Released volume that the CSI driver deletes after this many more listings.
+        listings = state.get("releasedPvListingsLeft", {})
+        for name in list(listings):
+            listings[name] -= 1
+            if listings[name] <= 0:
+                del listings[name]
+                state["pvs"] = [
+                    pv for pv in state.get("pvs", [])
+                    if pv["metadata"]["name"] != name
+                ]
+        if listings or "releasedPvListingsLeft" in state:
+            save()
+        # PV requests that arrive right after a given listing has returned its bytes.
+        state["pvListCount"] = state.get("pvListCount", 0) + 1
+        requests = state.get("pvRequestsAfterList")
+        if requests and requests["count"] == state["pvListCount"]:
+            admit_pv_requests(requests["requests"])
+            state["pvRequestsAfterList"] = None
+        save()
+        return
+    if command[:2] == ["get", "namespaces"] and "--selector" in command:
+        state["tenantDiscoveryCount"] = state.get("tenantDiscoveryCount", 0) + 1
+        mutation = state.get("tenantNamespaceMutation")
+        if mutation and state["tenantDiscoveryCount"] == mutation["discovery"]:
+            resource = f"namespace/{mutation['name']}"
+            if mutation["action"] == "add":
+                state["resources"][resource] = {
+                    "apiVersion": "v1",
+                    "kind": "Namespace",
+                    "metadata": metadata(
+                        mutation["name"],
+                        mutation["uid"],
+                        owner=mutation["owner"],
+                    ),
+                }
+            elif mutation["action"] == "replace-uid":
+                state["resources"][resource]["metadata"]["uid"] = mutation["uid"]
+            else:
+                raise SystemExit("unsupported tenant namespace mutation")
+            state["tenantNamespaceMutation"] = None
+        save()
+        selector = command[command.index("--selector") + 1]
+        key, value = selector.split("=", 1)
+        items = [
+            item for resource, item in state["resources"].items()
+            if resource.startswith("namespace/")
+            and item.get("metadata", {}).get("labels", {}).get(key) == value
+        ]
+        print(json.dumps({"apiVersion": "v1", "kind": "List", "items": items}))
+        return
+    if command[:2] == [
+        "get",
+        (
+            "pods,deployments.apps,statefulsets.apps,daemonsets.apps,"
+            "jobs.batch,cronjobs.batch,replicasets.apps"
+        ),
+    ]:
+        namespace = command[command.index("--namespace") + 1]
+        print(json.dumps({
+            "apiVersion": "v1",
+            "kind": "List",
+            "items": state.get("tenantWorkloads", {}).get(namespace, []),
+        }))
+        return
+    if command[:2] == ["get", "pods"]:
+        # The read-only Pod list that cleanup polls before it freezes a namespace.
+        namespace = command[command.index("--namespace") + 1]
+        log()
+        listings = state.setdefault("podListings", {})
+        listings[namespace] = listings.get(namespace, 0) + 1
+        if state.get("failPodList") == namespace:
+            save()
+            print("simulated pod list failure", file=sys.stderr)
+            raise SystemExit(1)
+        if state.get("malformedPodList") == namespace:
+            save()
+            print(json.dumps({"apiVersion": "v1", "kind": "List"}))
+            return
+        print(json.dumps({"apiVersion": "v1", "kind": "List", "items": [
+            pod for key in ("jobPods", "namespacePods") for pod in state.get(key, [])
+            if pod.get("metadata", {}).get("namespace") == namespace
+        ]}))
+        # A terminating Pod that the kubelet finishes and removes after this many more listings.
+        gone = state.get("podGoneAfterListings", {})
+        for name in list(gone):
+            gone[name] -= 1
+            if gone[name] <= 0:
+                del gone[name]
+                state["namespacePods"] = [
+                    pod for pod in state["namespacePods"] if pod["metadata"]["name"] != name
+                ]
+        save()
+        return
+    if command[0] == "get":
+        resource = command[1]
+        namespace = None
+        if "--namespace" in command:
+            namespace = command[command.index("--namespace") + 1]
+        item = state["resources"].get(object_key(resource, namespace))
+        if item and resource.startswith("namespace/") and state.get("delayedNamespaceDeletion"):
+            name = resource.split("/", 1)[1]
+            pending = state.get("pendingNamespaceDeletes", {})
+            if name in pending:
+                if namespace_finalization_blocked(name):
+                    pending[name] += 1
+                    state["namespaceLifecycleEvents"].append(["blocked", name])
+                    save()
+                    if pending[name] > 1:
+                        raise SystemExit("namespace finalization blocked by cleanup freeze")
+                elif (
+                    item["metadata"].get("deletionTimestamp")
+                    and item.get("status", {}).get("phase") == "Terminating"
+                ):
+                    # The first read after the DELETE still returns the terminating namespace; it is gone
+                    # from the next read on.
+                    reads = state.setdefault("terminatingNamespaceReads", {})
+                    reads[name] = reads.get(name, 0) + 1
+                    save()
+                    if reads[name] > 1:
+                        state["namespaceLifecycleEvents"].append(["finalized", name])
+                        finish_namespace_delete(name)
+                        del pending[name]
+                        save()
+                        return
+        if item:
+            print(json.dumps(item))
+        return
+    if command[:2] == ["create", "--dry-run=server"]:
+        document = json.loads(stdin)
+        if document["kind"] == "PersistentVolume":
+            claims = (document["spec"].get("claimRef") or {}).get("namespace")
+            message = pv_freeze_denial("CREATE", None, document)
+            if claims is None and state.get("denyUnclaimedPvProbe"):
+                message = "a misconfigured rule denied this volume"
+            state.setdefault("pvProbes", []).append({"claims": claims, "denied": message is not None})
+            save()
+            if message is not None:
+                print(message, file=sys.stderr)
+                raise SystemExit(1)
+            print(json.dumps(document))
+            return
+        if document["kind"] in (
+            "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"
+        ):
+            apply_admission_defaults(document, record=False)
+            print(json.dumps(document))
+            return
+        namespace = document["metadata"]["namespace"]
+        namespace_item = state["resources"].get(f"namespace/{namespace}", {})
+        if namespace_item.get("status", {}).get("phase") == "Terminating":
+            print(
+                f'Forbidden: unable to create new content in namespace "{namespace}" '
+                "because it is being terminated",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        for key, binding in state["resources"].items():
+            if not key.startswith(
+                "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
+            ):
+                continue
+            policy_name = binding.get("spec", {}).get("policyName")
+            if not policy_name:
+                continue
+            policy_key = (
+                "validatingadmissionpolicies.admissionregistration.k8s.io/"
+                + policy_name
+            )
+            policy = state["resources"].get(policy_key)
+            if not policy:
+                continue
+            selector = (
+                binding.get("spec", {})
+                .get("matchResources", {})
+                .get("namespaceSelector", {})
+                .get("matchLabels")
+            )
+            if selector:
+                namespace_item = state["resources"].get(f"namespace/{namespace}", {})
+                labels = namespace_item.get("metadata", {}).get("labels", {})
+                matches = all(labels.get(key) == value for key, value in selector.items())
+            else:
+                matches = (
+                    json.dumps(namespace)
+                    in policy["spec"]["matchConditions"][0]["expression"]
+                )
+            if matches:
+                print(policy["spec"]["validations"][0]["message"], file=sys.stderr)
+                raise SystemExit(1)
+        print(json.dumps(document))
+        return
+    if command[:2] == ["create", "-f"]:
+        document = json.loads(stdin)
+        name = document["metadata"]["name"]
+        if document["kind"] == "ValidatingAdmissionPolicy":
+            for index, rule in enumerate(
+                document["spec"].get("matchConstraints", {}).get("resourceRules", [])
+            ):
+                resources = rule.get("resources", [])
+                if "*/*" in resources and len(resources) != 1:
+                    print(
+                        f"spec.matchConstraints.resourceRules[{index}].resources: "
+                        "Invalid value: '*/*' cannot be combined with other resources",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1)
+            prefix = "validatingadmissionpolicies.admissionregistration.k8s.io"
+            kind = "policy"
+        else:
+            prefix = (
+                "validatingadmissionpolicybindings."
+                "admissionregistration.k8s.io"
+            )
+            kind = "binding"
+        document["metadata"]["uid"] = f"uid-freeze-{kind}"
+        document["metadata"]["resourceVersion"] = "1"
+        apply_admission_defaults(document)
+        state["resources"][f"{prefix}/{name}"] = document
+        state["mutations"] += 1
+        # Storage that a controller creates, binds or changes while the tenant freeze is being installed.
+        storage = state.get("storageAtTenantFreeze")
+        if storage and kind == "policy" and "cleanup-freeze-tenants-" in name:
+            state["pvcs"], state["pvs"] = storage["pvcs"], storage["pvs"]
+            state["storageAtTenantFreeze"] = None
+        boundary = state.get("killAfterFreezeCreate")
+        if boundary == kind:
+            state["killAfterFreezeCreate"] = None
+            save()
+            log(True)
+            os.kill(os.getppid(), signal.SIGKILL)
+            raise SystemExit(0)
+        save()
+        log(True)
+        print(json.dumps(document))
+        return
+    if command[:2] == ["delete", "--raw"]:
+        key = key_from_raw(command[2])
+        item = state["resources"].get(key)
+        if (
+            item
+            and key.startswith("namespace/")
+            and state.get("failNamespaceDeleteOnce") == key.split("/", 1)[1]
+        ):
+            state["failNamespaceDeleteOnce"] = None
+            save()
+            print("simulated namespace deletion failure", file=sys.stderr)
+            raise SystemExit(1)
+        options = json.loads(stdin)
+        expected = options["preconditions"]
+        if item and (
+            item["metadata"]["uid"] != expected["uid"]
+            or item["metadata"]["resourceVersion"] != expected["resourceVersion"]
+        ):
+            print("Conflict", file=sys.stderr)
+            raise SystemExit(1)
+        if item:
+            if key.startswith("namespace/"):
+                namespace = key.split("/", 1)[1]
+                if any(
+                    pv.get("spec", {}).get("claimRef", {}).get("namespace") == namespace
+                    and pv.get("spec", {}).get("persistentVolumeReclaimPolicy") != "Delete"
+                    for pv in state.get("pvs", [])
+                ):
+                    state["unsafeVolumeAtNamespaceDelete"] = True
+                if namespace in state.get("neverFinishingNamespaces", []):
+                    # A deletion that never finishes, for example behind a finalizer that no controller removes.
+                    item["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+                    item["status"] = {"phase": "Terminating"}
+                elif state.get("finalizerProtection"):
+                    begin_namespace_termination(namespace)
+                elif state.get("delayedNamespaceDeletion"):
+                    item["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+                    item["status"] = {"phase": "Terminating"}
+                    state.setdefault("pendingNamespaceDeletes", {})[namespace] = 0
+                    state.setdefault("namespaceLifecycleEvents", []).append(
+                        ["delete-requested", namespace]
+                    )
+                    tamper = state.get("namespaceDeleteTamper", {})
+                    if tamper.get("name") == namespace:
+                        if "uid" in tamper:
+                            item["metadata"]["uid"] = tamper["uid"]
+                        if "phase" in tamper:
+                            item["status"]["phase"] = tamper["phase"]
+                        if "deletionTimestamp" in tamper:
+                            item["metadata"]["deletionTimestamp"] = tamper["deletionTimestamp"]
+                else:
+                    finish_namespace_delete(namespace)
+            else:
+                if "cleanup-freeze-" in key and item["kind"] == "ValidatingAdmissionPolicyBinding":
+                    state.setdefault("namespaceLifecycleEvents", []).append(
+                        ["binding-deleted", item["metadata"]["name"]]
+                    )
+                del state["resources"][key]
+            state["mutations"] += 1
+            save()
+        log(bool(item))
+        print(json.dumps({"status": "Success"}))
+        return
+    raise SystemExit(f"unsupported kubectl command: {command}")
+
+def finish_namespace_delete(namespace):
+    state["resources"].pop(f"namespace/{namespace}", None)
+    for child in list(state["resources"]):
+        if child.startswith(f"{namespace}|"):
+            del state["resources"][child]
+    state.get("tenantWorkloads", {}).pop(namespace, None)
+    state["pvcs"] = [
+        pvc for pvc in state.get("pvcs", [])
+        if pvc.get("metadata", {}).get("namespace") != namespace
+    ]
+    for key in ("jobPods", "namespacePods"):
+        state[key] = [
+            pod for pod in state.get(key, [])
+            if pod.get("metadata", {}).get("namespace") != namespace
+        ]
+    if namespace not in state.get("retainTenantPvs", []):
+        state["pvs"] = [
+            pv for pv in state.get("pvs", [])
+            if pv.get("spec", {}).get("claimRef", {}).get("namespace")
+            != namespace
+        ]
+
+def begin_namespace_termination(namespace):
+    # The namespace and its finalizer-bearing objects stay, terminating, until their finalizers are removed.
+    state["resources"][f"namespace/{namespace}"]["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+    for items in (state.get("pvcs", []), state.get("jobPods", []), state.get("namespacePods", [])):
+        for item in items:
+            metadata = item.setdefault("metadata", {})
+            if metadata.get("namespace") == namespace:
+                metadata["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+                if item["kind"] == "PersistentVolumeClaim":
+                    metadata.setdefault("finalizers", ["kubernetes.io/pvc-protection"])
+                else:
+                    metadata.setdefault("deletionGracePeriodSeconds", 30)
+    state.setdefault("terminatingNamespaces", []).append(namespace)
+
+def freeze_policies_for(namespace):
+    policies = []
+    for key, binding in state["resources"].items():
+        if not key.startswith(
+            "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
+            "openclaw-enterprise-cleanup-freeze-"
+        ):
+            continue
+        policy = state["resources"].get(
+            "validatingadmissionpolicies.admissionregistration.k8s.io/"
+            + binding.get("spec", {}).get("policyName", "")
+        )
+        if not policy:
+            continue
+        selector = (
+            (binding["spec"].get("matchResources") or {}).get("namespaceSelector", {}).get("matchLabels")
+        )
+        if selector:
+            labels = (
+                state["resources"].get(f"namespace/{namespace}", {}).get("metadata", {}).get("labels", {})
+            )
+            matches = all(labels.get(name) == value for name, value in selector.items())
+        else:
+            matches = json.dumps(namespace) in policy["spec"]["matchConditions"][0]["expression"]
+        if matches:
+            policies.append(policy)
+    return policies
+
+MISSING = object()
+
+def field(document, path):
+    value = document
+    for key in path.split("."):
+        if not isinstance(value, dict) or key not in value:
+            return MISSING
+        value = value[key]
+    return value
+
+FINALIZER_UNCHANGED = (
+    "apiVersion", "kind", "metadata.name", "metadata.namespace", "metadata.uid",
+    "metadata.generateName", "metadata.creationTimestamp", "metadata.deletionTimestamp",
+    "metadata.deletionGracePeriodSeconds", "metadata.generation", "metadata.labels",
+    "metadata.annotations", "metadata.ownerReferences", "spec", "status",
+)
+
+FINALIZER_COUNT_CLAUSE = (
+    "object.metadata.finalizers.all(finalizer, size(object.metadata.finalizers.filter("
+    "entry, entry == finalizer)) <= size(oldObject.metadata.finalizers.filter(entry, entry == finalizer)))"
+)
+
+def finalizer_removal_allowed(policy, resource, subresource, old, new):
+    # A model of the freezes' finalizerRemoval rule for these tests; its CEL is not evaluated here.
+    variables = {item["name"]: item["expression"] for item in policy["spec"].get("variables", [])}
+    expression = variables.get("finalizerRemoval", "")
+    marker = "request.resource.resource in "
+    if marker not in expression or subresource:
+        return False
+    if resource not in json.loads(expression.split(marker, 1)[1].split(" && ", 1)[0]):
+        return False
+    if field(old, "metadata.deletionTimestamp") is MISSING:
+        return False
+    if any(field(old, path) != field(new, path) for path in FINALIZER_UNCHANGED):
+        return False
+    before = old["metadata"].get("finalizers") or []
+    after = new["metadata"].get("finalizers") or []
+    # The count rule applies only when the live policy carries its exact clause.
+    if FINALIZER_COUNT_CLAUSE in expression and any(after.count(name) > before.count(name) for name in after):
+        return False
+    return bool(before) and all(name in before for name in after) and len(after) < len(before)
+
+def finalizer_request(item, variant):
+    # The update a controller sends for item: a pure finalizer removal, or that removal with one more change.
+    old = json.loads(json.dumps(item))
+    new = json.loads(json.dumps(item))
+    removed = old["metadata"]["finalizers"][0]
+    new["metadata"]["finalizers"] = [name for name in old["metadata"]["finalizers"] if name != removed]
+    subresource = ""
+    if variant == "spec":
+        new.setdefault("spec", {})["volumeName" if item["kind"] == "PersistentVolumeClaim" else "nodeName"] = "other"
+    elif variant == "label":
+        new["metadata"].setdefault("labels", {})["example.com/changed"] = "yes"
+    elif variant == "annotation":
+        new["metadata"].setdefault("annotations", {})["example.com/changed"] = "yes"
+    elif variant == "ownerReference":
+        new["metadata"]["ownerReferences"] = [
+            {"apiVersion": "v1", "kind": "ConfigMap", "name": "adopter", "uid": "uid-adopter"}
+        ]
+    elif variant == "deletionTimestamp":
+        new["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:01Z"
+    elif variant == "add":
+        new["metadata"]["finalizers"] = old["metadata"]["finalizers"] + ["example.com/extra"]
+    elif variant == "notDeleting":
+        del old["metadata"]["deletionTimestamp"]
+        del new["metadata"]["deletionTimestamp"]
+    elif variant == "subresource":
+        subresource = "status"
+    elif variant in state.get("finalizerTargets", {}):
+        new["metadata"]["finalizers"] = list(state["finalizerTargets"][variant])
+    return old, new, subresource
+
+def pod_status_request(pod, variant):
+    # The kubelet's final status update for a Pod being deleted, or a request that differs from it in one way.
+    old = json.loads(json.dumps(pod))
+    for marker in ("variantTried", "statusVariantTried"):
+        old["metadata"].pop(marker, None)
+    new = json.loads(json.dumps(old))
+    new["metadata"]["resourceVersion"] = str(int(old["metadata"].get("resourceVersion", "1")) + 1)
+    new["metadata"]["managedFields"] = [
+        {"manager": "kubelet", "operation": "Update", "subresource": "status", "time": "2026-01-01T00:00:31Z"}
+    ]
+    new["status"] = {
+        "phase": "Succeeded",
+        "containerStatuses": [{"name": "agent", "state": {"terminated": {"exitCode": 0}}}],
+    }
+    request = {"operation": "UPDATE", "group": "", "version": "v1", "resource": "pods", "subresource": "status"}
+    if variant == "create":
+        request.update(operation="CREATE", subresource="")
+        old = None
+    elif variant == "mainResource":
+        request["subresource"] = ""
+    elif variant == "notDeleting":
+        for name in ("deletionTimestamp", "deletionGracePeriodSeconds"):
+            old["metadata"].pop(name, None)
+            new["metadata"].pop(name, None)
+    elif variant in ("ephemeralcontainers", "resize"):
+        request["subresource"] = variant
+    elif variant == "otherStatus":
+        claim = next(
+            item for item in state["pvcs"] if item["metadata"]["namespace"] == pod["metadata"]["namespace"]
+        )
+        old = json.loads(json.dumps(claim))
+        old["metadata"].pop("variantTried", None)
+        new = json.loads(json.dumps(old))
+        new["status"] = {"phase": "Lost"}
+        request["resource"] = "persistentvolumeclaims"
+    elif variant == "spec":
+        new["spec"]["nodeName"] = "node-b"
+    elif variant in ("labels", "annotations"):
+        new["metadata"].setdefault(variant, {})["example.com/changed"] = "yes"
+    elif variant == "finalizers":
+        # An added finalizer with the status: finalizerRemoval needs no subresource and a strict subset, and
+        # podStatusUpdate needs the finalizers unchanged, so neither admits it.
+        new["metadata"]["finalizers"] = [*old["metadata"].get("finalizers", []), "example.com/extra"]
+    elif variant == "ownerReferences":
+        new["metadata"]["ownerReferences"] = [
+            {"apiVersion": "v1", "kind": "ConfigMap", "name": "adopter", "uid": "uid-adopter"}
+        ]
+    elif variant == "deletionTimestamp":
+        new["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:01Z"
+    elif variant == "deletionGracePeriodSeconds":
+        new["metadata"]["deletionGracePeriodSeconds"] = 0
+    elif variant == "generation":
+        new["metadata"]["generation"] = old["metadata"].get("generation", 1) + 1
+    elif variant == "generateName":
+        new["metadata"]["generateName"] = "other-"
+    elif variant == "creationTimestamp":
+        new["metadata"]["creationTimestamp"] = "2026-01-01T00:00:02Z"
+    elif variant in ("name", "namespace", "uid"):
+        new["metadata"][variant] = f"other-{old['metadata'][variant]}"
+    elif variant != "pure":
+        raise SystemExit(f"unknown pod status variant: {variant}")
+    return request, old, new
+
+ERROR = object()
+
+def split_clauses(expression):
+    # The top-level && clauses of a CEL conjunction.
+    clauses, depth, start = [], 0, 0
+    for index, char in enumerate(expression):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if depth == 0 and expression.startswith(" && ", index):
+            clauses.append(expression[start:index])
+            start = index + 4
+    return [*clauses, expression[start:]]
+
+def unchanged_path(clause):
+    # The field of a has()-guarded comparison clause, or None.
+    if not clause.startswith("(has(object."):
+        return None
+    path = clause[len("(has(object."):].split(")", 1)[0]
+    expected = (
+        f"(has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
+        f" : !has(oldObject.{path}))"
+    )
+    return path if clause == expected else None
+
+def clause_value(clause, request, old, new):
+    # One clause of podStatusUpdate, from a fixed table. Reading the null oldObject of a CREATE is an error.
+    request_clauses = {
+        "request.operation == 'UPDATE'": request["operation"] == "UPDATE",
+        "request.subResource == 'status'": request["subresource"] == "status",
+        "request.resource.group == ''": request["group"] == "",
+        "request.resource.version == 'v1'": request["version"] == "v1",
+        "request.resource.resource == 'pods'": request["resource"] == "pods",
+    }
+    if clause in request_clauses:
+        return request_clauses[clause]
+    if clause == "has(oldObject.metadata.deletionTimestamp)":
+        paths = None
+    elif clause in ("object.apiVersion == oldObject.apiVersion", "object.kind == oldObject.kind"):
+        paths = clause.split(" == ", 1)[0].split(".", 1)[1]
+    else:
+        paths = unchanged_path(clause)
+        if paths is None:
+            raise SystemExit(f"unmodelled podStatusUpdate clause: {clause}")
+    if old is None:
+        return ERROR
+    if paths is None:
+        return field(old, "metadata.deletionTimestamp") is not MISSING
+    return field(new, paths) == field(old, paths)
+
+def pod_status_update_allowed(policy, request, old, new):
+    # A model of the tenant freeze's podStatusUpdate rule that reads the live policy clause by clause; its CEL is
+    # not evaluated here. A false clause wins over an error, and an error denies (failurePolicy Fail).
+    spec = policy["spec"]
+    variables = {item["name"]: item["expression"] for item in spec.get("variables", [])}
+    if "podStatusUpdate" not in variables or "variables.podStatusUpdate" not in spec["validations"][0]["expression"]:
+        return False
+    values = [clause_value(clause, request, old, new) for clause in split_clauses(variables["podStatusUpdate"])]
+    return not any(value is False for value in values) and not any(value is ERROR for value in values)
+
+def run_kubelet(namespace):
+    # The kubelet sends the final status of each running Pod that is being deleted; once it is admitted the Pod
+    # is finished and goes, unless a finalizer still holds it. A requested variant is tried once first, in the
+    # same window, then the pure update. Returns whether a pure update was denied.
+    stuck = False
+    for pod in list(state.get("namespacePods", [])):
+        metadata = pod.get("metadata", {})
+        if (
+            metadata.get("namespace") != namespace
+            or "deletionTimestamp" not in metadata
+            or pod.get("status", {}).get("phase") not in ("Pending", "Running")
+        ):
+            continue
+        variants = [] if metadata.get("statusVariantTried") else state.get("podStatusVariants", [])
+        metadata["statusVariantTried"] = True
+        for variant in [*variants, "pure"]:
+            request, old, new = pod_status_request(pod, variant)
+            policies = freeze_policies_for(namespace)
+            allowed = all(
+                finalizer_removal_allowed(policy, request["resource"], request["subresource"], old, new)
+                or pod_status_update_allowed(policy, request, old, new)
+                for policy in policies
+            )
+            state.setdefault("podStatusAdmission", []).append({
+                "namespace": namespace,
+                "pod": metadata.get("name"),
+                "variant": variant,
+                "frozen": bool(policies),
+                "allowed": allowed,
+            })
+            if variant != "pure":
+                continue
+            if not allowed:
+                stuck = True
+            elif new["metadata"].get("finalizers"):
+                pod["status"] = new["status"]
+                metadata["resourceVersion"] = new["metadata"]["resourceVersion"]
+            else:
+                state["namespacePods"] = [
+                    other for other in state["namespacePods"]
+                    if other["metadata"].get("uid") != metadata.get("uid")
+                ]
+    return stuck
+
+def run_finalizer_controllers():
+    # The PVC protection and Job controllers: each removes its finalizer from a terminating object. A requested
+    # variant is tried once first, in the same window, then the pure removal. The Job controller removes a
+    # running Pod's job-tracking finalizer only after the kubelet's final status.
+    for namespace in list(state.get("terminatingNamespaces", [])):
+        stuck = run_kubelet(namespace)
+        for resource, items_key in (
+            ("persistentvolumeclaims", "pvcs"), ("pods", "jobPods"), ("pods", "namespacePods")
+        ):
+            for item in list(state.get(items_key, [])):
+                metadata = item.get("metadata", {})
+                if metadata.get("namespace") != namespace or not metadata.get("finalizers"):
+                    continue
+                if items_key == "namespacePods" and item.get("status", {}).get("phase") not in (
+                    "Succeeded", "Failed"
+                ):
+                    continue
+                variants = [] if metadata.get("variantTried") else state.get("finalizerVariants", [])
+                metadata["variantTried"] = True
+                for variant in [*variants, "pure"]:
+                    old, new, subresource = finalizer_request(item, variant)
+                    old["metadata"].pop("variantTried", None)
+                    new["metadata"].pop("variantTried", None)
+                    policies = freeze_policies_for(namespace)
+                    allowed = all(
+                        finalizer_removal_allowed(policy, resource, subresource, old, new)
+                        for policy in policies
+                    )
+                    state.setdefault("finalizerAdmission", []).append({
+                        "namespace": namespace,
+                        "resource": resource,
+                        "variant": variant,
+                        "frozen": bool(policies),
+                        "allowed": allowed,
+                    })
+                    if variant == "pure":
+                        if allowed:
+                            state[items_key] = [
+                                other for other in state[items_key]
+                                if other["metadata"].get("uid") != metadata.get("uid")
+                            ]
+                        else:
+                            stuck = True
+        if not any(
+            item.get("metadata", {}).get("namespace") == namespace
+            for key in ("pvcs", "jobPods", "namespacePods")
+            for item in state.get(key, [])
+        ):
+            finish_namespace_delete(namespace)
+            state["terminatingNamespaces"].remove(namespace)
+        elif stuck:
+            # A namespace that can never finish: end the run instead of waiting out cleanup's deadline.
+            state["stuckNamespace"] = namespace
+            save()
+            os.kill(os.getppid(), signal.SIGKILL)
+            raise SystemExit(0)
+    save()
+
+def helm():
+    if args == ["version", "--short"]:
+        print(state.get("helmVersion", "v3.22.1+gd6c1a0e"))
+        return
+    if args[:2] != ["--kubeconfig", state["kubeconfig"]]:
+        raise SystemExit("missing explicit kubeconfig")
+    if args[2:4] != ["--kube-context", state["context"]]:
+        raise SystemExit("wrong context")
+    command = args[4:]
+    if command[0] == "list":
+        print(json.dumps([{"name": "oce"}] if state["helm"] else []))
+        return
+    if command[:2] == ["get", "values"]:
+        layout = state.get("helmValuesLayout", "current")
+        if layout == "current":
+            values = {"installation": {"attemptId": state["attempt"]}}
+        elif layout == "legacy":
+            values = {"installationAttempt": state["attempt"]}
+        elif layout == "dual":
+            values = {
+                "installation": {"attemptId": state["attempt"]},
+                "installationAttempt": state["attempt"],
+            }
+        elif layout == "conflict":
+            values = {
+                "installation": {"attemptId": state["attempt"]},
+                "installationAttempt": "other",
+            }
+        elif layout == "missing":
+            values = {}
+        else:
+            raise SystemExit("unsupported Helm values layout")
+        print(json.dumps(values))
+        return
+    if command[:2] == ["uninstall", "oce"]:
+        changed = state["helm"]
+        state["helm"] = False
+        if changed:
+            state["mutations"] += 1
+            save()
+        log(changed)
+        print("uninstalled")
+        return
+    raise SystemExit(f"unsupported helm command: {command}")
+
+def aws():
+    command = args[:]
+    for option in ("--region", "--output"):
+        if option in command:
+            index = command.index(option)
+            del command[index:index + 2]
+    action = command[:2]
+    data = state["aws"]
+    if action == ["sts", "get-caller-identity"]:
+        print(json.dumps({
+            "Account": data["account"],
+            "Arn": data.get(
+                "callerArn",
+                f"arn:aws:sts::{data['account']}:assumed-role/validation/session-1",
+            ),
+        }))
+        return
+    if action == ["eks", "describe-cluster"]:
+        print(json.dumps({"cluster": {"arn": data["clusterArn"]}}))
+        return
+    if action == ["eks", "describe-pod-identity-association"]:
+        if data["association"] is None:
+            print("ResourceNotFoundException", file=sys.stderr)
+            raise SystemExit(1)
+        print(json.dumps({"association": data["association"]}))
+        return
+    if action == ["eks", "delete-pod-identity-association"]:
+        if data.get("denyDeleteAssociation"):
+            print(
+                "AccessDenied: eks:DeletePodIdentityAssociation",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        changed = data["association"] is not None
+        data["association"] = None
+        mutation = state.get("mutateAfterAssociationDelete")
+        if mutation:
+            item = state["resources"][mutation["resource"]]
+            metadata = item.setdefault("metadata", {})
+            values = metadata.setdefault(mutation["section"], {})
+            values[mutation["key"]] = mutation["value"]
+            state["mutateAfterAssociationDelete"] = None
+    elif action == ["iam", "get-role"]:
+        if data.get("roleDeleted"):
+            data["roleGetsAfterDelete"] = data.get("roleGetsAfterDelete", 0) + 1
+            remaining = data.get("rolesAfterDelete", [])
+            if remaining:
+                live = remaining.pop(0)
+                save()
+                print(json.dumps({"Role": live}))
+                return
+            save()
+        if data["role"] is None:
+            print("NoSuchEntity", file=sys.stderr)
+            raise SystemExit(1)
+        print(json.dumps({"Role": data["role"]}))
+        return
+    elif action == ["iam", "get-role-policy"]:
+        if data["policyDocument"] is None:
+            print("NoSuchEntity", file=sys.stderr)
+            raise SystemExit(1)
+        data["policyGetCount"] = data.get("policyGetCount", 0) + 1
+        mutation = data.get("mutatePolicyOnGet")
+        if mutation and data["policyGetCount"] == mutation["count"]:
+            data["policyDocument"] = mutation["document"]
+            data["mutatePolicyOnGet"] = None
+        save()
+        print(json.dumps({"PolicyDocument": data["policyDocument"]}))
+        return
+    elif action == ["iam", "delete-role-policy"]:
+        changed = data["policyDocument"] is not None
+        data["policyDocument"] = None
+    elif action == ["iam", "list-role-policies"]:
+        names = [state["policyName"]] if data["policyDocument"] is not None else []
+        print(json.dumps({"PolicyNames": names}))
+        return
+    elif action == ["iam", "list-attached-role-policies"]:
+        print(json.dumps({"AttachedPolicies": data.get("attached", [])}))
+        return
+    elif action == ["iam", "list-instance-profiles-for-role"]:
+        print(json.dumps({"InstanceProfiles": data.get("profiles", [])}))
+        return
+    elif action == ["iam", "delete-role"]:
+        if data.get("denyDeleteRole"):
+            print("AccessDenied: iam:DeleteRole", file=sys.stderr)
+            raise SystemExit(1)
+        changed = data["role"] is not None
+        data["role"] = None
+        data["roleDeleted"] = True
+    else:
+        raise SystemExit(f"unsupported aws command: {command}")
+    if changed:
+        state["mutations"] += 1
+        save()
+    log(changed)
+    print("{}")
+
+if tool == "kubectl":
+    kubectl()
+elif tool == "helm":
+    helm()
+elif tool == "aws":
+    aws()
+else:
+    raise SystemExit(f"unknown fake tool: {tool}")
+"""
+
+
+def _object(
+    kind: str,
+    name: str,
+    uid: str,
+    *,
+    namespace: str | None = None,
+    owner: str = OWNER,
+    annotations: dict[str, str] | None = None,
+    labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "name": name,
+        "uid": uid,
+        "resourceVersion": "1",
+        "labels": {"app.kubernetes.io/managed-by": owner},
+    }
+    if namespace:
+        metadata["namespace"] = namespace
+    if labels:
+        metadata["labels"].update(labels)
+    if annotations:
+        metadata["annotations"] = annotations
+    return {"apiVersion": "v1", "kind": kind, "metadata": metadata}
+
+
+def _helm_object(kind: str, name: str, uid: str) -> dict[str, Any]:
+    item = _object(kind, name, uid, owner="Helm")
+    item["metadata"]["labels"]["app.kubernetes.io/instance"] = "oce"
+    item["metadata"]["annotations"] = {
+        "meta.helm.sh/release-name": "oce",
+        "meta.helm.sh/release-namespace": SYSTEM_NAMESPACE,
+    }
+    return item
+
+
+def _base_state(kubeconfig: Path) -> dict[str, Any]:
+    return {
+        "context": CONTEXT,
+        "cluster": CLUSTER,
+        "kubeconfig": str(kubeconfig),
+        "attempt": ATTEMPT,
+        "helmValuesLayout": "current",
+        "helm": True,
+        "mutations": 0,
+        "killAfterFreezeCreate": None,
+        "tenantDiscoveryCount": 0,
+        "tenantNamespaceMutation": None,
+        "mutateAfterAssociationDelete": None,
+        "tenantWorkloads": {},
+        "policyName": POLICY_NAME,
+        "pvcs": [],
+        "pvs": [],
+        "failNamespaceDeleteOnce": None,
+        "retainTenantPvs": [],
+        "resources": {
+            f"namespace/{SYSTEM_NAMESPACE}": _object(
+                "Namespace", SYSTEM_NAMESPACE, "uid-system"
+            ),
+        },
+        "aws": {
+            "account": ACCOUNT,
+            "clusterArn": CLUSTER_ARN,
+            "role": None,
+            "policyDocument": None,
+            "association": None,
+            "attached": [],
+            "profiles": [],
+            "denyDeleteAssociation": False,
+            "denyDeleteRole": False,
+            "policyGetCount": 0,
+            "mutatePolicyOnGet": None,
+        },
+    }
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+
+
+def _write_install_evidence(tmp_path: Path, state: dict[str, Any]) -> tuple[Path, Path]:
+    state_dir = tmp_path / "state"
+    receipt = state_dir / "receipt"
+    receipt.mkdir(parents=True)
+    state_dir.chmod(0o700)
+    receipt.chmod(0o700)
+    marker = state_dir / "install.complete"
+    marker.write_text(
+        f"source={SOURCE_PIN}\n"
+        f"cluster_arn={CLUSTER_ARN}\n"
+        f"context={CONTEXT}\n"
+        f"namespace={SYSTEM_NAMESPACE}\n"
+        "release=oce\n"
+    )
+    marker.chmod(0o600)
+    cluster_hash = hashlib.sha256(
+        json.dumps(CLUSTER, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    _write_json(receipt / "intent.json", {
+        "version": 1,
+        "operation": "helm-install",
+        "attempt": ATTEMPT,
+        "namespace": SYSTEM_NAMESPACE,
+        "release": "oce",
+        "clusterSha256": cluster_hash,
+    })
+    _write_json(receipt / "dispatch.json", {"outcome": "unknown"})
+    _write_json(receipt / "helm-result.json", {"outcome": "succeeded"})
+    admission_resources = {
+        (
+            "validatingadmissionpolicies.admissionregistration.k8s.io/"
+            "protect-openclaw-enterprise-namespace-label"
+        ): _object(
+            "ValidatingAdmissionPolicy",
+            "protect-openclaw-enterprise-namespace-label",
+            "uid-namespace-policy",
+        ),
+        (
+            "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
+            "protect-openclaw-enterprise-namespace-label"
+        ): _object(
+            "ValidatingAdmissionPolicyBinding",
+            "protect-openclaw-enterprise-namespace-label",
+            "uid-namespace-policy-binding",
+        ),
+        (
+            "mutatingwebhookconfigurations.admissionregistration.k8s.io/"
+            "openclaw-enterprise-nitro-adapter"
+        ): _object(
+            "MutatingWebhookConfiguration",
+            "openclaw-enterprise-nitro-adapter",
+            "uid-mutating-webhook",
+        ),
+        (
+            "validatingwebhookconfigurations.admissionregistration.k8s.io/"
+            "openclaw-enterprise-nitro-policy"
+        ): _object(
+            "ValidatingWebhookConfiguration",
+            "openclaw-enterprise-nitro-policy",
+            "uid-validating-webhook",
+        ),
+    }
+    rbac_resources = {
+        f"{resource}/{name}": _helm_object(kind, name, f"uid-rbac-{index}")
+        for index, (resource, name, kind) in enumerate(RBAC_RESOURCE_SPECS)
+    }
+    state["resources"].update(rbac_resources)
+    admission_resources.update(rbac_resources)
+    state["resources"].update(admission_resources)
+    _write_json(receipt / "resources.json", {
+        "version": 1,
+        "attempt": ATTEMPT,
+        "resources": {
+            f"namespace/{SYSTEM_NAMESPACE}": "uid-system",
+            **{
+                resource: item["metadata"]["uid"]
+                for resource, item in admission_resources.items()
+            },
+        },
+    })
+    return state_dir, receipt
+
+
+def _write_lifecycle_receipts(
+    tmp_path: Path,
+    state: dict[str, Any],
+    created: dict[str, bool],
+    gateway_reused: set[str] | None = None,
+) -> tuple[Path, Path, Path]:
+    lifecycle = tmp_path / "lifecycle"
+    lifecycle.mkdir()
+    lifecycle.chmod(0o700)
+    storage = lifecycle / "storage.json"
+    _write_json(storage, {
+        "version": 1,
+        "operation": "setup-storage-class",
+        "kubeContext": CONTEXT,
+        "clusterEndpoint": CLUSTER["server"],
+        "resource": {
+            "apiVersion": "storage.k8s.io/v1",
+            "kind": "StorageClass",
+            "name": STORAGE_CLASS,
+            "uid": "uid-storage",
+            "created": created["storage"],
+        },
+    })
+    policy_document = {
+        "Version": "2012-10-17",
+        "Statement": [{"Effect": "Allow", "Action": "bedrock:InvokeModel", "Resource": "*"}],
+    }
+    role_created = created["role"]
+    state["resources"][f"namespace/{AGW_NAMESPACE}"] = _object(
+        "Namespace",
+        AGW_NAMESPACE,
+        "uid-agw",
+        labels=(
+            {POD_SETUP_KEY: INVOCATION_ID}
+            if created["namespace"]
+            else None
+        ),
+    )
+    state["resources"][f"{AGW_NAMESPACE}|serviceaccount/agentgateway"] = _object(
+        "ServiceAccount",
+        "agentgateway",
+        "uid-sa",
+        namespace=AGW_NAMESPACE,
+        labels=(
+            {POD_SETUP_KEY: INVOCATION_ID}
+            if created["serviceAccount"]
+            else None
+        ),
+    )
+    gateway_records = []
+    gateway_reused = gateway_reused or set()
+    for index, (resource, namespace, name, kind) in enumerate(AGW_RESOURCE_SPECS):
+        created_by_gateway = (
+            kind not in {"Namespace", "ServiceAccount"}
+            and f"{resource}/{name}" not in gateway_reused
+        )
+        uid = (
+            "uid-agw"
+            if kind == "Namespace"
+            else "uid-sa"
+            if kind == "ServiceAccount"
+            else f"uid-gateway-{index}"
+        )
+        gateway_records.append({
+            "resource": resource,
+            "namespace": namespace,
+            "name": name,
+            "uid": uid,
+            "created": created_by_gateway,
+        })
+        if kind in {"Namespace", "ServiceAccount"}:
+            continue
+        state["resources"][f"{namespace}|{resource}/{name}"] = _object(
+            kind,
+            name,
+            uid,
+            namespace=namespace,
+            annotations=(
+                {"openclaw-enterprise.aws.dev/setup-token": AGW_SETUP_ID}
+                if created_by_gateway
+                else None
+            ),
+        )
+    gateway = lifecycle / "agentgateway.json"
+    _write_json(gateway, {
+        "version": 1,
+        "clusterEndpoint": CLUSTER["server"],
+        "namespace": AGW_NAMESPACE,
+        "setupId": AGW_SETUP_ID,
+        "resources": gateway_records,
+    })
+    state["resources"][
+        f"{AGW_NAMESPACE}|configmap/agentgateway-aws-region"
+    ] = _object(
+        "ConfigMap",
+        "agentgateway-aws-region",
+        "uid-region-config-map",
+        namespace=AGW_NAMESPACE,
+        labels=(
+            {POD_SETUP_KEY: INVOCATION_ID}
+            if created["regionConfigMap"]
+            else None
+        ),
+    )
+    state["resources"][f"storageclass.storage.k8s.io/{STORAGE_CLASS}"] = _object(
+        "StorageClass", STORAGE_CLASS, "uid-storage"
+    )
+    state["aws"]["role"] = {
+        "RoleName": ROLE_NAME,
+        "Arn": ROLE_ARN,
+        "RoleId": ROLE_ID,
+        "Tags": (
+            [{"Key": "OpenClawSetupInvocation", "Value": INVOCATION_ID}]
+            if role_created else []
+        ),
+    }
+    state["aws"]["policyDocument"] = policy_document
+    state["aws"]["association"] = {
+        "associationId": ASSOCIATION_ID,
+        "associationArn": ASSOCIATION_ARN,
+        "clusterName": CONTEXT,
+        "namespace": AGW_NAMESPACE,
+        "serviceAccount": "agentgateway",
+        "roleArn": ROLE_ARN,
+        "targetRoleArn": None,
+        "externalId": None,
+        "disableSessionTags": False,
+        "policy": None,
+    }
+    pod = lifecycle / "pod-identity.json"
+    _write_json(pod, {
+        "version": 2,
+        "operation": "setup-agentgateway-pod-identity",
+        "target": {
+            "kubeContext": CONTEXT,
+            "clusterEndpoint": CLUSTER["server"],
+            "awsRegion": REGION,
+            "awsAccountId": ACCOUNT,
+            "eksClusterName": CONTEXT,
+            "eksClusterArn": CLUSTER_ARN,
+        },
+        "resources": {
+            "namespace": {
+                "apiVersion": "v1",
+                "kind": "Namespace",
+                "name": AGW_NAMESPACE,
+                "uid": "uid-agw",
+                "created": created["namespace"],
+            },
+            "serviceAccount": {
+                "apiVersion": "v1",
+                "kind": "ServiceAccount",
+                "namespace": AGW_NAMESPACE,
+                "name": "agentgateway",
+                "uid": "uid-sa",
+                "created": created["serviceAccount"],
+            },
+            "regionConfigMap": {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "namespace": AGW_NAMESPACE,
+                "name": "agentgateway-aws-region",
+                "uid": "uid-region-config-map",
+                "created": created["regionConfigMap"],
+            },
+            "iamRole": {
+                "name": ROLE_NAME,
+                "arn": ROLE_ARN,
+                "roleId": ROLE_ID,
+                "invocationId": INVOCATION_ID,
+                "created": role_created,
+            },
+            "inlinePolicy": {
+                "name": POLICY_NAME,
+                "roleName": ROLE_NAME,
+                "roleId": ROLE_ID,
+                "documentSha256": hashlib.sha256(
+                    json.dumps(
+                        policy_document,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
+                "created": created["policy"],
+            },
+            "podIdentityAssociation": {
+                **state["aws"]["association"],
+                "invocationId": INVOCATION_ID,
+                "created": created["association"],
+            },
+        },
+    })
+    return storage, gateway, pod
+
+
+def _prepare(
+    tmp_path: Path,
+    *,
+    created: dict[str, bool] | None = None,
+    gateway_reused: set[str] | None = None,
+    kill_after: str | None = None,
+) -> tuple[dict[str, Any], list[str], dict[str, str]]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "fake-cli"
+    fake.write_text(FAKE_CLI)
+    fake.chmod(0o755)
+    for name in ("kubectl", "helm", "aws"):
+        (bin_dir / name).symlink_to(fake)
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("test")
+    kubeconfig.chmod(0o600)
+    state = _base_state(kubeconfig)
+    state["killAfterFreezeCreate"] = kill_after
+    state_dir, receipt = _write_install_evidence(tmp_path, state)
+    command = [
+        str(CLEANUP),
+        "--kubeconfig", str(kubeconfig),
+        "--kube-context", CONTEXT,
+        "--state-dir", str(state_dir),
+        "--receipt", str(receipt),
+    ]
+    if created:
+        storage, gateway, pod = _write_lifecycle_receipts(
+            tmp_path,
+            state,
+            created,
+            gateway_reused,
+        )
+        command += [
+            "--storage-class-receipt", str(storage),
+            "--agentgateway-receipt", str(gateway),
+            "--agentgateway-pod-identity-receipt", str(pod),
+            "--aws-region", REGION,
+            "--aws-account-id", ACCOUNT,
+            "--eks-cluster-name", CONTEXT,
+            "--pod-identity-association-id", ASSOCIATION_ID,
+            "--iam-role-name", ROLE_NAME,
+            "--iam-inline-policy-name", POLICY_NAME,
+        ]
+    state_path = tmp_path / "fake-state.json"
+    log_path = tmp_path / "fake-log.jsonl"
+    state["kubeconfig"] = str(kubeconfig)
+    state_path.write_text(json.dumps(state))
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_STATE": str(state_path),
+        "FAKE_LOG": str(log_path),
+        "OPENCLAW_EXPECTED_CALLER_ARN": f"arn:aws:sts::{ACCOUNT}:assumed-role/validation",
+    }
+    return state, command, env
+
+
+def _run(command: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        check=False,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _state(env: dict[str, str]) -> dict[str, Any]:
+    return json.loads(Path(env["FAKE_STATE"]).read_text())
+
+
+def _all_created() -> dict[str, bool]:
+    return {
+        "storage": True,
+        "namespace": True,
+        "serviceAccount": True,
+        "regionConfigMap": True,
+        "role": True,
+        "policy": True,
+        "association": True,
+    }
+
+
+def test_cleanup_rejects_helm_4_before_mutation(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path)
+    state = _state(env)
+    state["helmVersion"] = "v4.3.0+gbec5b06"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert "requires Helm 3; found v4.3.0+gbec5b06" in result.stderr
+    assert _state(env)["mutations"] == 0
+
+
+def _add_tenant(
+    env: dict[str, str],
+    name: str,
+    *,
+    uid: str | None = None,
+    workloads: list[dict[str, Any]] | None = None,
+) -> None:
+    state = _state(env)
+    state["resources"][f"namespace/{name}"] = _object(
+        "Namespace",
+        name,
+        uid or f"uid-{name}",
+        owner=OCE_OWNER,
+    )
+    if workloads:
+        state["tenantWorkloads"][name] = workloads
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+def _tenant_identity_args(*names: str) -> list[str]:
+    return [
+        argument
+        for name in names
+        for argument in (
+            "--tenant-namespace",
+            name,
+            "--tenant-namespace-uid",
+            f"{name}=uid-{name}",
+        )
+    ]
+
+
+def _add_tenant_storage(env: dict[str, str], namespace: str) -> None:
+    state = _state(env)
+    state["pvcs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": "openclaw-workspace",
+            "namespace": namespace,
+            "uid": f"uid-pvc-{namespace}",
+        },
+        "spec": {
+            "storageClassName": STORAGE_CLASS,
+            "volumeName": f"pv-{namespace}",
+        },
+        "status": {"phase": "Bound"},
+    })
+    state["pvs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {
+            "name": f"pv-{namespace}",
+            "uid": f"uid-pv-{namespace}",
+        },
+        "spec": {
+            "claimRef": {
+                "name": "openclaw-workspace",
+                "namespace": namespace,
+                "uid": f"uid-pvc-{namespace}",
+            },
+            "persistentVolumeReclaimPolicy": "Delete",
+            "csi": {
+                "driver": "ebs.csi.eks.amazonaws.com",
+                "volumeHandle": f"vol-test-{namespace}",
+            },
+        },
+    })
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+@pytest.mark.parametrize(
+    "defect, diagnostic",
+    [
+        (
+            "retain",
+            (
+                "persistentvolume/pv-openclaw-tenant-a must be an EBS CSI volume "
+                "with reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+        (
+            "other-driver",
+            (
+                "persistentvolume/pv-openclaw-tenant-a must be an EBS CSI volume "
+                "with reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+        (
+            "unbound-claim",
+            (
+                "persistentvolumeclaim/openclaw-tenant-a/openclaw-workspace is not "
+                "bound to its persistent volume; refusing tenant deletion."
+            ),
+        ),
+        (
+            "claim-uid-mismatch",
+            (
+                "persistentvolumeclaim/openclaw-tenant-a/openclaw-workspace is not "
+                "bound to its persistent volume; refusing tenant deletion."
+            ),
+        ),
+        (
+            "orphan-volume",
+            (
+                "persistentvolume/pv-openclaw-tenant-a is not bound to exactly one "
+                "tenant claim that names it; refusing tenant deletion."
+            ),
+        ),
+    ],
+)
+def test_retain_or_foreign_tenant_volume_fails_before_any_tenant_deletion(
+    tmp_path: Path, defect: str, diagnostic: str
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    state = _state(env)
+    pvc = next(item for item in state["pvcs"] if item["metadata"]["namespace"] == tenant)
+    pv = next(item for item in state["pvs"] if item["metadata"]["name"] == f"pv-{tenant}")
+    if defect == "retain":
+        pv["spec"]["persistentVolumeReclaimPolicy"] = "Retain"
+        state["retainTenantPvs"] = [tenant]
+    elif defect == "other-driver":
+        pv["spec"]["csi"]["driver"] = "efs.csi.aws.com"
+    elif defect == "unbound-claim":
+        pvc["status"] = {"phase": "Pending"}
+        del pvc["spec"]["volumeName"]
+        state["pvs"].remove(pv)
+    elif defect == "orphan-volume":
+        # An EBS CSI Delete volume whose tenant claim is already gone.
+        state["pvcs"].remove(pvc)
+    else:
+        pv["spec"]["claimRef"]["uid"] = "uid-another-claim"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    # On a tree without the check, the retained case waits 600 s for the volume; the bound keeps this test short.
+    try:
+        result = subprocess.run(
+            [*command, *_tenant_identity_args(tenant), "--delete-tenant-data"],
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        returncode, stderr = result.returncode, result.stderr
+    except subprocess.TimeoutExpired:
+        returncode, stderr = None, ""
+
+    log = tmp_path / "fake-log.jsonl"
+    mutations = [
+        json.loads(line) for line in log.read_text().splitlines()
+    ] if log.exists() else []
+    assert [entry for entry in mutations if entry.get("mutation")] == []
+    assert returncode == 1
+    assert stderr.endswith(f"cleanup: {diagnostic}\n")
+    after = _state(env)
+    assert after["mutations"] == 0
+    assert after["helm"] is True
+    assert f"namespace/{tenant}" in after["resources"]
+    assert not any("cleanup-freeze-tenants-" in key for key in after["resources"])
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/other-role/session-1",
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/validation-admin/session-1",
+        f"arn:aws:iam::{ACCOUNT}:user/validation",
+    ],
+)
+def test_same_account_wrong_caller_changes_nothing(tmp_path: Path, caller: str) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["callerArn"] = caller
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    log = tmp_path / "fake-log.jsonl"
+    entries = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    assert [entry for entry in entries if entry.get("mutation")] == []
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "cleanup: the AWS caller is not OPENCLAW_EXPECTED_CALLER_ARN "
+        f"arn:aws:sts::{ACCOUNT}:assumed-role/validation.\n"
+    )
+    assert _state(env)["mutations"] == 0
+
+
+def _add_validation_database_storage(env: dict[str, str]) -> None:
+    state = _state(env)
+    state["pvcs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": "oce-validation-only-postgres",
+            "namespace": SYSTEM_NAMESPACE,
+            "uid": "uid-pvc-validation-postgres",
+        },
+        "spec": {
+            "storageClassName": STORAGE_CLASS,
+            "volumeName": "pv-validation-postgres",
+        },
+    })
+    state["pvs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {
+            "name": "pv-validation-postgres",
+            "uid": "uid-pv-validation-postgres",
+        },
+        "spec": {
+            "storageClassName": STORAGE_CLASS,
+            "claimRef": {
+                "name": "oce-validation-only-postgres",
+                "namespace": SYSTEM_NAMESPACE,
+                "uid": "uid-pvc-validation-postgres",
+            },
+        },
+    })
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+def _mutate_tenant_namespace_on_discovery(
+    env: dict[str, str],
+    *,
+    discovery: int,
+    action: str,
+    name: str,
+    uid: str,
+) -> None:
+    state = _state(env)
+    state["tenantNamespaceMutation"] = {
+        "discovery": discovery,
+        "action": action,
+        "name": name,
+        "uid": uid,
+        "owner": OCE_OWNER,
+    }
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+def test_all_created_resources_are_deleted_and_second_run_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    first = _run(command, env)
+    assert first.returncode == 0, first.stderr
+    after_first = _state(env)
+    assert after_first["resources"] == {}
+    assert after_first["aws"]["association"] is None
+    assert after_first["aws"]["policyDocument"] is None
+    assert after_first["aws"]["role"] is None
+    mutation_count = after_first["mutations"]
+
+    second = _run(command, env)
+    assert second.returncode == 0, second.stderr
+    assert _state(env)["mutations"] == mutation_count
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_cleanup_freeze_policies_use_api_valid_resource_wildcard(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    after = _state(env)
+    assert after["resources"] == {}
+    assert after["helm"] is False
+    policies = [
+        json.loads(entry["stdin"])
+        for line in Path(env["FAKE_LOG"]).read_text().splitlines()
+        if (entry := json.loads(line))["tool"] == "kubectl"
+        and "create" in entry["args"]
+        and "-f" in entry["args"]
+        and json.loads(entry["stdin"])["kind"] == "ValidatingAdmissionPolicy"
+    ]
+    assert len(policies) == (2 if delete_tenant else 1)
+    assert any(
+        "cleanup-freeze-tenants-" in policy["metadata"]["name"]
+        for policy in policies
+    ) == delete_tenant
+    for policy in policies:
+        rules = policy["spec"]["matchConstraints"]["resourceRules"]
+        tenant_freeze = "cleanup-freeze-tenants-" in policy["metadata"]["name"]
+        # The tenant freeze adds its cluster-scoped PersistentVolume rule after the namespaced rule.
+        assert len(rules) == (2 if tenant_freeze else 1)
+        assert rules[0]["resources"] == ["*/*"]
+        assert rules[0]["operations"] == ["CREATE", "UPDATE"]
+        assert rules[0]["scope"] == "Namespaced"
+        if tenant_freeze:
+            assert rules[1]["resources"] == ["persistentvolumes"]
+            assert rules[1]["scope"] == "Cluster"
+        assert policy["spec"]["failurePolicy"] == "Fail"
+
+        # Replay the real builder's document with the formerly invalid overlap.
+        # The fake API must reject it before assigning a UID or storing anything.
+        rules[0]["resources"] = ["*", "*/*"]
+        rejected = subprocess.run(
+            [
+                str(tmp_path / "bin" / "kubectl"),
+                "--kubeconfig", str(tmp_path / "kubeconfig"),
+                "--context", CONTEXT,
+                "--request-timeout=20s",
+                "create", "-f", "-",
+            ],
+            input=json.dumps(policy),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert rejected.returncode == 1
+        assert rejected.stderr == (
+            "spec.matchConstraints.resourceRules[0].resources: "
+            "Invalid value: '*/*' cannot be combined with other resources\n"
+        )
+        assert _state(env) == after
+
+
+def test_cleanup_removes_local_admin_and_tenant_credentials(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path)
+    state_dir = tmp_path / "state"
+    admin_key = state_dir / "initial-admin-service-key.json"
+    _write_json(admin_key, {"key": "admin-key"})
+    admin_password = state_dir / "initial-admin-password"
+    admin_password.write_text("admin-password")
+    admin_password.chmod(0o600)
+
+    namespace = "openclaw-tenant-a"
+    _add_tenant(env, namespace)
+    validator_dir = tmp_path / "tenant-a"
+    validator_dir.mkdir(mode=0o700)
+    validator_key = validator_dir / "validator-service-key.json"
+    _write_json(validator_key, {"key": "test-validator-key"})
+    command += [
+        *_tenant_identity_args(namespace),
+        "--tenant-validator-key-file",
+        str(validator_key),
+        "--delete-tenant-data",
+    ]
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    for path in (admin_key, admin_password, validator_key):
+        assert not path.exists()
+        assert f"Removed local credential: {path}" in result.stdout
+
+
+def test_hard_linked_validator_key_is_reported_and_preserved_before_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    namespace = "openclaw-tenant-a"
+    _add_tenant(env, namespace)
+    validator_dir = tmp_path / "tenant-a"
+    validator_dir.mkdir(mode=0o700)
+    validator_key = validator_dir / "validator-service-key.json"
+    _write_json(validator_key, {"key": "test-validator-key"})
+    validator_link = validator_dir / "validator-key-backup.json"
+    validator_link.hardlink_to(validator_key)
+    command += [
+        *_tenant_identity_args(namespace),
+        "--tenant-validator-key-file",
+        str(validator_key),
+        "--delete-tenant-data",
+    ]
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert f"local credential remains at {validator_key}" in result.stderr
+    assert "every backup or snapshot that contains it" in result.stderr
+    assert validator_key.exists()
+    assert validator_link.exists()
+    assert _state(env)["mutations"] == 0
+
+
+def test_cleanup_removes_validation_database_storage_with_system_namespace(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    _add_validation_database_storage(env)
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["pvcs"] == []
+    assert current["pvs"] == []
+    assert (
+        f"storageclass.storage.k8s.io/{STORAGE_CLASS}"
+        not in current["resources"]
+    )
+
+
+@pytest.mark.parametrize("layout", ["legacy", "dual"])
+def test_cleanup_accepts_supported_helm_attempt_layouts(
+    tmp_path: Path,
+    layout: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["helmValuesLayout"] = layout
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["helm"] is False
+    assert current["resources"] == {}
+
+
+def test_cleanup_rejects_conflicting_helm_attempt_layouts_before_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["helmValuesLayout"] = "conflict"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: live Helm release does not match the OCC receipt attempt.\n"
+    )
+    assert _state(env)["mutations"] == 0
+
+
+def test_cleanup_accepts_minimal_helm_clusterrolebinding_labels(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    key = (
+        "clusterrolebinding.rbac.authorization.k8s.io/"
+        "oce-openclaw-worker-namespaces"
+    )
+    state = _state(env)
+    metadata = state["resources"][key]["metadata"]
+    # The upstream chart emits this exact shape; its receipt records the UID.
+    metadata["labels"] = {"app.kubernetes.io/managed-by": "Helm"}
+    metadata["annotations"] = {
+        "meta.helm.sh/release-name": "oce",
+        "meta.helm.sh/release-namespace": SYSTEM_NAMESPACE,
+    }
+    receipt = json.loads(
+        (tmp_path / "state" / "receipt" / "resources.json").read_text()
+    )
+    assert receipt["resources"][key] == metadata["uid"]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["helm"] is False
+    assert key not in current["resources"]
+    assert current["mutations"] > 0
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "diagnostic"),
+    [
+        (
+            "annotations", "meta.helm.sh/release-name", "foreign-release",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-name", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-namespace", "foreign-namespace",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-namespace", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "metadata", "uid", "replacement-uid",
+            "does not match the UID recorded in the installation receipt.",
+        ),
+        (
+            "metadata", "uid", None,
+            "does not match the UID recorded in the installation receipt.",
+        ),
+        (
+            "receipt", "uid", None,
+            "is live but has no UID in the installation receipt.",
+        ),
+        (
+            "labels", "app.kubernetes.io/instance", "foreign-release",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/instance", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/managed-by", "another-installer",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/managed-by", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+    ],
+    ids=[
+        "foreign-release", "missing-release", "foreign-namespace",
+        "missing-namespace", "replacement-uid", "missing-uid",
+        "missing-receipt-uid", "wrong-instance", "null-instance",
+        "foreign-owner", "missing-owner",
+    ],
+)
+def test_minimal_helm_clusterrolebinding_identity_mismatch_stops_mutations(
+    tmp_path: Path,
+    section: str,
+    field: str,
+    value: str | None,
+    diagnostic: str,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    key = (
+        "clusterrolebinding.rbac.authorization.k8s.io/"
+        "oce-openclaw-worker-namespaces"
+    )
+    state = _state(env)
+    metadata = state["resources"][key]["metadata"]
+    metadata["labels"] = {"app.kubernetes.io/managed-by": "Helm"}
+    if section == "receipt":
+        receipt_path = tmp_path / "state" / "receipt" / "resources.json"
+        receipt = json.loads(receipt_path.read_text())
+        del receipt["resources"][key]
+        _write_json(receipt_path, receipt)
+    else:
+        target = metadata if section == "metadata" else metadata[section]
+        if value is None and field != "app.kubernetes.io/instance":
+            target.pop(field)
+        else:
+            # A present JSON null is distinct from an absent instance label.
+            target[field] = value
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == f"cleanup: {key} {diagnostic}\n"
+    assert _state(env) == state
+    assert state["mutations"] == 0
+
+
+def test_helm_rbac_ownership_mismatch_fails_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    key = (
+        "clusterrole.rbac.authorization.k8s.io/"
+        "oce-openclaw-tenant-worker"
+    )
+    state = _state(env)
+    state["resources"][key]["metadata"]["labels"][
+        "app.kubernetes.io/managed-by"
+    ] = "another-installer"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert (
+        "cleanup: clusterrole.rbac.authorization.k8s.io/"
+        "oce-openclaw-tenant-worker does not carry an exact cleanup ownership "
+        "label.\n"
+    ) == result.stderr
+    assert _state(env)["mutations"] == 0
+
+
+def test_iam_delete_denial_occurs_after_kubernetes_cleanup(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["denyDeleteRole"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert "AccessDenied: iam:DeleteRole" in result.stderr
+    current = _state(env)
+    assert current["resources"] == {}
+    assert current["aws"]["association"] is None
+    assert current["aws"]["policyDocument"] is None
+    assert current["aws"]["role"] is not None
+
+
+def _fake_log(tmp_path: Path) -> list[dict[str, Any]]:
+    log = tmp_path / "fake-log.jsonl"
+    return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+
+
+def test_agentgateway_stops_before_its_pod_identity_association_is_deleted(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    entries = _fake_log(tmp_path)
+    deployment_delete = next(
+        index
+        for index, entry in enumerate(entries)
+        if entry["tool"] == "kubectl"
+        and "/apis/apps/v1/namespaces/openclaw-enterprise-agw/deployments/agentgateway"
+        in entry["args"]
+    )
+    association_delete = next(
+        index
+        for index, entry in enumerate(entries)
+        if entry["tool"] == "aws" and "delete-pod-identity-association" in entry["args"]
+    )
+    assert deployment_delete < association_delete
+    assert "/apis/apps/v1/namespaces/openclaw-enterprise-agw/deployments/agentgateway" in " ".join(
+        " ".join(entry["args"]) for entry in entries if entry["mutation"]
+    )
+    assert "The script stops the AgentGateway Deployment and waits until it is gone" in " ".join(
+        (SAMPLE / "README.md").read_text().split()
+    )
+
+
+def test_association_denial_after_stop_keeps_service_account_and_namespace(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["denyDeleteAssociation"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert "AccessDenied: eks:DeletePodIdentityAssociation" in result.stderr
+    current = _state(env)
+    assert f"{AGW_NAMESPACE}|deployment.apps/agentgateway" not in current["resources"]
+    assert f"{AGW_NAMESPACE}|serviceaccount/{AGW_SERVICE_ACCOUNT}" in current["resources"]
+    assert f"namespace/{AGW_NAMESPACE}" in current["resources"]
+    assert current["aws"]["association"] is not None
+    assert current["helm"] is True
+
+
+def test_role_deletion_waits_for_exact_absence(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    role = dict(state["aws"]["role"])
+    state["aws"]["rolesAfterDelete"] = [role, role]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["aws"]["role"] is None
+    assert current["aws"].get("roleGetsAfterDelete", 0) == 3
+    assert current["aws"]["rolesAfterDelete"] == []
+
+
+def test_role_replaced_after_deletion_fails_closed(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["rolesAfterDelete"] = [
+        {**state["aws"]["role"], "RoleId": "replacement-role-id"}
+    ]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "cleanup: IAM role was replaced while deletion was in progress.\n"
+    )
+    assert _state(env)["aws"]["roleGetsAfterDelete"] == 1
+
+
+def test_association_delete_denial_preserves_kubernetes_identity(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["denyDeleteAssociation"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert "AccessDenied: eks:DeletePodIdentityAssociation" in result.stderr
+    current = _state(env)
+    assert current["aws"]["association"] is not None
+    assert f"namespace/{AGW_NAMESPACE}" in current["resources"]
+    assert (
+        f"{AGW_NAMESPACE}|serviceaccount/{AGW_SERVICE_ACCOUNT}"
+        in current["resources"]
+    )
+    assert current["helm"] is True
+
+
+def test_tenant_data_requires_explicit_opt_in_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant_namespace = "openclaw-tenant-a"
+    _add_tenant(env, tenant_namespace)
+    state = _state(env)
+    state["resources"][f"{tenant_namespace}|secret/user-data"] = _object(
+        "Secret",
+        "user-data",
+        "uid-user-data",
+        namespace=tenant_namespace,
+        owner="tenant-user",
+    )
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run([*command, "--tenant-namespace", tenant_namespace], env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: tenant namespaces may contain user data; cleanup made no "
+        "changes. Rerun with --delete-tenant-data to delete the exact listed "
+        "tenant namespaces and their data.\n"
+    )
+    current = _state(env)
+    resources = current["resources"]
+    assert f"namespace/{tenant_namespace}" in resources
+    assert f"{tenant_namespace}|secret/user-data" in resources
+    assert current["mutations"] == 0
+    assert current["helm"] is True
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+
+
+def test_undisclosed_managed_tenant_fails_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    _add_tenant(env, "openclaw-tenant-a")
+    before = _state(env)
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: the supplied tenant namespace set does not exactly match "
+        "the cleanup tenant namespace set (not supplied: openclaw-tenant-a).\n"
+    )
+    after = _state(env)
+    assert after["tenantDiscoveryCount"] == 1
+    after["tenantDiscoveryCount"] = before["tenantDiscoveryCount"]
+    after["aws"]["policyGetCount"] = before["aws"]["policyGetCount"]
+    assert after == before
+
+
+def test_tenant_delete_requires_a_captured_uid_for_every_namespace(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant_namespace = "openclaw-tenant-a"
+    _add_tenant(env, tenant_namespace)
+    before = _state(env)
+
+    result = _run([
+        *command,
+        "--tenant-namespace",
+        tenant_namespace,
+        "--delete-tenant-data",
+    ], env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: --delete-tenant-data requires one "
+        "--tenant-namespace-uid NAME=UID for every supplied tenant namespace "
+        "on the first cleanup attempt.\n"
+    )
+    after = _state(env)
+    after["tenantDiscoveryCount"] = before["tenantDiscoveryCount"]
+    after["aws"]["policyGetCount"] = before["aws"]["policyGetCount"]
+    assert after == before
+
+
+def test_replacement_same_name_namespace_fails_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant_namespace = "openclaw-tenant-a"
+    _add_tenant(env, tenant_namespace, uid="replacement-tenant-uid")
+    before = _state(env)
+
+    result = _run([
+        *command,
+        *_tenant_identity_args(tenant_namespace),
+        "--delete-tenant-data",
+    ], env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: managed tenant namespaces changed during cleanup; "
+        "refusing to continue.\n"
+    )
+    after = _state(env)
+    assert after["tenantDiscoveryCount"] == 2
+    after["tenantDiscoveryCount"] = before["tenantDiscoveryCount"]
+    after["aws"]["policyGetCount"] = before["aws"]["policyGetCount"]
+    assert after == before
+
+
+def test_tenant_added_after_freeze_fails_before_application_teardown(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant_namespace = "openclaw-tenant-a"
+    _add_tenant(env, tenant_namespace)
+    _mutate_tenant_namespace_on_discovery(
+        env,
+        discovery=2,
+        action="add",
+        name="openclaw-tenant-b",
+        uid="uid-openclaw-tenant-b",
+    )
+
+    result = _run([
+        *command,
+        *_tenant_identity_args(tenant_namespace),
+        "--delete-tenant-data",
+    ], env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: managed tenant namespaces changed during cleanup; "
+        "refusing to continue.\n"
+    )
+    current = _state(env)
+    assert current["helm"] is True
+    assert current["aws"]["association"] is not None
+    assert f"namespace/{SYSTEM_NAMESPACE}" in current["resources"]
+    assert f"namespace/{AGW_NAMESPACE}" in current["resources"]
+    assert "namespace/openclaw-tenant-a" in current["resources"]
+    assert "namespace/openclaw-tenant-b" in current["resources"]
+    assert not any(
+        "cleanup-tenant-freeze-" in resource
+        for resource in current["resources"]
+    )
+
+
+def test_tenant_uid_replacement_is_rejected_before_control_plane_removal(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant_namespace = "openclaw-tenant-a"
+    _add_tenant(env, tenant_namespace)
+    _mutate_tenant_namespace_on_discovery(
+        env,
+        discovery=3,
+        action="replace-uid",
+        name=tenant_namespace,
+        uid="replacement-tenant-uid",
+    )
+
+    result = _run([
+        *command,
+        *_tenant_identity_args(tenant_namespace),
+        "--delete-tenant-data",
+    ], env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: managed tenant namespaces changed during cleanup; "
+        "refusing to continue.\n"
+    )
+    current = _state(env)
+    assert current["helm"] is True
+    assert current["aws"]["association"] is not None
+    assert f"namespace/{SYSTEM_NAMESPACE}" in current["resources"]
+    assert (
+        current["resources"][f"namespace/{tenant_namespace}"]["metadata"]["uid"]
+        == "replacement-tenant-uid"
+    )
+    deletion_state = json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )
+    assert deletion_state["namespaces"] == [
+        {"name": tenant_namespace, "uid": f"uid-{tenant_namespace}"}
+    ]
+    assert deletion_state["complete"] is False
+    assert any(
+        resource.startswith("clusterrole.rbac.authorization.k8s.io/")
+        for resource in current["resources"]
+    )
+    assert not any(
+        "cleanup-tenant-freeze-" in resource
+        for resource in current["resources"]
+    )
+
+
+def test_opt_in_deletes_live_tenant_workload_with_namespace(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant_namespace = "openclaw-tenant-a"
+    _add_tenant(
+        env,
+        tenant_namespace,
+        workloads=[
+            _object(
+                "Deployment",
+                "openclaw-agent",
+                "uid-agent-deployment",
+                namespace=tenant_namespace,
+                owner=OCE_OWNER,
+            )
+        ],
+    )
+    result = _run([
+        *command,
+        *_tenant_identity_args(tenant_namespace),
+        "--delete-tenant-data",
+    ], env)
+
+    assert result.returncode == 0, result.stderr
+    assert "No tenant validator key files were supplied" in result.stdout
+    after = _state(env)
+    assert f"namespace/{tenant_namespace}" not in after["resources"]
+    assert not after["tenantWorkloads"].get(tenant_namespace)
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+    assert not any("cleanup-freeze-tenants-" in key for key in after["resources"])
+
+
+def test_opt_in_deletes_exact_tenant_namespaces_and_storage_idempotently(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    destructive_command = [
+        *command,
+        *_tenant_identity_args(*tenants),
+        "--delete-tenant-data",
+    ]
+
+    first = _run(destructive_command, env)
+
+    assert first.returncode == 0, first.stderr
+    after_first = _state(env)
+    assert not any(
+        f"namespace/{tenant}" in after_first["resources"]
+        for tenant in tenants
+    )
+    assert after_first["pvcs"] == []
+    assert after_first["pvs"] == []
+    assert not any(
+        "cleanup-freeze-tenants-" in resource
+        for resource in after_first["resources"]
+    )
+    deletion_state_path = tmp_path / "state" / "cleanup-tenant-deletion.json"
+    deletion_state = json.loads(deletion_state_path.read_text())
+    assert deletion_state["complete"] is True
+    assert deletion_state["namespaces"] == [
+        {"name": tenant, "uid": f"uid-{tenant}"}
+        for tenant in tenants
+    ]
+    assert deletion_state["persistentVolumes"] == [
+        {"name": f"pv-{tenant}", "uid": f"uid-pv-{tenant}"}
+        for tenant in tenants
+    ]
+    assert stat.S_IMODE(deletion_state_path.stat().st_mode) == 0o600
+    mutation_count = after_first["mutations"]
+
+    second = _run(destructive_command, env)
+
+    assert second.returncode == 0, second.stderr
+    assert _state(env)["mutations"] == mutation_count
+
+
+@pytest.mark.parametrize(
+    "resume",
+    [
+        "namespace-delete-failed",
+        # Kubernetes already removed tenant A's claim, but its recorded volume is still Released.
+        "released-volume-without-claim",
+    ],
+)
+def test_partial_tenant_delete_rerun_uses_recorded_uids_and_keeps_controls(
+    tmp_path: Path, resume: str
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    # A copy, so the first run's volume deletion does not reach it.
+    released_volume = json.loads(json.dumps(
+        next(item for item in state["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-a")
+    ))
+    released_volume["status"] = {"phase": "Released"}
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    destructive_command = [
+        *command,
+        *_tenant_identity_args(*tenants),
+        "--delete-tenant-data",
+    ]
+
+    failed = _run(destructive_command, env)
+
+    assert failed.returncode == 1
+    assert "simulated namespace deletion failure" in failed.stderr
+    partial = _state(env)
+    assert "namespace/openclaw-tenant-a" not in partial["resources"]
+    assert "namespace/openclaw-tenant-b" in partial["resources"]
+    assert partial["helm"] is False
+    assert (
+        "validatingwebhookconfigurations.admissionregistration.k8s.io/"
+        "openclaw-enterprise-nitro-policy"
+    ) in partial["resources"]
+    # Tenant A's deletion had started, so the tenant freeze stays for the rerun.
+    assert any(
+        "cleanup-freeze-tenants-" in resource
+        for resource in partial["resources"]
+    )
+    deletion_state = json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )
+    assert deletion_state["complete"] is False
+    if resume == "released-volume-without-claim":
+        assert not [
+            item
+            for item in partial["pvcs"]
+            if item["metadata"]["namespace"] == "openclaw-tenant-a"
+        ]
+        partial["pvs"].append(released_volume)
+        partial["releasedPvListingsLeft"] = {"pv-openclaw-tenant-a": 3}
+        Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+
+    retry_command = [
+        *command,
+        *[
+            argument
+            for tenant in tenants
+            for argument in ("--tenant-namespace", tenant)
+        ],
+        "--delete-tenant-data",
+    ]
+    recovered = _run(retry_command, env)
+
+    assert recovered.returncode == 0, recovered.stderr
+    final = _state(env)
+    assert "namespace/openclaw-tenant-b" not in final["resources"]
+    assert final["pvcs"] == []
+    assert final["pvs"] == []
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["complete"] is True
+
+
+def test_partial_tenant_delete_rerun_refuses_a_replaced_recorded_volume(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    failed = _run(
+        [*command, *_tenant_identity_args(*tenants), "--delete-tenant-data"], env
+    )
+    assert failed.returncode == 1
+    partial = _state(env)
+    # Tenant B's recorded volume now carries another UID under the same name.
+    volume = next(
+        item for item in partial["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b"
+    )
+    volume["metadata"]["uid"] = "uid-pv-replacement"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    mutations = partial["mutations"]
+
+    retry = _run(
+        [
+            *command,
+            *[argument for tenant in tenants for argument in ("--tenant-namespace", tenant)],
+            "--delete-tenant-data",
+        ],
+        env,
+    )
+
+    assert retry.returncode == 1
+    assert retry.stderr.endswith(
+        "cleanup: persistentvolume/pv-openclaw-tenant-b was replaced since the tenant "
+        "deletion record was written; refusing to continue.\n"
+    )
+    after = _state(env)
+    assert after["mutations"] == mutations
+    assert "namespace/openclaw-tenant-b" in after["resources"]
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["complete"] is False
+
+
+@pytest.mark.parametrize(
+    ("unsafe", "diagnostic"),
+    [
+        (
+            "recorded-volume-retain",
+            (
+                "persistentvolume/pv-openclaw-tenant-b must be an EBS CSI volume with "
+                "reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+        (
+            "recorded-volume-other-driver",
+            (
+                "persistentvolume/pv-openclaw-tenant-b must be an EBS CSI volume with "
+                "reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+        (
+            "unrecorded-tenant-volume",
+            (
+                "persistentvolume/pv-openclaw-tenant-b-extra names a tenant namespace but "
+                "is not in the tenant deletion record; refusing to continue."
+            ),
+        ),
+        (
+            "live-claim-not-bound",
+            (
+                "persistentvolumeclaim/openclaw-tenant-b/openclaw-workspace is not bound "
+                "to its persistent volume; refusing tenant deletion."
+            ),
+        ),
+    ],
+)
+def test_partial_tenant_delete_rerun_refuses_an_unsafe_volume_state(
+    tmp_path: Path, unsafe: str, diagnostic: str
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    failed = _run(
+        [*command, *_tenant_identity_args(*tenants), "--delete-tenant-data"], env
+    )
+    assert failed.returncode == 1
+    partial = _state(env)
+    volume = next(
+        item for item in partial["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b"
+    )
+    claim = next(
+        item
+        for item in partial["pvcs"]
+        if item["metadata"]["namespace"] == "openclaw-tenant-b"
+    )
+    # Between the runs the remaining tenant's storage changes shape.
+    if unsafe == "recorded-volume-retain":
+        volume["spec"]["persistentVolumeReclaimPolicy"] = "Retain"
+    elif unsafe == "recorded-volume-other-driver":
+        volume["spec"]["csi"]["driver"] = "efs.csi.aws.com"
+    elif unsafe == "unrecorded-tenant-volume":
+        extra = json.loads(json.dumps(volume))
+        extra["metadata"] = {"name": "pv-openclaw-tenant-b-extra", "uid": "uid-pv-extra"}
+        extra["spec"]["claimRef"] = {
+            "name": "openclaw-extra",
+            "namespace": "openclaw-tenant-b",
+            "uid": "uid-pvc-extra",
+        }
+        partial["pvs"].append(extra)
+    else:
+        claim["status"] = {"phase": "Pending"}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    mutations = partial["mutations"]
+
+    retry = _run(
+        [
+            *command,
+            *[argument for tenant in tenants for argument in ("--tenant-namespace", tenant)],
+            "--delete-tenant-data",
+        ],
+        env,
+    )
+
+    assert retry.returncode == 1
+    assert retry.stderr.endswith(f"cleanup: {diagnostic}\n")
+    after = _state(env)
+    assert after["mutations"] == mutations
+    assert "namespace/openclaw-tenant-b" in after["resources"]
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["complete"] is False
+
+
+def _remove_kept_tenant_freeze(tmp_path: Path, env: dict[str, str]) -> None:
+    """A partial deletion keeps its tenant freeze; model a rerun after it was removed, so the rerun installs a new one."""
+    state = _state(env)
+    state["resources"] = {
+        key: item for key, item in state["resources"].items()
+        if "cleanup-freeze-tenants-" not in key
+    }
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    (tmp_path / "state" / "cleanup-tenant-freeze.json").unlink()
+
+
+def _storage_at_tenant_freeze(
+    env: dict[str, str], change: Callable[[dict[str, Any]], None]
+) -> None:
+    """Apply change to a copy of the storage; the fake swaps it in while the tenant freeze is created."""
+    state = _state(env)
+    storage = json.loads(json.dumps({"pvcs": state["pvcs"], "pvs": state["pvs"]}))
+    change(storage)
+    state["storageAtTenantFreeze"] = storage
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+def _add_extra_tenant_volume(storage: dict[str, Any], namespace: str, reclaim: str) -> None:
+    storage["pvcs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {"name": "openclaw-extra", "namespace": namespace, "uid": "uid-pvc-extra"},
+        "spec": {"storageClassName": STORAGE_CLASS, "volumeName": f"pv-{namespace}-extra"},
+        "status": {"phase": "Bound"},
+    })
+    storage["pvs"].append({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": f"pv-{namespace}-extra", "uid": "uid-pv-extra"},
+        "spec": {
+            "claimRef": {"name": "openclaw-extra", "namespace": namespace, "uid": "uid-pvc-extra"},
+            "persistentVolumeReclaimPolicy": reclaim,
+            "csi": {"driver": "ebs.csi.eks.amazonaws.com", "volumeHandle": "vol-test-extra"},
+        },
+    })
+
+
+def _assert_only_the_tenant_freeze_came_and_went(
+    tmp_path: Path, env: dict[str, str], mutations_before: int, helm: bool = True
+) -> None:
+    changes = [entry for entry in _fake_log(tmp_path) if entry.get("mutation")]
+    freeze_types = ("ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding")
+    created = [
+        json.loads(entry["stdin"])["kind"]
+        for entry in changes
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    deleted = [
+        entry["args"][entry["args"].index("--raw") + 1]
+        for entry in changes
+        if "delete" in entry["args"]
+    ]
+    assert sorted(created) == sorted(freeze_types)
+    assert len(deleted) == 2
+    assert all(
+        "/validatingadmissionpolicies/" in path or "/validatingadmissionpolicybindings/" in path
+        for path in deleted
+    )
+    assert len(changes) == 4
+    after = _state(env)
+    assert after["mutations"] == mutations_before + 4
+    assert after["helm"] is helm
+    assert not any("cleanup-freeze-tenants-" in key for key in after["resources"])
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("reclaim", "diagnostic"),
+    [
+        ("Delete", None),
+        (
+            "Retain",
+            (
+                "persistentvolume/pv-openclaw-tenant-a-extra must be an EBS CSI volume "
+                "with reclaim policy Delete; refusing tenant deletion."
+            ),
+        ),
+    ],
+)
+def test_tenant_volume_bound_before_the_freeze_is_recorded_or_refused(
+    tmp_path: Path, reclaim: str, diagnostic: str | None
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    # The read-only preflight has passed; another tenant volume is bound before the freeze takes effect.
+    _storage_at_tenant_freeze(
+        env, lambda storage: _add_extra_tenant_volume(storage, tenant, reclaim)
+    )
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    deletion_record = tmp_path / "state" / "cleanup-tenant-deletion.json"
+    if diagnostic is None:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(deletion_record.read_text())["persistentVolumes"] == [
+            {"name": f"pv-{tenant}", "uid": f"uid-pv-{tenant}"},
+            {"name": f"pv-{tenant}-extra", "uid": "uid-pv-extra"},
+        ]
+        return
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {diagnostic}\n")
+    assert f"namespace/{tenant}" in _state(env)["resources"]
+    assert not deletion_record.exists()
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, 0)
+
+
+def test_resumed_tenant_deletion_revalidates_its_record_under_the_freeze(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    failed = _run(
+        [*command, *_tenant_identity_args(*tenants), "--delete-tenant-data"], env
+    )
+    assert failed.returncode == 1
+    log = tmp_path / "fake-log.jsonl"
+    log.unlink()
+    _remove_kept_tenant_freeze(tmp_path, env)
+    mutations = _state(env)["mutations"]
+    # The partial run already removed the OCE release.
+    assert _state(env)["helm"] is False
+
+    def retain_recorded_volume(storage: dict[str, Any]) -> None:
+        volume = next(
+            item for item in storage["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b"
+        )
+        volume["spec"]["persistentVolumeReclaimPolicy"] = "Retain"
+
+    # The rerun's read-only check passes; tenant B's recorded volume turns Retain before the freeze holds.
+    _storage_at_tenant_freeze(env, retain_recorded_volume)
+    retry = _run(
+        [
+            *command,
+            *[argument for tenant in tenants for argument in ("--tenant-namespace", tenant)],
+            "--delete-tenant-data",
+        ],
+        env,
+    )
+
+    assert retry.returncode == 1
+    assert retry.stderr.endswith(
+        "cleanup: persistentvolume/pv-openclaw-tenant-b must be an EBS CSI volume with "
+        "reclaim policy Delete; refusing tenant deletion.\n"
+    )
+    assert "namespace/openclaw-tenant-b" in _state(env)["resources"]
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["complete"] is False
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, mutations, helm=False)
+
+
+def test_failed_volume_check_under_the_freeze_removes_it_and_changes_nothing_else(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+
+    def unbind_claim(storage: dict[str, Any]) -> None:
+        claim = next(
+            item for item in storage["pvcs"] if item["metadata"]["namespace"] == tenant
+        )
+        claim["status"] = {"phase": "Pending"}
+
+    _storage_at_tenant_freeze(env, unbind_claim)
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "cleanup: persistentvolumeclaim/openclaw-tenant-a/openclaw-workspace is not bound "
+        "to its persistent volume; refusing tenant deletion.\n"
+    )
+    assert f"namespace/{tenant}" in _state(env)["resources"]
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, 0)
+
+
+UNCLAIMED_RECORDED_VOLUME = (
+    "persistentvolume/pv-openclaw-tenant-b is in the tenant deletion record but its claim reference no "
+    "longer names a tenant namespace; refusing to continue."
+)
+
+
+def _partial_tenant_deletion(tmp_path: Path) -> tuple[list[str], dict[str, str]]:
+    """Two tenants; the first deletion stops after tenant A, leaving tenant B's namespace, claim and volume."""
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenants = ["openclaw-tenant-a", "openclaw-tenant-b"]
+    for tenant in tenants:
+        _add_tenant(env, tenant)
+        _add_tenant_storage(env, tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = "openclaw-tenant-b"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    failed = _run([*command, *_tenant_identity_args(*tenants), "--delete-tenant-data"], env)
+    assert failed.returncode == 1
+    retry = [
+        *command,
+        *[argument for tenant in tenants for argument in ("--tenant-namespace", tenant)],
+        "--delete-tenant-data",
+    ]
+    return retry, env
+
+
+def _unclaim_recorded_volume(storage: dict[str, Any]) -> None:
+    # Tenant B's claim is gone and its recorded volume's claim reference is cleared; the volume is Released.
+    storage["pvcs"] = [
+        claim for claim in storage["pvcs"] if claim["metadata"]["namespace"] != "openclaw-tenant-b"
+    ]
+    volume = next(item for item in storage["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b")
+    volume["spec"].pop("claimRef")
+    volume["status"] = {"phase": "Released"}
+
+
+def _assert_resume_stopped_before_namespace_deletion(tmp_path: Path, env: dict[str, str]) -> None:
+    after = _state(env)
+    assert "namespace/openclaw-tenant-b" in after["resources"]
+    assert any(item["metadata"]["name"] == "pv-openclaw-tenant-b" for item in after["pvs"])
+    assert json.loads((tmp_path / "state" / "cleanup-tenant-deletion.json").read_text())["complete"] is False
+
+
+def test_resumed_deletion_refuses_a_recorded_volume_that_no_longer_claims_a_tenant(tmp_path: Path) -> None:
+    retry, env = _partial_tenant_deletion(tmp_path)
+    partial = _state(env)
+    _unclaim_recorded_volume(partial)
+    # The CSI driver would remove the Released volume object after a few listings, so a run that let it pass
+    # would complete.
+    partial["releasedPvListingsLeft"] = {"pv-openclaw-tenant-b": 3}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    mutations = partial["mutations"]
+
+    result = _run(retry, env)
+
+    # The read-only check refuses before any change, the temporary freeze included.
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {UNCLAIMED_RECORDED_VOLUME}\n")
+    assert _state(env)["mutations"] == mutations
+    _assert_resume_stopped_before_namespace_deletion(tmp_path, env)
+
+
+def test_claim_reference_cleared_before_the_freeze_is_caught_under_it(tmp_path: Path) -> None:
+    retry, env = _partial_tenant_deletion(tmp_path)
+    (tmp_path / "fake-log.jsonl").unlink()
+    _remove_kept_tenant_freeze(tmp_path, env)
+    mutations = _state(env)["mutations"]
+    # The retry's read-only check passes; then the claim goes and the recorded volume's claim reference is
+    # cleared, before the tenant freeze holds.
+    _storage_at_tenant_freeze(env, _unclaim_recorded_volume)
+    state = _state(env)
+    state["releasedPvListingsLeft"] = {"pv-openclaw-tenant-b": 3}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(retry, env)
+
+    # The check under the freeze refuses; only the temporary freeze came and went.
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {UNCLAIMED_RECORDED_VOLUME}\n")
+    _assert_resume_stopped_before_namespace_deletion(tmp_path, env)
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, mutations, helm=False)
+
+
+def test_resumed_deletion_refuses_before_an_unclaimed_recorded_volume_can_turn_retain(tmp_path: Path) -> None:
+    retry, env = _partial_tenant_deletion(tmp_path)
+    partial = _state(env)
+    _unclaim_recorded_volume(partial)
+    # The volume turns Retain right after the snapshot under the freeze, which does not guard an unclaimed
+    # volume, and the CSI driver then removes the volume object while the backing volume is kept.
+    partial["pvRequestsAfterList"] = {
+        "count": partial.get("pvListCount", 0) + 2,
+        "requests": [{
+            "operation": "UPDATE",
+            "name": "pv-openclaw-tenant-b",
+            "path": ["spec", "persistentVolumeReclaimPolicy"],
+            "value": "Retain",
+        }],
+    }
+    partial["releasedPvListingsLeft"] = {"pv-openclaw-tenant-b": 3}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    mutations = partial["mutations"]
+
+    result = _run(retry, env)
+
+    # Cleanup refuses before the freeze and the namespace deletion, so the Retain update never comes.
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {UNCLAIMED_RECORDED_VOLUME}\n")
+    after = _state(env)
+    assert after["mutations"] == mutations
+    assert not [
+        entry
+        for entry in after.get("pvAdmission", [])
+        if entry["operation"] == "UPDATE" and entry["name"] == "pv-openclaw-tenant-b"
+    ]
+    volume = next(item for item in after["pvs"] if item["metadata"]["name"] == "pv-openclaw-tenant-b")
+    assert volume["spec"]["persistentVolumeReclaimPolicy"] == "Delete"
+    _assert_resume_stopped_before_namespace_deletion(tmp_path, env)
+
+
+def _pv_requests_after_under_freeze_list(env: dict[str, str], requests: list[dict[str, Any]]) -> None:
+    """The second PV listing is the snapshot under the freeze; the requests arrive after its bytes return."""
+    state = _state(env)
+    state["pvRequestsAfterList"] = {"count": 2, "requests": requests}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+
+TENANT_PV_DENIAL = (
+    "OpenClaw Enterprise cleanup admission freeze protects the persistent volumes of tenant namespaces."
+)
+
+
+def test_freeze_denies_a_recorded_volume_turning_retain_after_the_snapshot(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    _pv_requests_after_under_freeze_list(env, [{
+        "operation": "UPDATE",
+        "name": f"pv-{tenant}",
+        "path": ["spec", "persistentVolumeReclaimPolicy"],
+        "value": "Retain",
+    }])
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    after = _state(env)
+    # The change made after the snapshot never lands, so no namespace is deleted over a Retain volume.
+    assert after.get("unsafeVolumeAtNamespaceDelete") is not True
+    assert after["pvAdmission"] == [{
+        "operation": "UPDATE",
+        "name": f"pv-{tenant}",
+        "subresource": "",
+        "denied": True,
+        "message": TENANT_PV_DENIAL,
+    }]
+    assert result.returncode == 0, result.stderr
+    assert json.loads(
+        (tmp_path / "state" / "cleanup-tenant-deletion.json").read_text()
+    )["persistentVolumes"] == [{"name": f"pv-{tenant}", "uid": f"uid-pv-{tenant}"}]
+    assert after["pvs"] == []
+
+
+def test_freeze_denies_a_new_volume_that_claims_a_tenant_namespace(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    late = {
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {"name": f"pv-{tenant}-late", "uid": "uid-pv-late"},
+        "spec": {
+            "claimRef": {"name": "openclaw-late", "namespace": tenant, "uid": "uid-pvc-late"},
+            "persistentVolumeReclaimPolicy": "Retain",
+            "csi": {"driver": "ebs.csi.eks.amazonaws.com", "volumeHandle": "vol-test-late"},
+        },
+    }
+    _pv_requests_after_under_freeze_list(env, [{"operation": "CREATE", "object": late}])
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    after = _state(env)
+    assert after["pvAdmission"] == [{
+        "operation": "CREATE",
+        "name": f"pv-{tenant}-late",
+        "subresource": "",
+        "denied": True,
+        "message": TENANT_PV_DENIAL,
+    }]
+    assert after.get("unsafeVolumeAtNamespaceDelete") is not True
+    assert result.returncode == 0, result.stderr
+    assert after["pvs"] == []
+
+
+def test_freeze_allows_status_and_finalizer_progress_of_tenant_volumes(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    state = _state(env)
+    volume = next(pv for pv in state["pvs"] if pv["metadata"]["name"] == f"pv-{tenant}")
+    volume["metadata"]["finalizers"] = [
+        "kubernetes.io/pv-protection",
+        "external-provisioner.volume.kubernetes.io/finalizer",
+    ]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    name = f"pv-{tenant}"
+    _pv_requests_after_under_freeze_list(env, [
+        # The PV controller's status update goes to the status subresource.
+        {
+            "operation": "UPDATE",
+            "name": name,
+            "subresource": "status",
+            "path": ["status", "phase"],
+            "value": "Released",
+        },
+        # The protection controller and the CSI provisioner remove their finalizers.
+        {
+            "operation": "UPDATE",
+            "name": name,
+            "path": ["metadata", "finalizers"],
+            "remove": "kubernetes.io/pv-protection",
+        },
+        {
+            "operation": "UPDATE",
+            "name": name,
+            "path": ["metadata", "annotations", "pv.kubernetes.io/provisioned-by"],
+            "value": "ebs.csi.eks.amazonaws.com",
+        },
+        # In the same window a safety-relevant change is still denied, so the rule is active.
+        {
+            "operation": "UPDATE",
+            "name": name,
+            "path": ["spec", "csi", "volumeHandle"],
+            "value": "vol-test-other",
+        },
+    ])
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    after = _state(env)
+    assert [(entry["subresource"], entry["denied"]) for entry in after["pvAdmission"]] == [
+        ("status", False),
+        ("", False),
+        ("", False),
+        ("", True),
+    ]
+    assert after["pvAdmission"][3]["message"] == TENANT_PV_DENIAL
+    assert result.returncode == 0, result.stderr
+    assert after["pvs"] == []
+
+
+def _tenant_freeze_policy_document(tmp_path: Path) -> dict[str, Any]:
+    created = [
+        json.loads(entry["stdin"])
+        for entry in _fake_log(tmp_path)
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    return next(
+        document
+        for document in created
+        if document["kind"] == "ValidatingAdmissionPolicy"
+        and "cleanup-freeze-tenants-" in document["metadata"]["name"]
+    )
+
+
+def test_tenant_freeze_policy_guards_every_pv_field_and_probes_an_unclaimed_volume(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    assert result.returncode == 0, result.stderr
+    spec = _tenant_freeze_policy_document(tmp_path)["spec"]
+    assert spec["matchConstraints"]["resourceRules"][1] == {
+        "apiGroups": [""],
+        "apiVersions": ["v1"],
+        "operations": ["CREATE", "UPDATE"],
+        "resources": ["persistentvolumes"],
+        "scope": "Cluster",
+    }
+    variables = {item["name"]: item["expression"] for item in spec["variables"]}
+    assert json.loads(variables["targets"]) == [tenant]
+    # The PV rule's own expressions; the finalizer-removal rule compares whole objects and has its own test.
+    text = " ".join(
+        [variables[name] for name in ("pv", "newFields", "oldFields", "claimsTarget")]
+        + [spec["validations"][1]["expression"]]
+    )
+    # Every PV field the rule reads is guarded with has(), on the new and the old object.
+    for root in ("object", "oldObject"):
+        for path in (
+            "persistentVolumeReclaimPolicy",
+            "csi.driver",
+            "csi.volumeHandle",
+            "claimRef.namespace",
+            "claimRef.name",
+            "claimRef.uid",
+        ):
+            guarded = f"has({root}.spec.{path}) ? {root}.spec.{path}"
+            assert guarded in text, guarded
+            text = text.replace(guarded, "")
+        for parent in ("spec.csi", "spec.claimRef", "spec"):
+            text = text.replace(f"has({root}.{parent})", "")
+    assert "object.spec" not in text
+    assert "oldObject.spec" not in text
+    # The install check denies a PV that claims the target and allows one that claims nothing.
+    assert _state(env)["pvProbes"] == [
+        {"claims": tenant, "denied": True},
+        {"claims": None, "denied": False},
+    ]
+
+
+def test_freeze_that_denies_an_unclaimed_volume_fails_closed(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    state = _state(env)
+    # A rule that denies PVs outside the target namespaces would block other projects in a shared cluster.
+    state["denyUnclaimedPvProbe"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run([*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(
+        "cleanup: tenant admission freeze denied a persistent volume that claims no tenant "
+        "namespace; refusing to continue.\n"
+    )
+    assert f"namespace/{tenant}" in _state(env)["resources"]
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+    _assert_only_the_tenant_freeze_came_and_went(tmp_path, env, 0)
+
+
+def _freeze_run(tmp_path: Path, freeze: str, kill_after: str | None = None) -> tuple[list[str], dict[str, str]]:
+    """A cleanup that creates the per-namespace freeze (system namespaces) or, first, the tenant freeze."""
+    if freeze == "namespace":
+        _, command, env = _prepare(tmp_path, kill_after=kill_after)
+        return command, env
+    _, command, env = _prepare(tmp_path, created=_all_created(), kill_after=kill_after)
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    return [*command, *_tenant_identity_args(tenant), "--delete-tenant-data"], env
+
+
+def _defaulted_freeze_names(env: dict[str, str], freeze: str) -> list[str]:
+    return [
+        name
+        for name in _state(env).get("defaultedFreezeObjects", [])
+        if ("cleanup-freeze-tenants-" in name) == (freeze == "tenant")
+    ]
+
+
+@pytest.mark.parametrize("freeze", ["namespace", "tenant"])
+def test_freeze_read_back_with_api_defaults_validates(tmp_path: Path, freeze: str) -> None:
+    command, env = _freeze_run(tmp_path, freeze)
+
+    result = _run(command, env)
+
+    # The fake stores and returns each freeze object with the API server's defaults, as a cluster does.
+    assert result.returncode == 0, result.stderr
+    assert len(_defaulted_freeze_names(env, freeze)) == 2
+    assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+
+
+@pytest.mark.parametrize("freeze", ["namespace", "tenant"])
+def test_recovery_removes_a_freeze_read_back_with_api_defaults(tmp_path: Path, freeze: str) -> None:
+    command, env = _freeze_run(tmp_path, freeze, kill_after="binding")
+    killed = _run(command, env)
+    assert killed.returncode == -9
+    freeze_state = tmp_path / "state" / (
+        "cleanup-tenant-freeze.json" if freeze == "tenant" else "cleanup-freeze.json"
+    )
+    assert freeze_state.exists()
+    assert len(_defaulted_freeze_names(env, freeze)) == 2
+
+    recovered = _run(command, env)
+
+    assert recovered.returncode == 0, recovered.stderr
+    assert not freeze_state.exists()
+    assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+
+
+def _finalizer_run(
+    tmp_path: Path, freeze: str, variants: tuple[str, ...] = (), job_pod: bool = False
+) -> tuple[list[str], dict[str, str], str]:
+    """A cleanup whose namespace deletion waits for finalizers, under the tenant or the per-namespace freeze."""
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    if freeze == "tenant":
+        namespace = "openclaw-tenant-a"
+        _add_tenant(env, namespace)
+        _add_tenant_storage(env, namespace)
+        command = [*command, *_tenant_identity_args(namespace), "--delete-tenant-data"]
+    else:
+        namespace = SYSTEM_NAMESPACE
+        _add_validation_database_storage(env)
+    state = _state(env)
+    state["finalizerProtection"] = True
+    state["finalizerVariants"] = list(variants)
+    if job_pod:
+        state["jobPods"] = [{
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "oce-initialization-abcde",
+                "namespace": SYSTEM_NAMESPACE,
+                "uid": "uid-job-pod",
+                "finalizers": ["batch.kubernetes.io/job-tracking"],
+            },
+            "spec": {"nodeName": "node-a"},
+            "status": {"phase": "Succeeded"},
+        }]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    return command, env, namespace
+
+
+def _finalizer_admission(env: dict[str, str], namespace: str, resource: str) -> list[tuple[str, bool, bool]]:
+    return [
+        (entry["variant"], entry["frozen"], entry["allowed"])
+        for entry in _state(env).get("finalizerAdmission", [])
+        if entry["namespace"] == namespace and entry["resource"] == resource
+    ]
+
+
+@pytest.mark.parametrize("freeze", ["tenant", "namespace"])
+def test_pvc_protection_finalizer_removal_lets_the_namespace_go(tmp_path: Path, freeze: str) -> None:
+    command, env, namespace = _finalizer_run(tmp_path, freeze)
+
+    result = _run(command, env)
+
+    # Under the active freeze, the PVC protection controller removes its finalizer and the namespace goes.
+    assert _finalizer_admission(env, namespace, "persistentvolumeclaims") == [("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+    assert _state(env)["pvcs"] == []
+
+
+def test_job_tracking_finalizer_removal_lets_a_system_namespace_go(tmp_path: Path) -> None:
+    command, env, namespace = _finalizer_run(tmp_path, "namespace", job_pod=True)
+
+    result = _run(command, env)
+
+    assert _finalizer_admission(env, namespace, "pods") == [("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+
+
+@pytest.mark.parametrize("freeze", ["tenant", "namespace"])
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "spec",
+        "label",
+        "annotation",
+        "ownerReference",
+        "deletionTimestamp",
+        "add",
+        "notDeleting",
+        "subresource",
+    ],
+)
+def test_finalizer_exemption_denies_every_other_change(
+    tmp_path: Path, freeze: str, variant: str
+) -> None:
+    command, env, namespace = _finalizer_run(tmp_path, freeze, variants=(variant,))
+
+    result = _run(command, env)
+
+    # In the same window the variant is denied and the pure removal is allowed, so the namespace still goes.
+    assert _finalizer_admission(env, namespace, "persistentvolumeclaims") == [
+        (variant, True, False),
+        ("pure", True, True),
+    ]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+
+
+def test_both_freezes_carry_the_finalizer_removal_rule_before_any_field_read(tmp_path: Path) -> None:
+    command, env, _ = _finalizer_run(tmp_path, "tenant")
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    created = [
+        json.loads(entry["stdin"])
+        for entry in _fake_log(tmp_path)
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    policies = {
+        "tenant" if "cleanup-freeze-tenants-" in document["metadata"]["name"] else "namespace": document["spec"]
+        for document in created
+        if document["kind"] == "ValidatingAdmissionPolicy"
+    }
+    for freeze, resources, validation in (
+        ("namespace", '["persistentvolumeclaims", "pods"]', "variables.finalizerRemoval"),
+        (
+            "tenant",
+            '["persistentvolumeclaims", "pods"]',
+            "variables.pv || variables.finalizerRemoval || variables.podStatusUpdate",
+        ),
+    ):
+        spec = policies[freeze]
+        expression = {item["name"]: item["expression"] for item in spec["variables"]}["finalizerRemoval"]
+        # The operation, the empty subresource and the resource come first, before any field is read.
+        assert expression.startswith(
+            "request.operation == 'UPDATE' && request.subResource == ''"
+            f" && request.resource.group == '' && request.resource.resource in {resources}"
+            " && has(oldObject.metadata.deletionTimestamp)"
+        ), freeze
+        assert spec["validations"][0]["expression"] == validation
+        for path in ("metadata.labels", "metadata.annotations", "metadata.ownerReferences", "spec", "status"):
+            assert (
+                f"(has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
+                f" : !has(oldObject.{path}))"
+            ) in expression
+        for path in ("resourceVersion", "managedFields", "selfLink"):
+            assert path not in expression
+        assert "size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)" in expression
+
+
+PVC_PROTECTION = "kubernetes.io/pvc-protection"
+BACKUP = "example.com/backup"
+AUDIT = "example.com/audit"
+
+
+def _finalizer_count_run(
+    tmp_path: Path, freeze: str, variant: str, before: list[str], after: list[str]
+) -> tuple[list[str], dict[str, str], str]:
+    """A finalizer run whose claim starts with `before`; the variant asks for `after` before the pure removal."""
+    command, env, namespace = _finalizer_run(tmp_path, freeze, variants=(variant,))
+    state = _state(env)
+    for claim in state["pvcs"]:
+        if claim["metadata"]["namespace"] == namespace:
+            claim["metadata"]["finalizers"] = list(before)
+    state["finalizerTargets"] = {variant: list(after)}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    return command, env, namespace
+
+
+@pytest.mark.parametrize("freeze", ["tenant", "namespace"])
+@pytest.mark.parametrize(
+    ("variant", "before", "after"),
+    [
+        pytest.param(
+            "duplicateWhileShrinking",
+            [PVC_PROTECTION, BACKUP, AUDIT],
+            [PVC_PROTECTION, PVC_PROTECTION],
+            id="duplicateWhileShrinking",
+        ),
+        pytest.param(
+            "countIncreased",
+            [PVC_PROTECTION, PVC_PROTECTION, BACKUP, AUDIT],
+            [PVC_PROTECTION] * 3,
+            id="countIncreased",
+        ),
+    ],
+)
+def test_finalizer_removal_denies_a_name_whose_count_grows(
+    tmp_path: Path, freeze: str, variant: str, before: list[str], after: list[str]
+) -> None:
+    command, env, namespace = _finalizer_count_run(tmp_path, freeze, variant, before, after)
+
+    result = _run(command, env)
+
+    # The list gets shorter and every entry was already there, but one name now occurs more often: denied. The
+    # controller's pure removal in the same window is admitted, so the namespace still goes.
+    assert _finalizer_admission(env, namespace, "persistentvolumeclaims") == [
+        (variant, True, False),
+        ("pure", True, True),
+    ]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+
+
+@pytest.mark.parametrize("freeze", ["tenant", "namespace"])
+@pytest.mark.parametrize(
+    ("variant", "before", "after"),
+    [
+        pytest.param(
+            "oneDuplicateRemoved",
+            [PVC_PROTECTION, PVC_PROTECTION, BACKUP],
+            [PVC_PROTECTION, BACKUP],
+            id="oneDuplicateRemoved",
+        ),
+        pytest.param(
+            "lastDuplicateRemoved",
+            [PVC_PROTECTION, PVC_PROTECTION],
+            [PVC_PROTECTION],
+            id="lastDuplicateRemoved",
+        ),
+    ],
+)
+def test_finalizer_removal_allows_removing_one_duplicate(
+    tmp_path: Path, freeze: str, variant: str, before: list[str], after: list[str]
+) -> None:
+    command, env, namespace = _finalizer_count_run(tmp_path, freeze, variant, before, after)
+
+    result = _run(command, env)
+
+    assert _finalizer_admission(env, namespace, "persistentvolumeclaims") == [
+        (variant, True, True),
+        ("pure", True, True),
+    ]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{namespace}" not in _state(env)["resources"]
+
+
+def test_both_freezes_carry_the_finalizer_count_clause(tmp_path: Path) -> None:
+    command, env, _ = _finalizer_run(tmp_path, "tenant")
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    created = [
+        json.loads(entry["stdin"])
+        for entry in _fake_log(tmp_path)
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    expressions = {
+        "tenant" if "cleanup-freeze-tenants-" in document["metadata"]["name"] else "namespace": {
+            item["name"]: item["expression"] for item in document["spec"]["variables"]
+        }["finalizerRemoval"]
+        for document in created
+        if document["kind"] == "ValidatingAdmissionPolicy"
+    }
+    # Membership, then no name more often than before, then a shorter list.
+    tail = (
+        " && (!has(object.metadata.finalizers) || (object.metadata.finalizers.all("
+        "finalizer, finalizer in oldObject.metadata.finalizers)"
+        " && object.metadata.finalizers.all(finalizer, size(object.metadata.finalizers.filter("
+        "entry, entry == finalizer)) <= size(oldObject.metadata.finalizers.filter(entry, entry == finalizer)))"
+        " && size(object.metadata.finalizers) < size(oldObject.metadata.finalizers)))"
+    )
+    assert sorted(expressions) == ["namespace", "tenant"]
+    for freeze, expression in expressions.items():
+        assert expression.endswith(tail), freeze
+
+
+def test_readme_names_the_reviewed_finalizer_set_and_the_count_rule() -> None:
+    readme = " ".join((SAMPLE / "README.md").read_text().split())
+
+    assert (
+        "These two are the sample's reviewed finalizer set: `kubernetes.io/pvc-protection` on PVCs and"
+        " `batch.kubernetes.io/job-tracking` on Job Pods."
+    ) in readme
+    assert (
+        "A finalizer on any other kind, or any other finalizer that is not removed by an update the freeze"
+        " admits, keeps the namespace terminating, and cleanup stops, fail closed, when its 600-second wait for"
+        " that namespace times out."
+    ) in readme
+    assert (
+        "the new finalizer list is shorter than the old one, and no finalizer name occurs more often in it than"
+        " in the old list, so the update only removes entries;"
+    ) in readme
+    assert "No other object in these namespaces carries a finalizer" not in readme
+    assert "the new finalizer list is a strict subset of the old one" not in readme
+
+
+# Test-only: a python3 first on PATH for the deadline tests. It runs cleanup.sh's `python3 -I -` program under the
+# real interpreter with -I, with time.sleep(n) advancing a virtual offset that time.monotonic adds to the real clock,
+# so the 600 s Pod wait runs out in seconds. Every other python3 call passes straight through unchanged.
+FAKE_CLOCK_PYTHON = r'''#!@PYTHON@ -I
+import os
+import sys
+
+if sys.argv[1:3] != ["-I", "-"]:
+    os.execv("@PYTHON@", ["@PYTHON@", *sys.argv[1:]])
+
+import json
+import time
+
+offset = 0.0
+sleeps = []
+real_monotonic = time.monotonic
+start = real_monotonic()
+
+
+def monotonic():
+    return real_monotonic() + offset
+
+
+def sleep(seconds):
+    global offset
+    offset += seconds
+    sleeps.append(seconds)
+
+
+time.monotonic, time.sleep = monotonic, sleep
+source = sys.stdin.read()
+sys.argv = ["-", *sys.argv[3:]]
+try:
+    exec(compile(source, "<stdin>", "exec"), {"__name__": "__main__", "__file__": "<stdin>"})
+finally:
+    with open("@MARKER@", "w") as stream:
+        json.dump({"virtualElapsed": monotonic() - start, "sleeps": sorted(set(sleeps))}, stream)
+'''
+
+
+def _pod(name: str, phase: str | None, *, terminating: bool = False) -> dict[str, Any]:
+    pod: dict[str, Any] = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {"name": name, "namespace": SYSTEM_NAMESPACE, "uid": f"uid-{name}"},
+        "spec": {"nodeName": "node-a"},
+        "status": {} if phase is None else {"phase": phase},
+    }
+    if terminating:
+        pod["metadata"]["deletionTimestamp"] = "2026-01-01T00:00:00Z"
+    return pod
+
+
+def _pod_wait_run(tmp_path: Path, pods: list[dict[str, Any]], **changes: Any) -> tuple[list[str], dict[str, str]]:
+    """A cleanup whose first per-namespace freeze is for openclaw-system, which holds pods."""
+    _, command, env = _prepare(tmp_path)
+    state = _state(env)
+    state["namespacePods"] = pods
+    state.update(changes)
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    return command, env
+
+
+def _run_with_fake_clock(
+    tmp_path: Path, command: list[str], env: dict[str, str]
+) -> tuple[subprocess.CompletedProcess[str], dict[str, Any], float]:
+    import sys
+    import time
+
+    clock_dir = tmp_path / "fake-clock"
+    clock_dir.mkdir()
+    marker = tmp_path / "fake-clock.json"
+    shim = clock_dir / "python3"
+    shim.write_text(FAKE_CLOCK_PYTHON.replace("@PYTHON@", sys.executable).replace("@MARKER@", str(marker)))
+    shim.chmod(0o755)
+    started = time.monotonic()
+    result = subprocess.run(
+        command,
+        check=False,
+        env={**env, "PATH": f"{clock_dir}{os.pathsep}{env['PATH']}"},
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    wall = time.monotonic() - started
+    # The marker exists only if the cleanup program itself ran under the fake clock.
+    return result, json.loads(marker.read_text()), wall
+
+
+def _pod_listings(tmp_path: Path, namespace: str) -> list[int]:
+    return [
+        index
+        for index, entry in enumerate(_fake_log(tmp_path))
+        if entry["tool"] == "kubectl" and entry["args"][5:9] == ["get", "pods", "--namespace", namespace]
+    ]
+
+
+def _freeze_creates(tmp_path: Path, namespace: str | None = None) -> list[int]:
+    indexes = []
+    for index, entry in enumerate(_fake_log(tmp_path)):
+        if "create" not in entry["args"] or "-f" not in entry["args"]:
+            continue
+        document = json.loads(entry["stdin"])
+        if document["kind"] not in ("ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"):
+            continue
+        if namespace is None or (
+            document["kind"] == "ValidatingAdmissionPolicy"
+            and json.dumps(namespace) in document["spec"]["matchConditions"][0]["expression"]
+        ):
+            indexes.append(index)
+    return indexes
+
+
+def _assert_stopped_before_any_freeze(tmp_path: Path, env: dict[str, str], result: Any, diagnostic: str) -> None:
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {diagnostic}\n")
+    assert _freeze_creates(tmp_path) == []
+    assert not (tmp_path / "state" / "cleanup-freeze.json").exists()
+    resources = _state(env)["resources"]
+    assert not any("cleanup-freeze-" in key for key in resources)
+    assert f"namespace/{SYSTEM_NAMESPACE}" in resources
+
+
+def _assert_listed_then_frozen(tmp_path: Path, env: dict[str, str], result: Any, listings: int) -> None:
+    assert result.returncode == 0, result.stderr
+    pod_lists = _pod_listings(tmp_path, SYSTEM_NAMESPACE)
+    freezes = _freeze_creates(tmp_path, SYSTEM_NAMESPACE)
+    assert len(pod_lists) == listings
+    assert freezes and pod_lists[-1] < freezes[0]
+    assert f"namespace/{SYSTEM_NAMESPACE}" not in _state(env)["resources"]
+    assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+
+
+@pytest.mark.parametrize(
+    ("pods", "gone", "left"),
+    [
+        pytest.param([_pod("oce-gateway-0", "Running")], {}, "pod/oce-gateway-0", id="running-pod-stays"),
+        pytest.param(
+            [_pod("oce-job-abcde", "Succeeded", terminating=True)],
+            {},
+            "pod/oce-job-abcde",
+            id="terminating-pod-stays",
+        ),
+        pytest.param(
+            [
+                _pod("oce-pending", "Pending"),
+                _pod("oce-running", "Running"),
+                _pod("oce-leaving", "Running", terminating=True),
+                _pod("oce-done", "Succeeded"),
+            ],
+            {"oce-leaving": 3},
+            "pod/oce-pending, pod/oce-running",
+            id="timeout-names-the-pods-left",
+        ),
+    ],
+)
+def test_pod_wait_stops_at_its_deadline_before_any_freeze(
+    tmp_path: Path, pods: list[dict[str, Any]], gone: dict[str, int], left: str
+) -> None:
+    command, env = _pod_wait_run(tmp_path, pods, podGoneAfterListings=gone)
+
+    result, clock, wall = _run_with_fake_clock(tmp_path, command, env)
+
+    _assert_stopped_before_any_freeze(
+        tmp_path,
+        env,
+        result,
+        f"namespace/{SYSTEM_NAMESPACE} still has pods that have not finished: {left}; refusing to freeze it.",
+    )
+    # Virtual time passed the 600 s deadline in 2 s polls: at most 301 listings, the last at or past 600 s.
+    listings = len(_pod_listings(tmp_path, SYSTEM_NAMESPACE))
+    assert clock["virtualElapsed"] >= 600
+    assert clock["sleeps"] == [2]
+    assert listings <= 301
+    assert 2 * (listings - 1) + wall >= 600
+
+
+@pytest.mark.parametrize(
+    ("changes", "diagnostic"),
+    [
+        pytest.param(
+            {"namespacePods": [_pod("oce-gateway-0", "Running"), _pod("oce-lost", "Unknown")]},
+            f"pod/oce-lost in namespace/{SYSTEM_NAMESPACE} has phase Unknown; refusing to freeze the namespace.",
+            id="unknown-phase",
+        ),
+        pytest.param(
+            {"namespacePods": [_pod("oce-gateway-0", "Running"), _pod("oce-new", None)]},
+            f"pod/oce-new in namespace/{SYSTEM_NAMESPACE} has no phase; refusing to freeze the namespace.",
+            id="missing-phase",
+        ),
+        pytest.param(
+            {"failPodList": SYSTEM_NAMESPACE},
+            "kubectl failed: simulated pod list failure",
+            id="list-error",
+        ),
+        pytest.param(
+            {"malformedPodList": SYSTEM_NAMESPACE},
+            f"pod discovery for namespace/{SYSTEM_NAMESPACE} returned an unexpected result.",
+            id="malformed-list",
+        ),
+    ],
+)
+def test_pod_wait_stops_at_once_before_any_freeze(
+    tmp_path: Path, changes: dict[str, Any], diagnostic: str
+) -> None:
+    command, env = _pod_wait_run(tmp_path, [], **changes)
+
+    result = _run(command, env)
+
+    _assert_stopped_before_any_freeze(tmp_path, env, result, diagnostic)
+    assert len(_pod_listings(tmp_path, SYSTEM_NAMESPACE)) == 1
+
+
+def test_pod_wait_proceeds_when_a_terminating_pod_goes_within_the_window(tmp_path: Path) -> None:
+    command, env = _pod_wait_run(
+        tmp_path,
+        [_pod("oce-gateway-0", "Running", terminating=True)],
+        podGoneAfterListings={"oce-gateway-0": 1},
+    )
+
+    result = _run(command, env)
+
+    _assert_listed_then_frozen(tmp_path, env, result, listings=2)
+
+
+@pytest.mark.parametrize(
+    "pods",
+    [
+        pytest.param([_pod("oce-job-abcde", "Succeeded"), _pod("oce-job-fghij", "Failed")], id="terminal-pods"),
+        pytest.param([], id="empty-namespace"),
+    ],
+)
+def test_pod_wait_proceeds_when_every_pod_has_finished(tmp_path: Path, pods: list[dict[str, Any]]) -> None:
+    command, env = _pod_wait_run(tmp_path, pods)
+
+    result = _run(command, env)
+
+    _assert_listed_then_frozen(tmp_path, env, result, listings=1)
+
+
+TENANT = "openclaw-tenant-a"
+
+
+def _tenant_pod(name: str, *, job: bool = False) -> dict[str, Any]:
+    owner = (
+        {"apiVersion": "batch/v1", "kind": "Job", "name": "openclaw-agent-task", "uid": "uid-agent-job"}
+        if job
+        else {"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "openclaw-agent-7d9f6", "uid": "uid-agent-rs"}
+    )
+    pod: dict[str, Any] = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": name,
+            "generateName": name.rsplit("-", 1)[0] + "-",
+            "namespace": TENANT,
+            "uid": f"uid-{name}",
+            "resourceVersion": "7",
+            "generation": 1,
+            "creationTimestamp": "2026-01-01T00:00:00Z",
+            "labels": {"app.kubernetes.io/name": "openclaw-agent"},
+            "annotations": {"example.com/revision": "1"},
+            "ownerReferences": [{**owner, "controller": True}],
+            "managedFields": [{"manager": "kube-controller-manager", "operation": "Update"}],
+        },
+        "spec": {"nodeName": "node-a", "containers": [{"name": "agent", "image": "example.com/agent:1"}]},
+        "status": {"phase": "Running"},
+    }
+    if job:
+        pod["metadata"]["finalizers"] = ["batch.kubernetes.io/job-tracking"]
+    return pod
+
+
+def _tenant_pod_run(
+    tmp_path: Path, pod: dict[str, Any], variants: tuple[str, ...] = ()
+) -> tuple[list[str], dict[str, str]]:
+    """A tenant deletion whose namespace still runs a Pod when the tenant freeze goes on."""
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    _add_tenant(env, TENANT)
+    _add_tenant_storage(env, TENANT)
+    state = _state(env)
+    state["finalizerProtection"] = True
+    state["namespacePods"] = [pod]
+    state["podStatusVariants"] = list(variants)
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    return [*command, *_tenant_identity_args(TENANT), "--delete-tenant-data"], env
+
+
+def _pod_status_admission(env: dict[str, str]) -> list[tuple[str, bool, bool]]:
+    return [
+        (entry["variant"], entry["frozen"], entry["allowed"])
+        for entry in _state(env).get("podStatusAdmission", [])
+        if entry["namespace"] == TENANT
+    ]
+
+
+def test_tenant_freeze_admits_the_final_status_of_a_running_pod(tmp_path: Path) -> None:
+    command, env = _tenant_pod_run(tmp_path, _tenant_pod("openclaw-agent-7d9f6-abcde"))
+
+    result = _run(command, env)
+
+    # Under the active tenant freeze the kubelet's final status update is admitted, so the Pod and its namespace go.
+    assert _pod_status_admission(env) == [("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    after = _state(env)
+    assert f"namespace/{TENANT}" not in after["resources"]
+    assert after["namespacePods"] == []
+
+
+def test_tenant_freeze_admits_a_running_job_pods_status_then_its_finalizer_removal(tmp_path: Path) -> None:
+    command, env = _tenant_pod_run(tmp_path, _tenant_pod("openclaw-agent-task-fghij", job=True))
+
+    result = _run(command, env)
+
+    # The kubelet's final status goes through first; then the Job controller removes job-tracking, and the
+    # namespace goes.
+    assert _pod_status_admission(env) == [("pure", True, True)]
+    assert _finalizer_admission(env, TENANT, "pods") == [("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    after = _state(env)
+    assert f"namespace/{TENANT}" not in after["resources"]
+    assert after["namespacePods"] == []
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "create",
+        "mainResource",
+        "notDeleting",
+        "ephemeralcontainers",
+        "resize",
+        "otherStatus",
+        "spec",
+        "labels",
+        "annotations",
+        "finalizers",
+        "ownerReferences",
+        "deletionTimestamp",
+        "deletionGracePeriodSeconds",
+        "generation",
+        "generateName",
+        "creationTimestamp",
+        "name",
+        "namespace",
+        "uid",
+    ],
+)
+def test_tenant_freeze_denies_every_other_pod_status_change(tmp_path: Path, variant: str) -> None:
+    command, env = _tenant_pod_run(tmp_path, _tenant_pod("openclaw-agent-7d9f6-abcde"), variants=(variant,))
+
+    result = _run(command, env)
+
+    # In the same window the variant is denied and the kubelet's pure update is admitted, so the namespace goes.
+    # `finalizers` adds a finalizer with the status, which neither finalizerRemoval nor podStatusUpdate admits.
+    assert _pod_status_admission(env) == [(variant, True, False), ("pure", True, True)]
+    assert result.returncode == 0, result.stderr
+    assert f"namespace/{TENANT}" not in _state(env)["resources"]
+
+
+def test_tenant_freeze_carries_the_pod_status_rule_before_any_field_read(tmp_path: Path) -> None:
+    command, env = _tenant_pod_run(tmp_path, _tenant_pod("openclaw-agent-7d9f6-abcde"))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    created = [
+        json.loads(entry["stdin"])
+        for entry in _fake_log(tmp_path)
+        if "create" in entry["args"] and "-f" in entry["args"]
+    ]
+    policies = {
+        "tenant" if "cleanup-freeze-tenants-" in document["metadata"]["name"] else "namespace": document["spec"]
+        for document in created
+        if document["kind"] == "ValidatingAdmissionPolicy"
+    }
+    tenant = {item["name"]: item["expression"] for item in policies["tenant"]["variables"]}
+    expression = tenant["podStatusUpdate"]
+    # The operation, the status subresource and the core v1 pods resource come first, before any field is read.
+    assert expression.startswith(
+        "request.operation == 'UPDATE' && request.subResource == 'status'"
+        " && request.resource.group == '' && request.resource.version == 'v1'"
+        " && request.resource.resource == 'pods'"
+        " && has(oldObject.metadata.deletionTimestamp)"
+        " && object.apiVersion == oldObject.apiVersion && object.kind == oldObject.kind"
+    )
+    paths = [
+        f"metadata.{name}"
+        for name in (
+            "name", "namespace", "uid", "generateName", "creationTimestamp", "deletionTimestamp",
+            "deletionGracePeriodSeconds", "generation", "labels", "annotations", "ownerReferences",
+        )
+    ] + ["spec", "metadata.finalizers"]
+    assert expression.endswith(
+        "".join(
+            f" && (has(object.{path}) ? (has(oldObject.{path}) && object.{path} == oldObject.{path})"
+            f" : !has(oldObject.{path}))"
+            for path in paths
+        )
+    )
+    for path in ("status", "resourceVersion", "managedFields", "selfLink"):
+        assert path not in expression.replace("request.subResource == 'status'", "")
+    assert policies["tenant"]["validations"][0]["expression"] == (
+        "variables.pv || variables.finalizerRemoval || variables.podStatusUpdate"
+    )
+    # The per-namespace freeze is unchanged.
+    assert "podStatusUpdate" not in {item["name"] for item in policies["namespace"]["variables"]}
+    assert policies["namespace"]["validations"][0]["expression"] == "variables.finalizerRemoval"
+
+
+@pytest.mark.parametrize(
+    ("tamper", "diagnostic"),
+    [
+        (
+            "uid",
+            (
+                "cleanup: Deployment/agentgateway does not match its "
+                "AgentGateway lifecycle receipt.\n"
+            ),
+        ),
+        (
+            "setup-token",
+            (
+                "cleanup: Deployment/agentgateway does not match its "
+                "AgentGateway lifecycle receipt.\n"
+            ),
+        ),
+    ],
+)
+def test_agentgateway_identity_mismatch_fails_before_any_mutation(
+    tmp_path: Path,
+    tamper: str,
+    diagnostic: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    key = f"{AGW_NAMESPACE}|deployment.apps/agentgateway"
+    state = _state(env)
+    if tamper == "uid":
+        state["resources"][key]["metadata"]["uid"] = "replacement-uid"
+    else:
+        state["resources"][key]["metadata"]["annotations"][SETUP_KEY] = (
+            "0123456789abcdef0123456789abcdef"  # pragma: allowlist secret -- test identity
+        )
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == diagnostic
+    assert _state(env)["mutations"] == 0
+
+
+def test_agentgateway_setup_token_drift_stops_late_deletion(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    key = f"{AGW_NAMESPACE}|configmap/agentgateway-config"
+    state = _state(env)
+    state["mutateAfterAssociationDelete"] = {
+        "resource": key,
+        "section": "annotations",
+        "key": SETUP_KEY,
+        "value": "0123456789abcdef0123456789abcdef",  # pragma: allowlist secret -- test placeholder
+    }
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: ConfigMap/agentgateway-config changed after AgentGateway "
+        "cleanup preflight.\n"
+    )
+    current = _state(env)
+    assert key in current["resources"]
+    assert current["aws"]["association"] is None
+    assert current["aws"]["policyDocument"] is not None
+    assert current["aws"]["role"] is not None
+
+
+def test_pod_identity_namespace_marker_drift_stops_late_deletion(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    key = f"namespace/{AGW_NAMESPACE}"
+    state = _state(env)
+    state["mutateAfterAssociationDelete"] = {
+        "resource": key,
+        "section": "labels",
+        "key": POD_SETUP_KEY,
+        "value": "fedcba9876543210fedcba9876543210",  # pragma: allowlist secret -- test identity
+    }
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: namespace/openclaw-enterprise-agw identity changed before "
+        "deletion.\n"
+    )
+    current = _state(env)
+    assert key in current["resources"]
+    assert current["aws"]["policyDocument"] is not None
+    assert current["aws"]["role"] is not None
+
+
+def test_inline_policy_drift_stops_late_deletion(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    state = _state(env)
+    state["aws"]["mutatePolicyOnGet"] = {
+        "count": 2,
+        "document": {
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Action": "s3:*",
+                "Resource": "*",
+            }],
+        },
+    }
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: inline policy changed after cleanup preflight.\n"
+    )
+    current = _state(env)
+    assert current["aws"]["policyDocument"] is not None
+    assert current["aws"]["role"] is not None
+
+
+def test_reused_agentgateway_dependency_and_identity_are_preserved(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(
+        tmp_path,
+        created=_all_created(),
+        gateway_reused={"secret/agw-session-key"},
+    )
+
+    first = _run(command, env)
+
+    assert first.returncode == 0, first.stderr
+    after_first = _state(env)
+    resources = after_first["resources"]
+    assert f"{AGW_NAMESPACE}|secret/agw-session-key" in resources
+    assert f"namespace/{AGW_NAMESPACE}" in resources
+    assert f"{AGW_NAMESPACE}|serviceaccount/{AGW_SERVICE_ACCOUNT}" in resources
+    assert f"{AGW_NAMESPACE}|deployment.apps/agentgateway" in resources
+    assert f"{AGW_NAMESPACE}|configmap/agentgateway-aws-region" in resources
+    assert after_first["aws"]["association"] is not None
+    assert after_first["aws"]["policyDocument"] is not None
+    assert after_first["aws"]["role"] is not None
+    assert "Preserved the complete AgentGateway dependency closure" in first.stdout
+    mutation_count = after_first["mutations"]
+
+    second = _run(command, env)
+
+    assert second.returncode == 0, second.stderr
+    assert _state(env)["mutations"] == mutation_count
+
+
+def test_mixed_provenance_preserves_dependencies_and_rerun_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    created = {
+        "storage": False,
+        "namespace": True,
+        "serviceAccount": True,
+        "regionConfigMap": True,
+        "role": True,
+        "policy": True,
+        "association": False,
+    }
+    _, command, env = _prepare(tmp_path, created=created)
+    first = _run(command, env)
+    assert first.returncode == 0, first.stderr
+    after_first = _state(env)
+    assert f"namespace/{AGW_NAMESPACE}" in after_first["resources"]
+    assert f"{AGW_NAMESPACE}|serviceaccount/agentgateway" in after_first["resources"]
+    assert (
+        f"{AGW_NAMESPACE}|configmap/agentgateway-aws-region"
+        in after_first["resources"]
+    )
+    assert after_first["aws"]["association"] is not None
+    assert after_first["aws"]["role"] is not None
+    assert after_first["aws"]["policyDocument"] is not None
+    assert f"storageclass.storage.k8s.io/{STORAGE_CLASS}" in after_first["resources"]
+    mutation_count = after_first["mutations"]
+
+    second = _run(command, env)
+    assert second.returncode == 0, second.stderr
+    assert _state(env)["mutations"] == mutation_count
+
+
+def test_reused_region_config_map_and_its_namespace_are_preserved(
+    tmp_path: Path,
+) -> None:
+    created = _all_created()
+    created["regionConfigMap"] = False
+    _, command, env = _prepare(tmp_path, created=created)
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    resources = _state(env)["resources"]
+    assert f"{AGW_NAMESPACE}|configmap/agentgateway-aws-region" in resources
+    assert f"namespace/{AGW_NAMESPACE}" in resources
+    assert f"{AGW_NAMESPACE}|deployment.apps/agentgateway" in resources
+    current = _state(env)
+    assert current["aws"]["association"] is not None
+    assert current["aws"]["policyDocument"] is not None
+    assert current["aws"]["role"] is not None
+
+
+def test_reused_inline_policy_preserves_complete_dependency_closure(
+    tmp_path: Path,
+) -> None:
+    created = _all_created()
+    created["policy"] = False
+    _, command, env = _prepare(tmp_path, created=created)
+    first = _run(command, env)
+    assert first.returncode == 0, first.stderr
+    after_first = _state(env)
+    assert after_first["aws"]["association"] is not None
+    assert after_first["aws"]["policyDocument"] is not None
+    assert after_first["aws"]["role"] is not None
+    assert f"namespace/{AGW_NAMESPACE}" in after_first["resources"]
+    assert f"{AGW_NAMESPACE}|deployment.apps/agentgateway" in after_first["resources"]
+    mutation_count = after_first["mutations"]
+
+    second = _run(command, env)
+    assert second.returncode == 0, second.stderr
+    assert _state(env)["mutations"] == mutation_count
+
+
+@pytest.mark.parametrize("boundary", ["policy", "binding"])
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_sigkill_after_freeze_creation_is_recovered_on_rerun(
+    tmp_path: Path,
+    boundary: str,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after=boundary)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    killed = _run(command, env)
+    assert killed.returncode == -9
+    freeze_state = tmp_path / "state" / (
+        "cleanup-tenant-freeze.json" if delete_tenant else "cleanup-freeze.json"
+    )
+    assert freeze_state.exists()
+    assert stat.S_IMODE(freeze_state.stat().st_mode) == 0o600
+    live = _state(env)["resources"]
+    assert any("cleanup-freeze-" in key for key in live)
+    policy = next(
+        item for key, item in live.items()
+        if "cleanup-freeze-" in key and item["kind"] == "ValidatingAdmissionPolicy"
+    )
+    constraints = policy["spec"]["matchConstraints"]
+    assert constraints["matchPolicy"] == "Equivalent"
+    assert constraints["namespaceSelector"] == {}
+    assert constraints["objectSelector"] == {}
+    if boundary == "binding":
+        binding = next(
+            item for key, item in live.items()
+            if "cleanup-freeze-" in key
+            and item["kind"] == "ValidatingAdmissionPolicyBinding"
+        )
+        if delete_tenant:
+            assert binding["spec"]["matchResources"] == {
+                "matchPolicy": "Equivalent",
+                "namespaceSelector": {
+                    "matchLabels": {"app.kubernetes.io/managed-by": OCE_OWNER},
+                },
+                "objectSelector": {},
+            }
+        else:
+            assert "matchResources" not in binding["spec"]
+
+    recovered = _run(command, env)
+    assert recovered.returncode == 0, recovered.stderr
+    assert not freeze_state.exists()
+    assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+    assert _state(env)["resources"] == {}
+
+
+@pytest.mark.parametrize(
+    ("delete_tenant", "kind", "tamper"),
+    [
+        (False, "policy", "match-policy"),
+        (True, "policy", "namespace-selector"),
+        (True, "binding", "object-selector"),
+        (False, "policy", "validation"),
+    ],
+    ids=[
+        "system-match-policy", "tenant-namespace-selector",
+        "tenant-binding-object-selector", "system-validation",
+    ],
+)
+def test_server_defaulted_freeze_spec_drift_refuses_recovery(
+    tmp_path: Path,
+    delete_tenant: bool,
+    kind: str,
+    tamper: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after=kind)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    target_kind = (
+        "ValidatingAdmissionPolicyBinding"
+        if kind == "binding" else "ValidatingAdmissionPolicy"
+    )
+    item = next(
+        item for key, item in state["resources"].items()
+        if "cleanup-freeze-" in key and item["kind"] == target_kind
+    )
+    if tamper == "match-policy":
+        item["spec"]["matchConstraints"]["matchPolicy"] = "Exact"
+    elif tamper == "namespace-selector":
+        item["spec"]["matchConstraints"]["namespaceSelector"] = {
+            "matchLabels": {"app.kubernetes.io/managed-by": "foreign-owner"},
+        }
+    elif tamper == "object-selector":
+        item["spec"]["matchResources"]["objectSelector"] = {
+            "matchLabels": {"app": "foreign-workload"},
+        }
+    else:
+        item["spec"]["validations"][0]["expression"] = "true"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    prefix = "tenant " if delete_tenant else ""
+    diagnostic = (
+        f"{prefix}admission-freeze {kind} identity/UID does not match "
+        "private state; refusing deletion."
+    )
+    expected_stderr = f"cleanup: {diagnostic}\n"
+    if delete_tenant:
+        expected_stderr += (
+            f"cleanup: failed to remove admission freeze: {diagnostic}\n"
+        )
+    assert result.stderr == expected_stderr
+    current = _state(env)
+    assert current["resources"] == state["resources"]
+    assert current["mutations"] == state["mutations"]
+    assert current["helm"] == state["helm"]
+
+
+@pytest.mark.parametrize("kind", ["policy", "binding"])
+def test_recorded_tenant_freeze_uid_missing_refuses_replacement(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after="binding")
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    target_kind = (
+        "ValidatingAdmissionPolicyBinding"
+        if kind == "binding" else "ValidatingAdmissionPolicy"
+    )
+    resource = next(
+        key for key, item in state["resources"].items()
+        if "cleanup-freeze-tenants-" in key and item["kind"] == target_kind
+    )
+    journal_path = tmp_path / "state" / "cleanup-tenant-freeze.json"
+    journal = json.loads(journal_path.read_text())
+    # Model a successfully recorded UID before the object disappears.
+    journal[f"{kind}Uid"] = state["resources"][resource]["metadata"]["uid"]
+    _write_json(journal_path, journal)
+    del state["resources"][resource]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    prior_log = Path(env["FAKE_LOG"]).read_text().splitlines()
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"cleanup: recorded tenant admission-freeze {kind} is absent; "
+        "refusing replacement.\n"
+    )
+    current = _state(env)
+    assert resource not in current["resources"]
+    assert current["helm"] is True
+    assert f"namespace/{tenant}" in current["resources"]
+    recovery_log = Path(env["FAKE_LOG"]).read_text().splitlines()[len(prior_log):]
+    assert not any(
+        (entry := json.loads(line))["tool"] == "kubectl"
+        and "create" in entry["args"]
+        for line in recovery_log
+    )
+
+
+def _freeze_binding_deleted(events: list[list[Any]], tenant: bool) -> int:
+    return next(
+        index for index, event in enumerate(events)
+        if event[0] == "binding-deleted"
+        and ("cleanup-freeze-tenants-" in event[1]) == tenant
+    )
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_namespace_controllers_finalize_under_the_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    names = ["openclaw-tenant-a", "openclaw-tenant-b"] if delete_tenant else [
+        SYSTEM_NAMESPACE
+    ]
+    if delete_tenant:
+        for name in names:
+            _add_tenant(env, name)
+            _add_tenant_storage(env, name)
+        command += [*_tenant_identity_args(*names), "--delete-tenant-data"]
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["resources"] == {}
+    assert current["pvcs"] == []
+    assert current["pvs"] == []
+    assert current["pendingNamespaceDeletes"] == {}
+    events = current["namespaceLifecycleEvents"]
+    # The freeze stays in place while the namespace terminates: its finalizer exceptions let the controllers
+    # finish, and cleanup removes it only after the namespace (and, for tenants, its PVCs and PVs) is gone.
+    binding_removed = _freeze_binding_deleted(events, delete_tenant)
+    for name in names:
+        assert events.index(["delete-requested", name]) < events.index(["finalized", name])
+        assert events.index(["finalized", name]) < binding_removed
+    assert not any(event[0] == "blocked" for event in events)
+    assert not (tmp_path / "state" / "cleanup-freeze.json").exists()
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_namespace_replaced_during_deletion_stops_under_the_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    name = "openclaw-tenant-a" if delete_tenant else SYSTEM_NAMESPACE
+    if delete_tenant:
+        _add_tenant(env, name)
+        command += [*_tenant_identity_args(name), "--delete-tenant-data"]
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    state["namespaceDeleteTamper"] = {"name": name, "uid": "replacement-uid"}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines()[0] == (
+        f"cleanup: namespace/{name} was replaced while deletion was in progress."
+    )
+    current = _state(env)
+    assert f"namespace/{name}" in current["resources"]
+    assert ["finalized", name] not in current["namespaceLifecycleEvents"]
+
+
+def test_system_freeze_survives_failure_after_deletion_starts(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path)
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    state["namespaceDeleteTamper"] = {
+        "name": SYSTEM_NAMESPACE,
+        "uid": "replacement-uid",
+    }
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert (tmp_path / "state" / "cleanup-freeze.json").exists()
+    current = _state(env)
+    assert any("cleanup-freeze-" in key for key in current["resources"])
+
+
+def test_tenant_freeze_survives_failure_after_deletion_starts(tmp_path: Path) -> None:
+    _, command, env = _prepare(tmp_path)
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    state["namespaceDeleteTamper"] = {"name": tenant, "uid": "replacement-uid"}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+    assert (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+    current = _state(env)
+    assert any("cleanup-freeze-tenants-" in key for key in current["resources"])
+
+
+FREEZE_JOURNAL = {False: "cleanup-freeze.json", True: "cleanup-tenant-freeze.json"}
+
+
+def _fast_clock(tmp_path: Path, env: dict[str, str]) -> None:
+    """Run cleanup with a clock that each of its sleeps moves 300 seconds on, so its 600-second waits time out."""
+    # Imported here so the module's earlier lines, which .ash/.ash.yaml pins by number, keep their positions.
+    import sys
+
+    clock = tmp_path / "clock"
+    clock.mkdir()
+    python = clock / "python3"
+    python.write_text(
+        f"#!{sys.executable} -I\n"
+        "import os, sys, time\n"
+        # The fake CLIs also start through python3: only cleanup's own script gets the clock.
+        "if sys.argv[1:3] != ['-I', '-']:\n"
+        f"    os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n"
+        "now = [time.monotonic()]\n"
+        "time.monotonic = lambda: now[0]\n"
+        "time.sleep = lambda seconds: now.__setitem__(0, now[0] + 300)\n"
+        "sys.argv = ['-', *sys.argv[3:]]\n"
+        "exec(compile(sys.stdin.read(), '<stdin>', 'exec'), {'__name__': '__main__'})\n"
+    )
+    python.chmod(0o755)
+    env["PATH"] = f"{clock}{os.pathsep}{env['PATH']}"
+
+
+def _deletion_target(tmp_path: Path, delete_tenant: bool) -> tuple[str, list[str], dict[str, str]]:
+    _, command, env = _prepare(tmp_path)
+    name = "openclaw-tenant-a" if delete_tenant else SYSTEM_NAMESPACE
+    if delete_tenant:
+        _add_tenant(env, name)
+        _add_tenant_storage(env, name)
+        command += [*_tenant_identity_args(name), "--delete-tenant-data"]
+    return name, command, env
+
+
+def _freeze_objects(env: dict[str, str], tenant: bool) -> dict[str, dict[str, Any]]:
+    return {
+        key: item for key, item in _state(env)["resources"].items()
+        if "cleanup-freeze-" in key and ("cleanup-freeze-tenants-" in key) == tenant
+    }
+
+
+def _assert_freeze_kept(
+    tmp_path: Path,
+    env: dict[str, str],
+    result: subprocess.CompletedProcess[str],
+    tenant: bool,
+) -> None:
+    assert result.returncode == 1
+    journal = json.loads((tmp_path / "state" / FREEZE_JOURNAL[tenant]).read_text())
+    assert journal["deletionAttempted"] is True
+    objects = _freeze_objects(env, tenant)
+    assert sorted(item["kind"] for item in objects.values()) == [
+        "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding",
+    ]
+    assert {item["metadata"]["uid"] for item in objects.values()} == {
+        journal["policyUid"], journal["bindingUid"],
+    }
+    if tenant:
+        deletion = json.loads((tmp_path / "state" / "cleanup-tenant-deletion.json").read_text())
+        assert deletion["complete"] is False
+    label = "tenant" if tenant else "per-namespace"
+    assert result.stderr.splitlines()[-2:] == [
+        (
+            f"cleanup: kept the {label} admission freeze and its private state because a "
+            "namespace deletion had been requested."
+        ),
+        (
+            "cleanup: rerun the same cleanup command with the same receipts and state "
+            "directory to resume under the kept freeze."
+        ),
+    ]
+    assert journal["token"] not in result.stderr
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_failed_namespace_delete_request_keeps_the_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    name, command, env = _deletion_target(tmp_path, delete_tenant)
+    state = _state(env)
+    state["failNamespaceDeleteOnce"] = name
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert "simulated namespace deletion failure" in result.stderr
+    _assert_freeze_kept(tmp_path, env, result, delete_tenant)
+    assert f"namespace/{name}" in _state(env)["resources"]
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_namespace_deletion_timeout_keeps_the_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    name, command, env = _deletion_target(tmp_path, delete_tenant)
+    state = _state(env)
+    state["neverFinishingNamespaces"] = [name]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    _fast_clock(tmp_path, env)
+
+    result = _run(command, env)
+
+    assert result.stderr.splitlines()[0] == (
+        f"cleanup: namespace/{name} still exists after deletion."
+    )
+    _assert_freeze_kept(tmp_path, env, result, delete_tenant)
+
+
+def test_recorded_volume_left_after_tenant_namespace_deletion_keeps_the_freeze(
+    tmp_path: Path,
+) -> None:
+    name, command, env = _deletion_target(tmp_path, True)
+    state = _state(env)
+    state["retainTenantPvs"] = [name]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    _fast_clock(tmp_path, env)
+
+    result = _run(command, env)
+
+    assert result.stderr.splitlines()[0] == (
+        "cleanup: tenant data still exists after namespace deletion: "
+        f"persistentvolume/pv-{name}."
+    )
+    _assert_freeze_kept(tmp_path, env, result, True)
+    assert f"namespace/{name}" not in _state(env)["resources"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["tenant-volume-check", "tenant-freeze-verification", "system-freeze-verification"],
+)
+def test_failure_before_any_namespace_deletion_removes_the_freeze(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    delete_tenant = failure.startswith("tenant-")
+    name, command, env = _deletion_target(tmp_path, delete_tenant)
+    if failure == "tenant-volume-check":
+
+        def unbind_claim(storage: dict[str, Any]) -> None:
+            claim = next(item for item in storage["pvcs"] if item["metadata"]["namespace"] == name)
+            claim["status"] = {"phase": "Pending"}
+
+        _storage_at_tenant_freeze(env, unbind_claim)
+        diagnostic = (
+            f"persistentvolumeclaim/{name}/openclaw-workspace is not bound to its "
+            "persistent volume; refusing tenant deletion."
+        )
+    else:
+        state = _state(env)
+        if failure == "tenant-freeze-verification":
+            state["denyUnclaimedPvProbe"] = True
+            diagnostic = (
+                "tenant admission freeze denied a persistent volume that claims no "
+                "tenant namespace; refusing to continue."
+            )
+        else:
+            # Another client has started deleting the namespace, so the probe meets the namespace lifecycle
+            # denial instead of the freeze's.
+            namespace = state["resources"][f"namespace/{name}"]
+            namespace["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+            namespace["status"] = {"phase": "Terminating"}
+            diagnostic = "namespace admission freeze could not be verified."
+        Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr.endswith(f"cleanup: {diagnostic}\n")
+    assert "kept the" not in result.stderr
+    assert f"namespace/{name}" in _state(env)["resources"]
+    assert not _freeze_objects(env, delete_tenant)
+    assert not (tmp_path / "state" / FREEZE_JOURNAL[delete_tenant]).exists()
+    assert not (tmp_path / "state" / "cleanup-tenant-deletion.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("delete_tenant", "first_failure"),
+    [(False, "delete-request"), (True, "delete-request"), (False, "timeout")],
+    ids=["system-delete-request", "tenant-delete-request", "system-timeout"],
+)
+def test_rerun_resumes_deletion_under_the_kept_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+    first_failure: str,
+) -> None:
+    name, command, env = _deletion_target(tmp_path, delete_tenant)
+    state = _state(env)
+    if first_failure == "timeout":
+        state["neverFinishingNamespaces"] = [name]
+        _fast_clock(tmp_path, env)
+    else:
+        state["failNamespaceDeleteOnce"] = name
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    assert _run(command, env).returncode == 1
+    kept = _freeze_objects(env, delete_tenant)
+    assert kept
+    if first_failure == "timeout":
+        # The namespace finishes on the rerun's fourth read.
+        partial = _state(env)
+        partial.update({
+            "neverFinishingNamespaces": [],
+            "delayedNamespaceDeletion": True,
+            "pendingNamespaceDeletes": {name: 0},
+            "terminatingNamespaceReads": {name: -2},
+            "namespaceLifecycleEvents": [],
+        })
+        Path(env["FAKE_STATE"]).write_text(json.dumps(partial))
+    (tmp_path / "fake-log.jsonl").unlink()
+
+    resumed = _run(command, env)
+
+    assert resumed.returncode == 0, resumed.stderr
+    log = _fake_log(tmp_path)
+    freeze_name = next(iter(kept.values()))["metadata"]["name"]
+    # No second freeze for this namespace: a new one would carry the same identity-derived name.
+    created = [
+        json.loads(entry["stdin"])["metadata"]["name"]
+        for entry in log
+        if "create" in entry["args"] and "--dry-run=server" not in entry["args"]
+    ]
+    assert freeze_name not in created
+    deleted = [
+        entry["args"][entry["args"].index("--raw") + 1]
+        for entry in log
+        if "delete" in entry["args"] and entry["mutation"]
+    ]
+    kept_deletes = [index for index, path in enumerate(deleted) if path.endswith(f"/{freeze_name}")]
+    assert len(kept_deletes) == 2
+    namespace_path = f"/api/v1/namespaces/{name}"
+    if first_failure == "timeout":
+        # The namespace was already terminating under the kept freeze, so the rerun sends no second DELETE.
+        assert namespace_path not in deleted
+        assert ["finalized", name] in _state(env)["namespaceLifecycleEvents"]
+    else:
+        assert deleted.index(namespace_path) < kept_deletes[0]
+    assert f"namespace/{name}" not in _state(env)["resources"]
+    assert not _freeze_objects(env, delete_tenant)
+    assert not (tmp_path / "state" / FREEZE_JOURNAL[delete_tenant]).exists()
+
+
+def test_namespace_lifecycle_denies_create_without_cleanup_binding(
+    tmp_path: Path,
+) -> None:
+    _, _, env = _prepare(tmp_path)
+    state = _state(env)
+    namespace = state["resources"][f"namespace/{SYSTEM_NAMESPACE}"]
+    namespace["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+    namespace["status"] = {"phase": "Terminating"}
+    assert not any(
+        "cleanup-freeze-" in key for key in state["resources"]
+    )
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    result = subprocess.run(
+        [
+            str(tmp_path / "bin" / "kubectl"),
+            "--kubeconfig", str(tmp_path / "kubeconfig"),
+            "--context", CONTEXT, "--request-timeout=20s",
+            "create", "--dry-run=server", "-f", "-",
+        ],
+        input=json.dumps(_object(
+            "ConfigMap", "probe", "probe-uid", namespace=SYSTEM_NAMESPACE,
+        )),
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "because it is being terminated" in result.stderr
+    assert _state(env) == state
+
+
+@pytest.mark.parametrize(
+    ("uid", "phase", "timestamp", "probe_code", "probe_error", "diagnostic"),
+    [
+        ("target-uid", "Terminating", "2026-11-26T00:00:00Z", 1, "native denial", None),
+        ("replacement-uid", "Terminating", "2026-11-26T00:00:00Z", 1, "", "changed while verifying"),
+        ("target-uid", "Terminating", None, 1, "", "has not entered deletion"),
+        ("target-uid", "Active", "2026-11-26T00:00:00Z", 1, "", "has not entered deletion"),
+        ("target-uid", "Terminating", "", 1, "", "has not entered deletion"),
+        ("target-uid", "Active", None, 1, "UID-bound freeze denial", None),
+        ("target-uid", "Active", None, 1, "because it is being terminated", "could not be verified"),
+        ("target-uid", "Active", None, 0, "UID-bound freeze denial", "could not be verified"),
+    ],
+    ids=[
+        "terminating-native-barrier", "replaced-namespace", "phase-only",
+        "timestamp-only", "empty-timestamp", "active-freeze-denial",
+        "active-native-denial", "active-create-allowed",
+    ],
+)
+def test_tenant_freeze_verification_requires_exact_namespace_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    uid: str,
+    phase: str,
+    timestamp: str | None,
+    probe_code: int,
+    probe_error: str,
+    diagnostic: str | None,
+) -> None:
+    # Execute the production methods, including their shared termination guard.
+    source = CLEANUP.read_text().split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    tree = ast.parse(source)
+    cleanup_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Cleanup"
+    )
+    cleanup_class.body = [
+        node for node in cleanup_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {
+            "verify_tenant_freeze", "require_namespace_deletion_started",
+            "dry_run_create", "freeze_probe_volume",
+        }
+    ]
+    definitions = [
+        node for node in tree.body
+        if (
+            isinstance(node, (ast.ClassDef, ast.FunctionDef))
+            and node.name in {"CleanupError", "fail"}
+        ) or (
+            isinstance(node, ast.Assign)
+            and [getattr(target, "id", None) for target in node.targets] == ["TENANT_PV_FREEZE_MESSAGE"]
+        )
+    ]
+    module_path = tmp_path / "cleanup_namespace_barrier.py"
+    module_path.write_text(
+        "import json\nimport subprocess\n"
+        + ast.unparse(ast.Module(body=[*definitions, cleanup_class], type_ignores=[]))
+    )
+    spec = importlib.util.spec_from_file_location("cleanup_namespace_barrier", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    namespace = vars(module)
+    cleanup = namespace["Cleanup"]()
+    cleanup.k = ["fake-kubectl"]
+    target = {"name": "openclaw-tenant-a", "uid": "target-uid"}
+    live = {
+        "metadata": {"uid": uid, "deletionTimestamp": timestamp},
+        "status": {"phase": phase},
+    }
+    reads: list[str] = []
+    probes: list[dict[str, Any]] = []
+
+    def get(key: str) -> dict[str, Any]:
+        reads.append(key)
+        assert key == f"namespace/{target['name']}"
+        return live
+
+    def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert args == ["fake-kubectl", "create", "--dry-run=server", "-f", "-"]
+        probe = json.loads(kwargs["input"])
+        probes.append(probe)
+        if probe["kind"] == "ConfigMap":
+            return subprocess.CompletedProcess(args, probe_code, "", probe_error)
+        # The freeze's PV rule denies a volume that claims the target namespace and admits one that claims none.
+        if probe["spec"].get("claimRef"):
+            return subprocess.CompletedProcess(args, 1, "", namespace["TENANT_PV_FREEZE_MESSAGE"])
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    cleanup.get = get
+    monkeypatch.setattr(subprocess, "run", run)
+    state = {"denialMessage": "UID-bound freeze denial", "token": "0123456789abcdef"}
+    if diagnostic:
+        with pytest.raises(namespace["CleanupError"], match=diagnostic):
+            cleanup.verify_tenant_freeze(state, [target])
+    else:
+        cleanup.verify_tenant_freeze(state, [target])
+    probe_kinds = [
+        probe["kind"] if probe["kind"] == "ConfigMap"
+        else "claimed-pv" if probe["spec"].get("claimRef") else "unclaimed-pv"
+        for probe in probes
+    ]
+    # A terminating exact namespace replaces only the namespaced probe; the PV rule is still probed.
+    if diagnostic in {"changed while verifying", "has not entered deletion"}:
+        assert probe_kinds == []
+    elif phase == "Terminating":
+        assert probe_kinds == ["claimed-pv", "unclaimed-pv"]
+    elif diagnostic:
+        assert probe_kinds == ["ConfigMap"]
+    else:
+        assert probe_kinds == ["ConfigMap", "claimed-pv", "unclaimed-pv"]
+    if probes and probes[0]["kind"] == "ConfigMap":
+        assert probes[0]["metadata"]["namespace"] == target["name"]
+    if "claimed-pv" in probe_kinds:
+        claimed = probes[probe_kinds.index("claimed-pv")]
+        assert claimed["spec"]["claimRef"]["namespace"] == target["name"]
+    assert len(reads) == (
+        2 if uid == target["uid"] and (phase == "Terminating" or timestamp) else 1
+    )
+
+
+def test_terminating_tenant_retry_recovers_owned_freeze_and_finishes(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after="binding")
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    live = state["resources"][f"namespace/{tenant}"]
+    live["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+    live["status"] = {"phase": "Terminating"}
+    state["delayedNamespaceDeletion"] = True
+    probes_before = len(state.get("pvProbes", []))
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["resources"] == {}
+    assert current["pvcs"] == []
+    assert current["pvs"] == []
+    # The retry still proves the freeze's PV rule for the terminating namespace and for an unclaimed volume.
+    retry_probes = current.get("pvProbes", [])[probes_before:]
+    assert {"claims": tenant, "denied": True} in retry_probes
+    assert {"claims": None, "denied": False} in retry_probes
+    events = current["namespaceLifecycleEvents"]
+    delete_requested = events.index(["delete-requested", tenant])
+    # A storage listing after those probes and before the namespace DELETE: the snapshot under the freeze.
+    assert any(
+        event[0] == "pv-listing" and event[1] >= probes_before + 2
+        for event in events[:delete_requested]
+    )
+    # The freeze stays in place until the terminating namespace and its storage are gone.
+    assert events.index(["finalized", tenant]) < _freeze_binding_deleted(events, True)
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+
+
+def test_private_freeze_state_mode_is_fail_closed_with_exact_diagnostic(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after="policy")
+    assert _run(command, env).returncode == -9
+    freeze_state = tmp_path / "state" / "cleanup-freeze.json"
+    freeze_state.chmod(0o644)
+    result = _run(command, env)
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: admission-freeze state must be an owned regular file "
+        "with mode 0600.\n"
+    )
+    assert any("cleanup-freeze-" in key for key in _state(env)["resources"])
+
+
+def test_recorded_freeze_uid_mismatch_is_fail_closed_with_exact_diagnostic(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after="binding")
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    policy_key = next(
+        key for key in state["resources"]
+        if key.startswith(
+            "validatingadmissionpolicies.admissionregistration.k8s.io/"
+        )
+    )
+    state["resources"][policy_key]["metadata"]["uid"] = "replacement-uid"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    result = _run(command, env)
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: admission-freeze policy identity/UID does not match "
+        "private state; refusing deletion.\n"
+    )
+    assert policy_key in _state(env)["resources"]
+
+
+def test_lifecycle_target_mismatch_fails_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, created=_all_created())
+    receipt = tmp_path / "lifecycle" / "pod-identity.json"
+    content = json.loads(receipt.read_text())
+    content["target"]["awsAccountId"] = "999900001111"
+    _write_json(receipt, content)
+    result = _run(command, env)
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: AgentGateway lifecycle receipt does not match "
+        "this cleanup target.\n"
+    )
+    assert _state(env)["mutations"] == 0
+
+
+def test_region_config_map_uid_mismatch_fails_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    created = _all_created()
+    created["association"] = False
+    _, command, env = _prepare(tmp_path, created=created)
+    key = f"{AGW_NAMESPACE}|configmap/agentgateway-aws-region"
+    state = _state(env)
+    state["resources"][key]["metadata"]["uid"] = "replacement-uid"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "cleanup: ConfigMap/agentgateway-aws-region does not match its "
+        "lifecycle receipt.\n"
+    )
+    assert _state(env)["mutations"] == 0
+
+
+def test_reused_storage_class_is_preserved(tmp_path: Path) -> None:
+    created = _all_created()
+    created["storage"] = False
+    _, command, env = _prepare(tmp_path, created=created)
+    result = _run(command, env)
+    assert result.returncode == 0, result.stderr
+    assert f"storageclass.storage.k8s.io/{STORAGE_CLASS}" in _state(env)["resources"]
