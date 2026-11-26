@@ -115,6 +115,7 @@ Box adds a small HTTP launcher around the supplier handler and supplies its own 
 | [`analyst/deploy/`](analyst/deploy/) | The namespace, the analyst ServiceAccount, and the supplier API Deployment and Services |
 | [`analyst/iam/`](analyst/iam/) | The Pod Identity role trust policy and the permissions the controller gets |
 | [`analyst/scripts/analyst-lib.sh`](analyst/scripts/analyst-lib.sh) | The half of setup every blueprint shares, sourced by each blueprint's own `setup.sh` |
+| [`analyst/scripts/analyst-clean-lib.sh`](analyst/scripts/analyst-clean-lib.sh) | The AWS half of a clean up: the IAM role, the bucket and the image repositories, each deleted only when it carries the blueprint's `ManagedBy` tag, and confirmed gone afterwards. Sourced after `analyst-lib.sh` by a blueprint's own `clean.sh` (so far, OpenShell's) |
 | [`analyst/requirements.txt`](analyst/requirements.txt) | The locked, hash-pinned Python dependencies, installed with `--require-hashes` |
 
 **What a blueprint adds.** Its own `Dockerfile`, which puts its confinement layer in the image
