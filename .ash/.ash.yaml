@@ -2274,15 +2274,15 @@ global_settings:
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/adapter-webhook.yaml'
-      reason: 'By design: the admission adapter is an ordinary control-plane Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      reason: 'The admission adapter is an ordinary control-plane Pod behind a ClusterIP Service; this manifest does not provide a general network-isolation policy. The sample separately configures scoped API-relay and tenant-model routes'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
-      reason: 'By design: the shared stateless AgentGateway is an ordinary Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      reason: 'The shared stateless AgentGateway is an ordinary Pod behind a ClusterIP Service; this manifest does not provide a general network-isolation policy. The sample separately configures scoped API-relay and tenant-model routes'
       expiration: '2027-12-31'
     - rule_id: CKV2_K8S_6
       path: 'examples/ai-agents/openclaw-enterprise/deploy/oce-validation-postgres.yaml'
-      reason: 'By design: the disposable validation database is an ordinary Pod behind a ClusterIP Service; the sample ships no NetworkPolicy and README.md links the dedicated network-policy sample'
+      reason: 'The disposable database is an ordinary Pod behind a ClusterIP Service; this manifest does not provide a general network-isolation policy. The sample separately configures scoped API-relay and tenant-model routes'
       expiration: '2027-12-31'
     - rule_id: CKV_K8S_35
       path: 'examples/ai-agents/openclaw-enterprise/deploy/agentgateway.yaml'
@@ -2402,10 +2402,22 @@ global_settings:
       line_end: 252
       reason: 'Synthetic Kubernetes Secret volume used to test fail-closed credential-source rejection; it contains no secret value'
       expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_native_cli_contract.py'
+      line_start: 174
+      line_end: 174
+      reason: 'Synthetic configured-auth-secret password passed only to the local fake CLI fixture; not a deployed or real credential'
+      expiration: '2027-12-31'
+    - rule_id: SECRET-SECRET-KEYWORD
+      path: 'examples/ai-agents/openclaw-enterprise/tests/test_native_cli_contract.py'
+      line_start: 562
+      line_end: 562
+      reason: 'Synthetic configured password for the invalid-port fixture; the test replaces HTTP transport and asserts it is never called'
+      expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 1725
-      line_end: 1725
+      line_start: 2156
+      line_end: 2156
       reason: 'Assertion for the synthetic block-device name nvme0n1; no encoded value or secret is present'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
