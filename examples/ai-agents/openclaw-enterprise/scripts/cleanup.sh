@@ -742,7 +742,7 @@ class Cleanup:
                 "resourceRules": [{
                     "apiGroups": ["*"], "apiVersions": ["*"],
                     "operations": ["CREATE", "UPDATE"],
-                    "resources": ["*", "*/*"], "scope": "Namespaced",
+                    "resources": ["*/*"], "scope": "Namespaced",
                 }],
                 "matchPolicy": "Equivalent",
                 "namespaceSelector": {},
@@ -1102,7 +1102,7 @@ class Cleanup:
                         "apiGroups": ["*"],
                         "apiVersions": ["*"],
                         "operations": ["CREATE", "UPDATE"],
-                        "resources": ["*", "*/*"],
+                        "resources": ["*/*"],
                         "scope": "Namespaced",
                     },
                     {
@@ -1226,26 +1226,39 @@ class Cleanup:
 
     def verify_tenant_freeze(self, state, live_targets):
         for target in live_targets:
-            probe = {
-                "apiVersion": "v1",
-                "kind": "ConfigMap",
-                "metadata": {
-                    "name": "openclaw-cleanup-freeze-probe",
-                    "namespace": target["name"],
-                },
-            }
-            result = subprocess.run(
-                [*self.k, "create", "--dry-run=server", "-f", "-"],
-                input=json.dumps(probe),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            if result.returncode == 0 or state["denialMessage"] not in result.stderr:
-                fail(
-                    f"tenant admission freeze could not be verified for "
-                    f"namespace/{target['name']}."
+            namespace = self.get(f"namespace/{target['name']}")
+            if not namespace or namespace.get("metadata", {}).get("uid") != target["uid"]:
+                fail(f"namespace/{target['name']} changed while verifying the admission freeze.")
+            if (
+                namespace.get("metadata", {}).get("deletionTimestamp")
+                or namespace.get("status", {}).get("phase") == "Terminating"
+            ):
+                # NamespaceLifecycle rejects CREATE before admission policies
+                # run, so the exact namespace's verified deletion state replaces
+                # the namespaced probe. PersistentVolumes are cluster-scoped, so
+                # the freeze's PV rule is still probed below.
+                self.require_namespace_deletion_started(target["name"], target["uid"])
+            else:
+                probe = {
+                    "apiVersion": "v1",
+                    "kind": "ConfigMap",
+                    "metadata": {
+                        "name": "openclaw-cleanup-freeze-probe",
+                        "namespace": target["name"],
+                    },
+                }
+                result = subprocess.run(
+                    [*self.k, "create", "--dry-run=server", "-f", "-"],
+                    input=json.dumps(probe),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                 )
+                if result.returncode == 0 or state["denialMessage"] not in result.stderr:
+                    fail(
+                        f"tenant admission freeze could not be verified for "
+                        f"namespace/{target['name']}."
+                    )
             # A PV that claims the target namespace must be denied.
             result = self.dry_run_create(self.freeze_probe_volume(state, target["name"]))
             if result.returncode == 0 or TENANT_PV_FREEZE_MESSAGE not in result.stderr:
@@ -1302,43 +1315,38 @@ class Cleanup:
                     "tenant admission-freeze state does not match the recorded "
                     "tenant deletion targets."
                 )
-            self.tenant_freeze_started = True
-            for kind, resource_type in (
-                (
-                    "policy",
-                    "validatingadmissionpolicies.admissionregistration.k8s.io",
-                ),
-                (
-                    "binding",
-                    "validatingadmissionpolicybindings.admissionregistration.k8s.io",
-                ),
-            ):
-                self.validate_tenant_freeze(
-                    self.get(f"{resource_type}/{state['name']}"),
-                    state,
-                    kind,
-                )
-            self.verify_tenant_freeze(state, live_targets)
+        elif not live_targets:
             return
-        if not live_targets:
-            return
-
-        name, denial_message = self.tenant_freeze_identity(protected_targets)
-        state = {
-            "version": 1,
-            "context": self.a.kube_context,
-            "endpoint": self.endpoint,
-            "attempt": self.attempt,
-            "namespaces": protected_targets,
-            "name": name,
-            "token": secrets.token_hex(16),
-            "denialMessage": denial_message,
-            "policyUid": None,
-            "bindingUid": None,
-        }
-        self.write_tenant_freeze(state)
+        else:
+            name, denial_message = self.tenant_freeze_identity(protected_targets)
+            state = {
+                "version": 1,
+                "context": self.a.kube_context,
+                "endpoint": self.endpoint,
+                "attempt": self.attempt,
+                "namespaces": protected_targets,
+                "name": name,
+                "token": secrets.token_hex(16),
+                "denialMessage": denial_message,
+                "policyUid": None,
+                "bindingUid": None,
+            }
+            self.write_tenant_freeze(state)
         self.tenant_freeze_started = True
         for kind in ("policy", "binding"):
+            resource_type = (
+                "validatingadmissionpolicybindings.admissionregistration.k8s.io"
+                if kind == "binding"
+                else "validatingadmissionpolicies.admissionregistration.k8s.io"
+            )
+            item = self.get(f"{resource_type}/{state['name']}")
+            if item:
+                self.validate_tenant_freeze(item, state, kind)
+                state[f"{kind}Uid"] = item["metadata"]["uid"]
+                self.write_tenant_freeze(state)
+                continue
+            if state[f"{kind}Uid"] is not None:
+                fail(f"recorded tenant admission-freeze {kind} is absent; refusing replacement.")
             document = {
                 "apiVersion": "admissionregistration.k8s.io/v1",
                 "kind": (
@@ -1354,11 +1362,6 @@ class Cleanup:
                 "spec": self.tenant_freeze_spec(state, kind),
             }
             self.kubectl("create", "-f", "-", stdin=json.dumps(document))
-            resource_type = (
-                "validatingadmissionpolicybindings.admissionregistration.k8s.io"
-                if kind == "binding"
-                else "validatingadmissionpolicies.admissionregistration.k8s.io"
-            )
             item = self.get(f"{resource_type}/{state['name']}")
             self.validate_tenant_freeze(item, state, kind)
             state[f"{kind}Uid"] = item["metadata"]["uid"]
@@ -1914,6 +1917,16 @@ class Cleanup:
                 )
             time.sleep(2)
 
+    def require_namespace_deletion_started(self, name, uid):
+        live = self.get(f"namespace/{name}")
+        if not live:
+            return
+        metadata = live.get("metadata", {})
+        if metadata.get("uid") != uid:
+            fail(f"namespace/{name} was replaced while deletion was starting.")
+        if not metadata.get("deletionTimestamp") or live.get("status", {}).get("phase") != "Terminating":
+            fail(f"namespace/{name} has not entered deletion; refusing to verify the admission freeze.")
+
     def delete_namespace(self, planned):
         if not planned:
             return
@@ -2012,7 +2025,7 @@ class Cleanup:
         owner = labels.get(OWNER_KEY)
         helm_identity = (
             owner == "Helm"
-            and labels.get("app.kubernetes.io/instance") == self.a.release
+            and labels.get("app.kubernetes.io/instance", self.a.release) == self.a.release
             and annotations.get("meta.helm.sh/release-name") == self.a.release
             and annotations.get("meta.helm.sh/release-namespace") == self.a.namespace
         )

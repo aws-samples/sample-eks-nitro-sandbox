@@ -220,6 +220,9 @@ require_matching_oce_node_bases \
   "$OCE_NODE_BUILD_BASE_IMAGE" \
   "$OCE_NODE_RUNTIME_BASE_IMAGE"
 
+# Preserve the validated tag and digest while avoiding Docker Hub pull limits.
+readonly CONTROLLER_NODE_BUILD_BASE_IMAGE="public.ecr.aws/docker/library/node:${OCE_NODE_BUILD_BASE_IMAGE#docker.io/library/node:}"
+
 REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
 aws ecr get-login-password --region "$AWS_DEFAULT_REGION" |
   docker login --username AWS --password-stdin "$REGISTRY"
@@ -314,7 +317,7 @@ docker buildx build \
   --platform "${TARGET_PLATFORM:-linux/amd64}" \
   --target runtime \
   --metadata-file "$metadata_dir/controller.json" \
-  --build-arg "NODE_BUILD_BASE_IMAGE=$OCE_NODE_BUILD_BASE_IMAGE" \
+  --build-arg "NODE_BUILD_BASE_IMAGE=$CONTROLLER_NODE_BUILD_BASE_IMAGE" \
   --build-arg "NODE_RUNTIME_BASE_IMAGE=$CONTROLLER_RUNTIME_BASE_IMAGE" \
   --build-arg "REPAIRED_RUNTIME_IMAGE=$REPAIRED_RUNTIME_IMAGE" \
   --build-arg "OCC_BUILD_REVISION=$OCE_SOURCE_REVISION" \
@@ -485,6 +488,7 @@ export ADAPTER_IMAGE CONTROLLER_IMAGE OWNERSHIP_INIT_IMAGE RUNTIME_IMAGE
 export OWNERSHIP_HELPER_BUILDER_IMAGE
 export SAMPLE_SOURCE_REVISION OCE_SOURCE_REVISION
 export OCE_NODE_BUILD_BASE_IMAGE OCE_NODE_RUNTIME_BASE_IMAGE
+export CONTROLLER_NODE_BUILD_BASE_IMAGE
 export CONTROLLER_RUNTIME_BASE_IMAGE REPAIRED_RUNTIME_IMAGE
 export OPENSSL_BACKPORT_CVE OPENSSL_BACKPORT_PATCH_SHA256
 export OPENSSL_BACKPORT_UPSTREAM_COMMIT
@@ -523,6 +527,7 @@ result = {
     },
     "controller": {
         "baseImage": os.environ["CONTROLLER_RUNTIME_BASE_IMAGE"],
+        "buildBaseImage": os.environ["CONTROLLER_NODE_BUILD_BASE_IMAGE"],
         "repairedRuntimeImage": os.environ["REPAIRED_RUNTIME_IMAGE"],
         "image": os.environ["CONTROLLER_IMAGE"],
         "oceSourceRevision": os.environ["OCE_SOURCE_REVISION"],

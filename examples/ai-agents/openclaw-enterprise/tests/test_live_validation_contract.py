@@ -91,6 +91,7 @@ FAKE_COMMAND = textwrap.dedent(
                 "containers": [{{
                     "name": "gateway",
                     "image": image,
+                    "ports": [{{"name": "http", "containerPort": 8080}}],
                     "securityContext": {{
                         "allowPrivilegeEscalation": False,
                         "privileged": False,
@@ -231,6 +232,7 @@ FAKE_COMMAND = textwrap.dedent(
         "agt_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "rs-a",
         "rev_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "pvc-a",
     )
+    pod_a_new["spec"]["containers"][0]["ports"][0]["containerPort"] = 9090
     if scenario == "replacement_wrong_revision":
         pod_a_new["metadata"]["labels"]["openclaw.dev/revision"] = (
             "rev_cccccccc-cccc-4ccc-8ccc-cccccccccccc"
@@ -755,13 +757,14 @@ FAKE_COMMAND = textwrap.dedent(
                 else "amazon.nova-lite-v1:0"
             )
             fields = []
-            if scenario != "missing_agw_request_id":
-                fields.append("request.id=" + str(9000 + call_index))
+            if scenario != "missing_agw_span_id":
+                fields.append('span.id="' + format(call_index, "016x") + '"')
             fields.extend([
                 'trace.id="' + trace_id + '"',
-                'gen_ai.provider.name="bedrock"',
+                'gen_ai.provider.name="aws.bedrock"',
                 'agw.ai.original_model="nova-lite"',
                 'gen_ai.request.model="' + bedrock_model + '"',
+                'http.status="200"',
             ])
             print(" ".join(fields))
         sys.exit(0)
@@ -988,10 +991,15 @@ FAKE_COMMAND = textwrap.dedent(
             if (
                 namespace != "tenant-a-k8s"
                 or pod_name != "tenant-a-pod"
+                or args[args.index("-c") + 1] != "gateway"
                 or "__OCE_EXACT_POD_COMMAND__" not in args
+                or "OCE_EXPECTED_POD_UID=uid-a-old" not in args
                 or remote[:1] != ["env"]
-                or remote[2:4] != ["node", "-e"]
-                or any(value.startswith("OCE_TEST_") for value in remote)
+                or "OCE_TEST_GATEWAY_PORT=8080" not in remote
+                or any(
+                    value.startswith(("OCE_TEST_NAMESPACE_ID=", "OCE_TEST_AGENT_ID="))
+                    for value in remote
+                )
             ):
                 print("invalid native tool execution target", file=sys.stderr)
                 sys.exit(103)
@@ -1109,6 +1117,10 @@ FAKE_COMMAND = textwrap.dedent(
             ]))
             sys.exit(0)
         if "/v1/chat/completions" in joined:
+            expected_port = 9090 if pod_name == "tenant-a-replacement" else 8080
+            if f"OCE_TEST_GATEWAY_PORT={{expected_port}}" not in remote:
+                print("native model probe did not use the pod HTTP port", file=sys.stderr)
+                sys.exit(107)
             model_call_count_file = state_dir / "model_call_count"
             model_call_count = int(
                 model_call_count_file.read_text()
@@ -1126,7 +1138,10 @@ FAKE_COMMAND = textwrap.dedent(
                     if scenario == "wrong_native_model"
                     else "openclaw/default"
                 ),
-                "requestId": "chatcmpl_" + format(model_call_count, "032x"),
+                "requestId": (
+                    "chatcmpl_00000000-0000-0000-0000-"
+                    + format(model_call_count, "012x")
+                ),
                 "traceId": format(model_call_count, "032x"),
                 "challengeMatch": scenario != "challenge_mismatch",
             }})
@@ -1312,11 +1327,61 @@ FAKE_COMMAND = textwrap.dedent(
     if args[:2] == ["create", "--dry-run=server"]:
         print("denied: admission caller is not an allowed controller identity for this resource", file=sys.stderr)
         sys.exit(1)
-    if args[:1] == ["debug"]:
+    if args[:2] == ["replace", "--raw"]:
+        assert len(args) == 5 and args[3] == "-f", args
+        assert args[2] == (
+            "/api/v1/namespaces/tenant-a-k8s/pods/tenant-a-pod/"
+            "ephemeralcontainers?dryRun=All"
+        ), args
+        payload_path = Path(args[4])
+        stat = payload_path.lstat()
+        assert payload_path.is_file() and not payload_path.is_symlink()
+        assert stat.st_uid == os.getuid() and stat.st_nlink == 1
+        assert stat.st_mode & 0o777 == 0o600
+        assert payload_path.parent.stat().st_mode & 0o777 == 0o700
+        assert payload_path.parent.name.startswith("oce-live-validation.")
+        payload = json.loads(payload_path.read_text())
+        expected = json.loads(json.dumps(pod_a))
+        expected.pop("status", None)
+        expected["metadata"].pop("managedFields", None)
+        expected["spec"]["ephemeralContainers"] = [{{
+            "name": "live-validation-debug",
+            "image": image,
+            "imagePullPolicy": "IfNotPresent",
+            "targetContainerName": "gateway",
+            "command": ["sh", "-c", "true"],
+            "securityContext": {{
+                "runAsNonRoot": True,
+                "runAsUser": 1000,
+                "runAsGroup": 1000,
+                "allowPrivilegeEscalation": False,
+                "readOnlyRootFilesystem": True,
+                "capabilities": {{"drop": ["ALL"]}},
+                "seccompProfile": {{"type": "RuntimeDefault"}},
+            }},
+        }}]
+        assert payload["apiVersion"] == "v1" and payload["kind"] == "Pod"
+        assert payload["metadata"]["uid"] == "uid-a-old"
+        assert payload["metadata"]["name"] == "tenant-a-pod"
+        assert payload["metadata"]["namespace"] == "tenant-a-k8s"
+        assert payload == expected
+        (state_dir / "ephemeral_debug_manifest.json").write_text(json.dumps(payload))
+        if scenario == "ephemeral_cli_error":
+            print("error: unsupported synthetic CLI operation", file=sys.stderr)
+            sys.exit(2)
+        if scenario == "ephemeral_wrong_denial":
+            print("denied: synthetic unrelated admission rule", file=sys.stderr)
+            sys.exit(1)
+        if scenario == "ephemeral_unexpected_success":
+            emit(payload)
+            sys.exit(0)
         print(
             "denied: ephemeral containers are not permitted in OpenClaw Enterprise managed namespaces",
             file=sys.stderr,
         )
+        sys.exit(1)
+    if args[:1] == ["debug"]:
+        print("error: unknown flag: --dry-run", file=sys.stderr)
         sys.exit(1)
     if args[:2] == ["get", "replicaset"]:
         emit({{
@@ -1429,6 +1494,24 @@ FAKE_GIT = textwrap.dedent(
         elif operation == ["status", "--porcelain", "--untracked-files=normal"]:
             if os.environ.get("FAKE_SCENARIO") == "dirty_worktree":
                 print(" M examples/ai-agents/openclaw-enterprise/README.md")
+        elif operation == ["cat-file", "-e", {GIT_REVISION!r} + "^{{commit}}"]:
+            pass
+        elif operation == ["merge-base", "--is-ancestor", {GIT_REVISION!r}, {GIT_REVISION!r}]:
+            pass
+        elif operation == [
+            "ls-tree", "-r", "-z", "--full-tree", {GIT_REVISION!r}, "--",
+            "examples/ai-agents/openclaw-enterprise/adapter",
+            "examples/ai-agents/openclaw-enterprise/ownership-helper",
+            "examples/ai-agents/openclaw-enterprise/build",
+        ]:
+            for path in (
+                "adapter/adapter.py", "ownership-helper/main.go",
+                "build/controller-runtime.Dockerfile",
+            ):
+                sys.stdout.buffer.write(
+                    ("100644 blob " + "a" * 40 + "\\t"
+                     + "examples/ai-agents/openclaw-enterprise/" + path + "\\0").encode()
+                )
         else:
             raise SystemExit(f"unsupported fake git command: {{args}}")
     else:
@@ -1689,8 +1772,7 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     timeout = (
         180
-        if scenario
-        in {"wrong_agw_model", "missing_agw_trace", "missing_agw_request_id"}
+        if scenario in {"wrong_agw_model", "missing_agw_trace", "missing_agw_span_id"}
         else 90
     )
     fake_bin, state_dir = _make_fake_commands(tmp_path)
@@ -1814,6 +1896,107 @@ def test_native_history_evaluator_accepts_harmless_retries_and_extra_messages() 
             "finalReplyCount": 1,
         },
     }
+
+
+def test_native_history_evaluator_accepts_thinking_before_exact_final_reply() -> None:
+    messages = _valid_native_history()
+    messages[-1]["content"] = [
+        {
+            "type": "thinking",
+            "thinking": "The exec result matches the requested marker.",
+        },
+        {"type": "text", "text": "DONE_nonce-123"},
+    ]
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 0, result.stderr
+    assert output == {
+        "ok": True,
+        "evidence": {"toolCallCount": 1, "execResultCount": 1, "finalReplyCount": 1},
+    }
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "thinking"},
+        {"type": "thinking", "thinking": None},
+        {"type": "thinking", "thinking": 123},
+        {"type": "thinking", "thinking": {"text": "DONE_nonce-123"}},
+        {"type": "reasoning", "text": "synthetic reasoning"},
+        {"type": "image", "text": "DONE_nonce-123"},
+        {"type": "text", "text": None},
+        None,
+        [],
+    ],
+)
+def test_native_history_evaluator_rejects_malformed_or_unknown_final_blocks(
+    block: object,
+) -> None:
+    messages = _valid_native_history()
+    messages[-1]["content"] = [block, {"type": "text", "text": "DONE_nonce-123"}]
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 2
+    assert output["ok"] is False
+    assert output["error"] in {
+        "unsupported transcript content shape",
+        "malformed assistant content block",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "wrong_final",
+        "thinking_only",
+        "wrong_command",
+        "uncorrelated_result",
+        "failed_exec",
+    ],
+)
+def test_thinking_final_cannot_bypass_native_execution_guards(mutation: str) -> None:
+    messages = _valid_native_history()
+    messages[-1]["content"] = [
+        {"type": "thinking", "thinking": "DONE_nonce-123"},
+        {"type": "text", "text": "DONE_nonce-123"},
+    ]
+    if mutation == "wrong_final":
+        messages[-1]["content"][1]["text"] = "WRONG"
+    elif mutation == "thinking_only":
+        messages[-1]["content"].pop()
+    elif mutation == "wrong_command":
+        messages[1]["content"][0]["arguments"]["command"] = "printf WRONG"
+    elif mutation == "uncorrelated_result":
+        messages[2]["toolCallId"] = "call-other"
+    elif mutation == "failed_exec":
+        messages[2]["isError"] = True
+
+    result, output = _evaluate_native_history(messages)
+
+    if mutation in {"wrong_final", "thinking_only"}:
+        assert result.returncode == 0, result.stderr
+        assert output == {"ok": True, "evidence": None}
+    else:
+        assert result.returncode == 2
+        assert output["ok"] is False
+
+
+@pytest.mark.parametrize("index", [0, 2])
+def test_thinking_blocks_remain_invalid_in_user_and_exec_result(index: int) -> None:
+    messages = _valid_native_history()
+    text = messages[index]["content"]
+    messages[index]["content"] = [
+        {"type": "thinking", "thinking": "synthetic"},
+        {"type": "text", "text": text},
+    ]
+
+    result, output = _evaluate_native_history(messages)
+
+    assert result.returncode == 2
+    assert output == {"ok": False, "error": "unsupported transcript content shape"}
 
 
 @pytest.mark.parametrize(
@@ -2067,6 +2250,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         in evidence
     )
     assert f"EVIDENCE\tgit-revision\t{GIT_REVISION}" in evidence
+    assert f"EVIDENCE\timage-build-revision\t{GIT_REVISION}" in evidence
     cluster_arn = "arn:aws:eks:us-west-2:123456789012:cluster/explicit-cluster"
     assert (
         f"EVIDENCE\tcluster-arn-sha256\t"
@@ -2100,15 +2284,17 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         ("tenant-a", "tenant-b", "tenant-a-replacement"), start=1
     ):
         trace_id = format(call_index, "032x")
-        native_request_id = "chatcmpl_" + trace_id
-        gateway_request_id = str(9000 + call_index)
+        native_request_id = "chatcmpl_00000000-0000-0000-0000-" + format(
+            call_index, "012x"
+        )
+        span_ids_json = json.dumps([format(call_index, "016x")], separators=(",", ":"))
         assert (
             f"EVIDENCE\tnative-model-correlation-{alias}\t"
             f"trace-id-sha256={hashlib.sha256(trace_id.encode()).hexdigest()} "
             "native-request-id-sha256="
             f"{hashlib.sha256(native_request_id.encode()).hexdigest()} "
-            "gateway-request-id-sha256="
-            f"{hashlib.sha256(gateway_request_id.encode()).hexdigest()} "
+            "gateway-span-ids-sha256="
+            f"{hashlib.sha256(span_ids_json.encode()).hexdigest()} "
             "native-model=openclaw/default gateway-model=nova-lite "
             "bedrock-model=amazon.nova-lite-v1:0"
         ) in evidence
@@ -2122,7 +2308,10 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "EVIDENCE\tguest-a-block-devices\tvda" in evidence
     assert "EVIDENCE\tguest-b-block-devices\tvda" in evidence
     assert "EVIDENCE\tordinary-control-root\toverlay overlay" in evidence
-    assert "EVIDENCE\tordinary-control-block-devices\tnvme0n1" in evidence  # pragma: allowlist secret -- block-device fixture
+    assert (
+        "EVIDENCE\tordinary-control-block-devices\tnvme0n1"  # pragma: allowlist secret -- synthetic NVMe block-device name
+        in evidence
+    )
     assert (
         "EVIDENCE\tshared-postgresql-boundary\t"
         "app-role-restricted=true application-table-count=12 "
@@ -2284,6 +2473,21 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
     assert "tenant-b-secret" not in result.stdout + result.stderr
     assert '"kms"' not in command_log
     commands = [json.loads(line) for line in command_log.splitlines()]
+    ephemeral_calls = [
+        command
+        for command in commands
+        if command["tool"] == "kubectl" and "replace" in command["args"]
+    ]
+    assert len(ephemeral_calls) == 1
+    assert (
+        "/api/v1/namespaces/tenant-a-k8s/pods/tenant-a-pod/"
+        "ephemeralcontainers?dryRun=All"
+    ) in ephemeral_calls[0]["args"]
+    ephemeral_payload = json.loads(
+        (state_dir / "ephemeral_debug_manifest.json").read_text()
+    )
+    assert ephemeral_payload["metadata"]["uid"] == "uid-a-old"
+    assert len(ephemeral_payload["spec"]["ephemeralContainers"]) == 1
     native_tool_commands = [
         command
         for command in commands
@@ -2345,7 +2549,7 @@ def test_deployed_ecr_image_revision_mismatch_fails_closed(tmp_path: Path) -> No
 
     assert result.returncode != 0
     assert (
-        "tenant-a-1 ECR image revision label does not match the candidate Git revision"
+        "tenant-a-1 ECR image revision label does not match the verified image build revision"
         in result.stderr
     )
     evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
@@ -2449,17 +2653,20 @@ def test_validator_never_reads_gateway_routing(tmp_path: Path) -> None:
 def test_native_tool_turn_has_no_hard_coded_port() -> None:
     function = _native_tool_function()
 
-    assert 'const port = process.env.OPENCLAW_GATEWAY_PORT || "";' in function
-    assert '{ host: "127.0.0.1", port: Number(port), path: "/readyz", timeout: 5000 }' in function
+    # The port is the one HTTP container port that the exact runtime Pod declares.
+    assert 'gateway_port="$(gateway_http_port "$TENANT_A_NAMESPACE" "$TENANT_A_POD" \\' in function
+    assert '"OCE_TEST_GATEWAY_PORT=$gateway_port"' in function
+    assert 'const rawPort = process.env.OCE_TEST_GATEWAY_PORT || "";' in function
+    assert '"--expect-url", `ws://127.0.0.1:${port}`,' in function
     assert not any(f"port: {digit}" in function for digit in "0123456789")
     assert not any(number in function for number in ("443", "8080", "18789"))
-    assert "wss://" not in function and "ws://" not in function
-    # The SDK takes the password from the container's configuration; the validator never handles it.
-    assert "OPENCLAW_GATEWAY_PASSWORD=" not in function
-    assert "password" not in function.replace("OPENCLAW_GATEWAY_PASSWORD", "")
+    assert "wss://" not in function
+    # The native CLI reads the configured authentication inside the guest; the validator never handles it.
+    assert "OPENCLAW_GATEWAY_PASSWORD" not in function
+    assert "password" not in function
 
 
-def test_model_turn_uses_the_configured_pod_port_and_keeps_the_password_in_the_pod(
+def test_model_turn_uses_the_declared_pod_port_and_keeps_the_password_in_the_pod(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import http.server
@@ -2506,6 +2713,11 @@ def test_model_turn_uses_the_configured_pod_port_and_keeps_the_password_in_the_p
         def log_message(self, *args: object) -> None:
             del args
 
+    # A stand-in for the native timeline reader: a checkpoint, then one trace ID for the response.
+    timeline_reader = (
+        'const mode = process.argv[1];'
+        ' process.stdout.write(JSON.stringify(mode === "mark" ? {offset: 0} : {traceId: "0".repeat(32)}));'
+    )
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -2518,7 +2730,8 @@ def test_model_turn_uses_the_configured_pod_port_and_keeps_the_password_in_the_p
             timeout=60,
             env={
                 "PATH": os.environ["PATH"],
-                "OPENCLAW_GATEWAY_PORT": str(server.server_address[1]),
+                "OCE_TEST_GATEWAY_PORT": str(server.server_address[1]),
+                "OCE_NATIVE_TIMELINE_READER_B64": base64.b64encode(timeline_reader.encode()).decode(),
                 "OPENCLAW_GATEWAY_PASSWORD": sentinel,
             },
         )
@@ -2526,7 +2739,7 @@ def test_model_turn_uses_the_configured_pod_port_and_keeps_the_password_in_the_p
         server.shutdown()
         server.server_close()
 
-    # The model turn reached the gateway on the port the Pod environment names.
+    # The model turn reached the gateway on the declared port that the validator passes in.
     assert result.returncode == 0, result.stderr
     assert [request["path"] for request in requests] == ["/v1/chat/completions"] * 2
     assert [request["authorization"] for request in requests] == [None, f"Bearer {sentinel}"]
@@ -2786,7 +2999,7 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
         ("wrong_native_model", "native-openclaw-model-turn"),
         ("wrong_agw_model", "agentgateway-model-telemetry"),
         ("missing_agw_trace", "agentgateway-model-telemetry"),
-        ("missing_agw_request_id", "agentgateway-model-telemetry"),
+        ("missing_agw_span_id", "agentgateway-model-telemetry"),
         ("kms_verify_failure", "evidence-signing"),
         ("ordinary_post_create_uid_failure", "guest-vm-evidence"),
         ("ordinary_sandboxed_control", "guest-vm-evidence"),
@@ -2918,9 +3131,47 @@ def test_forged_identity_probe_runs_from_the_ordinary_peer_pod() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "scenario",
+    ["ephemeral_cli_error", "ephemeral_wrong_denial", "ephemeral_unexpected_success"],
+)
+def test_ephemeral_raw_dry_run_requires_the_actual_admission_denial(
+    tmp_path: Path, scenario: str
+) -> None:
+    result = _run(tmp_path, scenario)
+
+    assert result.returncode != 0
+    evidence = (tmp_path / "evidence/live-validation-evidence.txt").read_text()
+    assert "FAIL\tephemeral-debug-admission\t" in evidence
+    assert "PASS\tephemeral-debug\t" not in evidence
+    assert "RESULT\tPASS" not in evidence
+    assert (tmp_path / "state/ephemeral_debug_manifest.json").exists()
+    commands = [
+        json.loads(line)
+        for line in (tmp_path / "state/commands.jsonl").read_text().splitlines()
+    ]
+    assert (
+        len(
+            [
+                command
+                for command in commands
+                if command["tool"] == "kubectl" and "replace" in command["args"]
+            ]
+        )
+        == 1
+    )
+    if scenario == "ephemeral_unexpected_success":
+        assert "ephemeral-debug unexpectedly succeeded" in result.stderr
+    else:
+        assert "ephemeral-debug failed without the expected denial" in result.stderr
+
+
 def test_script_contains_destructive_and_api_contract_guards() -> None:
     source = SCRIPT.read_text()
     evaluator_source = NATIVE_HISTORY_EVALUATOR.read_text(encoding="utf-8")
+    telemetry_source = (
+        ROOT / "scripts/lib/evaluate-agentgateway-telemetry.mjs"
+    ).read_text(encoding="utf-8")
 
     assert source.startswith(
         "#!/usr/bin/env bash\n"
@@ -2937,24 +3188,38 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert 'path: "/v1/chat/completions"' in source
     assert "crypto.randomInt(100, 500)" in source
     assert source.count('crypto.randomBytes(12).toString("hex")') == 2
-    assert source.count("const expected = `${nonce}:${left + right}`;") == 2
+    assert source.count("const expected = `${nonce}:${left + right}`;") == 1
+    assert "expected: `${nonce}:${left + right}`" in source
     assert source.count("${nonce}:<answer>") == 2
     assert 'value.normalize("NFKC").trim()' in source
-    assert "normalize(text) !== expected" in source
+    assert 'text.normalize("NFKC").trim() === expected' in source
     assert "model: parsed.model" in source
     assert "requestId: parsed.id" in source
     assert "challengeMatch: true" in source
-    assert "headers.traceparent = traceparent" in source
+    assert 'timeline("mark")' in source
+    assert 'timeline("read", JSON.stringify(checkpoint.value), parsed.id)' in source
+    assert "const traceId = mapping.value.traceId;" in source
+    assert "true, traceparent" not in source
     assert 'AGW_MODEL_ID="nova-lite"' in source
     assert 'BEDROCK_MODEL_ID="amazon.nova-lite-v1:0"' in source
-    assert '"trace.id"' in source
-    assert r"request\.id" in source
-    assert '"gen_ai.provider.name", "bedrock"' in source
-    assert '"agw.ai.original_model", gatewayModel' in source
-    assert '"gen_ai.request.model", bedrockModel' in source
+    assert '"trace.id"' in telemetry_source
+    assert '"span.id"' in telemetry_source
+    assert '"gen_ai.provider.name": "aws.bedrock"' in telemetry_source
+    assert '"agw.ai.original_model": gatewayModel' in telemetry_source
+    assert '"gen_ai.request.model": bedrockModel' in telemetry_source
     assert "unauthenticatedStatus" in source
     assert "rejectUnauthorized: false" not in source
-    assert source.count("--dry-run=server") >= 3
+    assert source.count("--dry-run=server") == 2
+    assert 'kube -n "$TENANT_A_NAMESPACE" debug' not in source
+    assert 'kube -n "$TENANT_A_NAMESPACE" get pod "$TENANT_A_POD" -o json' in source
+    assert ".metadata.uid == $uid" in source
+    assert 'name: "live-validation-debug"' in source
+    assert "kube replace --raw" in source
+    assert (
+        "/api/v1/namespaces/$TENANT_A_NAMESPACE/pods/$TENANT_A_POD/"
+        "ephemeralcontainers?dryRun=All"
+    ) in source
+    assert '-f "$WORK_DIR/ephemeral-debug-update.json"' in source
     assert "admission caller is not an allowed controller identity" in source
     assert "ephemeral containers are not permitted" in source
     assert 'EXPECTED_OCE_SOURCE_REVISION="' + OCE_SOURCE_REVISION + '"' in source
@@ -2974,8 +3239,7 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "database-isolation-not-proven" in source
     assert "shared-database-application-boundary" in source
     assert (
-        "NOT has_database_privilege('occ_app', current_database(), 'CREATE')"
-        in source
+        "NOT has_database_privilege('occ_app', current_database(), 'CREATE')" in source
     )
     assert "NOT has_schema_privilege('occ_app', 'public', 'CREATE')" in source
     assert 'ORDINARY_CONTROL_POD="oce-live-ordinary-$$"' in source
@@ -3018,10 +3282,11 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "verify_agentgateway_key_contract" in source
     assert 'operation.destroy(new Error("response too large"))' in source
     assert 'response.on("data", chunk => { responseBody += chunk; });' not in source
-    assert (
-        'gateway = createRequire("/app/")("openclaw/plugin-sdk/gateway-runtime");' in source
-    )
-    assert "gateway.callGatewayFromCli(method," in source
+    assert "spawnSync" in source
+    assert "gatewayRouting" not in source
+    assert "GatewayClient" not in source
+    assert "OCC_GATEWAY_API_KEY_PATH" not in source
+    assert "18789" not in source
     assert "evaluateNativeToolHistory" in source
     assert "OCE_NATIVE_HISTORY_EVALUATOR_B64" in source
     assert "const exactCommand = `printf ${toolMarker}`;" in source
@@ -3046,16 +3311,15 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert "stop_oce_api_port_forward >/dev/null 2>&1" in source
     assert 'if wait "$pid" 2>/dev/null; then' in source
     assert "stop_oce_api_port_forward || die" in source
-    assert 'OCE_API_TUNNEL_SCRIPT="$(dirname "$SCRIPT_PATH")/oce-api-tunnel.sh"' in source
+    assert (
+        'OCE_API_TUNNEL_SCRIPT="$(dirname "$SCRIPT_PATH")/oce-api-tunnel.sh"' in source
+    )
     assert "OCE_API_TUNNEL_CLEANUP_GRACE_SECONDS=15" in source
     assert "OCE_API_TUNNEL_CLEANUP_TIMEOUT_SECONDS * 2 +" in source
     assert "--ready-file" in source
     assert "--state-file" in source
     assert "oce_api_tunnel_resources_absent" in source
-    assert (
-        '"Forwarding from 127.0.0.1:${OCE_API_LOCAL_PORT} -> 18080"'
-        in source
-    )
+    assert '"Forwarding from 127.0.0.1:${OCE_API_LOCAL_PORT} -> 18080"' in source
     assert "service/openclaw-enterprise-api" not in source
     assert 'delete namespace "$TENANT_A_NAMESPACE"' not in source
     assert 'delete namespace "$TENANT_B_NAMESPACE"' not in source

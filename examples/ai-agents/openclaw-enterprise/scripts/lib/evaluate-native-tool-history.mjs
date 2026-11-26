@@ -26,7 +26,15 @@ function assistantReplyText(value) {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
     const textBlocks = value.filter((block) => block?.type === "text");
-    if (textBlocks.length !== value.length) {
+    const supported = value.every(
+      (block) =>
+        block &&
+        typeof block === "object" &&
+        !Array.isArray(block) &&
+        (block.type === "text" ||
+          (block.type === "thinking" && typeof block.thinking === "string")),
+    );
+    if (!supported) {
       throw new Error("unsupported transcript content shape");
     }
     return contentText(textBlocks);

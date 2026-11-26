@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import importlib.util
 import json
 import os
 import stat
@@ -163,7 +165,7 @@ def metadata(name, uid, namespace=None, owner=None):
         result["labels"] = {"app.kubernetes.io/managed-by": owner}
     return result
 
-def apply_admission_defaults(document):
+def apply_admission_defaults(document, record=True):
     # What the API server stores and returns for a created policy or binding: the values that
     # kubernetes pkg/apis/admissionregistration/v1 SetObjectDefaults_ValidatingAdmissionPolicy and
     # SetObjectDefaults_ValidatingAdmissionPolicyBinding write when they are unset.
@@ -183,7 +185,8 @@ def apply_admission_defaults(document):
             match_defaults(spec["matchConstraints"])
     elif spec.get("matchResources") is not None:
         match_defaults(spec["matchResources"])
-    state.setdefault("defaultedFreezeObjects", []).append(document["metadata"]["name"])
+    if record:
+        state.setdefault("defaultedFreezeObjects", []).append(document["metadata"]["name"])
 
 def tenant_freeze_policy():
     for key, item in state["resources"].items():
@@ -265,6 +268,15 @@ def admit_pv_requests(requests):
             "message": message,
         })
 
+def namespace_finalization_blocked(name):
+    # A terminating namespace finishes only after controllers remove finalizers from its PVCs and Pods with
+    # UPDATE requests. An installed freeze whose policy has no finalizer-removal exception denies them, so the
+    # namespace cannot finish while that freeze is in place; one with the exception lets it finish.
+    return any(
+        "finalizerRemoval" not in {item["name"] for item in policy["spec"].get("variables", [])}
+        for policy in freeze_policies_for(name)
+    )
+
 def key_from_raw(path):
     name = path.rsplit("/", 1)[-1]
     if "/serviceaccounts/" in path:
@@ -333,6 +345,12 @@ def kubectl():
         return
     if command[:2] == ["get", "persistentvolumes"]:
         print(json.dumps({"items": state.get("pvs", [])}))
+        if state.get("delayedNamespaceDeletion"):
+            # Each storage listing, with the number of PV freeze probes sent before it.
+            state.setdefault("namespaceLifecycleEvents", []).append(
+                ["pv-listing", len(state.get("pvProbes", []))]
+            )
+            save()
         # A Released volume that the CSI driver deletes after this many more listings.
         listings = state.get("releasedPvListingsLeft", {})
         for name in list(listings):
@@ -432,6 +450,31 @@ def kubectl():
         if "--namespace" in command:
             namespace = command[command.index("--namespace") + 1]
         item = state["resources"].get(object_key(resource, namespace))
+        if item and resource.startswith("namespace/") and state.get("delayedNamespaceDeletion"):
+            name = resource.split("/", 1)[1]
+            pending = state.get("pendingNamespaceDeletes", {})
+            if name in pending:
+                if namespace_finalization_blocked(name):
+                    pending[name] += 1
+                    state["namespaceLifecycleEvents"].append(["blocked", name])
+                    save()
+                    if pending[name] > 1:
+                        raise SystemExit("namespace finalization blocked by cleanup freeze")
+                elif (
+                    item["metadata"].get("deletionTimestamp")
+                    and item.get("status", {}).get("phase") == "Terminating"
+                ):
+                    # The first read after the DELETE still returns the terminating namespace; it is gone
+                    # from the next read on.
+                    reads = state.setdefault("terminatingNamespaceReads", {})
+                    reads[name] = reads.get(name, 0) + 1
+                    save()
+                    if reads[name] > 1:
+                        state["namespaceLifecycleEvents"].append(["finalized", name])
+                        finish_namespace_delete(name)
+                        del pending[name]
+                        save()
+                        return
         if item:
             print(json.dumps(item))
         return
@@ -449,7 +492,21 @@ def kubectl():
                 raise SystemExit(1)
             print(json.dumps(document))
             return
+        if document["kind"] in (
+            "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding"
+        ):
+            apply_admission_defaults(document, record=False)
+            print(json.dumps(document))
+            return
         namespace = document["metadata"]["namespace"]
+        namespace_item = state["resources"].get(f"namespace/{namespace}", {})
+        if namespace_item.get("status", {}).get("phase") == "Terminating":
+            print(
+                f'Forbidden: unable to create new content in namespace "{namespace}" '
+                "because it is being terminated",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
         for key, binding in state["resources"].items():
             if not key.startswith(
                 "validatingadmissionpolicybindings.admissionregistration.k8s.io/"
@@ -489,6 +546,17 @@ def kubectl():
         document = json.loads(stdin)
         name = document["metadata"]["name"]
         if document["kind"] == "ValidatingAdmissionPolicy":
+            for index, rule in enumerate(
+                document["spec"].get("matchConstraints", {}).get("resourceRules", [])
+            ):
+                resources = rule.get("resources", [])
+                if "*/*" in resources and len(resources) != 1:
+                    print(
+                        f"spec.matchConstraints.resourceRules[{index}].resources: "
+                        "Invalid value: '*/*' cannot be combined with other resources",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(1)
             prefix = "validatingadmissionpolicies.admissionregistration.k8s.io"
             kind = "policy"
         else:
@@ -549,9 +617,28 @@ def kubectl():
                     state["unsafeVolumeAtNamespaceDelete"] = True
                 if state.get("finalizerProtection"):
                     begin_namespace_termination(namespace)
+                elif state.get("delayedNamespaceDeletion"):
+                    item["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+                    item["status"] = {"phase": "Terminating"}
+                    state.setdefault("pendingNamespaceDeletes", {})[namespace] = 0
+                    state.setdefault("namespaceLifecycleEvents", []).append(
+                        ["delete-requested", namespace]
+                    )
+                    tamper = state.get("namespaceDeleteTamper", {})
+                    if tamper.get("name") == namespace:
+                        if "uid" in tamper:
+                            item["metadata"]["uid"] = tamper["uid"]
+                        if "phase" in tamper:
+                            item["status"]["phase"] = tamper["phase"]
+                        if "deletionTimestamp" in tamper:
+                            item["metadata"]["deletionTimestamp"] = tamper["deletionTimestamp"]
                 else:
                     finish_namespace_delete(namespace)
             else:
+                if "cleanup-freeze-" in key and item["kind"] == "ValidatingAdmissionPolicyBinding":
+                    state.setdefault("namespaceLifecycleEvents", []).append(
+                        ["binding-deleted", item["metadata"]["name"]]
+                    )
                 del state["resources"][key]
             state["mutations"] += 1
             save()
@@ -1792,6 +1879,74 @@ def test_all_created_resources_are_deleted_and_second_run_is_idempotent(
     assert _state(env)["mutations"] == mutation_count
 
 
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_cleanup_freeze_policies_use_api_valid_resource_wildcard(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    after = _state(env)
+    assert after["resources"] == {}
+    assert after["helm"] is False
+    policies = [
+        json.loads(entry["stdin"])
+        for line in Path(env["FAKE_LOG"]).read_text().splitlines()
+        if (entry := json.loads(line))["tool"] == "kubectl"
+        and "create" in entry["args"]
+        and "-f" in entry["args"]
+        and json.loads(entry["stdin"])["kind"] == "ValidatingAdmissionPolicy"
+    ]
+    assert len(policies) == (2 if delete_tenant else 1)
+    assert any(
+        "cleanup-freeze-tenants-" in policy["metadata"]["name"]
+        for policy in policies
+    ) == delete_tenant
+    for policy in policies:
+        rules = policy["spec"]["matchConstraints"]["resourceRules"]
+        tenant_freeze = "cleanup-freeze-tenants-" in policy["metadata"]["name"]
+        # The tenant freeze adds its cluster-scoped PersistentVolume rule after the namespaced rule.
+        assert len(rules) == (2 if tenant_freeze else 1)
+        assert rules[0]["resources"] == ["*/*"]
+        assert rules[0]["operations"] == ["CREATE", "UPDATE"]
+        assert rules[0]["scope"] == "Namespaced"
+        if tenant_freeze:
+            assert rules[1]["resources"] == ["persistentvolumes"]
+            assert rules[1]["scope"] == "Cluster"
+        assert policy["spec"]["failurePolicy"] == "Fail"
+
+        # Replay the real builder's document with the formerly invalid overlap.
+        # The fake API must reject it before assigning a UID or storing anything.
+        rules[0]["resources"] = ["*", "*/*"]
+        rejected = subprocess.run(
+            [
+                str(tmp_path / "bin" / "kubectl"),
+                "--kubeconfig", str(tmp_path / "kubeconfig"),
+                "--context", CONTEXT,
+                "--request-timeout=20s",
+                "create", "-f", "-",
+            ],
+            input=json.dumps(policy),
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert rejected.returncode == 1
+        assert rejected.stderr == (
+            "spec.matchConstraints.resourceRules[0].resources: "
+            "Invalid value: '*/*' cannot be combined with other resources\n"
+        )
+        assert _state(env) == after
+
+
 def test_cleanup_removes_local_admin_and_tenant_credentials(tmp_path: Path) -> None:
     _, command, env = _prepare(tmp_path)
     state_dir = tmp_path / "state"
@@ -1902,6 +2057,129 @@ def test_cleanup_rejects_conflicting_helm_attempt_layouts_before_mutation(
         "cleanup: live Helm release does not match the OCC receipt attempt.\n"
     )
     assert _state(env)["mutations"] == 0
+
+
+def test_cleanup_accepts_minimal_helm_clusterrolebinding_labels(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    key = (
+        "clusterrolebinding.rbac.authorization.k8s.io/"
+        "oce-openclaw-worker-namespaces"
+    )
+    state = _state(env)
+    metadata = state["resources"][key]["metadata"]
+    # The upstream chart emits this exact shape; its receipt records the UID.
+    metadata["labels"] = {"app.kubernetes.io/managed-by": "Helm"}
+    metadata["annotations"] = {
+        "meta.helm.sh/release-name": "oce",
+        "meta.helm.sh/release-namespace": SYSTEM_NAMESPACE,
+    }
+    receipt = json.loads(
+        (tmp_path / "state" / "receipt" / "resources.json").read_text()
+    )
+    assert receipt["resources"][key] == metadata["uid"]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["helm"] is False
+    assert key not in current["resources"]
+    assert current["mutations"] > 0
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "diagnostic"),
+    [
+        (
+            "annotations", "meta.helm.sh/release-name", "foreign-release",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-name", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-namespace", "foreign-namespace",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "annotations", "meta.helm.sh/release-namespace", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "metadata", "uid", "replacement-uid",
+            "does not match the UID recorded in the installation receipt.",
+        ),
+        (
+            "metadata", "uid", None,
+            "does not match the UID recorded in the installation receipt.",
+        ),
+        (
+            "receipt", "uid", None,
+            "is live but has no UID in the installation receipt.",
+        ),
+        (
+            "labels", "app.kubernetes.io/instance", "foreign-release",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/instance", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/managed-by", "another-installer",
+            "does not carry an exact cleanup ownership label.",
+        ),
+        (
+            "labels", "app.kubernetes.io/managed-by", None,
+            "does not carry an exact cleanup ownership label.",
+        ),
+    ],
+    ids=[
+        "foreign-release", "missing-release", "foreign-namespace",
+        "missing-namespace", "replacement-uid", "missing-uid",
+        "missing-receipt-uid", "wrong-instance", "null-instance",
+        "foreign-owner", "missing-owner",
+    ],
+)
+def test_minimal_helm_clusterrolebinding_identity_mismatch_stops_mutations(
+    tmp_path: Path,
+    section: str,
+    field: str,
+    value: str | None,
+    diagnostic: str,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    key = (
+        "clusterrolebinding.rbac.authorization.k8s.io/"
+        "oce-openclaw-worker-namespaces"
+    )
+    state = _state(env)
+    metadata = state["resources"][key]["metadata"]
+    metadata["labels"] = {"app.kubernetes.io/managed-by": "Helm"}
+    if section == "receipt":
+        receipt_path = tmp_path / "state" / "receipt" / "resources.json"
+        receipt = json.loads(receipt_path.read_text())
+        del receipt["resources"][key]
+        _write_json(receipt_path, receipt)
+    else:
+        target = metadata if section == "metadata" else metadata[section]
+        if value is None and field != "app.kubernetes.io/instance":
+            target.pop(field)
+        else:
+            # A present JSON null is distinct from an absent instance label.
+            target[field] = value
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == f"cleanup: {key} {diagnostic}\n"
+    assert _state(env) == state
+    assert state["mutations"] == 0
 
 
 def test_helm_rbac_ownership_mismatch_fails_before_any_mutation(
@@ -4042,23 +4320,433 @@ def test_reused_inline_policy_preserves_complete_dependency_closure(
 
 
 @pytest.mark.parametrize("boundary", ["policy", "binding"])
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
 def test_sigkill_after_freeze_creation_is_recovered_on_rerun(
     tmp_path: Path,
     boundary: str,
+    delete_tenant: bool,
 ) -> None:
     _, command, env = _prepare(tmp_path, kill_after=boundary)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
     killed = _run(command, env)
     assert killed.returncode == -9
-    freeze_state = tmp_path / "state" / "cleanup-freeze.json"
+    freeze_state = tmp_path / "state" / (
+        "cleanup-tenant-freeze.json" if delete_tenant else "cleanup-freeze.json"
+    )
     assert freeze_state.exists()
     assert stat.S_IMODE(freeze_state.stat().st_mode) == 0o600
     live = _state(env)["resources"]
     assert any("cleanup-freeze-" in key for key in live)
+    policy = next(
+        item for key, item in live.items()
+        if "cleanup-freeze-" in key and item["kind"] == "ValidatingAdmissionPolicy"
+    )
+    constraints = policy["spec"]["matchConstraints"]
+    assert constraints["matchPolicy"] == "Equivalent"
+    assert constraints["namespaceSelector"] == {}
+    assert constraints["objectSelector"] == {}
+    if boundary == "binding":
+        binding = next(
+            item for key, item in live.items()
+            if "cleanup-freeze-" in key
+            and item["kind"] == "ValidatingAdmissionPolicyBinding"
+        )
+        if delete_tenant:
+            assert binding["spec"]["matchResources"] == {
+                "matchPolicy": "Equivalent",
+                "namespaceSelector": {
+                    "matchLabels": {"app.kubernetes.io/managed-by": OCE_OWNER},
+                },
+                "objectSelector": {},
+            }
+        else:
+            assert "matchResources" not in binding["spec"]
 
     recovered = _run(command, env)
     assert recovered.returncode == 0, recovered.stderr
     assert not freeze_state.exists()
     assert not any("cleanup-freeze-" in key for key in _state(env)["resources"])
+    assert _state(env)["resources"] == {}
+
+
+@pytest.mark.parametrize(
+    ("delete_tenant", "kind", "tamper"),
+    [
+        (False, "policy", "match-policy"),
+        (True, "policy", "namespace-selector"),
+        (True, "binding", "object-selector"),
+        (False, "policy", "validation"),
+    ],
+    ids=[
+        "system-match-policy", "tenant-namespace-selector",
+        "tenant-binding-object-selector", "system-validation",
+    ],
+)
+def test_server_defaulted_freeze_spec_drift_refuses_recovery(
+    tmp_path: Path,
+    delete_tenant: bool,
+    kind: str,
+    tamper: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after=kind)
+    if delete_tenant:
+        tenant = "openclaw-tenant-a"
+        _add_tenant(env, tenant)
+        command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    target_kind = (
+        "ValidatingAdmissionPolicyBinding"
+        if kind == "binding" else "ValidatingAdmissionPolicy"
+    )
+    item = next(
+        item for key, item in state["resources"].items()
+        if "cleanup-freeze-" in key and item["kind"] == target_kind
+    )
+    if tamper == "match-policy":
+        item["spec"]["matchConstraints"]["matchPolicy"] = "Exact"
+    elif tamper == "namespace-selector":
+        item["spec"]["matchConstraints"]["namespaceSelector"] = {
+            "matchLabels": {"app.kubernetes.io/managed-by": "foreign-owner"},
+        }
+    elif tamper == "object-selector":
+        item["spec"]["matchResources"]["objectSelector"] = {
+            "matchLabels": {"app": "foreign-workload"},
+        }
+    else:
+        item["spec"]["validations"][0]["expression"] = "true"
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    prefix = "tenant " if delete_tenant else ""
+    diagnostic = (
+        f"{prefix}admission-freeze {kind} identity/UID does not match "
+        "private state; refusing deletion."
+    )
+    expected_stderr = f"cleanup: {diagnostic}\n"
+    if delete_tenant:
+        expected_stderr += (
+            f"cleanup: failed to remove admission freeze: {diagnostic}\n"
+        )
+    assert result.stderr == expected_stderr
+    current = _state(env)
+    assert current["resources"] == state["resources"]
+    assert current["mutations"] == state["mutations"]
+    assert current["helm"] == state["helm"]
+
+
+@pytest.mark.parametrize("kind", ["policy", "binding"])
+def test_recorded_tenant_freeze_uid_missing_refuses_replacement(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after="binding")
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    target_kind = (
+        "ValidatingAdmissionPolicyBinding"
+        if kind == "binding" else "ValidatingAdmissionPolicy"
+    )
+    resource = next(
+        key for key, item in state["resources"].items()
+        if "cleanup-freeze-tenants-" in key and item["kind"] == target_kind
+    )
+    journal_path = tmp_path / "state" / "cleanup-tenant-freeze.json"
+    journal = json.loads(journal_path.read_text())
+    # Model a successfully recorded UID before the object disappears.
+    journal[f"{kind}Uid"] = state["resources"][resource]["metadata"]["uid"]
+    _write_json(journal_path, journal)
+    del state["resources"][resource]
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    prior_log = Path(env["FAKE_LOG"]).read_text().splitlines()
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"cleanup: recorded tenant admission-freeze {kind} is absent; "
+        "refusing replacement.\n"
+    )
+    current = _state(env)
+    assert resource not in current["resources"]
+    assert current["helm"] is True
+    assert f"namespace/{tenant}" in current["resources"]
+    recovery_log = Path(env["FAKE_LOG"]).read_text().splitlines()[len(prior_log):]
+    assert not any(
+        (entry := json.loads(line))["tool"] == "kubectl"
+        and "create" in entry["args"]
+        for line in recovery_log
+    )
+
+
+def _freeze_binding_deleted(events: list[list[Any]], tenant: bool) -> int:
+    return next(
+        index for index, event in enumerate(events)
+        if event[0] == "binding-deleted"
+        and ("cleanup-freeze-tenants-" in event[1]) == tenant
+    )
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_namespace_controllers_finalize_under_the_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    names = ["openclaw-tenant-a", "openclaw-tenant-b"] if delete_tenant else [
+        SYSTEM_NAMESPACE
+    ]
+    if delete_tenant:
+        for name in names:
+            _add_tenant(env, name)
+            _add_tenant_storage(env, name)
+        command += [*_tenant_identity_args(*names), "--delete-tenant-data"]
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["resources"] == {}
+    assert current["pvcs"] == []
+    assert current["pvs"] == []
+    assert current["pendingNamespaceDeletes"] == {}
+    events = current["namespaceLifecycleEvents"]
+    # The freeze stays in place while the namespace terminates: its finalizer exceptions let the controllers
+    # finish, and cleanup removes it only after the namespace (and, for tenants, its PVCs and PVs) is gone.
+    binding_removed = _freeze_binding_deleted(events, delete_tenant)
+    for name in names:
+        assert events.index(["delete-requested", name]) < events.index(["finalized", name])
+        assert events.index(["finalized", name]) < binding_removed
+    assert not any(event[0] == "blocked" for event in events)
+    assert not (tmp_path / "state" / "cleanup-freeze.json").exists()
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
+
+
+@pytest.mark.parametrize("delete_tenant", [False, True], ids=["system", "tenant"])
+def test_namespace_replaced_during_deletion_stops_under_the_freeze(
+    tmp_path: Path,
+    delete_tenant: bool,
+) -> None:
+    _, command, env = _prepare(tmp_path)
+    name = "openclaw-tenant-a" if delete_tenant else SYSTEM_NAMESPACE
+    if delete_tenant:
+        _add_tenant(env, name)
+        command += [*_tenant_identity_args(name), "--delete-tenant-data"]
+    state = _state(env)
+    state["delayedNamespaceDeletion"] = True
+    state["namespaceDeleteTamper"] = {"name": name, "uid": "replacement-uid"}
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 1
+    assert result.stderr.splitlines()[0] == (
+        f"cleanup: namespace/{name} was replaced while deletion was in progress."
+    )
+    current = _state(env)
+    assert f"namespace/{name}" in current["resources"]
+    assert ["finalized", name] not in current["namespaceLifecycleEvents"]
+
+
+def test_namespace_lifecycle_denies_create_without_cleanup_binding(
+    tmp_path: Path,
+) -> None:
+    _, _, env = _prepare(tmp_path)
+    state = _state(env)
+    namespace = state["resources"][f"namespace/{SYSTEM_NAMESPACE}"]
+    namespace["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+    namespace["status"] = {"phase": "Terminating"}
+    assert not any(
+        "cleanup-freeze-" in key for key in state["resources"]
+    )
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+    result = subprocess.run(
+        [
+            str(tmp_path / "bin" / "kubectl"),
+            "--kubeconfig", str(tmp_path / "kubeconfig"),
+            "--context", CONTEXT, "--request-timeout=20s",
+            "create", "--dry-run=server", "-f", "-",
+        ],
+        input=json.dumps(_object(
+            "ConfigMap", "probe", "probe-uid", namespace=SYSTEM_NAMESPACE,
+        )),
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 1
+    assert "because it is being terminated" in result.stderr
+    assert _state(env) == state
+
+
+@pytest.mark.parametrize(
+    ("uid", "phase", "timestamp", "probe_code", "probe_error", "diagnostic"),
+    [
+        ("target-uid", "Terminating", "2026-11-26T00:00:00Z", 1, "native denial", None),
+        ("replacement-uid", "Terminating", "2026-11-26T00:00:00Z", 1, "", "changed while verifying"),
+        ("target-uid", "Terminating", None, 1, "", "has not entered deletion"),
+        ("target-uid", "Active", "2026-11-26T00:00:00Z", 1, "", "has not entered deletion"),
+        ("target-uid", "Terminating", "", 1, "", "has not entered deletion"),
+        ("target-uid", "Active", None, 1, "UID-bound freeze denial", None),
+        ("target-uid", "Active", None, 1, "because it is being terminated", "could not be verified"),
+        ("target-uid", "Active", None, 0, "UID-bound freeze denial", "could not be verified"),
+    ],
+    ids=[
+        "terminating-native-barrier", "replaced-namespace", "phase-only",
+        "timestamp-only", "empty-timestamp", "active-freeze-denial",
+        "active-native-denial", "active-create-allowed",
+    ],
+)
+def test_tenant_freeze_verification_requires_exact_namespace_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    uid: str,
+    phase: str,
+    timestamp: str | None,
+    probe_code: int,
+    probe_error: str,
+    diagnostic: str | None,
+) -> None:
+    # Execute the production methods, including their shared termination guard.
+    source = CLEANUP.read_text().split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    tree = ast.parse(source)
+    cleanup_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Cleanup"
+    )
+    cleanup_class.body = [
+        node for node in cleanup_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {
+            "verify_tenant_freeze", "require_namespace_deletion_started",
+            "dry_run_create", "freeze_probe_volume",
+        }
+    ]
+    definitions = [
+        node for node in tree.body
+        if (
+            isinstance(node, (ast.ClassDef, ast.FunctionDef))
+            and node.name in {"CleanupError", "fail"}
+        ) or (
+            isinstance(node, ast.Assign)
+            and [getattr(target, "id", None) for target in node.targets] == ["TENANT_PV_FREEZE_MESSAGE"]
+        )
+    ]
+    module_path = tmp_path / "cleanup_namespace_barrier.py"
+    module_path.write_text(
+        "import json\nimport subprocess\n"
+        + ast.unparse(ast.Module(body=[*definitions, cleanup_class], type_ignores=[]))
+    )
+    spec = importlib.util.spec_from_file_location("cleanup_namespace_barrier", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    namespace = vars(module)
+    cleanup = namespace["Cleanup"]()
+    cleanup.k = ["fake-kubectl"]
+    target = {"name": "openclaw-tenant-a", "uid": "target-uid"}
+    live = {
+        "metadata": {"uid": uid, "deletionTimestamp": timestamp},
+        "status": {"phase": phase},
+    }
+    reads: list[str] = []
+    probes: list[dict[str, Any]] = []
+
+    def get(key: str) -> dict[str, Any]:
+        reads.append(key)
+        assert key == f"namespace/{target['name']}"
+        return live
+
+    def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert args == ["fake-kubectl", "create", "--dry-run=server", "-f", "-"]
+        probe = json.loads(kwargs["input"])
+        probes.append(probe)
+        if probe["kind"] == "ConfigMap":
+            return subprocess.CompletedProcess(args, probe_code, "", probe_error)
+        # The freeze's PV rule denies a volume that claims the target namespace and admits one that claims none.
+        if probe["spec"].get("claimRef"):
+            return subprocess.CompletedProcess(args, 1, "", namespace["TENANT_PV_FREEZE_MESSAGE"])
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    cleanup.get = get
+    monkeypatch.setattr(subprocess, "run", run)
+    state = {"denialMessage": "UID-bound freeze denial", "token": "0123456789abcdef"}
+    if diagnostic:
+        with pytest.raises(namespace["CleanupError"], match=diagnostic):
+            cleanup.verify_tenant_freeze(state, [target])
+    else:
+        cleanup.verify_tenant_freeze(state, [target])
+    probe_kinds = [
+        probe["kind"] if probe["kind"] == "ConfigMap"
+        else "claimed-pv" if probe["spec"].get("claimRef") else "unclaimed-pv"
+        for probe in probes
+    ]
+    # A terminating exact namespace replaces only the namespaced probe; the PV rule is still probed.
+    if diagnostic in {"changed while verifying", "has not entered deletion"}:
+        assert probe_kinds == []
+    elif phase == "Terminating":
+        assert probe_kinds == ["claimed-pv", "unclaimed-pv"]
+    elif diagnostic:
+        assert probe_kinds == ["ConfigMap"]
+    else:
+        assert probe_kinds == ["ConfigMap", "claimed-pv", "unclaimed-pv"]
+    if probes and probes[0]["kind"] == "ConfigMap":
+        assert probes[0]["metadata"]["namespace"] == target["name"]
+    if "claimed-pv" in probe_kinds:
+        claimed = probes[probe_kinds.index("claimed-pv")]
+        assert claimed["spec"]["claimRef"]["namespace"] == target["name"]
+    assert len(reads) == (
+        2 if uid == target["uid"] and (phase == "Terminating" or timestamp) else 1
+    )
+
+
+def test_terminating_tenant_retry_recovers_owned_freeze_and_finishes(
+    tmp_path: Path,
+) -> None:
+    _, command, env = _prepare(tmp_path, kill_after="binding")
+    tenant = "openclaw-tenant-a"
+    _add_tenant(env, tenant)
+    _add_tenant_storage(env, tenant)
+    command += [*_tenant_identity_args(tenant), "--delete-tenant-data"]
+    assert _run(command, env).returncode == -9
+    state = _state(env)
+    live = state["resources"][f"namespace/{tenant}"]
+    live["metadata"]["deletionTimestamp"] = "2026-11-26T00:00:00Z"
+    live["status"] = {"phase": "Terminating"}
+    state["delayedNamespaceDeletion"] = True
+    probes_before = len(state.get("pvProbes", []))
+    Path(env["FAKE_STATE"]).write_text(json.dumps(state))
+
+    result = _run(command, env)
+
+    assert result.returncode == 0, result.stderr
+    current = _state(env)
+    assert current["resources"] == {}
+    assert current["pvcs"] == []
+    assert current["pvs"] == []
+    # The retry still proves the freeze's PV rule for the terminating namespace and for an unclaimed volume.
+    retry_probes = current.get("pvProbes", [])[probes_before:]
+    assert {"claims": tenant, "denied": True} in retry_probes
+    assert {"claims": None, "denied": False} in retry_probes
+    events = current["namespaceLifecycleEvents"]
+    delete_requested = events.index(["delete-requested", tenant])
+    # A storage listing after those probes and before the namespace DELETE: the snapshot under the freeze.
+    assert any(
+        event[0] == "pv-listing" and event[1] >= probes_before + 2
+        for event in events[:delete_requested]
+    )
+    # The freeze stays in place until the terminating namespace and its storage are gone.
+    assert events.index(["finalized", tenant]) < _freeze_binding_deleted(events, True)
+    assert not (tmp_path / "state" / "cleanup-tenant-freeze.json").exists()
 
 
 def test_private_freeze_state_mode_is_fail_closed_with_exact_diagnostic(

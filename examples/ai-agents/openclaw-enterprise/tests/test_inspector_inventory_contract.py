@@ -24,15 +24,15 @@ PATHS = [
 ]
 # Public upstream references, independent of the checker's policy table.
 REFERENCES = {
-    "CVE-2026-88823": "159e1de0c448d7b9f09ad768c8e141def4aa1eb4",
-    "CVE-2026-95692": "257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116",
-    "CVE-2026-107496": "a0051cfe699bf5a047bc1c4faef65f80f7987366",
-    "CVE-2026-95691": "f6244675833e097c2429a40d1b206d95385bd42f",
-    "CVE-2026-107493": "c8f6d04f8e6d40b1bf83334e4a2ec9daf5943a3d",
-    "CVE-2026-124709": "f3acb0a3328046741479482c51cec815839e1b05",
-    "CVE-2026-121482": "468c287cf451a834b370b69ab321b8ffdfac23aa",
-    "CVE-2026-107494": "734c6cd7444bdbf589bfec917e47598c1b21ddd3",
-    "CVE-2026-84786": "1ad851363d5b8588b0d40edcc045fd633e93f0c2",
+    "CVE-2026-88823": "159e1de0c448d7b9f09ad768c8e141def4aa1eb4",  # pragma: allowlist secret -- public OpenSSL upstream commit
+    "CVE-2026-95692": "257a3427aa0ef8d9dd2ef5b3e2d1c021a221b116",  # pragma: allowlist secret -- public OpenSSL upstream commit
+    "CVE-2026-107496": "a0051cfe699bf5a047bc1c4faef65f80f7987366",  # pragma: allowlist secret -- public OpenSSL upstream commit
+    "CVE-2026-95691": "f6244675833e097c2429a40d1b206d95385bd42f",  # pragma: allowlist secret -- public OpenSSL upstream commit
+    "CVE-2026-107493": "c8f6d04f8e6d40b1bf83334e4a2ec9daf5943a3d",  # pragma: allowlist secret -- public OpenSSL upstream commit
+    "CVE-2026-124709": "f3acb0a3328046741479482c51cec815839e1b05",  # pragma: allowlist secret -- public OpenSSL upstream commit
+    "CVE-2026-121482": "468c287cf451a834b370b69ab321b8ffdfac23aa",  # pragma: allowlist secret -- public OpenSSL upstream commit
+    "CVE-2026-107494": "734c6cd7444bdbf589bfec917e47598c1b21ddd3",  # pragma: allowlist secret -- public OpenSSL upstream commit
+    "CVE-2026-84786": "1ad851363d5b8588b0d40edcc045fd633e93f0c2",  # pragma: allowlist secret -- public OpenSSL upstream commit
 }
 GAP_CVES = ("CVE-2026-88823", "CVE-2026-95692")
 
