@@ -174,18 +174,24 @@ def reject_constant(constant: str) -> None:
     raise ValueError(f"{constant} is not a JSON number")
 
 
-def read_object(path: pathlib.Path, name: str) -> dict[str, Any]:
+def parse_object(text: str, name: str) -> dict[str, Any]:
     try:
         # JSON has no NaN or Infinity. Every parse failure is a ValueError, including
         # an integer longer than the interpreter converts.
-        value: Any = json.loads(
-            path.read_text(encoding="utf-8"), parse_constant=reject_constant
-        )
-    except (OSError, ValueError) as error:
+        value: Any = json.loads(text, parse_constant=reject_constant)
+    except ValueError as error:
         fail(f"invalid {name} response: {error}")
     if not isinstance(value, dict):
         fail(f"{name} response is not an object")
     return value
+
+
+def read_object(path: pathlib.Path, name: str) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as error:
+        fail(f"invalid {name} response: {error}")
+    return parse_object(text, name)
 
 
 # Only source backports validated by the pinned build manifest may match
@@ -232,6 +238,8 @@ parser.add_argument(
     default=[],
     type=pathlib.Path,
 )
+parser.add_argument("--repair-provenance", type=pathlib.Path)
+parser.add_argument("--repair-provenance-sha256")
 args = parser.parse_args()
 
 reviewed_patch_cves: dict[str, str] = {}
@@ -250,6 +258,105 @@ for patch in args.backport_patch:
     if cve in reviewed_patch_cves:
         fail(f"backport patch for {cve} was provided more than once")
     reviewed_patch_cves[cve] = patch_sha256
+
+
+# Reviewed backport patches waive findings only for the runtime digest that this build repaired.
+# build-images.sh writes a repair provenance record after it verifies the pushed runtime digest and
+# before any scan: the image identity, both source revisions, every reviewed patch, the pinned source
+# anchors, the reviewed regression recipes and hashes of the repair evidence read back from the image.
+# The same build writes and consumes the record, so it binds the waiver to this run's checks; it is not
+# a signed provenance attestation.
+REPAIR_PROVENANCE_KEYS = {
+    "version",
+    "digest",
+    "repository",
+    "accountId",
+    "sampleRevision",
+    "oceRevision",
+    "patches",
+    "sourceAnchors",
+    "regressions",
+    "imageEvidence",
+}
+IMAGE_EVIDENCE_KEYS = {"sourceSha256", "packagesSha256"}
+
+
+def is_sha256(value: Any) -> bool:
+    return type(value) is str and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def is_revision(value: Any) -> bool:
+    return type(value) is str and len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+
+def validate_repair_provenance() -> None:
+    if args.repair_provenance is None or args.repair_provenance_sha256 is None:
+        fail(
+            "reviewed backport patches require --repair-provenance and "
+            "--repair-provenance-sha256"
+        )
+    if not is_sha256(args.repair_provenance_sha256):
+        fail("--repair-provenance-sha256 must be a lowercase SHA-256")
+    try:
+        record_bytes = args.repair_provenance.read_bytes()
+    except OSError as error:
+        fail(f"could not read the repair provenance: {error}")
+    if hashlib.sha256(record_bytes).hexdigest() != args.repair_provenance_sha256:
+        fail("repair provenance checksum does not match")
+    try:
+        record_text = record_bytes.decode("utf-8")
+    except UnicodeDecodeError as error:
+        fail(f"invalid repair provenance response: {error}")
+    record = parse_object(record_text, "repair provenance")
+    if set(record) != REPAIR_PROVENANCE_KEYS:
+        fail("repair provenance fields do not match the reviewed record")
+    if type(record["version"]) is not int or record["version"] != 1:
+        fail("repair provenance version is not 1")
+    for field, expected in (
+        ("digest", args.digest),
+        ("repository", args.repository),
+        ("accountId", args.account_id),
+    ):
+        if type(record[field]) is not str or record[field] != expected:
+            fail(f"repair provenance {field} does not match the scanned image")
+    for field in ("sampleRevision", "oceRevision"):
+        if not is_revision(record[field]):
+            fail(f"repair provenance {field} is not a source revision")
+    reviewed_patches = {
+        cve: policy["patch_sha256"] for cve, policy in REVIEWED_BACKPORTS.items()
+    }
+    if record["patches"] != reviewed_patches:
+        fail("repair provenance patches do not match the complete reviewed patch set")
+    if reviewed_patch_cves != reviewed_patches:
+        fail("backport patches do not match the complete reviewed patch set")
+    expected_anchors = {
+        "source": security_metadata["sourceAnchors"],
+        "patched": security_metadata["patchedSourceAnchors"],
+    }
+    if record["sourceAnchors"] != expected_anchors:
+        fail("repair provenance sourceAnchors do not match the reviewed source anchors")
+    expected_regressions = {
+        recipe: "passed"
+        for recipe in [
+            *security_metadata["testRecipes"],
+            *(test["file"] for test in security_metadata["localRegressionTests"]),
+        ]
+    }
+    if record["regressions"] != expected_regressions:
+        fail("repair provenance regressions do not match the reviewed passing recipes")
+    evidence = record["imageEvidence"]
+    if (
+        not isinstance(evidence, dict)
+        or set(evidence) != IMAGE_EVIDENCE_KEYS
+        or not all(is_sha256(value) for value in evidence.values())
+    ):
+        fail("repair provenance imageEvidence is not the reviewed evidence shape")
+
+
+if args.backport_patch:
+    validate_repair_provenance()
+elif args.repair_provenance is not None or args.repair_provenance_sha256 is not None:
+    fail("--repair-provenance applies only with reviewed backport patches")
 
 coverage = read_object(args.coverage, "coverage")
 resources = coverage.get("coveredResources")

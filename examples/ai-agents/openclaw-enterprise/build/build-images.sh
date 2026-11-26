@@ -355,6 +355,85 @@ verify_digest "$CONTROLLER_REPOSITORY" "$controller_digest"
 verify_digest "$OWNERSHIP_HELPER_REPOSITORY" "$ownership_helper_digest"
 verify_digest "$RUNTIME_REPOSITORY" "$runtime_digest"
 
+# Record which revisions, reviewed patches, pinned source anchors and reviewed regression recipes produced
+# the verified runtime digest, with hashes of the repair evidence read back from that image, before any
+# scan. The runtime scan's OpenSSL finding waiver accepts only this record, by exact digest and checksum.
+# The same build writes and consumes the record: it binds the waiver to this run's checks and is not a
+# signed provenance attestation. Each RUN step behind these checks fails the image build on error, so a
+# digest exists only after they passed.
+readonly REPAIR_PROVENANCE_FILE="$metadata_dir/runtime-repair-provenance.json"
+repair_evidence_dir="$metadata_dir/runtime-repair-evidence"
+mkdir -p "$repair_evidence_dir"
+repair_evidence_container="$(
+  docker create --platform "${TARGET_PLATFORM:-linux/amd64}" "$REPAIRED_RUNTIME_IMAGE"
+)" || die "could not read repair evidence from $REPAIRED_RUNTIME_IMAGE"
+for repair_evidence_file in source.sha256 packages.sha256; do
+  if ! docker cp "$repair_evidence_container:/usr/share/doc/openssl/oce/$repair_evidence_file" \
+    "$repair_evidence_dir/$repair_evidence_file"; then
+    docker rm "$repair_evidence_container" >/dev/null 2>&1 || true
+    die "could not read /usr/share/doc/openssl/oce/$repair_evidence_file from $REPAIRED_RUNTIME_IMAGE"
+  fi
+done
+docker rm "$repair_evidence_container" >/dev/null ||
+  die "could not remove the repair evidence container"
+python3 - "$REPAIR_PROVENANCE_FILE" "$repair_evidence_dir" "$OPENSSL_88823_SOURCE_ASSETS/source.json" \
+  "$runtime_digest" "$RUNTIME_REPOSITORY" "$AWS_ACCOUNT_ID" \
+  "$SAMPLE_SOURCE_REVISION" "$OCE_SOURCE_REVISION" \
+  "$OPENSSL_BACKPORT_CVE" "$OPENSSL_BACKPORT_PATCH_SHA256" \
+  "$OPENSSL_88823_BACKPORT_CVE" "$OPENSSL_88823_BACKPORT_PATCH_SHA256" \
+  "$OPENSSL_107496_BACKPORT_CVE" "$OPENSSL_107496_BACKPORT_PATCH_SHA256" <<'PY' ||
+import hashlib
+import json
+import os
+import pathlib
+import sys
+
+path, evidence_dir, metadata_file, digest, repository, account_id = sys.argv[1:7]
+sample_revision, oce_revision = sys.argv[7:9]
+named_patches = sys.argv[9:]
+metadata = json.loads(pathlib.Path(metadata_file).read_text(encoding="utf-8"))
+patches = dict(zip(named_patches[0::2], named_patches[1::2]))
+for entry in metadata["additionalBackports"]:
+    patches[entry["cve"]] = entry["patchSha256"]
+if len(patches) != 9:
+    raise SystemExit("expected exactly nine reviewed OpenSSL patches")
+record = {
+    "version": 1,
+    "digest": digest,
+    "repository": repository,
+    "accountId": account_id,
+    "sampleRevision": sample_revision,
+    "oceRevision": oce_revision,
+    "patches": patches,
+    "sourceAnchors": {
+        "source": metadata["sourceAnchors"],
+        "patched": metadata["patchedSourceAnchors"],
+    },
+    "regressions": {
+        recipe: "passed"
+        for recipe in [
+            *metadata["testRecipes"],
+            *(test["file"] for test in metadata["localRegressionTests"]),
+        ]
+    },
+    "imageEvidence": {
+        key: hashlib.sha256((pathlib.Path(evidence_dir) / name).read_bytes()).hexdigest()
+        for key, name in (
+            ("sourceSha256", "source.sha256"),
+            ("packagesSha256", "packages.sha256"),
+        )
+    },
+}
+# Created exclusively with mode 0600, and never rewritten.
+descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+    json.dump(record, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+PY
+  die "could not write the runtime repair provenance"
+REPAIR_PROVENANCE_SHA256="$(sha256sum "$REPAIR_PROVENANCE_FILE" | cut -d' ' -f1)"
+readonly REPAIR_PROVENANCE_SHA256
+
 verify_scan() {
   local repository="$1"
   local digest="$2"
@@ -436,6 +515,13 @@ PY
     for backport_patch in "${backport_patches[@]}"; do
       scan_command+=(--backport-patch "$backport_patch")
     done
+    # Only the runtime scan passes reviewed patches; its waiver needs this run's repair record.
+    if (( ${#backport_patches[@]} > 0 )); then
+      scan_command+=(
+        --repair-provenance "$REPAIR_PROVENANCE_FILE"
+        --repair-provenance-sha256 "$REPAIR_PROVENANCE_SHA256"
+      )
+    fi
     # Inspector can mark coverage successful before all findings are queryable.
     # Observations at five-second intervals span a full minute from first to last.
     if "${scan_command[@]}"; then
@@ -505,6 +591,7 @@ export NPM_RUNTIME_VERSION NPM_RUNTIME_ARCHIVE_SHA256
 export OPENSSL_METADATA_FILE="$OPENSSL_88823_SOURCE_ASSETS/source.json"
 export GIT_METADATA_FILE="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/git/source.json"
 export EXPAT_METADATA_FILE="$SAMPLE_SOURCE_DIR/examples/ai-agents/openclaw-enterprise/build/expat/source.json"
+export REPAIR_PROVENANCE_FILE
 
 {
   printf 'export ADAPTER_IMAGE=%q\n' "$ADAPTER_IMAGE"
@@ -544,6 +631,10 @@ result = {
         "image": os.environ["RUNTIME_IMAGE"],
         "oceSourceRevision": os.environ["OCE_SOURCE_REVISION"],
         "sourceRevision": os.environ["SAMPLE_SOURCE_REVISION"],
+        # A copy of the repair record the runtime scan accepted, for audit only; nothing reads it back.
+        "repairProvenance": json.loads(
+            open(os.environ["REPAIR_PROVENANCE_FILE"], encoding="utf-8").read()
+        ),
         "dependencyPatches": [
             {
                 "component": "OpenClaw transitive dependencies",

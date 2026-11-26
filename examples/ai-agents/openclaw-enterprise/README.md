@@ -501,6 +501,18 @@ findings. Git and Expat have no scan exceptions. Every active `CRITICAL`
 finding and every unmatched active `HIGH` finding fails the build.
 ECR basic scanning alone does not meet this gate.
 
+The OpenSSL exceptions also require the runtime repair record that the build
+writes after it verifies the pushed runtime digest and before any scan. The
+record names that exact digest, both source revisions, all nine reviewed patch
+checksums, the pinned source anchors and the reviewed regression recipes, and
+holds hashes of `/usr/share/doc/openssl/oce/source.sha256` and
+`packages.sha256` read back from the image. The gate refuses every exception
+unless the record matches its checksum, the scanned digest and the complete
+patch set. The same build writes and checks this record, so it is
+self-attestation of that run's checks; it is not BuildKit or other signed
+provenance. `image-digests.json` keeps a copy as `repairProvenance` in the
+runtime entry.
+
 Assume the generated invocation role in a subshell and start the fixed
 workflow. The temporary credentials disappear when the subshell exits; only
 the four non-secret image references are returned to the operator shell. The

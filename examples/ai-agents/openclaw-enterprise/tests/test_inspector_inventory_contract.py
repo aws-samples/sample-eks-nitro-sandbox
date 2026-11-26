@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -87,7 +88,46 @@ def os_package(release="1~deb13u1+oce3"):
     }
 
 
-def run_checker(tmp_path, items, patches=None, raw=None):
+def reviewed_patch_files():
+    return [BUILD / "patches" / f"openssl-{cve.lower()}.patch" for cve in REFERENCES]
+
+
+def repair_provenance(**changes):
+    """The runtime repair record that build-images.sh writes for the scanned digest."""
+    metadata = json.loads((BUILD / "openssl" / "source.json").read_text(encoding="utf-8"))
+    record = {
+        "version": 1,
+        "digest": DIGEST,
+        "repository": REPOSITORY,
+        "accountId": ACCOUNT,
+        "sampleRevision": "1" * 40,
+        "oceRevision": "2" * 40,
+        "patches": {
+            cve: hashlib.sha256(patch.read_bytes()).hexdigest()
+            for cve, patch in zip(REFERENCES, reviewed_patch_files())
+        },
+        "sourceAnchors": {
+            "source": metadata["sourceAnchors"],
+            "patched": metadata["patchedSourceAnchors"],
+        },
+        "regressions": {
+            recipe: "passed"
+            for recipe in [
+                *metadata["testRecipes"],
+                *(test["file"] for test in metadata["localRegressionTests"]),
+            ]
+        },
+        "imageEvidence": {"sourceSha256": "3" * 64, "packagesSha256": "4" * 64},
+    }
+    record.update(changes)
+    return record
+
+
+def run_checker(
+    tmp_path, items, patches=None, raw=None, provenance=None, provenance_text=None,
+    provenance_sha256=None,
+):
+    # With reviewed patches, a matching repair record is passed unless provenance is False.
     coverage = {
         "coveredResources": [{
             "resourceType": "AWS_ECR_CONTAINER_IMAGE",
@@ -114,12 +154,19 @@ def run_checker(tmp_path, items, patches=None, raw=None):
         RESOURCE, ACCOUNT, REPOSITORY, DIGEST,
     ]
     if patches is None:
-        patches = [
-            BUILD / "patches" / f"openssl-{cve.lower()}.patch"
-            for cve in REFERENCES
-        ]
+        patches = reviewed_patch_files()
     for patch in patches:
         arguments.extend(["--backport-patch", str(patch)])
+    if patches and provenance is not False:
+        if provenance_text is None:
+            provenance_text = json.dumps(provenance or repair_provenance(), indent=2) + "\n"
+        provenance_path = tmp_path / "runtime-repair-provenance.json"
+        provenance_path.write_text(provenance_text, encoding="utf-8")
+        arguments.extend([
+            "--repair-provenance", str(provenance_path),
+            "--repair-provenance-sha256",
+            provenance_sha256 or hashlib.sha256(provenance_text.encode()).hexdigest(),
+        ])
     return subprocess.run(arguments, capture_output=True, text=True, check=False)
 
 
@@ -294,3 +341,93 @@ def test_historical_exact_inventory_still_accepted(tmp_path, cve):
         packages.insert(0, os_package("1~deb13u1+oce1"))
     result = run_checker(tmp_path, [finding])
     assert result.returncode == 0, result.stderr
+
+
+def assert_repair_refused(result, message):
+    assert result.returncode == 1
+    assert result.stderr == f"Inspector image scan: {message}\n"
+    assert "accepted" not in result.stdout
+
+
+def test_reviewed_patches_without_repair_provenance_rejected(tmp_path):
+    result = run_checker(tmp_path, [current_finding("CVE-2026-95692")], provenance=False)
+    assert_repair_refused(
+        result,
+        "reviewed backport patches require --repair-provenance and --repair-provenance-sha256",
+    )
+
+
+def test_repair_provenance_for_another_digest_rejected(tmp_path):
+    other_digest = DIGEST[:-1] + "b"
+    result = run_checker(
+        tmp_path, [current_finding("CVE-2026-95692")], provenance=repair_provenance(digest=other_digest)
+    )
+    assert_repair_refused(result, "repair provenance digest does not match the scanned image")
+
+
+@pytest.mark.parametrize("change", ["record-missing", "record-extra", "command-line-missing"])
+def test_repair_provenance_requires_the_complete_reviewed_patch_set(tmp_path, change):
+    record = repair_provenance()
+    patches = reviewed_patch_files()
+    if change == "record-missing":
+        del record["patches"]["CVE-2026-84786"]
+        message = "repair provenance patches do not match the complete reviewed patch set"
+    elif change == "record-extra":
+        record["patches"]["CVE-2099-0001"] = "5" * 64
+        message = "repair provenance patches do not match the complete reviewed patch set"
+    else:
+        patches = patches[:-1]
+        message = "backport patches do not match the complete reviewed patch set"
+    result = run_checker(tmp_path, [current_finding("CVE-2026-95692")], patches=patches, provenance=record)
+    assert_repair_refused(result, message)
+
+
+def test_repair_provenance_with_a_changed_source_anchor_rejected(tmp_path):
+    record = repair_provenance()
+    path = min(record["sourceAnchors"]["patched"])
+    record["sourceAnchors"]["patched"][path] = "6" * 64
+    result = run_checker(tmp_path, [current_finding("CVE-2026-95692")], provenance=record)
+    assert_repair_refused(result, "repair provenance sourceAnchors do not match the reviewed source anchors")
+
+
+@pytest.mark.parametrize("change", ["failed", "missing"])
+def test_repair_provenance_requires_every_reviewed_regression_to_pass(tmp_path, change):
+    record = repair_provenance()
+    recipe = min(record["regressions"])
+    if change == "failed":
+        record["regressions"][recipe] = "failed"
+    else:
+        del record["regressions"][recipe]
+    result = run_checker(tmp_path, [current_finding("CVE-2026-95692")], provenance=record)
+    assert_repair_refused(result, "repair provenance regressions do not match the reviewed passing recipes")
+
+
+def test_repair_provenance_changed_after_its_checksum_rejected(tmp_path):
+    text = json.dumps(repair_provenance(), indent=2) + "\n"
+    changed = text.replace('"version": 1', '"version": 1 ', 1)
+    result = run_checker(
+        tmp_path,
+        [current_finding("CVE-2026-95692")],
+        provenance_text=changed,
+        provenance_sha256=hashlib.sha256(text.encode()).hexdigest(),
+    )
+    assert_repair_refused(result, "repair provenance checksum does not match")
+
+
+def test_non_finite_number_in_repair_provenance_rejected(tmp_path):
+    text = json.dumps(repair_provenance(), indent=2).replace('"version": 1', '"version": NaN', 1)
+    result = run_checker(tmp_path, [current_finding("CVE-2026-95692")], provenance_text=text)
+    assert_repair_refused(result, "invalid repair provenance response: NaN is not a JSON number")
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.parametrize("inventory", ["current", "historical"])
+def test_matching_repair_provenance_accepts_reviewed_inventories(tmp_path, inventory):
+    finding = current_finding("CVE-2026-95692")
+    if inventory == "historical":
+        for package in finding["packageVulnerabilityDetails"]["vulnerablePackages"]:
+            del package["epoch"]
+            del package["remediation"]
+    result = run_checker(tmp_path, [finding], provenance=repair_provenance())
+    assert result.returncode == 0, result.stderr
+    assert "accepted 1 reviewed HIGH source backport finding(s)" in result.stdout

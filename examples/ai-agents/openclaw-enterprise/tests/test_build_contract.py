@@ -1858,12 +1858,60 @@ def _inspector_scan_result(
         backport_patches = backport_patch or ()
     for patch in backport_patches:
         command.extend(["--backport-patch", str(patch)])
+    if backport_patches:
+        # The runtime scan's matching repair record; the gate accepts it only with all nine reviewed patches.
+        provenance = tmp_path / "runtime-repair-provenance.json"
+        provenance.write_text(json.dumps(_repair_provenance()), encoding="utf-8")
+        command.extend([
+            "--repair-provenance", str(provenance),
+            "--repair-provenance-sha256", hashlib.sha256(provenance.read_bytes()).hexdigest(),
+        ])
     return subprocess.run(
         command,
         check=False,
         text=True,
         capture_output=True,
     )
+
+
+def _repair_provenance() -> dict[str, Any]:
+    metadata = json.loads((BUILD / "openssl" / "source.json").read_text(encoding="utf-8"))
+    patches = {
+        "CVE-2026-95692": OPENSSL_BACKPORT_PATCH,
+        "CVE-2026-88823": OPENSSL_88823_BACKPORT_PATCH,
+        "CVE-2026-107496": OPENSSL_107496_BACKPORT_PATCH,
+        **{entry["cve"]: BUILD / "patches" / entry["repoPatchFile"] for entry in metadata["additionalBackports"]},
+    }
+    return {
+        "version": 1,
+        "digest": INSPECTOR_DIGEST,
+        "repository": INSPECTOR_REPOSITORY,
+        "accountId": INSPECTOR_ACCOUNT,
+        "sampleRevision": "1" * 40,
+        "oceRevision": "2" * 40,
+        "patches": {cve: hashlib.sha256(path.read_bytes()).hexdigest() for cve, path in patches.items()},
+        "sourceAnchors": {"source": metadata["sourceAnchors"], "patched": metadata["patchedSourceAnchors"]},
+        "regressions": {
+            recipe: "passed"
+            for recipe in [
+                *metadata["testRecipes"],
+                *(test["file"] for test in metadata["localRegressionTests"]),
+            ]
+        },
+        "imageEvidence": {"sourceSha256": "3" * 64, "packagesSha256": "4" * 64},
+    }
+
+
+# The runtime scan always passes all nine reviewed patches with its repair record.
+REVIEWED_OPENSSL_PATCHES = (
+    OPENSSL_BACKPORT_PATCH,
+    OPENSSL_88823_BACKPORT_PATCH,
+    OPENSSL_107496_BACKPORT_PATCH,
+    *(
+        BUILD / "patches" / entry["repoPatchFile"]
+        for entry in json.loads((BUILD / "openssl" / "source.json").read_text())["additionalBackports"]
+    ),
+)
 
 
 INSPECTOR_ACCOUNT = "123456789012"
@@ -2072,7 +2120,7 @@ def test_inspector_gate_accepts_only_the_exact_reviewed_source_backport(
         tmp_path,
         _inspector_coverage(),
         {"findings": [_openssl_backport_finding()]},
-        OPENSSL_BACKPORT_PATCH,
+        REVIEWED_OPENSSL_PATCHES,
     )
 
     assert result.returncode == 0, result.stderr
@@ -2091,7 +2139,7 @@ def test_inspector_gate_accepts_both_exact_reviewed_source_backports(
                 _openssl_88823_backport_finding(),
             ]
         },
-        (OPENSSL_BACKPORT_PATCH, OPENSSL_88823_BACKPORT_PATCH),
+        REVIEWED_OPENSSL_PATCHES,
     )
 
     assert result.returncode == 0, result.stderr
@@ -2127,11 +2175,9 @@ def test_additional_openssl_inspector_records_require_exact_source_fix(
         finding["severity"] = "CRITICAL"
     elif mutation == "os-package":
         package["packageManager"] = "OS"
-    patch = BUILD / "patches" / entry["repoPatchFile"]
-
     result = _inspector_scan_result(
         tmp_path, _inspector_coverage(), {"findings": [finding]},
-        () if mutation == "missing-patch" else patch,
+        () if mutation == "missing-patch" else REVIEWED_OPENSSL_PATCHES,
     )
 
     assert result.returncode == (0 if mutation == "accepted" else 1), result.stderr
@@ -2149,7 +2195,7 @@ def test_inspector_gate_accepts_exact_cve_2026_107496_package_shapes(
                     _openssl_107496_backport_finding(include_os_package)
                 ]
             },
-            OPENSSL_107496_BACKPORT_PATCH,
+            REVIEWED_OPENSSL_PATCHES,
         )
 
         assert result.returncode == 0, result.stderr
@@ -2228,11 +2274,58 @@ def test_inspector_gate_accepts_only_exact_cve_2026_88823_backport(
         tmp_path,
         _inspector_coverage(),
         {"findings": [_openssl_88823_backport_finding()]},
-        (OPENSSL_BACKPORT_PATCH, OPENSSL_88823_BACKPORT_PATCH),
+        REVIEWED_OPENSSL_PATCHES,
     )
 
     assert result.returncode == 0, result.stderr
     assert "accepted 1 reviewed HIGH source backport finding(s)" in result.stdout
+
+
+def test_runtime_repair_provenance_is_written_after_digest_verification_and_before_any_scan() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    checker = INSPECTOR_SCAN_CHECK.read_text(encoding="utf-8")
+    read = script.rindex('runtime_digest="$(read_digest "$metadata_dir/runtime.json")"')
+    verified = script.index('verify_digest "$RUNTIME_REPOSITORY" "$runtime_digest"\n')
+    written = script.index('readonly REPAIR_PROVENANCE_FILE="$metadata_dir/runtime-repair-provenance.json"')
+    hashed = script.index('REPAIR_PROVENANCE_SHA256="$(sha256sum "$REPAIR_PROVENANCE_FILE" | cut -d\' \' -f1)"')
+    first_scan = script.index('verify_scan "$ADAPTER_REPOSITORY" "$adapter_digest"\n')
+    assert read < verified < written < hashed < first_scan
+    # Created exclusively, private, from the image's own repair evidence.
+    assert "os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)" in script
+    assert 'docker create --platform "${TARGET_PLATFORM:-linux/amd64}" "$REPAIRED_RUNTIME_IMAGE"' in script
+    assert "for repair_evidence_file in source.sha256 packages.sha256; do" in script
+    # Only the runtime scan passes reviewed patches, and with them the record and its checksum.
+    verify_scan = script.split("verify_scan() {", 1)[1].split(
+        '\n}\n\nverify_scan "$ADAPTER_REPOSITORY"', 1
+    )[0]
+    assert (
+        '    if (( ${#backport_patches[@]} > 0 )); then\n'
+        "      scan_command+=(\n"
+        '        --repair-provenance "$REPAIR_PROVENANCE_FILE"\n'
+        '        --repair-provenance-sha256 "$REPAIR_PROVENANCE_SHA256"\n'
+    ) in verify_scan
+    for repository, digest in (
+        ("ADAPTER_REPOSITORY", "adapter_digest"),
+        ("CONTROLLER_REPOSITORY", "controller_digest"),
+        ("OWNERSHIP_HELPER_REPOSITORY", "ownership_helper_digest"),
+    ):
+        assert f'verify_scan "${repository}" "${digest}"\n' in script
+    # The writer and the gate derive the patch, anchor and regression sets from the same reviewed manifest.
+    for expression in (
+        'metadata["testRecipes"]',
+        '(test["file"] for test in metadata["localRegressionTests"])',
+        '"source": metadata["sourceAnchors"]',
+        '"patched": metadata["patchedSourceAnchors"]',
+    ):
+        assert expression in script
+        assert expression.replace("metadata[", "security_metadata[") in checker
+    # The audit copy sits in the runtime entry; the controller entry keeps its source fields.
+    runtime_entry = script.split('    "runtime": {', 1)[1].split('        "dependencyPatches": [', 1)[0]
+    assert '"repairProvenance": json.loads(' in runtime_entry
+    controller_entry = script.split('    "controller": {', 1)[1].split("    },", 1)[0]
+    assert "repairProvenance" not in controller_entry
+    for key in ("baseImage", "buildBaseImage", "repairedRuntimeImage"):
+        assert f'"{key}"' in controller_entry
 
 
 def test_inspector_cve_2026_88823_gate_rejects_package_near_matches(
