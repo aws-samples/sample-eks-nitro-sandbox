@@ -1352,6 +1352,9 @@ Then run the destructive two-tenant check:
 
 Commit the sample changes first. The validator refuses a dirty Git worktree so
 the evidence identifies the exact revision tested.
+It records the image-build revision separately. Images from an earlier commit
+are accepted only when that commit is an ancestor and all compiled image inputs
+match the current checkout.
 
 Set `EVIDENCE_DIR` to a path that does not exist. Every existing parent must
 be owned by root or the current user and must not be group- or other-writable,
@@ -1374,6 +1377,7 @@ export EVIDENCE_DIR='<new-private-evidence-directory>'
   --tenant-b-pod '<tenant-b-runtime-pod>' \
   --tenant-b-container '<tenant-b-runtime-container>' \
   --runtime-image "$RUNTIME_IMAGE" \
+  --image-source-revision "$(jq -er '.sampleRevision' "$IMAGE_DIGESTS_FILE")" \
   --oce-api-local-port 18081 \
   --oce-system-namespace "$OCE_NAMESPACE" \
   --oce-source-revision \

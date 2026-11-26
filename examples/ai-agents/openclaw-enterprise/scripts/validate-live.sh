@@ -48,6 +48,7 @@ OCE_API_LOCAL_PORT=""
 OCE_API_URL=""
 OCE_SYSTEM_NAMESPACE=""
 OCE_SOURCE_REVISION=""
+IMAGE_SOURCE_REVISION=""
 TENANT_A_OCE_NAMESPACE=""
 TENANT_A_AGENT_ID=""
 TENANT_A_CREDENTIAL_FILE=""
@@ -128,6 +129,7 @@ usage() {
     '  --confirm-pod-replacement' \
     '' \
     'Optional:' \
+    '  --image-source-revision COMMIT  Image build revision; compiled inputs must match HEAD' \
     '  --timeout-seconds SECONDS  Replacement timeout (default: 600)' \
     '  --kms-signing-key-id KEY   KMS signing key ID or ARN; evidence is unsigned when omitted'
 }
@@ -617,6 +619,7 @@ while [[ $# -gt 0 ]]; do
     --oce-api-local-port) OCE_API_LOCAL_PORT="${2:-}"; shift 2 ;;
     --oce-system-namespace) OCE_SYSTEM_NAMESPACE="${2:-}"; shift 2 ;;
     --oce-source-revision) OCE_SOURCE_REVISION="${2:-}"; shift 2 ;;
+    --image-source-revision) IMAGE_SOURCE_REVISION="${2:-}"; shift 2 ;;
     --tenant-a-oce-namespace) TENANT_A_OCE_NAMESPACE="${2:-}"; shift 2 ;;
     --tenant-a-agent-id) TENANT_A_AGENT_ID="${2:-}"; shift 2 ;;
     --tenant-a-credential-file) TENANT_A_CREDENTIAL_FILE="${2:-}"; shift 2 ;;
@@ -673,6 +676,8 @@ done
   die "OCE source revision must be a full lowercase Git commit SHA"
 [[ "$OCE_SOURCE_REVISION" == "$EXPECTED_OCE_SOURCE_REVISION" ]] ||
   die "OCE source revision must match this sample's reviewed pin"
+[[ -z "$IMAGE_SOURCE_REVISION" || "$IMAGE_SOURCE_REVISION" =~ ^[0-9a-f]{40}$ ]] ||
+  die "image source revision must be a full lowercase Git commit SHA"
 [[ "$TENANT_A_OCE_NAMESPACE" =~ ^ns_[A-Za-z0-9-]+$ ]] ||
   die "tenant A OCE namespace ID is invalid"
 [[ "$TENANT_B_OCE_NAMESPACE" =~ ^ns_[A-Za-z0-9-]+$ ]] ||
@@ -700,7 +705,7 @@ done
 
 for command_name in \
   awk aws basename cat chmod cp curl date dirname git grep id jq kubectl mkdir mktemp node openssl rm \
-  sed sleep stat uname; do
+  python3 sed sleep stat uname; do
   command -v "$command_name" >/dev/null 2>&1 || die "required command is unavailable: $command_name"
 done
 
@@ -780,6 +785,10 @@ GIT_REVISION="$(git -C "$REPO_ROOT" rev-parse --verify 'HEAD^{commit}')" ||
 [[ -z "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=normal)" ]] ||
   die "Git worktree must be clean before live validation"
 GIT_WORKTREE_STATE="clean"
+IMAGE_SOURCE_REVISION="${IMAGE_SOURCE_REVISION:-$GIT_REVISION}"
+python3 "$(dirname "$SCRIPT_PATH")/lib/check-image-source-revision.py" \
+  "$REPO_ROOT" "$IMAGE_SOURCE_REVISION" "$GIT_REVISION" >/dev/null ||
+  die "image build source does not match the candidate compiled inputs"
 VALIDATOR_SHA256="$(sha256_file "$SCRIPT_PATH")"
 EVIDENCE_REQUESTED_DIR="$(
   node -e 'process.stdout.write(require("node:path").resolve(process.argv[1]))' "$EVIDENCE_DIR"
@@ -852,6 +861,7 @@ done
   printf 'OpenClaw Enterprise live validation\n'
   printf 'EVIDENCE\tvalidation-start\t%s\n' "$VALIDATION_STARTED_AT"
   printf 'EVIDENCE\tgit-revision\t%s\n' "$GIT_REVISION"
+  printf 'EVIDENCE\timage-build-revision\t%s\n' "$IMAGE_SOURCE_REVISION"
   printf 'EVIDENCE\tgit-worktree-state\t%s\n' "$GIT_WORKTREE_STATE"
   printf 'EVIDENCE\tvalidator-sha256\t%s\n' "$VALIDATOR_SHA256"
   printf 'EVIDENCE\tnative-history-evaluator-sha256\t%s\n' \
@@ -977,12 +987,12 @@ verify_ecr_image_revision() {
     --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 1048576 \
     --output "$config_file" "$config_url" ||
     die "$evidence_alias ECR image config download failed"
-  jq -e --arg revision "$GIT_REVISION" '
+  jq -e --arg revision "$IMAGE_SOURCE_REVISION" '
     .config.Labels["org.opencontainers.image.revision"] == $revision
   ' "$config_file" >/dev/null ||
-    die "$evidence_alias ECR image revision label does not match the candidate Git revision"
+    die "$evidence_alias ECR image revision label does not match the verified image build revision"
   printf 'EVIDENCE\timage-source-revision-%s\t%s@%s revision=%s\n' \
-    "$evidence_alias" "$repository" "$digest" "$GIT_REVISION" >>"$EVIDENCE_FILE"
+    "$evidence_alias" "$repository" "$digest" "$IMAGE_SOURCE_REVISION" >>"$EVIDENCE_FILE"
 }
 
 verify_pod_ecr_image_revisions() {

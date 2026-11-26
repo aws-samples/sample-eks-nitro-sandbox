@@ -1350,6 +1350,24 @@ FAKE_GIT = textwrap.dedent(
         elif operation == ["status", "--porcelain", "--untracked-files=normal"]:
             if os.environ.get("FAKE_SCENARIO") == "dirty_worktree":
                 print(" M examples/ai-agents/openclaw-enterprise/README.md")
+        elif operation == ["cat-file", "-e", {GIT_REVISION!r} + "^{{commit}}"]:
+            pass
+        elif operation == ["merge-base", "--is-ancestor", {GIT_REVISION!r}, {GIT_REVISION!r}]:
+            pass
+        elif operation == [
+            "ls-tree", "-r", "-z", "--full-tree", {GIT_REVISION!r}, "--",
+            "examples/ai-agents/openclaw-enterprise/adapter",
+            "examples/ai-agents/openclaw-enterprise/ownership-helper",
+            "examples/ai-agents/openclaw-enterprise/build",
+        ]:
+            for path in (
+                "adapter/adapter.py", "ownership-helper/main.go",
+                "build/controller-runtime.Dockerfile",
+            ):
+                sys.stdout.buffer.write(
+                    ("100644 blob " + "a" * 40 + "\\t"
+                     + "examples/ai-agents/openclaw-enterprise/" + path + "\\0").encode()
+                )
         else:
             raise SystemExit(f"unsupported fake git command: {{args}}")
     else:
@@ -2078,6 +2096,7 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         in evidence
     )
     assert f"EVIDENCE\tgit-revision\t{GIT_REVISION}" in evidence
+    assert f"EVIDENCE\timage-build-revision\t{GIT_REVISION}" in evidence
     cluster_arn = "arn:aws:eks:us-west-2:123456789012:cluster/explicit-cluster"
     assert (
         f"EVIDENCE\tcluster-arn-sha256\t"
@@ -2327,7 +2346,7 @@ def test_deployed_ecr_image_revision_mismatch_fails_closed(tmp_path: Path) -> No
 
     assert result.returncode != 0
     assert (
-        "tenant-a-1 ECR image revision label does not match the candidate Git revision"
+        "tenant-a-1 ECR image revision label does not match the verified image build revision"
         in result.stderr
     )
     evidence = (tmp_path / "evidence" / "live-validation-evidence.txt").read_text()
