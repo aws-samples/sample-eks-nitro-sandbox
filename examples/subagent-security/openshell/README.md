@@ -274,9 +274,12 @@ class it picks goes into both `server.dataStorageClass` and `server.workspaceSto
 the rendered [`deploy/gateway-values.yaml`](deploy/gateway-values.yaml). On the cluster this
 run used, no default class fit, so setup created the blueprint's own.
 
-The first five stages are the ones every Subagent security blueprint shares, which is why they
-count out of seven: this blueprint does not use the sixth, the analyst's own IAM role, because
-here only the model bridge has an AWS identity.
+The first six stages are the ones every Subagent security blueprint shares, which is why they
+count out of seven. The sixth is the IAM role and its EKS Pod Identity association: the same
+setup the other blueprints use for the analyst's role, here with the model bridge's narrower
+inline policy ([`iam/bridge-permissions-policy.json`](iam/bridge-permissions-policy.json), one
+Bedrock action on the configured model), because only the bridge has an AWS identity. The
+seventh is each blueprint's own, which here is the stages that follow.
 
 ```bash
 ./scripts/setup.sh

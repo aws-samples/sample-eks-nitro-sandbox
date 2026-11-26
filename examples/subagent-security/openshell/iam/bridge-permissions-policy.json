@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "Everything the model bridge may do in AWS: invoke the one configured Bedrock inference",
+    "profile, and nothing else. It has no S3 and no other service, and the analyst inside the",
+    "sandbox has no AWS role at all.",
+    "A setup script drops this key and fills in the <MODEL_RESOURCES> list, which it reads from",
+    "the configured inference profile. The statement keeps this Sid because analyst_role in",
+    "analyst/scripts/analyst-lib.sh looks for it."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeTheConfiguredModel",
+      "Effect": "Allow",
+      "Action": ["bedrock:InvokeModel"],
+      "Resource": "<MODEL_RESOURCES>"
+    }
+  ]
+}

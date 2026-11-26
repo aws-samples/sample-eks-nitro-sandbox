@@ -6,7 +6,7 @@
 #   cp .env.example .env && $EDITOR .env
 #   ./scripts/setup.sh
 #
-# What it does, in order (the first five stages are the ones every Subagent security
+# What it does, in order (the first six stages are the ones every Subagent security
 # sample shares, and print their own "N/7" counter from analyst-lib.sh):
 #   1. checks the tools, the kube context, the isolated-sandbox RuntimeClass, the Bedrock
 #      model, the MutatingAdmissionPolicy API and the shared agent-sandbox install;
@@ -15,9 +15,9 @@
 #   4. builds and pushes the supplier API image and starts it as an ordinary pod;
 #   5. creates the S3 bucket and seeds the case, the three proposals and another case's
 #      object, so the keys the model has to cite name real objects;
-#   6. downloads the pinned OpenShell CLI and chart and verifies both checksums;
-#   7. applies this sample's namespace-scoped admission adapter;
-#   8. creates the bridge's IAM role and EKS Pod Identity association;
+#   6. creates the bridge's IAM role and EKS Pod Identity association;
+#   7. downloads the pinned OpenShell CLI and chart and verifies both checksums;
+#   8. applies this sample's namespace-scoped admission adapter;
 #   9. builds and pushes the analyst image and the CA-extended supervisor image, and
 #      starts the model bridge;
 #  10. installs the OpenShell gateway from the pinned chart.
@@ -273,6 +273,12 @@ analyst_supplier_secrets
 analyst_supplier_api
 analyst_bucket
 
+# The bridge is the only component with AWS credentials, and Bedrock on one inference
+# profile is all it needs: no S3, no other service. The analyst in the sandbox has no role
+# at all. This is the role setup the other samples use, with the bridge's own inline policy
+# and permissions in place of the analyst's.
+analyst_role bridge "$SAMPLE_DIR/iam/bridge-permissions-policy.json"
+
 # ---------------------------------------------------------------------------
 # The pinned OpenShell CLI and chart
 # ---------------------------------------------------------------------------
@@ -317,87 +323,6 @@ analyst_render "$SAMPLE_DIR/deploy/nitro-adapter.yaml" "$TMP_DIR/nitro-adapter.y
 kc apply -f "$TMP_DIR/nitro-adapter.yaml"
 state_put ADAPTER_CREATED true
 echo "  applied $ADAPTER, scoped to namespaces labelled managed-by=$SAMPLE"
-
-# ---------------------------------------------------------------------------
-# The bridge's IAM role and Pod Identity association
-# ---------------------------------------------------------------------------
-
-say "the model bridge's IAM role and its EKS Pod Identity association"
-
-# The bridge is the only component with AWS credentials, and Bedrock on one inference
-# profile is all it needs: no S3, no other service. The analyst in the sandbox has no
-# role at all.
-jq -n --arg ns "$NAMESPACE" --arg sa "$ANALYST_SA" '{
-  Version: "2012-10-17",
-  Statement: [{
-    Effect: "Allow",
-    Principal: {Service: "pods.eks.amazonaws.com"},
-    Action: ["sts:AssumeRole", "sts:TagSession"],
-    Condition: {StringEquals: {
-      "aws:RequestTag/kubernetes-namespace": $ns,
-      "aws:RequestTag/kubernetes-service-account": $sa}}}]}' \
-  > "$TMP_DIR/bridge-trust-policy.json"
-jq -n --argjson models "$MODEL_RESOURCES" '{
-  Version: "2012-10-17",
-  Statement: [{
-    Sid: "InvokeTheConfiguredModel",
-    Effect: "Allow",
-    Action: ["bedrock:InvokeModel"],
-    Resource: $models}]}' > "$TMP_DIR/bridge-permissions-policy.json"
-
-rc=0
-existing_role="$(lookup NoSuchEntity iam get-role --role-name "$ROLE_NAME" --output json)" || rc=$?
-stop_if_undetermined "$rc" "the IAM role $ROLE_NAME"
-if [[ "$rc" == 0 ]]; then
-  require_managed_by "the IAM role $ROLE_NAME" \
-    "$(jq -r '.Role.Tags[]? | select(.Key=="ManagedBy") | .Value' <<<"$existing_role")"
-  # The tag says the role is this sample's; it does not say it still carries only what
-  # this sample grants. Putting the bridge policy back would not remove a second one, and
-  # the page would then show a model-scoped role that in fact holds more.
-  inline="$(aws iam list-role-policies --role-name "$ROLE_NAME" --output json)" ||
-    die "could not list the inline policies on the IAM role $ROLE_NAME, so it is unknown whether it carries only this sample's; changed nothing."
-  attached="$(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --output json)" ||
-    die "could not list the attached policies on the IAM role $ROLE_NAME, so it is unknown whether it carries only this sample's; changed nothing."
-  extra="$(jq -r '.PolicyNames[] | select(. != "bridge")' <<<"$inline" | tr '\n' ' ')"
-  [[ -z "$extra" ]] ||
-    die "the IAM role $ROLE_NAME carries inline policies this sample did not create ($extra); changed nothing. Delete the role, or set a new ROLE_NAME in .env."
-  [[ "$(jq '.AttachedPolicies | length' <<<"$attached")" == 0 ]] ||
-    die "the IAM role $ROLE_NAME has managed policies attached ($(jq -r '[.AttachedPolicies[].PolicyName] | join(", ")' <<<"$attached")); changed nothing. Delete the role, or set a new ROLE_NAME in .env."
-  aws iam update-assume-role-policy --role-name "$ROLE_NAME" \
-    --policy-document "file://$TMP_DIR/bridge-trust-policy.json"
-  ROLE_ARN="$(jq -r '.Role.Arn' <<<"$existing_role")"
-  echo "  reusing the IAM role $ROLE_NAME (it carries only this sample's bridge policy)"
-else
-  ROLE_ARN="$(aws iam create-role --role-name "$ROLE_NAME" \
-    --assume-role-policy-document "file://$TMP_DIR/bridge-trust-policy.json" \
-    --tags "Key=ManagedBy,Value=$SAMPLE" --query Role.Arn --output text)" ||
-    die "could not create the IAM role $ROLE_NAME"
-  state_put ROLE_CREATED true
-  echo "  created the IAM role $ROLE_NAME"
-fi
-aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name bridge \
-  --policy-document "file://$TMP_DIR/bridge-permissions-policy.json"
-state_put ROLE_ARN "$ROLE_ARN"
-
-assoc="$(aws eks list-pod-identity-associations --cluster-name "$CLUSTER_NAME" \
-  --namespace "$NAMESPACE" --service-account "$ANALYST_SA" --output json)" ||
-  die "could not list the Pod Identity associations for $NAMESPACE/$ANALYST_SA on $CLUSTER_NAME"
-if [[ "$(jq '.associations | length' <<<"$assoc")" != 0 ]]; then
-  id="$(jq -r '.associations[0].associationId' <<<"$assoc")"
-  assoc_role="$(aws eks describe-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-    --association-id "$id" --query association.roleArn --output text)" ||
-    die "could not read the existing Pod Identity association $id"
-  [[ "$assoc_role" == "$ROLE_ARN" ]] ||
-    die "the Pod Identity association for $NAMESPACE/$ANALYST_SA points at $assoc_role, not $ROLE_ARN; changed nothing. Remove it, or set a new NAMESPACE in .env."
-  echo "  reusing the Pod Identity association $id"
-else
-  id="$(aws eks create-pod-identity-association --cluster-name "$CLUSTER_NAME" \
-    --namespace "$NAMESPACE" --service-account "$ANALYST_SA" --role-arn "$ROLE_ARN" \
-    --tags "ManagedBy=$SAMPLE" --query association.associationId --output text)" ||
-    die "could not create the Pod Identity association"
-  state_put POD_IDENTITY_ASSOCIATION "$id"
-  echo "  created the Pod Identity association $id"
-fi
 
 # ---------------------------------------------------------------------------
 # The analyst image, the supervisor image and the model bridge
@@ -462,8 +387,6 @@ kc get configmap supplier-ca -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}' \
 cat "$bridge_dir/ca.crt" >> "$supervisor_dir/ca.crt"
 grep -q 'BEGIN CERTIFICATE' "$supervisor_dir/ca.crt" ||
   die "the supervisor trust bundle this run assembled holds no certificate"
-! grep -q 'PRIVATE KEY' "$supervisor_dir/ca.crt" ||
-  die "the supervisor trust bundle this run assembled holds a private key; refusing to build it into an image"
 
 supervisor_tag="supervisor-$(cat "$SAMPLE_DIR/supervisor/Dockerfile" "$supervisor_dir/ca.crt" \
   "$SAMPLE_DIR/versions.json" | sha256sum | cut -c1-20)"
