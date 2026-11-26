@@ -484,12 +484,34 @@ def test_native_model_requests_use_derived_http_port_and_header_auth(
     tmp_path: Path, port: str
 ) -> None:
     assert NODE is not None
-    env = os.environ.copy()
-    env.update(
-        OCE_TEST_GATEWAY_PORT=port,
-        OPENCLAW_GATEWAY_PASSWORD="configured-auth-secret",
-        HTTP_CALL_LOG=str(tmp_path / "http-calls.json"),
-    )
+    reader_stub = """
+        const assert = require("node:assert/strict");
+        const [mode, cursor, runId] = process.argv.slice(1);
+        require("node:fs").appendFileSync(
+          process.env.TIMELINE_CALL_LOG, JSON.stringify({mode, cursor, runId}) + "\\n"
+        );
+        if (mode === "mark") {
+          process.stdout.write(JSON.stringify({exists: false, offset: 0}));
+        } else {
+          assert.equal(mode, "read");
+          assert.deepEqual(JSON.parse(cursor), {exists: false, offset: 0});
+          assert.equal(runId, "chatcmpl_00000000-0000-0000-0000-000000000000");
+          process.stdout.write(JSON.stringify({
+            runId, traceId: "1".repeat(32),
+            calls: [{callId: "synthetic-call", ok: true}]
+          }));
+        }
+    """
+    env = {
+        "OCE_TEST_GATEWAY_PORT": port,
+        # Low-entropy synthetic fixture; never a deployable credential.
+        "OPENCLAW_GATEWAY_PASSWORD": "x",
+        "HTTP_CALL_LOG": str(tmp_path / "http-calls.json"),
+        "TIMELINE_CALL_LOG": str(tmp_path / "timeline-calls.jsonl"),
+        "OCE_NATIVE_TIMELINE_READER_B64": base64.b64encode(
+            reader_stub.encode()
+        ).decode(),
+    }
     # Replace only transport. Run the production challenge/authentication logic.
     transport = """
         const { EventEmitter } = require("node:events");
@@ -512,7 +534,8 @@ def test_native_model_requests_use_derived_http_port_and_header_auth(
                 const nonce = prompt.match(/nonce is ([0-9a-f]+)/)[1];
                 const arithmetic = prompt.match(/Calculate ([0-9]+) \\+ ([0-9]+)/);
                 output = {
-                  model: "openclaw/default", id: "chatcmpl_test1234",
+                  model: "openclaw/default",
+                  id: "chatcmpl_00000000-0000-0000-0000-000000000000",
                   choices: [{ message: {
                     content: `${nonce}:${Number(arithmetic[1]) + Number(arithmetic[2])}`
                   }}]
@@ -537,7 +560,21 @@ def test_native_model_requests_use_derived_http_port_and_header_auth(
         timeout=5,
     )
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout)["challengeMatch"] is True
+    evidence = json.loads(result.stdout)
+    assert evidence == {
+        "status": 200,
+        "unauthenticatedStatus": 401,
+        "model": "openclaw/default",
+        "requestId": "chatcmpl_00000000-0000-0000-0000-000000000000",
+        "traceId": "1" * 32,
+        "challengeMatch": True,
+    }
+    timeline_calls = [
+        json.loads(line)
+        for line in (tmp_path / "timeline-calls.jsonl").read_text().splitlines()
+    ]
+    assert [call["mode"] for call in timeline_calls] == ["mark", "read"]
+    assert timeline_calls[1]["runId"] == evidence["requestId"]
     calls = json.loads((tmp_path / "http-calls.json").read_text())
     assert len(calls) == 2
     for call in calls:
@@ -546,11 +583,9 @@ def test_native_model_requests_use_derived_http_port_and_header_auth(
         assert call["path"] == "/v1/chat/completions"
         assert call["method"] == "POST"
     assert "authorization" not in calls[0]["headers"]
-    assert calls[1]["headers"]["authorization"] == "Bearer configured-auth-secret"
-    assert re.fullmatch(
-        r"00-[0-9a-f]{32}-[0-9a-f]{16}-01", calls[1]["headers"]["traceparent"]
-    )
-    assert "configured-auth-secret" not in result.stdout + result.stderr
+    assert calls[1]["headers"]["authorization"] == "Bearer x"
+    assert all("traceparent" not in call["headers"] for call in calls)
+    assert "Bearer x" not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
@@ -558,12 +593,16 @@ def test_native_model_requests_use_derived_http_port_and_header_auth(
 )
 def test_native_model_rejects_invalid_port_before_http_request(port: str) -> None:
     assert NODE is not None
-    env = os.environ.copy()
-    env.update(OCE_TEST_GATEWAY_PORT=port, OPENCLAW_GATEWAY_PASSWORD="configured")
+    # Low-entropy synthetic fixture; never a deployable credential.
+    env = {"OCE_TEST_GATEWAY_PORT": port, "OPENCLAW_GATEWAY_PASSWORD": "x"}
     transport = """
         require("node:http").request = () => {
           process.stdout.write("UNEXPECTED_HTTP_REQUEST");
           throw new Error("invalid port reached HTTP transport");
+        };
+        require("node:child_process").spawnSync = () => {
+          process.stdout.write("UNEXPECTED_TIMELINE_READER");
+          throw new Error("invalid port reached timeline reader");
         };
     """
     result = subprocess.run(
@@ -576,3 +615,212 @@ def test_native_model_rejects_invalid_port_before_http_request(port: str) -> Non
     )
     assert result.returncode != 0
     assert result.stdout == ""
+
+
+def test_native_model_rejects_missing_auth_before_http_or_timeline() -> None:
+    assert NODE is not None
+    transport = """
+        const unexpected = () => {
+          process.stdout.write("UNEXPECTED_TRANSPORT_OR_TIMELINE");
+          throw new Error("missing auth reached a dependency");
+        };
+        require("node:http").request = unexpected;
+        require("node:child_process").spawnSync = unexpected;
+    """
+    result = subprocess.run(
+        [NODE, "-e", transport + _guest_program("call_native_openclaw_model")],
+        env={"OCE_TEST_GATEWAY_PORT": "8080"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+
+    assert result.returncode == 49
+    assert result.stdout == ""
+
+
+def _run_native_model_responses(tmp_path: Path, responses: list[dict]):
+    """Run production HTTP challenges with synthetic replies and a reader stub."""
+    assert NODE is not None
+    reader_stub = """
+        const [mode, cursor, runId] = process.argv.slice(1);
+        require("node:fs").appendFileSync(
+          process.env.TIMELINE_CALL_LOG, JSON.stringify({mode, cursor, runId}) + "\\n"
+        );
+        process.stdout.write(JSON.stringify(mode === "mark"
+          ? {exists: false, offset: 0}
+          : {runId, traceId: "1".repeat(32)}));
+    """
+    transport = r"""
+        const assert = require("node:assert/strict");
+        const { EventEmitter } = require("node:events");
+        const calls = [];
+        let positiveCount = 0;
+        let previousExpected = "";
+        require("node:http").request = (options, callback) => {
+          assert.equal(options.hostname, "127.0.0.1");
+          assert.equal(options.port, 8080);
+          assert.equal(options.path, "/v1/chat/completions");
+          const operation = new EventEmitter();
+          operation.setTimeout = () => {};
+          operation.destroy = error => operation.emit("error", error);
+          operation.end = body => {
+            const payload = JSON.parse(body);
+            const authenticated = options.headers.authorization !== undefined;
+            let responseBody = "{}";
+            let status = 401;
+            let call = {authenticated};
+            if (authenticated) {
+              assert.equal(options.headers.authorization, "Bearer x");
+              assert.equal(options.headers.traceparent, undefined);
+              const [ , nonce, left, right ] = payload.messages[0].content.match(
+                /nonce is ([0-9a-f]{24})\. Calculate (\d+) \+ (\d+)\./
+              );
+              const expected = `${nonce}:${Number(left) + Number(right)}`;
+              const fixture = fixtures[positiveCount++];
+              const id = "chatcmpl_00000000-0000-0000-0000-" +
+                positiveCount.toString(16).padStart(12, "0");
+              call = {authenticated, nonce, left: Number(left), right: Number(right), id};
+              calls.push(call);
+              assert.ok(fixture, "unexpected extra positive challenge attempt");
+              status = fixture.status ?? 200;
+              let content = expected;
+              if (fixture.mode === "formatting") content = `Answer: ${expected}`;
+              if (fixture.mode === "math") {
+                content = `${nonce}:${Number(left) + Number(right) + 1}`;
+              }
+              if (fixture.mode === "stale") content = previousExpected || "stale";
+              if (fixture.mode === "empty") content = "";
+              if (fixture.mode === "nonstring") content = {synthetic: "invalid"};
+              const output = {model: "openclaw/default", id,
+                choices: [{message: {content}}]};
+              if (fixture.mode === "missing") delete output.choices[0].message.content;
+              if (fixture.mode === "null") output.choices[0].message.content = null;
+              responseBody = fixture.mode === "malformed"
+                ? "{synthetic invalid JSON" : JSON.stringify(output);
+              previousExpected = expected;
+            } else {
+              calls.push(call);
+            }
+            queueMicrotask(() => {
+              const response = new EventEmitter();
+              response.statusCode = status;
+              response.setEncoding = () => {};
+              callback(response);
+              response.emit("data", responseBody);
+              response.emit("end");
+            });
+          };
+          return operation;
+        };
+        process.on("exit", () => require("node:fs").writeFileSync(
+          process.env.HTTP_CALL_LOG, JSON.stringify(calls)
+        ));
+    """
+    result = subprocess.run(
+        [
+            NODE,
+            "-e",
+            f"const fixtures = {json.dumps(responses)};\n"
+            + transport
+            + _guest_program("call_native_openclaw_model"),
+        ],
+        env={
+            "OCE_TEST_GATEWAY_PORT": "8080",
+            # Low-entropy synthetic fixture; never a deployable credential.
+            "OPENCLAW_GATEWAY_PASSWORD": "x",
+            "HTTP_CALL_LOG": str(tmp_path / "http-calls.json"),
+            "TIMELINE_CALL_LOG": str(tmp_path / "timeline-calls.jsonl"),
+            "OCE_NATIVE_TIMELINE_READER_B64": base64.b64encode(
+                reader_stub.encode()
+            ).decode(),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5,
+    )
+    calls = json.loads((tmp_path / "http-calls.json").read_text())
+    timeline_calls = [
+        json.loads(line)
+        for line in (tmp_path / "timeline-calls.jsonl").read_text().splitlines()
+    ]
+    return result, calls, timeline_calls
+
+
+@pytest.mark.parametrize("mismatches", [1, 2])
+@pytest.mark.parametrize("mode", ["formatting", "math", "stale"])
+def test_native_model_retries_mismatches_with_fresh_nonce_then_succeeds(
+    tmp_path: Path, mismatches: int, mode: str
+) -> None:
+    result, calls, timeline_calls = _run_native_model_responses(
+        tmp_path, [{"mode": mode}] * mismatches + [{}]
+    )
+
+    assert result.returncode == 0, result.stderr
+    positives = [call for call in calls if call["authenticated"]]
+    assert len(positives) == mismatches + 1
+    assert len(calls) == mismatches + 2  # Auth denial runs only once.
+    assert len({call["nonce"] for call in positives}) == len(positives)
+    assert json.loads(result.stdout) == {
+        "status": 200,
+        "unauthenticatedStatus": 401,
+        "model": "openclaw/default",
+        "requestId": positives[-1]["id"],
+        "traceId": "1" * 32,
+        "challengeMatch": True,
+    }
+    reads = [call for call in timeline_calls if call["mode"] == "read"]
+    assert len(reads) == 1
+    assert reads[0]["runId"] == positives[-1]["id"]
+
+
+@pytest.mark.parametrize("mode", ["formatting", "math", "stale", "empty"])
+def test_native_model_exhausted_mismatches_fail_after_exactly_three_attempts(
+    tmp_path: Path, mode: str
+) -> None:
+    result, calls, timeline_calls = _run_native_model_responses(
+        tmp_path, [{"mode": mode}] * 3
+    )
+
+    assert result.returncode == 52, result.stderr
+    assert result.stdout == ""
+    positives = [call for call in calls if call["authenticated"]]
+    assert len(positives) == 3
+    assert len(calls) == 4
+    assert len({call["nonce"] for call in positives}) == 3
+    assert not any(call["mode"] == "read" for call in timeline_calls)
+
+
+@pytest.mark.parametrize("status", [401, 503])
+@pytest.mark.parametrize("prior_mismatch", [False, True])
+def test_native_model_valid_auth_non_200_is_fatal_without_challenge_retry(
+    tmp_path: Path, status: int, prior_mismatch: bool
+) -> None:
+    responses = ([{"mode": "formatting"}] if prior_mismatch else []) + [
+        {"status": status, "mode": "malformed"}
+    ]
+    result, calls, timeline_calls = _run_native_model_responses(tmp_path, responses)
+
+    assert result.returncode == 52, result.stderr
+    assert result.stdout == ""
+    assert len([call for call in calls if call["authenticated"]]) == len(responses)
+    assert not any(call["mode"] == "read" for call in timeline_calls)
+
+
+@pytest.mark.parametrize(
+    "mode,exit_code",
+    [("malformed", 51), ("missing", 52), ("null", 52), ("nonstring", 52)],
+)
+@pytest.mark.parametrize("prior_mismatch", [False, True])
+def test_native_model_malformed_body_or_missing_content_is_fatal_without_retry(
+    tmp_path: Path, mode: str, exit_code: int, prior_mismatch: bool
+) -> None:
+    responses = ([{"mode": "formatting"}] if prior_mismatch else []) + [{"mode": mode}]
+    result, calls, timeline_calls = _run_native_model_responses(tmp_path, responses)
+
+    assert result.returncode == exit_code, result.stderr
+    assert result.stdout == ""
+    assert len([call for call in calls if call["authenticated"]]) == len(responses)
+    assert not any(call["mode"] == "read" for call in timeline_calls)

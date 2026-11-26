@@ -92,6 +92,8 @@ EVIDENCE_PREPASS_BACKUP=""
 NATIVE_HISTORY_EVALUATOR_PATH=""
 NATIVE_HISTORY_EVALUATOR_B64=""
 NATIVE_HISTORY_EVALUATOR_SHA256=""
+NATIVE_TIMELINE_READER_B64=""
+AGENTGATEWAY_TELEMETRY_EVALUATOR_B64=""
 TENANT_A_POD_UID=""
 TENANT_B_POD_UID=""
 REPLACEMENT_POD_UID=""
@@ -843,6 +845,13 @@ NATIVE_HISTORY_EVALUATOR_B64="$(
 [[ -n "$NATIVE_HISTORY_EVALUATOR_B64" ]] ||
   die "native tool-history evaluator encoding is empty"
 NATIVE_HISTORY_EVALUATOR_SHA256="$(sha256_base64 "$NATIVE_HISTORY_EVALUATOR_B64")"
+for helper in read-native-timeline.cjs evaluate-agentgateway-telemetry.mjs; do
+  helper_path="$(dirname "$SCRIPT_PATH")/lib/$helper"
+  [[ -f "$helper_path" && ! -L "$helper_path" && -r "$helper_path" ]] ||
+    die "native trace helper must be a readable regular, non-symlink file"
+done
+NATIVE_TIMELINE_READER_B64="$(openssl base64 -A -in "$(dirname "$SCRIPT_PATH")/lib/read-native-timeline.cjs")"
+AGENTGATEWAY_TELEMETRY_EVALUATOR_B64="$(openssl base64 -A -in "$(dirname "$SCRIPT_PATH")/lib/evaluate-agentgateway-telemetry.mjs")"
 VALIDATION_STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 AWS_VERSION="$(aws --version 2>&1)"
 KUBECTL_VERSION="$(kube version --client -o json | jq -er '
@@ -866,6 +875,10 @@ done
   printf 'EVIDENCE\tvalidator-sha256\t%s\n' "$VALIDATOR_SHA256"
   printf 'EVIDENCE\tnative-history-evaluator-sha256\t%s\n' \
     "$NATIVE_HISTORY_EVALUATOR_SHA256"
+  printf 'EVIDENCE\tnative-timeline-reader-sha256\t%s\n' \
+    "$(sha256_base64 "$NATIVE_TIMELINE_READER_B64")"
+  printf 'EVIDENCE\tagentgateway-telemetry-evaluator-sha256\t%s\n' \
+    "$(sha256_base64 "$AGENTGATEWAY_TELEMETRY_EVALUATOR_B64")"
   printf 'EVIDENCE\toce-source-revision\t%s\n' "$OCE_SOURCE_REVISION"
   printf 'EVIDENCE\ttool-version-aws\t%s\n' "$AWS_VERSION"
   printf 'EVIDENCE\ttool-version-kubectl\t%s\n' "$KUBECTL_VERSION"
@@ -2192,23 +2205,35 @@ call_native_openclaw_model() {
   gateway_port="$(gateway_http_port "$namespace" "$pod" "$container" "$expected_uid")"
   # shellcheck disable=SC2016 # This JavaScript reads the guest environment.
   exec_in_exact_pod "$namespace" "$pod" "$container" "$expected_uid" \
-    env "OCE_TEST_GATEWAY_PORT=$gateway_port" node -e '
+    env "OCE_TEST_GATEWAY_PORT=$gateway_port" \
+      "OCE_NATIVE_TIMELINE_READER_B64=$NATIVE_TIMELINE_READER_B64" node -e '
     const crypto = require("node:crypto");
     const http = require("node:http");
+    const { spawnSync } = require("node:child_process");
     const password = process.env.OPENCLAW_GATEWAY_PASSWORD || "";
     if (!password) process.exit(49);
     const rawPort = process.env.OCE_TEST_GATEWAY_PORT || "";
     const port = Number(rawPort);
     if (!/^[1-9][0-9]{0,4}$/.test(rawPort) || port > 65535) process.exit(48);
+    const reader = Buffer.from(process.env.OCE_NATIVE_TIMELINE_READER_B64 || "", "base64").toString("utf8");
+    if (!reader) process.exit(54);
+    const timeline = (mode, cursor = "", runId = "") => {
+      const result = spawnSync(process.execPath, ["-e", reader, mode, cursor, runId], {
+        encoding: "utf8", timeout: 10000, maxBuffer: 1048576
+      });
+      if (result.error) process.exit(54);
+      if (result.status !== 0) return { status: result.status };
+      try { return { status: 0, value: JSON.parse(result.stdout) }; }
+      catch { process.exit(54); }
+    };
 
-    function request(payload, authenticated, traceparent = "") {
+    function request(payload, authenticated) {
       const body = JSON.stringify(payload);
       const headers = {
         "content-type": "application/json",
         "content-length": Buffer.byteLength(body)
       };
       if (authenticated) headers.authorization = `Bearer ${password}`;
-      if (traceparent) headers.traceparent = traceparent;
       return new Promise((resolve, reject) => {
         const operation = http.request({
           hostname: "127.0.0.1",
@@ -2237,38 +2262,48 @@ call_native_openclaw_model() {
     }
 
     (async () => {
+      const checkpoint = timeline("mark");
+      if (checkpoint.status !== 0) process.exit(54);
       const denied = await request({
         model: "openclaw/default",
         messages: []
       }, false);
       if (![401, 403].includes(denied.status)) process.exit(50);
 
-      const nonce = crypto.randomBytes(12).toString("hex");
-      const left = crypto.randomInt(100, 500);
-      const right = crypto.randomInt(100, 500);
-      const expected = `${nonce}:${left + right}`;
-      const traceId = crypto.randomBytes(16).toString("hex");
-      const parentSpanId = crypto.randomBytes(8).toString("hex");
-      const traceparent = `00-${traceId}-${parentSpanId}-01`;
-      const response = await request({
-        model: "openclaw/default",
-        stream: false,
-        messages: [{
-          role: "user",
-          content: `The verification nonce is ${nonce}. Calculate ${left} + ${right}. Reply in exactly this form: ${nonce}:<answer>.`
-        }]
-      }, true, traceparent);
       let parsed;
-      try { parsed = JSON.parse(response.body); } catch { process.exit(51); }
-      const text = parsed?.choices?.[0]?.message?.content;
-      const normalize = value => value.normalize("NFKC").trim();
-      if (
-        response.status !== 200
-        || typeof text !== "string"
-        || normalize(text) !== expected
-      ) {
-        process.exit(52);
+      let challengeMatch = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const nonce = crypto.randomBytes(12).toString("hex");
+        const left = crypto.randomInt(100, 500);
+        const right = crypto.randomInt(100, 500);
+        const expected = `${nonce}:${left + right}`;
+        const response = await request({
+          model: "openclaw/default",
+          stream: false,
+          messages: [{
+            role: "user",
+            content: `The verification nonce is ${nonce}. Calculate ${left} + ${right}. Reply in exactly this form: ${nonce}:<answer>.`
+          }]
+        }, true);
+        if (response.status !== 200) process.exit(52);
+        try { parsed = JSON.parse(response.body); } catch { process.exit(51); }
+        const text = parsed?.choices?.[0]?.message?.content;
+        if (typeof text !== "string") process.exit(52);
+        if (text.normalize("NFKC").trim() === expected) {
+          challengeMatch = true;
+          break;
+        }
       }
+      if (!challengeMatch) process.exit(52);
+      let mapping;
+      for (let attempt = 0; attempt < 50; attempt++) {
+        mapping = timeline("read", JSON.stringify(checkpoint.value), parsed.id);
+        if (mapping.status === 0) break;
+        if (mapping.status !== 2) process.exit(54);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      if (mapping.status !== 0) process.exit(54);
+      const traceId = mapping.value.traceId;
       process.stdout.write(JSON.stringify({
         status: 200,
         unauthenticatedStatus: denied.status,
@@ -2438,34 +2473,18 @@ capture_agentgateway_model_evidence() {
   done
 
   # shellcheck disable=SC2016 # This JavaScript contains regex metacharacters.
-  if ! node -e '
-    const fs = require("node:fs");
-    const [logFile, traceId, gatewayModel, bedrockModel] = process.argv.slice(1);
-    const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const hasField = (line, name, value) => new RegExp(
-      "(?:^|\\s)" + escapeRegex(name) + "=\"?" + escapeRegex(value)
-        + "\"?(?=\\s|$)"
-    ).test(line);
-    const matches = fs.readFileSync(logFile, "utf8").split(/\r?\n/).filter(line =>
-      hasField(line, "trace.id", traceId)
-      && hasField(line, "gen_ai.provider.name", "bedrock")
-      && hasField(line, "agw.ai.original_model", gatewayModel)
-      && hasField(line, "gen_ai.request.model", bedrockModel)
+  if ! env "OCE_TELEMETRY_EVALUATOR_B64=$AGENTGATEWAY_TELEMETRY_EVALUATOR_B64" \
+    node --input-type=module -e '
+    import fs from "node:fs";
+    const { evaluateAgentGatewayTelemetry } = await import(
+      `data:text/javascript;base64,${process.env.OCE_TELEMETRY_EVALUATOR_B64}`
     );
-    if (matches.length !== 1) process.exit(1);
-    const requestId = matches[0].match(
-      /(?:^|\s)request\.id="?([0-9]+)"?(?=\s|$)/
-    )?.[1];
-    if (!requestId) process.exit(1);
-    process.stdout.write(JSON.stringify({
-      traceId,
-      requestId,
-      provider: "bedrock",
-      gatewayModel,
-      bedrockModel
-    }));
+    const [logFile, traceId, gatewayModel, bedrockModel] = process.argv.slice(1);
+    process.stdout.write(JSON.stringify(evaluateAgentGatewayTelemetry({
+      lines: fs.readFileSync(logFile, "utf8"), traceId, gatewayModel, bedrockModel
+    })));
   ' "$log_file" "$trace_id" "$AGW_MODEL_ID" "$BEDROCK_MODEL_ID" >"$telemetry_file"; then
-    die "native OpenClaw request did not match one AgentGateway Bedrock telemetry event"
+    die "native OpenClaw run trace did not match successful AgentGateway Bedrock spans"
   fi
 
   jq -e \
@@ -2473,19 +2492,21 @@ capture_agentgateway_model_evidence() {
     --arg gateway_model "$AGW_MODEL_ID" \
     --arg bedrock_model "$BEDROCK_MODEL_ID" '
       .traceId == $trace_id
-      and (.requestId | type == "string" and test("^[0-9]+$"))
-      and .provider == "bedrock"
+    and .provider == "aws.bedrock"
+    and (.spanIds | type == "array" and length > 0)
+    and all(.spanIds[]; type == "string" and test("^[0-9a-f]{16}$"))
+    and .invocationCount == (.spanIds | length)
       and .gatewayModel == $gateway_model
       and .bedrockModel == $bedrock_model
     ' "$telemetry_file" >/dev/null ||
     die "AgentGateway telemetry fields did not match the Bedrock model contract"
 
   printf \
-    'EVIDENCE\tnative-model-correlation-%s\ttrace-id-sha256=%s native-request-id-sha256=%s gateway-request-id-sha256=%s native-model=%s gateway-model=%s bedrock-model=%s\n' \
+    'EVIDENCE\tnative-model-correlation-%s\ttrace-id-sha256=%s native-request-id-sha256=%s gateway-span-ids-sha256=%s native-model=%s gateway-model=%s bedrock-model=%s\n' \
     "$evidence_alias" \
     "$(sha256_text "$trace_id")" \
     "$(sha256_text "$native_request_id")" \
-    "$(sha256_text "$(jq -er '.requestId' "$telemetry_file")")" \
+    "$(sha256_text "$(jq -cer '.spanIds' "$telemetry_file")")" \
     "$NATIVE_MODEL_ID" "$AGW_MODEL_ID" "$BEDROCK_MODEL_ID" >>"$EVIDENCE_FILE"
 }
 
@@ -2506,7 +2527,7 @@ capture_agentgateway_model_evidence \
 record_pass "native-openclaw-model-turn" \
   "both native OpenClaw gateways rejected anonymous access and answered their random arithmetic challenge"
 record_pass "agentgateway-model-telemetry" \
-  "both native requests matched one AgentGateway Bedrock model invocation and request ID"
+  "both native run IDs joined through their diagnostic timeline to successful AgentGateway Bedrock spans"
 CURRENT_CHECK="native-openclaw-tool-execution"
 verify_native_tool_execution "$WORK_DIR/native-tool-execution.json"
 record_pass "native-openclaw-tool-execution" \

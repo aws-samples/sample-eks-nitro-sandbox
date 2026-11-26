@@ -724,13 +724,14 @@ FAKE_COMMAND = textwrap.dedent(
                 else "amazon.nova-lite-v1:0"
             )
             fields = []
-            if scenario != "missing_agw_request_id":
-                fields.append("request.id=" + str(9000 + call_index))
+            if scenario != "missing_agw_span_id":
+                fields.append('span.id="' + format(call_index, "016x") + '"')
             fields.extend([
                 'trace.id="' + trace_id + '"',
-                'gen_ai.provider.name="bedrock"',
+                'gen_ai.provider.name="aws.bedrock"',
                 'agw.ai.original_model="nova-lite"',
                 'gen_ai.request.model="' + bedrock_model + '"',
+                'http.status="200"',
             ])
             print(" ".join(fields))
         sys.exit(0)
@@ -1096,7 +1097,10 @@ FAKE_COMMAND = textwrap.dedent(
                     if scenario == "wrong_native_model"
                     else "openclaw/default"
                 ),
-                "requestId": "chatcmpl_" + format(model_call_count, "032x"),
+                "requestId": (
+                    "chatcmpl_00000000-0000-0000-0000-"
+                    + format(model_call_count, "012x")
+                ),
                 "traceId": format(model_call_count, "032x"),
                 "challengeMatch": scenario != "challenge_mismatch",
             }})
@@ -1628,8 +1632,7 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     timeout = (
         180
-        if scenario
-        in {"wrong_agw_model", "missing_agw_trace", "missing_agw_request_id"}
+        if scenario in {"wrong_agw_model", "missing_agw_trace", "missing_agw_span_id"}
         else 90
     )
     fake_bin, state_dir = _make_fake_commands(tmp_path)
@@ -2130,15 +2133,17 @@ def test_fake_live_run_accepts_valid_runtime_mounts_and_sanitizes_evidence(
         ("tenant-a", "tenant-b", "tenant-a-replacement"), start=1
     ):
         trace_id = format(call_index, "032x")
-        native_request_id = "chatcmpl_" + trace_id
-        gateway_request_id = str(9000 + call_index)
+        native_request_id = "chatcmpl_00000000-0000-0000-0000-" + format(
+            call_index, "012x"
+        )
+        span_ids_json = json.dumps([format(call_index, "016x")], separators=(",", ":"))
         assert (
             f"EVIDENCE\tnative-model-correlation-{alias}\t"
             f"trace-id-sha256={hashlib.sha256(trace_id.encode()).hexdigest()} "
             "native-request-id-sha256="
             f"{hashlib.sha256(native_request_id.encode()).hexdigest()} "
-            "gateway-request-id-sha256="
-            f"{hashlib.sha256(gateway_request_id.encode()).hexdigest()} "
+            "gateway-span-ids-sha256="
+            f"{hashlib.sha256(span_ids_json.encode()).hexdigest()} "
             "native-model=openclaw/default gateway-model=nova-lite "
             "bedrock-model=amazon.nova-lite-v1:0"
         ) in evidence
@@ -2624,7 +2629,7 @@ def test_unverified_replacement_pod_is_never_registered_for_marker_cleanup(
         ("wrong_native_model", "native-openclaw-model-turn"),
         ("wrong_agw_model", "agentgateway-model-telemetry"),
         ("missing_agw_trace", "agentgateway-model-telemetry"),
-        ("missing_agw_request_id", "agentgateway-model-telemetry"),
+        ("missing_agw_span_id", "agentgateway-model-telemetry"),
         ("kms_verify_failure", "evidence-signing"),
         ("ordinary_post_create_uid_failure", "guest-vm-evidence"),
         ("ordinary_sandboxed_control", "guest-vm-evidence"),
@@ -2721,6 +2726,9 @@ def test_live_run_fails_closed_on_security_contract_mismatch(
 def test_script_contains_destructive_and_api_contract_guards() -> None:
     source = SCRIPT.read_text()
     evaluator_source = NATIVE_HISTORY_EVALUATOR.read_text(encoding="utf-8")
+    telemetry_source = (
+        ROOT / "scripts/lib/evaluate-agentgateway-telemetry.mjs"
+    ).read_text(encoding="utf-8")
 
     assert source.startswith(
         "#!/usr/bin/env bash\n"
@@ -2737,21 +2745,25 @@ def test_script_contains_destructive_and_api_contract_guards() -> None:
     assert 'path: "/v1/chat/completions"' in source
     assert "crypto.randomInt(100, 500)" in source
     assert source.count('crypto.randomBytes(12).toString("hex")') == 2
-    assert source.count("const expected = `${nonce}:${left + right}`;") == 2
+    assert source.count("const expected = `${nonce}:${left + right}`;") == 1
+    assert "expected: `${nonce}:${left + right}`" in source
     assert source.count("${nonce}:<answer>") == 2
     assert 'value.normalize("NFKC").trim()' in source
     assert "normalize(text) !== expected" in source
     assert "model: parsed.model" in source
     assert "requestId: parsed.id" in source
     assert "challengeMatch: true" in source
-    assert "headers.traceparent = traceparent" in source
+    assert 'timeline("mark")' in source
+    assert 'timeline("read", JSON.stringify(checkpoint.value), parsed.id)' in source
+    assert "const traceId = mapping.value.traceId;" in source
+    assert "true, traceparent" not in source
     assert 'AGW_MODEL_ID="nova-lite"' in source
     assert 'BEDROCK_MODEL_ID="amazon.nova-lite-v1:0"' in source
-    assert '"trace.id"' in source
-    assert r"request\.id" in source
-    assert '"gen_ai.provider.name", "bedrock"' in source
-    assert '"agw.ai.original_model", gatewayModel' in source
-    assert '"gen_ai.request.model", bedrockModel' in source
+    assert '"trace.id"' in telemetry_source
+    assert '"span.id"' in telemetry_source
+    assert '"gen_ai.provider.name": "aws.bedrock"' in telemetry_source
+    assert '"agw.ai.original_model": gatewayModel' in telemetry_source
+    assert '"gen_ai.request.model": bedrockModel' in telemetry_source
     assert "unauthenticatedStatus" in source
     assert "rejectUnauthorized: false" not in source
     assert source.count("--dry-run=server") >= 3

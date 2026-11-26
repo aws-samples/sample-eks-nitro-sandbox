@@ -1047,12 +1047,25 @@ rm "$TENANT_WORK_DIR/model-secret.json"
 Create an embedded OpenClaw configuration. The default OpenAI URL is required
 in the agent metadata; the installation-level model provider replaces it with
 the private AgentGateway URL when OCE prepares the revision.
+Enable the private diagnostic timeline so validation can correlate an agent
+turn with its AgentGateway model requests. The validator reads only bounded
+correlation metadata from this file.
 
 ```bash
 cat >"$TENANT_WORK_DIR/configuration.json" <<'JSON'
 {
   "kind": "agent",
   "values": {
+    "env": {
+      "vars": {
+        "OPENCLAW_DIAGNOSTICS_TIMELINE_PATH": "/home/node/.openclaw/diagnostics/native-timeline.jsonl",
+        "OPENCLAW_DIAGNOSTICS": "timeline"
+      }
+    },
+    "diagnostics": {
+      "enabled": true,
+      "flags": ["timeline"]
+    },
     "gateway": {
       "mode": "local",
       "bind": "lan",
@@ -1419,7 +1432,9 @@ The command exits zero only after it verifies:
    matching tenant key over verified TLS.
 7. Each native OpenClaw gateway rejects an unauthenticated request, returns the
    exact nonce-bound answer to a freshly generated random arithmetic challenge
-   through AgentGateway and Amazon Bedrock on its declared HTTP port. Tenant A's
+   through AgentGateway and Amazon Bedrock on its declared HTTP port. Each
+   response ID is correlated through the native diagnostic timeline to the
+   successful AgentGateway inference spans. Tenant A's
    native CLI also proves one unique `exec` tool call, a correlated successful
    result, and exactly one requested final reply. The CLI reads configured
    authentication inside the guest.

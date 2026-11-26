@@ -172,6 +172,7 @@ def run_contract():
                 + HARNESS,
             ],
             # Deliberately low-entropy synthetic auth fixture; never deployable.
+            check=False,
             env={"OPENAI_API_KEY": "x"},
             capture_output=True,
             text=True,

@@ -2408,16 +2408,10 @@ global_settings:
       line_end: 174
       reason: 'Synthetic configured-auth-secret password passed only to the local fake CLI fixture; not a deployed or real credential'
       expiration: '2027-12-31'
-    - rule_id: SECRET-SECRET-KEYWORD
-      path: 'examples/ai-agents/openclaw-enterprise/tests/test_native_cli_contract.py'
-      line_start: 562
-      line_end: 562
-      reason: 'Synthetic configured password for the invalid-port fixture; the test replaces HTTP transport and asserts it is never called'
-      expiration: '2027-12-31'
     - rule_id: SECRET-BASE64-HIGH-ENTROPY-STRING
       path: 'examples/ai-agents/openclaw-enterprise/tests/test_live_validation_contract.py'
-      line_start: 2156
-      line_end: 2156
+      line_start: 2162
+      line_end: 2162
       reason: 'Assertion for the synthetic block-device name nvme0n1; no encoded value or secret is present'
       expiration: '2027-12-31'
     - rule_id: SECRET-HEX-HIGH-ENTROPY-STRING
