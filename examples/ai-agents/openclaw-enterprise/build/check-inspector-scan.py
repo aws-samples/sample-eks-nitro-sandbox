@@ -170,10 +170,18 @@ def fail(message: str, status: int = 1) -> None:
     raise SystemExit(status)
 
 
+def reject_constant(constant: str) -> None:
+    raise ValueError(f"{constant} is not a JSON number")
+
+
 def read_object(path: pathlib.Path, name: str) -> dict[str, Any]:
     try:
-        value: Any = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        # JSON has no NaN or Infinity. Every parse failure is a ValueError, including
+        # an integer longer than the interpreter converts.
+        value: Any = json.loads(
+            path.read_text(encoding="utf-8"), parse_constant=reject_constant
+        )
+    except (OSError, ValueError) as error:
         fail(f"invalid {name} response: {error}")
     if not isinstance(value, dict):
         fail(f"{name} response is not an object")

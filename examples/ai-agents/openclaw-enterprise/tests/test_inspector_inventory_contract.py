@@ -87,7 +87,7 @@ def os_package(release="1~deb13u1+oce3"):
     }
 
 
-def run_checker(tmp_path, items, patches=None):
+def run_checker(tmp_path, items, patches=None, raw=None):
     coverage = {
         "coveredResources": [{
             "resourceType": "AWS_ECR_CONTAINER_IMAGE",
@@ -101,8 +101,14 @@ def run_checker(tmp_path, items, patches=None):
     }
     coverage_path = tmp_path / "coverage.json"
     findings_path = tmp_path / "findings.json"
-    coverage_path.write_text(json.dumps(coverage))
-    findings_path.write_text(json.dumps({"findings": items}))
+    coverage_text = json.dumps(coverage)
+    findings_text = json.dumps({"findings": items})
+    # raw replaces a JSON string value in either document with text that json.dumps cannot write.
+    for value, text in (raw or {}).items():
+        coverage_text = coverage_text.replace(json.dumps(value), text)
+        findings_text = findings_text.replace(json.dumps(value), text)
+    coverage_path.write_text(coverage_text)
+    findings_path.write_text(findings_text)
     arguments = [
         sys.executable, str(CHECKER), str(coverage_path), str(findings_path),
         RESOURCE, ACCOUNT, REPOSITORY, DIGEST,
@@ -232,6 +238,48 @@ def test_mismatched_patch_rejected(tmp_path, cve):
     result = run_checker(tmp_path, [current_finding(cve)], patches=[patch])
     assert result.returncode != 0
     assert "backport patch checksum does not match a reviewed upstream patch" in result.stderr
+
+
+def test_raw_integer_epoch_still_accepted(tmp_path):
+    # The raw-text path itself changes nothing for valid JSON: an integer epoch written as text is accepted.
+    finding = current_finding("CVE-2026-95692")
+    finding["packageVulnerabilityDetails"]["vulnerablePackages"][0]["epoch"] = "<raw>"
+    result = run_checker(tmp_path, [finding], raw={"<raw>": "0"})
+    assert result.returncode == 0, result.stderr
+    assert "accepted 1 reviewed HIGH source backport finding(s)" in result.stdout
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+@pytest.mark.parametrize("field", ["epoch", "sourceLayerHash"])
+def test_non_finite_number_rejects_the_findings_response(tmp_path, constant, field):
+    # epoch is part of the reviewed signature; sourceLayerHash is not compared.
+    finding = current_finding("CVE-2026-95692")
+    finding["packageVulnerabilityDetails"]["vulnerablePackages"][0][field] = "<raw>"
+    result = run_checker(tmp_path, [finding], raw={"<raw>": constant})
+    assert result.returncode != 0
+    assert (
+        f"Inspector image scan: invalid findings response: {constant} is not a JSON number"
+        in result.stderr
+    )
+    assert "Traceback" not in result.stderr
+
+
+def test_non_finite_number_rejects_the_coverage_response(tmp_path):
+    result = run_checker(
+        tmp_path, [current_finding("CVE-2026-95692")], raw={"2026-11-26T00:00:00Z": "NaN"}
+    )
+    assert result.returncode != 0
+    assert "Inspector image scan: invalid coverage response: NaN is not a JSON number" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_oversized_integer_rejects_the_findings_response(tmp_path):
+    finding = current_finding("CVE-2026-95692")
+    finding["packageVulnerabilityDetails"]["vulnerablePackages"][0]["epoch"] = "<raw>"
+    result = run_checker(tmp_path, [finding], raw={"<raw>": "9" * 5000})
+    assert result.returncode != 0
+    assert "Inspector image scan: invalid findings response: " in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize("cve", GAP_CVES)
