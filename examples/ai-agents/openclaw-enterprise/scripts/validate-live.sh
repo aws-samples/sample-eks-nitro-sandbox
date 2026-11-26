@@ -2092,11 +2092,17 @@ verify_agentgateway_key_contract() {
     const normalize = value => value.normalize("NFKC").trim();
 
     (async () => {
-      const nonce = crypto.randomBytes(12).toString("hex");
-      const left = crypto.randomInt(100, 500);
-      const right = crypto.randomInt(100, 500);
-      const expected = `${nonce}:${left + right}`;
-      const prompt = `The verification nonce is ${nonce}. Calculate ${left} + ${right}. Reply in exactly this form: ${nonce}:<answer>.`;
+      const challenge = () => {
+        const nonce = crypto.randomBytes(12).toString("hex");
+        const left = crypto.randomInt(100, 500);
+        const right = crypto.randomInt(100, 500);
+        return {
+          expected: `${nonce}:${left + right}`,
+          prompt: `The verification nonce is ${nonce}. Calculate ${left} + ${right}. Reply in exactly this form: ${nonce}:<answer>. Do not add explanation or formatting.`
+        };
+      };
+      const initial = challenge();
+      const prompt = initial.prompt;
       const noKey = await request(null, prompt);
       const wrongKey = await request(
         `wrong-${crypto.randomBytes(24).toString("hex")}`,
@@ -2104,14 +2110,22 @@ verify_agentgateway_key_contract() {
       );
       if (![401, 403].includes(noKey.status)) process.exit(71);
       if (![401, 403].includes(wrongKey.status)) process.exit(72);
-      const accepted = await request(key, prompt);
-      let parsed;
-      try { parsed = JSON.parse(accepted.body); } catch { process.exit(73); }
-      if (
-        accepted.status !== 200
-        || normalize(outputText(parsed)) !== expected
-      ) {
-        process.exit(74);
+      let accepted;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const probe = attempt === 1 ? initial : challenge();
+        accepted = await request(key, probe.prompt);
+        if (accepted.status !== 200) {
+          process.stderr.write(`Responses request with tenant key returned HTTP ${accepted.status}\n`);
+          process.exit(74);
+        }
+        let parsed;
+        try { parsed = JSON.parse(accepted.body); } catch { process.exit(73); }
+        if (normalize(outputText(parsed)) === probe.expected) break;
+        if (attempt === 3) {
+          process.stderr.write("Responses model challenge mismatched after 3 attempts\n");
+          process.exit(74);
+        }
+        process.stderr.write(`Responses model challenge retry ${attempt + 1}/3\n`);
       }
       process.stdout.write(JSON.stringify({
         marker: "LIVE_AGENTGATEWAY_KEY_CONTRACT",

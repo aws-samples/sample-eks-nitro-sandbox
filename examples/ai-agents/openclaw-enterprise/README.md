@@ -1377,7 +1377,7 @@ export EVIDENCE_DIR='<new-private-evidence-directory>'
   --tenant-b-pod '<tenant-b-runtime-pod>' \
   --tenant-b-container '<tenant-b-runtime-container>' \
   --runtime-image "$RUNTIME_IMAGE" \
-  --image-source-revision "$(jq -er '.sampleRevision' "$IMAGE_DIGESTS_FILE")" \
+  --image-source-revision "$(jq -er '.runtime.sourceRevision' "$IMAGE_DIGESTS_FILE")" \
   --oce-api-local-port 18081 \
   --oce-system-namespace "$OCE_NAMESPACE" \
   --oce-source-revision \
