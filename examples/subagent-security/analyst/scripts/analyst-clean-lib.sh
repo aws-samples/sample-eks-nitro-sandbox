@@ -41,9 +41,13 @@ analyst_clean_role() {
     note_fail "the IAM role $role does not carry ManagedBy=$SAMPLE (found '$tag'); left it alone"
     return
   fi
-  inline="$(aws iam list-role-policies --role-name "$role" --output json 2>/dev/null)"
-  attached="$(aws iam list-attached-role-policies --role-name "$role" --output json 2>/dev/null)"
-  if [[ -z "$inline" || -z "$attached" ]]; then
+  # Each list call has to succeed AND answer with the shape the check below reads. An answer
+  # that is not JSON, or has no PolicyNames, makes jq print nothing, and nothing reads as "no
+  # other policy": the role would then be deleted on a read that never worked.
+  if ! inline="$(aws iam list-role-policies --role-name "$role" --output json 2>/dev/null)" ||
+     ! attached="$(aws iam list-attached-role-policies --role-name "$role" --output json 2>/dev/null)" ||
+     ! jq -e '.PolicyNames | type == "array"' <<<"$inline" >/dev/null 2>&1 ||
+     ! jq -e '.AttachedPolicies | type == "array"' <<<"$attached" >/dev/null 2>&1; then
     note_fail "could not list the policies on the IAM role $role; left it in place"
     return
   elif [[ -n "$(jq -r --arg p "$policy" '.PolicyNames[] | select(. != $p)' <<<"$inline")" ||
@@ -120,8 +124,8 @@ analyst_clean_repository() {
     return
   fi
   arn="$(jq -r '.repositories[0].repositoryArn' <<<"$got")"
-  tags="$(aws ecr list-tags-for-resource --resource-arn "$arn" --output json 2>/dev/null)"
-  if [[ -z "$tags" ]]; then
+  if ! tags="$(aws ecr list-tags-for-resource --resource-arn "$arn" --output json 2>/dev/null)" ||
+     ! jq -e '.tags | type == "array"' <<<"$tags" >/dev/null 2>&1; then
     note_fail "could not read the tags on the ECR repository $repo; left it alone"
     return
   elif [[ "$(jq -r '.tags[]? | select(.Key=="ManagedBy") | .Value' <<<"$tags")" != "$SAMPLE" ]]; then
