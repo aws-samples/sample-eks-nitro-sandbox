@@ -36,10 +36,20 @@
 set -uo pipefail
 
 SAMPLE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-REPO_ROOT="$(cd "$SAMPLE_DIR/../../.." && pwd)"
+SECTION_DIR="$(cd "$SAMPLE_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SECTION_DIR/../.." && pwd)"
 SAMPLE="subagent-security-openshell"
 TMP_DIR="$REPO_ROOT/tmp/$SAMPLE"
 STATE_FILE="$TMP_DIR/state.env"
+
+# say, die, kc (every kubectl call names the context rather than selecting it, so a
+# `kubectl config use-context` in another session on this shared machine cannot redirect the
+# deletes) and lookup (see there for why it returns 2 rather than exiting) are the ones every
+# Subagent security sample shares. The IAM role, bucket and ECR deletes are shared too.
+# shellcheck source=../../analyst/scripts/analyst-lib.sh
+. "$SECTION_DIR/analyst/scripts/analyst-lib.sh"
+# shellcheck source=../../analyst/scripts/analyst-clean-lib.sh
+. "$SECTION_DIR/analyst/scripts/analyst-clean-lib.sh"
 
 delete_aws=false
 for arg in "$@"; do
@@ -52,8 +62,6 @@ done
 
 failed=0
 note_fail() { echo "INCOMPLETE: $*" >&2; failed=1; }
-say() { printf '\n==> %s\n' "$*"; }
-die() { echo "ERROR: $*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 # 1/11 the run record, the context and the account
@@ -93,28 +101,6 @@ for c in aws jq kubectl helm; do
   command -v "$c" >/dev/null 2>&1 || die "$c is required"
 done
 
-# Every kubectl call names the context rather than selecting it, so a `kubectl config
-# use-context` in another session on this shared machine cannot redirect the deletes.
-kc() {
-  if [[ -n "$KUBE_CONTEXT" ]]; then kubectl --context "$KUBE_CONTEXT" "$@"
-  else kubectl "$@"; fi
-}
-
-# See analyst-lib.sh for why this returns 2 rather than exiting.
-lookup() {
-  local notfound="$1"; shift
-  local out err rc=0
-  out="$(mktemp "${TMPDIR:-/tmp}/analyst-out.XXXXXX")" || return 2
-  err="$(mktemp "${TMPDIR:-/tmp}/analyst-err.XXXXXX")" || return 2
-  aws "$@" >"$out" 2>"$err" || rc=$?
-  if [[ "$rc" == 0 ]]; then cat "$out"; rm -f "$out" "$err"; return 0; fi
-  if grep -Fq "$notfound" "$err"; then rm -f "$out" "$err"; return 1; fi
-  echo "ERROR: 'aws $*' failed (exit $rc) and not with $notfound, so it is unknown whether the resource exists:" >&2
-  sed 's/^/  /' "$err" >&2
-  rm -f "$out" "$err"
-  return 2
-}
-
 say "1/11 the run record, the context and the account"
 
 echo "  context:   ${KUBE_CONTEXT:-<whatever kubectl is set to>}"
@@ -128,8 +114,6 @@ echo "  region:    $AWS_REGION"
 [[ -n "$ROLE_ARN" ]] ||
   die "the run record names no ROLE_ARN, so the account this sample's resources are in cannot be confirmed; nothing was deleted"
 record_account="$(cut -d: -f5 <<<"$ROLE_ARN")"
-[[ -n "$record_account" ]] ||
-  die "could not read an account id out of ROLE_ARN ($ROLE_ARN); nothing was deleted"
 caller_account="$(aws sts get-caller-identity --query Account --output text 2>/dev/null)"
 [[ -n "$caller_account" && "$caller_account" != "None" ]] ||
   die "could not read the AWS account these credentials belong to, so it is unknown whether they are the account this sample's resources are in; nothing was deleted"
@@ -453,111 +437,10 @@ say "8-10/11 the IAM role, the bucket and the images"
 if [[ "$delete_aws" != true ]]; then
   echo "  kept the IAM role, the bucket and the images; pass --delete-aws to remove them."
 else
-  role="$ROLE_NAME"
-  if [[ -z "$role" ]]; then
-    note_fail "no IAM role name in the run record or .env, so the role could not be removed"
-  else
-    got="$(lookup NoSuchEntity iam get-role --role-name "$role" --output json)"; rc=$?
-    if [[ "$rc" == 0 ]]; then
-      tag="$(jq -r '.Role.Tags[]? | select(.Key=="ManagedBy") | .Value' <<<"$got")"
-      if [[ "$tag" != "$SAMPLE" ]]; then
-        note_fail "the IAM role $role does not carry ManagedBy=$SAMPLE (found '$tag'); left it alone"
-      else
-        inline="$(aws iam list-role-policies --role-name "$role" --output json 2>/dev/null)"
-        attached="$(aws iam list-attached-role-policies --role-name "$role" --output json 2>/dev/null)"
-        if [[ -z "$inline" || -z "$attached" ]]; then
-          note_fail "could not list the policies on the IAM role $role; left it in place"
-        elif [[ -n "$(jq -r '.PolicyNames[] | select(. != "bridge")' <<<"$inline")" ||
-                "$(jq '.AttachedPolicies | length' <<<"$attached")" != 0 ]]; then
-          # The tag says the role is this sample's, but it now carries a grant this sample
-          # did not create. Deleting it would take someone else's change with it.
-          note_fail "the IAM role $role carries a policy this sample did not create; left it in place"
-        else
-          if [[ "$(jq -r '.PolicyNames | index("bridge")' <<<"$inline")" != "null" ]]; then
-            aws iam delete-role-policy --role-name "$role" --policy-name bridge >/dev/null 2>&1 ||
-              note_fail "could not delete the inline bridge policy on $role"
-          fi
-          aws iam delete-role --role-name "$role" >/dev/null 2>&1 ||
-            note_fail "could not delete the IAM role $role"
-          lookup NoSuchEntity iam get-role --role-name "$role" --output json >/dev/null 2>&1; rc=$?
-          case "$rc" in
-            1) echo "  deleted the IAM role $role." ;;
-            0) note_fail "the IAM role $role is still present after the delete" ;;
-            *) note_fail "could not confirm the IAM role $role was deleted" ;;
-          esac
-        fi
-      fi
-    elif [[ "$rc" == 1 ]]; then
-      echo "  the IAM role $role is already gone."
-    else
-      note_fail "could not determine whether the IAM role $role exists; left it alone"
-    fi
-  fi
-
-  bucket="${BUCKET:-}"
-  if [[ -z "$bucket" ]]; then
-    note_fail "no bucket name in the run record or .env, so the bucket could not be removed"
-  else
-    tags="$(lookup NoSuchBucket s3api get-bucket-tagging --bucket "$bucket" --output json)"; rc=$?
-    if [[ "$rc" == 0 ]]; then
-      tag="$(jq -r '.TagSet[]? | select(.Key=="ManagedBy") | .Value' <<<"$tags")"
-      if [[ "$tag" != "$SAMPLE" ]]; then
-        note_fail "the bucket $bucket does not carry ManagedBy=$SAMPLE (found '$tag'); left it alone"
-      else
-        aws s3 rm "s3://$bucket" --recursive --region "$AWS_REGION" >/dev/null 2>&1 ||
-          note_fail "could not empty the bucket $bucket"
-        aws s3api delete-bucket --bucket "$bucket" >/dev/null 2>&1 ||
-          note_fail "could not delete the bucket $bucket"
-        lookup NoSuchBucket s3api get-bucket-tagging --bucket "$bucket" --output json \
-          >/dev/null 2>&1; rc=$?
-        case "$rc" in
-          1) echo "  deleted the bucket $bucket, with this sample's reports in it." ;;
-          0) note_fail "the bucket $bucket is still present after the delete" ;;
-          *) note_fail "could not confirm the bucket $bucket was deleted" ;;
-        esac
-      fi
-    elif [[ "$rc" == 1 ]]; then
-      echo "  the bucket $bucket is already gone."
-    else
-      note_fail "could not determine whether the bucket $bucket exists; left it alone"
-    fi
-  fi
-
-  # Named rather than iterated over values, so a record missing one of them is reported
-  # instead of quietly skipped: an empty name used to `continue` and leave the repository
-  # in the account with the clean up still exiting 0.
-  for repo_var in ANALYST_REPOSITORY SUPPLIER_API_REPOSITORY; do
-    repo="${!repo_var:-}"
-    if [[ -z "$repo" ]]; then
-      note_fail "the run record names no $repo_var, so that ECR repository could not be found or removed"
-      continue
-    fi
-    got="$(lookup RepositoryNotFoundException ecr describe-repositories \
-      --repository-names "$repo" --output json)"; rc=$?
-    if [[ "$rc" == 0 ]]; then
-      arn="$(jq -r '.repositories[0].repositoryArn' <<<"$got")"
-      tags="$(aws ecr list-tags-for-resource --resource-arn "$arn" --output json 2>/dev/null)"
-      if [[ -z "$tags" ]]; then
-        note_fail "could not read the tags on the ECR repository $repo; left it alone"
-      elif [[ "$(jq -r '.tags[]? | select(.Key=="ManagedBy") | .Value' <<<"$tags")" != "$SAMPLE" ]]; then
-        note_fail "the ECR repository $repo does not carry ManagedBy=$SAMPLE; left it alone"
-      else
-        aws ecr delete-repository --repository-name "$repo" --force >/dev/null 2>&1 ||
-          note_fail "could not delete the ECR repository $repo"
-        lookup RepositoryNotFoundException ecr describe-repositories \
-          --repository-names "$repo" --output json >/dev/null 2>&1; rc=$?
-        case "$rc" in
-          1) echo "  deleted the ECR repository $repo." ;;
-          0) note_fail "the ECR repository $repo is still present after the delete" ;;
-          *) note_fail "could not confirm the ECR repository $repo was deleted" ;;
-        esac
-      fi
-    elif [[ "$rc" == 1 ]]; then
-      echo "  the ECR repository $repo is already gone."
-    else
-      note_fail "could not determine whether the ECR repository $repo exists; left it alone"
-    fi
-  done
+  analyst_clean_role "$ROLE_NAME" bridge
+  analyst_clean_bucket "${BUCKET:-}"
+  analyst_clean_repository ANALYST_REPOSITORY
+  analyst_clean_repository SUPPLIER_API_REPOSITORY
 fi
 
 # ---------------------------------------------------------------------------

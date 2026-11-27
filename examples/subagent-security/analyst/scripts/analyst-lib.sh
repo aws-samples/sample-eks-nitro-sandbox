@@ -376,7 +376,11 @@ analyst_bucket() {
 # The IAM role and the Pod Identity association
 # ---------------------------------------------------------------------------
 
+# analyst_role [<inline policy name> [<permissions template>]]
+# With no arguments it is the analyst's own role: the inline policy "analyst", from
+# analyst/iam/permissions-policy.json. A sample whose role does less passes its own two.
 analyst_role() {
+  local policy="${1:-analyst}" template="${2:-$SECTION_DIR/analyst/iam/permissions-policy.json}"
   say "6/7 the IAM role and its EKS Pod Identity association"
   jq --arg ns "$NAMESPACE" 'del(._comment)
       | .Statement[0].Condition.StringEquals["aws:RequestTag/kubernetes-namespace"] = $ns' \
@@ -386,7 +390,7 @@ analyst_role() {
           if .Sid == "InvokeTheConfiguredModel" then .Resource = $models
           else .Resource = (.Resource | if type == "array" then map(gsub("<BUCKET>"; $bucket))
                                         else gsub("<BUCKET>"; $bucket) end) end)' \
-    "$SECTION_DIR/analyst/iam/permissions-policy.json" > "$TMP_DIR/permissions-policy.json"
+    "$template" > "$TMP_DIR/permissions-policy.json"
 
   local existing rc=0
   existing="$(lookup NoSuchEntity iam get-role --role-name "$ROLE_NAME" --output json)" || rc=$?
@@ -406,7 +410,7 @@ analyst_role() {
       die "could not list the inline policies on the IAM role $ROLE_NAME, so it is unknown whether it carries only this sample's; changed nothing."
     attached="$(aws iam list-attached-role-policies --role-name "$ROLE_NAME" --output json)" ||
       die "could not list the attached policies on the IAM role $ROLE_NAME, so it is unknown whether it carries only this sample's; changed nothing."
-    extra="$(jq -r '.PolicyNames[] | select(. != "analyst")' <<<"$inline" | tr '\n' ' ')"
+    extra="$(jq -r --arg p "$policy" '.PolicyNames[] | select(. != $p)' <<<"$inline" | tr '\n' ' ')"
     [[ -z "$extra" ]] ||
       die "the IAM role $ROLE_NAME carries inline policies this sample did not create ($extra), so reusing it would leave the controller with more than this sample grants; changed nothing. Delete the role, or set a new ROLE_NAME in .env."
     [[ "$(jq '.AttachedPolicies | length' <<<"$attached")" == 0 ]] ||
@@ -415,7 +419,7 @@ analyst_role() {
     aws iam update-assume-role-policy --role-name "$ROLE_NAME" \
       --policy-document "file://$TMP_DIR/role-trust-policy.json"
     ROLE_ARN="$(jq -r '.Role.Arn' <<<"$existing")"
-    echo "  reusing the IAM role $ROLE_NAME (it carries only this sample's analyst policy)"
+    echo "  reusing the IAM role $ROLE_NAME (it carries only this sample's $policy policy)"
   else
     ROLE_ARN="$(aws iam create-role --role-name "$ROLE_NAME" \
       --assume-role-policy-document "file://$TMP_DIR/role-trust-policy.json" \
@@ -424,7 +428,7 @@ analyst_role() {
     state_put ROLE_CREATED true
     echo "  created the IAM role $ROLE_NAME"
   fi
-  aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name analyst \
+  aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name "$policy" \
     --policy-document "file://$TMP_DIR/permissions-policy.json"
   state_put ROLE_ARN "$ROLE_ARN"
 

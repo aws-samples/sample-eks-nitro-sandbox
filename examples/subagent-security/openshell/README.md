@@ -58,12 +58,20 @@ sandboxed workload pod, one supervisor pod, one supplier API pod and one bridge 
 running until you clean up, plus two EBS volumes: the gateway's 1 GiB database volume and the
 workload pod's 2 GiB workspace volume.
 
-Every output block on this page is from one real run of this blueprint, run id
-`286b39b900024323a25e1f067b11a385`. Values from the account it ran on are replaced by
+The output blocks of steps 3 to 12 are from one real run of this blueprint, run id
+`286b39b900024323a25e1f067b11a385`. The setup block in step 2 and the clean up block at the end
+are from a second, later run of the same scripts on a new cluster, run id
+`df63fa387a2e41eda821c1497e09951a`, made after `setup.sh` and `clean.sh` were changed to share
+their IAM role, bucket and image repository handling with the other blueprints. A value the
+two sets of blocks both show can therefore differ between them: for example the analyst
+image's tag (the second run rebuilt it), the EKS Pod Identity association's id, and the name of
+the sandbox that the clean up deletes (`run.sh` leaves one running, and the second run's has
+its own run id). Values from the account they ran on are replaced by
 placeholders, because this repository is public: `<ACCOUNT_ID>`, and `<NODE_NAME>` and
 `<SUPERVISOR_NODE_NAME>` for the nodes the workload pod and the supervisor pod ran on. The
-cluster is `sandbox-demo`, the name this repository's blueprints share, and the run was in
-`us-east-1`; yours are whatever you set in `.env`. Run ids, pod names, kernel builds, uptimes, device
+cluster is `sandbox-demo`, the name this repository's blueprints share (for the second run, the
+name of its kube context: the cluster itself was created under another name), and both runs were
+in `us-east-1`; yours are whatever you set in `.env`. Run ids, pod names, kernel builds, uptimes, device
 lists, token counts and the model's own prose are exactly as the run printed them. Where a
 block shows a file from this folder rather than a run's output, it says so.
 
@@ -274,9 +282,12 @@ class it picks goes into both `server.dataStorageClass` and `server.workspaceSto
 the rendered [`deploy/gateway-values.yaml`](deploy/gateway-values.yaml). On the cluster this
 run used, no default class fit, so setup created the blueprint's own.
 
-The first five stages are the ones every Subagent security blueprint shares, which is why they
-count out of seven: this blueprint does not use the sixth, the analyst's own IAM role, because
-here only the model bridge has an AWS identity.
+The first six stages are the shared setup that the nono and bubblewrap blueprints use too, which
+is why they count out of seven. The sixth is the IAM role and its EKS Pod Identity association: the same
+setup the other blueprints use for the analyst's role, here with the model bridge's narrower
+inline policy ([`iam/bridge-permissions-policy.json`](iam/bridge-permissions-policy.json), one
+Bedrock action on the configured model), because only the bridge has an AWS identity. The
+seventh is each blueprint's own, which here is the stages that follow.
 
 ```bash
 ./scripts/setup.sh
@@ -311,6 +322,9 @@ deployment "supplier-api" successfully rolled out
 ==> 5/7 the S3 bucket and the proposals
   created the bucket subagent-analyst-subagent-security-openshell-<ACCOUNT_ID>
   seeded the case, 3 proposals and one other case's object
+==> 6/7 the IAM role and its EKS Pod Identity association
+  created the IAM role subagent-analyst-subagent-security-openshell-bridge
+  created the Pod Identity association a-ed60uzowzeeh0j4fp
 ==> the pinned OpenShell CLI and chart (v0.1.6)
   reusing the verified CLI at tmp/subagent-security-openshell/local/openshell-v0.1.6
   verified chart 0.1.6 against its pinned checksum
@@ -318,16 +332,13 @@ deployment "supplier-api" successfully rolled out
 mutatingadmissionpolicy.admissionregistration.k8s.io/openshell-analyst-nitro-adapter created
 mutatingadmissionpolicybinding.admissionregistration.k8s.io/openshell-analyst-nitro-adapter created
   applied openshell-analyst-nitro-adapter, scoped to namespaces labelled managed-by=subagent-security-openshell
-==> the model bridge's IAM role and its EKS Pod Identity association
-  created the IAM role subagent-analyst-subagent-security-openshell-bridge
-  created the Pod Identity association a-9oeruxjph9qae1jjr
 ==> the analyst image, the CA-extended supervisor image and the model bridge
   created the ECR repository pod-isolation/subagent-analyst-subagent-security-openshell
-  built and pushed pod-isolation/subagent-analyst-subagent-security-openshell:11a91fcb7e9b47ba5a14
+  built and pushed pod-isolation/subagent-analyst-subagent-security-openshell:c8b26b5e0dceeceb3d05
 secret/bridge-tls created
 configmap/bridge-ca created
   created a 30-day certificate authority and the bridge-tls Secret
-  built and pushed supervisor-588cea6629e24d2a0894
+  built and pushed supervisor-4f0bbc0655136fe93526
 service/analyst-bridge created
 deployment.apps/analyst-bridge created
 deployment "analyst-bridge" successfully rolled out
@@ -350,8 +361,8 @@ REVISION: 1
 ```
 
 Abridged: the Docker build output, Docker's credential-store warning, the rollout's
-intermediate "waiting" lines, Helm's timestamp and test lines, the run record's path and the
-closing hint are cut, and this machine's directory prefix is cut from the CLI's path. The CLI
+intermediate "waiting" lines, Helm's timestamp and test lines, the run record's path, the
+closing hint and the blank lines between sections are cut, and this machine's directory prefix is cut from the CLI's path. The CLI
 line says "reusing" because the clean up keeps the downloaded, verified CLI under `tmp/`.
 
 Two things in that output are worth stopping on. **The chart is checked before it is
@@ -1064,7 +1075,7 @@ is what finishes the job:
   namespace subagent-security-openshell carries app.kubernetes.io/managed-by=subagent-security-openshell.
 
 ==> 3/11 the sandboxes, the OpenShell gateway and the namespace
-  deleted the Sandbox default--analyst-286b39b900.
+  deleted the Sandbox default--analyst-df63fa387a.
   uninstalled the Helm release openshell-analyst.
   deleted namespace subagent-security-openshell and everything in it.
 
@@ -1081,7 +1092,7 @@ is what finishes the job:
   no clusterrole is annotated for the release openshell-analyst in subagent-security-openshell.
 
 ==> 7/11 the EKS Pod Identity association
-  deleted the association a-9oeruxjph9qae1jjr.
+  deleted the association a-ed60uzowzeeh0j4fp.
 
 ==> 8-10/11 the IAM role, the bucket and the images
   deleted the IAM role subagent-analyst-subagent-security-openshell-bridge.
