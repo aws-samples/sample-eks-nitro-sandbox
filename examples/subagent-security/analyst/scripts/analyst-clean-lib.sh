@@ -17,6 +17,15 @@
 # sample's ManagedBy tag is left alone and reported. After each delete the resource is looked
 # up again, and only the service's own not-found answer counts as deleted.
 
+# analyst_json_array <json> <key>: succeeds only when the text is exactly ONE JSON document, an
+# object whose <key> is an array. Anything else is a read that did not work: no output, text
+# that is not JSON, a second document (a JSON warning printed before the answer), null, or an
+# error body. `jq -e` alone is not enough, because it judges only the last value it reads.
+analyst_json_array() {
+  jq -e -s --arg k "$2" 'length == 1 and (.[0] | type == "object" and (.[$k] | type == "array"))' \
+    <<<"$1" >/dev/null 2>&1
+}
+
 # analyst_clean_role <role name> <the one inline policy the sample puts on it>
 #
 # The tag says the role is this sample's; it does not say the role still carries only what
@@ -41,13 +50,14 @@ analyst_clean_role() {
     note_fail "the IAM role $role does not carry ManagedBy=$SAMPLE (found '$tag'); left it alone"
     return
   fi
-  # Each list call has to succeed AND answer with the shape the check below reads. An answer
-  # that is not JSON, or has no PolicyNames, makes jq print nothing, and nothing reads as "no
-  # other policy": the role would then be deleted on a read that never worked.
+  # Each list call has to succeed AND answer with one document of the shape the check below
+  # reads. An answer that is not JSON, has no PolicyNames, or is more than one document makes
+  # jq print nothing or the wrong thing, and nothing reads as "no other policy": the role would
+  # then be deleted on a read that never worked.
   if ! inline="$(aws iam list-role-policies --role-name "$role" --output json 2>/dev/null)" ||
      ! attached="$(aws iam list-attached-role-policies --role-name "$role" --output json 2>/dev/null)" ||
-     ! jq -e '.PolicyNames | type == "array"' <<<"$inline" >/dev/null 2>&1 ||
-     ! jq -e '.AttachedPolicies | type == "array"' <<<"$attached" >/dev/null 2>&1; then
+     ! analyst_json_array "$inline" PolicyNames ||
+     ! analyst_json_array "$attached" AttachedPolicies; then
     note_fail "could not list the policies on the IAM role $role; left it in place"
     return
   elif [[ -n "$(jq -r --arg p "$policy" '.PolicyNames[] | select(. != $p)' <<<"$inline")" ||
@@ -125,7 +135,7 @@ analyst_clean_repository() {
   fi
   arn="$(jq -r '.repositories[0].repositoryArn' <<<"$got")"
   if ! tags="$(aws ecr list-tags-for-resource --resource-arn "$arn" --output json 2>/dev/null)" ||
-     ! jq -e '.tags | type == "array"' <<<"$tags" >/dev/null 2>&1; then
+     ! analyst_json_array "$tags" tags; then
     note_fail "could not read the tags on the ECR repository $repo; left it alone"
     return
   elif [[ "$(jq -r '.tags[]? | select(.Key=="ManagedBy") | .Value' <<<"$tags")" != "$SAMPLE" ]]; then

@@ -6,8 +6,8 @@
 #   cp .env.example .env && $EDITOR .env
 #   ./scripts/setup.sh
 #
-# What it does, in order (the first six stages are the ones every Subagent security
-# sample shares, and print their own "N/7" counter from analyst-lib.sh):
+# What it does, in order (the first six stages come from analyst-lib.sh, which the nono
+# and bubblewrap samples use too, and print its "N/7" counter):
 #   1. checks the tools, the kube context, the isolated-sandbox RuntimeClass, the Bedrock
 #      model, the MutatingAdmissionPolicy API and the shared agent-sandbox install;
 #   2. creates the namespace when it is absent, and the analyst ServiceAccount;
@@ -252,7 +252,7 @@ fi
 state_put STORAGE_CLASS "$CHOSEN_STORAGE_CLASS"
 
 # ---------------------------------------------------------------------------
-# The parts every Subagent security sample shares
+# The parts the nono and bubblewrap samples share, from analyst-lib.sh
 # ---------------------------------------------------------------------------
 
 BUCKET="${BUCKET:-subagent-analyst-$SAMPLE-$ACCOUNT_ID}"

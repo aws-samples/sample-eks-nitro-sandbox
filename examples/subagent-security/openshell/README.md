@@ -282,8 +282,8 @@ class it picks goes into both `server.dataStorageClass` and `server.workspaceSto
 the rendered [`deploy/gateway-values.yaml`](deploy/gateway-values.yaml). On the cluster this
 run used, no default class fit, so setup created the blueprint's own.
 
-The first six stages are the ones every Subagent security blueprint shares, which is why they
-count out of seven. The sixth is the IAM role and its EKS Pod Identity association: the same
+The first six stages are the shared setup that the nono and bubblewrap blueprints use too, which
+is why they count out of seven. The sixth is the IAM role and its EKS Pod Identity association: the same
 setup the other blueprints use for the analyst's role, here with the model bridge's narrower
 inline policy ([`iam/bridge-permissions-policy.json`](iam/bridge-permissions-policy.json), one
 Bedrock action on the configured model), because only the bridge has an AWS identity. The
@@ -361,8 +361,8 @@ REVISION: 1
 ```
 
 Abridged: the Docker build output, Docker's credential-store warning, the rollout's
-intermediate "waiting" lines, Helm's timestamp and test lines, the run record's path and the
-closing hint are cut, and this machine's directory prefix is cut from the CLI's path. The CLI
+intermediate "waiting" lines, Helm's timestamp and test lines, the run record's path, the
+closing hint and the blank lines between sections are cut, and this machine's directory prefix is cut from the CLI's path. The CLI
 line says "reusing" because the clean up keeps the downloaded, verified CLI under `tmp/`.
 
 Two things in that output are worth stopping on. **The chart is checked before it is
