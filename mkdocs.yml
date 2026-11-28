@@ -130,6 +130,7 @@ nav:
       - Encrypted image: confidential/encrypted-image/README.md
       - Secrets Manager secret: confidential/secrets-manager-secret/README.md  # pragma: allowlist secret
       - S3 encrypted file: confidential/s3-encrypted-file/README.md
+      - Reproducible build: confidential/reproducible-build/README.md
       # Last on purpose: a reference the three samples above point at, rather than one
       # of them.
       - Image trust by signer: confidential/signer-policy/README.md

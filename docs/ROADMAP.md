@@ -64,6 +64,7 @@ examples/
     ├── encrypted-image/
     ├── secrets-manager-secret/
     ├── s3-encrypted-file/
+    ├── reproducible-build/
     └── signer-policy/
 ```
 
@@ -204,4 +205,5 @@ The [Confidential section page](../examples/confidential/README.md) holds what t
 - [encrypted-image](../examples/confidential/encrypted-image/README.md) (available now): encrypted image layers in Amazon ECR, decrypted inside the sandbox after AWS KMS checks its attested policy. Spec: [#19](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/19).
 - [secrets-manager-secret](../examples/confidential/secrets-manager-secret/README.md) (available now): an AWS Secrets Manager secret released only to an approved sandbox. Spec: [#20](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/20).
 - [s3-encrypted-file](../examples/confidential/s3-encrypted-file/README.md) (available now): a file encrypted before upload to Amazon S3 and decrypted only inside an approved sandbox. Spec: [#21](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/21).
+- [reproducible-build](../examples/confidential/reproducible-build/README.md) (available now): a Nix-built image whose digest is locked in a KMS key policy so only pods running the approved reproducible build can decrypt; an independent rebuild verifies the measurement and a changed source is refused.
 - [signer-policy](../examples/confidential/signer-policy/README.md) (available now): the section's reference for signer-based image trust. A generated Cedar policy names an AWS Signer profile instead of pinning one digest, so a provider's next release runs with no policy regenerated, shown beside the default digest pin refusing that same release. Spec: [#119](https://github.com/aws-samples/sample-eks-nitro-sandbox/issues/119).

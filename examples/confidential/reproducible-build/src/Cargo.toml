@@ -1,0 +1,39 @@
+[package]
+name = "reproducible-build-decrypt"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aes = "0.9.4"
+# aws-config 1.13 and aws-sdk-kms 1.133 need rustc 1.94.1 or later. The image is built with the
+# rustc of the nixpkgs in ../flake.lock (1.95.0), so these are the latest; a nixpkgs below
+# 1.94.1 would need them held back at aws-config 1.8.18 and aws-sdk-kms 1.111.0.
+aws-config = "1.13.3"
+aws-nitro-enclaves-nsm-api = "0.5.2"
+aws-sdk-kms = "1.133.0"
+cbc = { version = "0.2.1", features = ["alloc"] }
+ciborium = "0.2"
+# Tag cms/v0.3.0-rc.2, a prerelease: it is the only cms on der 0.8 and rsa 0.10, and the BER
+# decoding of KMS output needs der 0.8. Move to cms 0.3.0 when it ships.
+cms = { git = "https://github.com/RustCrypto/formats", rev = "feca63aee1f5cb668ef24e5ebc215448d8a0d925", default-features = false }
+getrandom = { version = "0.4.3", features = ["sys_rng"] }
+rsa = "0.10.0"
+serde_bytes = "0.11"
+sha2 = "0.11"
+tokio = { version = "1", features = ["rt"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+overflow-checks = true
+panic = "abort"
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+expect_used = "deny"
+panic = "deny"
+unwrap_used = "deny"
